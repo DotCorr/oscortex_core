@@ -21,10 +21,17 @@ alive over serial, nothing else. What's missing, for real, before the next miles
   `timeout`-free shutdown path (`isa-debug-exit` or an actual `ACPI` shutdown would need at least basic
   I/O handling to be worth adding).
 - **No drivers beyond COM1**, and even COM1 has no busy-wait on the Line Status Register's
-  Transmit-Holding-Register-Empty bit before each `Port.outb` write — DCDart has no bitwise AND
-  operator yet (its own spec's "Cut" list), so `LSR & 0x20`-style polling isn't expressible. The M0
-  message is kept to 15 bytes, safely under the 16550's 16-byte TX FIFO, so every byte queues in one
-  shot without needing to poll — this is fragile and would silently drop bytes for a longer message.
+  Transmit-Holding-Register-Empty bit before each `Port.outb` write. **Partially unblocked**: DCDart
+  now has a bitwise AND operator (`docs/known-gaps.md` GAP-0002 below, DCDart's own ADR-0030) that
+  `LSR & u8(0x20)` needs — but a busy-wait loop's CONDITION also needs a way to turn that masked byte
+  into a `bool` (a comparison operator on `u8`, e.g. `<` or `==`), which DCDart doesn't have yet either
+  (only `u64` has `<`, added for a different reason — recursion, ADR-0026). Not worth bolting a
+  one-off `u8 operator <` onto DCDart just to patch this single loop in `kmain.dart`'s throwaway M0
+  proof-of-life code — real polling belongs in a proper, reusable UART driver module, which the
+  interrupts milestone will need to build anyway (interrupt-driven I/O needs a real driver structure
+  regardless). The M0 message stays 15 bytes, safely under the 16550's 16-byte TX FIFO, so every byte
+  queues in one shot without polling — fragile for a longer message, fine for M0, deliberately not
+  patched further until the real driver exists.
 - **No real bootloader.** QEMU's built-in Multiboot loader (`-kernel`) is the only tested boot path.
   BIOS MBR / UEFI boot on real hardware is unbuilt and unverified.
 
@@ -37,13 +44,17 @@ closing these.
 ## GAP-0002 — DCDart-side primitives this kernel needs but doesn't have yet
 
 **Domain:** kernel (blocked on DCDart repo changes, not this repo's to fix directly)
-**Status:** OPEN — tracked here so it's visible from the kernel side; the actual work happens in the
-DCDart repo's own `docs/known-gaps.md`/`docs/decisions/`.
+**Status:** OPEN — bitwise operators RESOLVED (DCDart's own `docs/decisions/0030-bitwise-operators.md`,
+2026-08-16); general asm/`@naked`/extern-FFI/`@interrupt` enforcement remain unstarted. Tracked here so
+it's visible from the kernel side; the actual work happens in the DCDart repo's own
+`docs/known-gaps.md`/`docs/decisions/`.
 
-- **Bitwise operators** (`&`, `|`, `^`, `<<`, `>>`) — needed for real register-flag manipulation
-  (LSR polling above, page-table flag bits currently done in hand-written asm instead of DCDart because
-  of this, PIC/IDT setup once that milestone starts). DCDart's own spec lists these in its "Cut"
-  section — not started.
+- **Bitwise operators** (`&`, `|`, `^`, `<<`, `>>`) — **now available** on `u8`/`u16`/`u32`/`u64`
+  (DCDart ADR-0030). Not yet USED here: `boot.S`'s page-table flag bits are still hand-written asm
+  (that stays asm regardless — it runs before `kmain()`/any DCDart code exists at all), and real UART
+  LSR polling still needs a `u8` comparison operator DCDart doesn't have yet (see the M0 known-gaps
+  entry above). The real payoff lands once IDT/PIC setup (interrupts milestone) actually needs to pack
+  register fields.
 - **General inline asm / `@naked` / extern-FFI** — `@interrupt` handler entry points need `@naked`
   (no compiler-generated prologue/epilogue); `cli`/`sti`/`lgdt`/`lidt` need either dedicated
   instructions (the same narrow pattern `Port.outb`/`Port.inb` used, ADR-0029 in the DCDart repo) or a
