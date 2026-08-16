@@ -1,0 +1,4 @@
+# oscortex_core's freestanding-symbol allowlist. Empty by design -- nothing
+# built so far needs anything allowlisted. Do not add an entry here to make
+# verify-freestanding.sh pass; a genuine need gets a known-gaps.md entry
+# explaining why, in the same commit as the allowlist change.

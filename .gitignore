@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+*.o
+*.elf
+*.img
+*.bin
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Claude Code local session state
+.claude/
+
+# Internal agent-orchestration process docs -- kept locally, not published.
+# Root of the public repo is intentionally just README.md + core/, same
+# convention as the DCDart repo (see its docs/decisions/0001-directory-
+# layout.md UPDATE note).
+/AGENTS.md
+/CLAUDE.md
+/OSCORTEX_SPEC.md
+/ROADMAP.md
+/SKILL.md
