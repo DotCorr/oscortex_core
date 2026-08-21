@@ -51,6 +51,53 @@ p3_table:
     .skip 4096
 p2_table:
     .skip 4096
+/* M5 (ADR-0009): a SECOND page directory, for the 3-4GiB region.
+ *
+ * WHY. A PCI device's registers and framebuffer live wherever the firmware's
+ * BAR allocator put them, and on this machine that is the "PCI hole" just
+ * below 4GiB -- QEMU's std VGA gets its 16MiB linear framebuffer at
+ * 0xFD000000. The eight 2MiB pages above cover 0..16MiB and nothing else, so
+ * until this page existed a store to a BAR address was a page fault, which is
+ * the same class of silent wall OSCORTEX_SPEC.md §3 predicts for 0xB8000 on
+ * real hardware -- except this one faults instead of doing nothing.
+ *
+ * WHY THE WHOLE GIGABYTE, rather than just the framebuffer. The alternative is
+ * to map exactly the BAR, which means DCDart would have to write page-table
+ * entries at runtime -- a second, much larger capability (a page-table walker,
+ * TLB invalidation, and a decision about where new tables come from with no
+ * allocator to ask). Identity-mapping 3-4GiB up front is 512 entries in one
+ * loop, is where the PCI hole always is on a PC, and needs nothing new. It is
+ * a boot-time decision made in boot-time assembly, which is what CLAUDE.md
+ * rule 4 asks for.
+ *
+ * WHAT IT IS NOT. It is not a memory manager and it does not make these pages
+ * safe: they are mapped writable, cacheable and identity, with no permissions
+ * and no MTRR/PAT setup. Cacheable is wrong in principle for MMIO and right in
+ * practice for a linear framebuffer; docs/known-gaps.md GAP-0071 says so
+ * rather than leaving it to be discovered. */
+p2_pci_table:
+    .skip 4096
+/* Multiboot1 information-structure pointer, as handed to us in EBX. Stashed
+ * in memory rather than kept in a register because EVERY register is fair
+ * game for the long-mode transition below (the page-table loops clobber
+ * eax/ecx/edi, rdmsr/wrmsr clobber eax/ecx/edx, and cr0/cr3/cr4 writes go
+ * through eax) -- a stash that survives by inspection today would be a
+ * silent, hard-to-find corruption the first time someone adds a step here.
+ * A .bss dword costs nothing and cannot be clobbered by accident.
+ *
+ * Written before ANY of that runs; read back immediately before `call
+ * kmain`. .bss is not zeroed by anything at this point -- it does not need
+ * to be, this location is written before it is ever read. */
+multiboot_info_ptr:
+    .skip 4
+/* .align 16 is load-bearing, not decoration: the System V AMD64 ABI (the
+ * calling convention DCDart's x86_64-unknown-none-elf backend targets)
+ * requires RSP to be 16-byte aligned at every `call` site. Before this
+ * 4-byte stash existed, stack_top happened to be 4096-aligned by accident
+ * of p4/p3/p2 each being exactly 4096 bytes; adding an odd-sized object
+ * above it would silently have made it 4-mod-16. Align explicitly so the
+ * property is stated, not inherited. */
+.align 16
 stack_bottom:
     .skip 16384                   /* 16KiB boot stack */
 stack_top:
@@ -64,20 +111,35 @@ _start:
     /* Multiboot handoff: EAX = 0x2BADB002, EBX = multiboot info struct
      * pointer, CS/DS/ES/FS/GS/SS = flat 32-bit segments covering all
      * 4GiB, paging disabled, interrupts disabled, A20 enabled -- all
-     * per the Multiboot spec's machine-state guarantee. Neither EAX
-     * nor EBX is read at M0 (no memory-map parsing yet). */
+     * per the Multiboot spec's machine-state guarantee. EAX is still not
+     * read (nothing needs to re-confirm the magic the loader already
+     * matched to get here); EBX IS, now -- it is the information-struct
+     * pointer core/kernel/multiboot.dart parses. */
     cli                            /* no IDT exists yet; keep interrupts
                                     * off for the whole boot sequence */
     movl $stack_top, %esp          /* only usable stack before this point
                                     * is whatever the loader left, which
                                     * nothing here should rely on */
 
-    /* --- Zero the three page-table pages -------------------------- */
+    /* Stash EBX before anything else touches a register. See the
+     * multiboot_info_ptr declaration above for why this goes to memory
+     * rather than being parked in a callee-saved register. */
+    movl %ebx, multiboot_info_ptr  /* bare symbol = absolute disp32 memory
+                                    * operand -- see the p4_table store
+                                    * below for why NOT "(multiboot_info_ptr)" */
+
+    /* --- Zero the four page-table pages ---------------------------- */
     movl $p4_table, %edi
     movl %edi, %ecx
-    addl $(4096 * 3), %ecx         /* end address: p4+p3+p2 are laid out
-                                    * contiguously (no alignment directive
-                                    * between them in the .bss block above) */
+    addl $(4096 * 4), %ecx         /* end address: p4+p3+p2+p2_pci are laid
+                                    * out contiguously (no alignment directive
+                                    * between them in the .bss block above).
+                                    * FOUR pages as of M5 -- the fourth is the
+                                    * 3-4GiB page directory. Getting this
+                                    * count wrong would leave a page directory
+                                    * full of whatever the loader left in
+                                    * memory and then mark every one of those
+                                    * entries present. */
     xorl %eax, %eax
 zero_tables:
     movl %eax, (%edi)
@@ -117,6 +179,33 @@ map_p2_table:
     incl %ecx
     cmpl $8, %ecx
     jl map_p2_table
+
+    /* --- PDPT[3] -> the 3-4GiB page directory (present, writable) ----
+     * M5. PDPT entry N covers [N GiB, N+1 GiB), so entry 3 is 0xC0000000..
+     * 0xFFFFFFFF -- the PC's PCI hole, where the firmware puts BARs. Entry 3
+     * is at byte offset 3*8 = 24 in the PDPT. */
+    movl $p2_pci_table, %eax
+    orl $0x3, %eax
+    movl %eax, p3_table + 24
+
+    /* --- PD[0..511] of that directory -> 2MiB huge pages, identity ---
+     * Virtual 0xC0000000 + i*2MiB maps to the same physical address. The
+     * base for entry i is 0xC0000000 + i * 0x200000, which is 2MiB-aligned
+     * for every i, so ORing the flag bits in never disturbs an address bit.
+     *
+     * `mull` is avoided here: 0xC0000000 + 511*0x200000 = 0xFFE00000 still
+     * fits in 32 bits, but the running base is kept in a register and added
+     * to rather than recomputed, so there is no multiply whose high half
+     * would need thinking about. */
+    movl $0, %ecx
+    movl $0xC0000083, %eax         /* base 0xC0000000 | present | writable | PS */
+map_p2_pci_table:
+    movl %eax, p2_pci_table(, %ecx, 8)
+    addl $0x200000, %eax           /* next 2MiB frame; flags ride along in the
+                                    * low bits and are unaffected by the add */
+    incl %ecx
+    cmpl $512, %ecx
+    jl map_p2_pci_table
 
     /* --- Enable PAE (CR4 bit 5) -------------------------------------- */
     movl %cr4, %eax
@@ -164,7 +253,17 @@ long_mode_start:
     /* rsp already holds stack_top's (zero-extended) value from the
      * 32-bit setup above -- a valid 64-bit stack pointer, no extra
      * work needed. */
-    call kmain                      /* @bare DCDart, C ABI, no args, no
+    /* First (and only) integer argument goes in RDI, per the System V
+     * AMD64 ABI. `movl ..., %edi` (32-bit) is deliberate, not an
+     * oversight: writing a 32-bit register zero-extends into the full
+     * 64-bit register on x86-64, which is exactly what is wanted here --
+     * the Multiboot info pointer is a 32-bit physical address and the
+     * upper 32 bits of RDI must be zero for kmain()'s `u64` parameter to
+     * be the address and not address-plus-garbage. */
+    movl multiboot_info_ptr, %edi
+
+    call kmain                      /* @bare DCDart, C ABI: one u64 arg
+                                     * (the Multiboot info pointer), no
                                      * return value -- OSCORTEX_SPEC.md §2 */
 
 halt_forever:
@@ -193,3 +292,6 @@ gdt64_data:
 gdt64_pointer:
     .word . - gdt64 - 1
     .quad gdt64
+
+/* Mark the stack non-executable (see kdata.S for the full note). */
+.section .note.GNU-stack,"",@progbits

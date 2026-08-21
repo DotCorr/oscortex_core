@@ -98,12 +98,38 @@ fi
 EXPECTED="$WORKDIR/expected.txt"
 printf 'OSCORTEX M0 OK\n' >"$EXPECTED"
 
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED"; then
-  echo "--- captured serial output (hex) ---" >&2
-  xxd "$SERIAL_CAPTURE" >&2 2>/dev/null || od -An -tx1 "$SERIAL_CAPTURE" >&2
+# M0's proof of life is the FIRST LINE of serial output, asserted byte-for-
+# byte. This used to be a whole-file `cmp`, back when the kernel printed
+# exactly one line and nothing else.
+#
+# It is a first-line comparison now because the kernel legitimately prints
+# more than M0's message: core/kernel/multiboot.dart's report follows it
+# (docs/decisions/0003-uart-driver-and-multiboot-info.md). Keeping a
+# whole-file `cmp` here would have meant either deleting real work or
+# folding M1-scope output into M0's exit criterion, and both are worse.
+#
+# This is a WEAKENING of this harness taken on its own -- it no longer proves
+# "and nothing else was printed" -- and that is stated plainly rather than
+# glossed. The property is not lost, it MOVED: tests/conformance/mb-info/run.sh
+# asserts the ENTIRE capture byte-for-byte, first line included, so the two
+# harnesses together assert strictly more than this one did alone. Run both.
+#
+# `head -c` on the exact expected byte length, not `head -1`: comparing a
+# fixed byte count means a capture that is SHORTER than expected, or that has
+# the right first line but a missing newline, still fails. `head -1` would
+# paper over both.
+EXPECTED_BYTES=$(wc -c <"$EXPECTED" | tr -d ' ')
+FIRST_LINE="$WORKDIR/first_line.txt"
+head -c "$EXPECTED_BYTES" "$SERIAL_CAPTURE" >"$FIRST_LINE"
+
+if ! cmp -s "$FIRST_LINE" "$EXPECTED"; then
+  echo "--- captured serial output, first $EXPECTED_BYTES bytes (hex) ---" >&2
+  xxd "$FIRST_LINE" >&2 2>/dev/null || od -An -tx1 "$FIRST_LINE" >&2
   echo "--- expected (hex) ---" >&2
   xxd "$EXPECTED" >&2 2>/dev/null || od -An -tx1 "$EXPECTED" >&2
-  fail "captured serial output did not exactly match the expected proof-of-life message"
+  echo "--- full capture, for context (hex) ---" >&2
+  xxd "$SERIAL_CAPTURE" >&2 2>/dev/null || od -An -tx1 "$SERIAL_CAPTURE" >&2
+  fail "the first $EXPECTED_BYTES captured serial bytes did not exactly match the expected proof-of-life message"
 fi
 
 echo "M0-boot: PASS — dcc build -> assemble -> link -> verify-freestanding pass -> real QEMU boot -> exact serial byte match ('OSCORTEX M0 OK')"

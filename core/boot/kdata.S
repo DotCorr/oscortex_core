@@ -1,0 +1,389 @@
+/* core/boot/kdata.S
+ *
+ * oscortex_core M2/M3: DONATED MUTABLE STORAGE.
+ *
+ * WHY THIS FILE EXISTS (and why it is not a design choice)
+ * ------------------------------------------------------------------
+ * DCDart has no mutable static data of ANY kind. `@rodata` (DCDart ADR-0040)
+ * gives read-only tables and nothing else; there is no `static`, no global,
+ * no `var` outside a function body. Every byte of kernel state that must
+ * outlive a call therefore has to be donated by assembly and reached from
+ * DCDart through a `u64` address — exactly the pattern `isr.S` already uses
+ * for the IDT and the tick counter (ADR-0002), and recorded as a real
+ * language gap in docs/known-gaps.md (GAP-0004 item 1, GAP-0053).
+ *
+ * M1 could hide that inside isr.S, because the only state it needed WAS
+ * interrupt state. M2's console cursor is not interrupt state, and putting it
+ * in isr.S would have made "the interrupt file" quietly mean "the file where
+ * we keep globals." A separate file named for what it is keeps the workaround
+ * legible, and keeps the count of donated words visible in one place: when
+ * DCDart grows mutable statics, this whole file is what gets deleted.
+ *
+ * NOT ZEROED HERE. `.bss` is not cleared by anything in this kernel — boot.S
+ * zeroes only the three page-table pages, by explicit address range. Every
+ * word below is initialized by DCDart through its address before first use
+ * (`vgaInit()` for the cursor, `m2Enter()` for the phase word, `shellInit()`
+ * for the whole M3 block). Assuming `.bss` is zero would be a real bug on
+ * this kernel, not a portability nit.
+ *
+ * SIZE, AND WHY IT IS TRACKED. M5 adds 32 bytes for the framebuffer console's
+ * state (base, pitch, cursor column, cursor row), taking the total to **424**.
+ * M5's OTHER subsystem, PCI enumeration, added zero -- it prints as it walks
+ * and retains nothing -- so the 32 bytes are precisely the cost of a console
+ * having a cursor. `tests/conformance/m5-pci/run.sh` asserts the total.
+ *
+ * M6 ADDS NOTHING, AND THAT WAS A CHOICE RATHER THAN AN ABSENCE OF NEED.
+ * An ATA PIO driver's obvious shape is `read(lba, buffer)` and the buffer is
+ * 512 bytes, which would have taken this file from 424 to 936 -- more than
+ * doubling in one milestone, for one command. core/kernel/ata.dart hexdumps
+ * each 16-bit word as it arrives off the data port instead, so there is no
+ * sector buffer anywhere in this kernel. The cost is that the driver can SHOW
+ * you a sector and cannot GIVE you one (docs/known-gaps.md GAP-0074 item 1).
+ * `tests/conformance/m6-disk/run.sh` asserts that this total did NOT move.
+ *
+ * M2 donated 16 bytes (two words). M3's line
+ * editor needs a BUFFER, and DCDart has no array type either, so the total went
+ * to 304 bytes: 16 + 256 (line buffer) + 8 (length) + 8 (shell state) + 8
+ * (Multiboot pointer copy) + 8 (0xE0-prefix flag). M4 adds 88 more — 64 for the
+ * CPUID result strings, and 24 for the three words fault recovery needs — so
+ * the total is 392 at M4 and **424** at M5 (see above).
+ * `tests/conformance/m4-fault/run.sh` and `m5-pci/run.sh` assert their own
+ * milestone's number exactly, so it moves only as a deliberate edit — it is the running
+ * measure of what DCDart's missing mutable statics cost downstream
+ * (docs/known-gaps.md GAP-0053).
+ *
+ * WHO WRITES WHAT, at M4. Every word through `kbd_prefix` is written only by
+ * DCDart, through the accessors below. The M4 block is the first that is
+ * written by ASSEMBLY as well: `cpu_info` is filled by `cpu_probe` in isr.S
+ * (DCDart cannot execute `cpuid`), and `shell_resume_rsp`/`shell_resume_ok` are
+ * written by `shell_run_forever` in isr.S (DCDart cannot read RSP). DCDart
+ * still initializes them, and that ordering is what makes the recovery guard
+ * mean anything — see `shell_resume_ok` below.
+ */
+
+/* ==================================================================
+ * Storage.
+ * ================================================================== */
+.section .bss
+
+/* VGA text-console cursor, as a LINEAR CELL INDEX (row * 80 + column), not a
+ * row/column pair — one word is one store, and every operation the console
+ * performs (advance, newline, backspace, scroll) is arithmetic on the linear
+ * index. Range 0..1999 for an 80x25 screen; core/kernel/vga.dart maintains
+ * that invariant and is the only writer.
+ *
+ * Initialized by vgaInit(). */
+.align 8
+vga_cursor:
+    .skip 8
+    .size vga_cursor, 8
+    .type vga_cursor, @object
+
+/* M2 phase word. 0 = M2 has not been entered; 1 = it has.
+ *
+ * Load-bearing, not bookkeeping: M2 is entered from the FAULT path of
+ * isrDispatch (M1's last act is a deliberate #UD, and a fault handler cannot
+ * `iretq` back to a faulting instruction — see core/kernel/vga.dart's
+ * m2Enter). That path is also where a genuine, unexpected fault during M2
+ * would land, so without this word a fault inside the console would re-enter
+ * the console recursively instead of stopping. Initialized by m2Enter()
+ * itself, whose first act is to read it. */
+.align 8
+m2_phase:
+    .skip 8
+    .size m2_phase, 8
+    .type m2_phase, @object
+
+/* ------------------------------------------------------------------
+ * M3 (ADR-0006): the shell's state.
+ *
+ * This is the block that turned GAP-0053 from "awkward" into "expensive."
+ * M2 needed two words; a line editor needs a BUFFER, and there is no way to
+ * spell one in DCDart at all -- no array type, no mutable static, no
+ * allocator. 256 bytes of assembly-donated .bss is what `static u8
+ * line[256];` costs in this language today.
+ *
+ * Every word here is initialized by shellInit() through its address, called
+ * from kmain() alongside vgaInit(). .bss is NOT zeroed by anything in this
+ * kernel: a garbage shell_len would make the first keystroke store hundreds
+ * of bytes past the end of the buffer, and a garbage kbd_prefix would swallow
+ * the first real key.
+ * ------------------------------------------------------------------ */
+
+/* Current line buffer. Holds the bytes typed since the last Enter, WITHOUT
+ * the prompt and without the terminating newline -- the prompt is screen
+ * output, not part of the line, which is exactly why backspace cannot erase
+ * it (core/kernel/shell.dart's shellKey stops at length 0). */
+.align 8
+shell_line:
+    .skip 256
+    .size shell_line, 256
+    .type shell_line, @object
+
+/* Number of valid bytes in shell_line, 0..256. */
+.align 8
+shell_len:
+    .skip 8
+    .size shell_len, 8
+    .type shell_len, @object
+
+/* Shell state: 0 = accepting input, 1 = a line was submitted and is waiting
+ * to run, 2 = a command is running.
+ *
+ * State 2 is not bookkeeping. Commands run in TASK context with interrupts
+ * enabled, so an IRQ1 can arrive in the middle of one; without a state the
+ * handler would append to shell_line and bump shell_len while shellExecute
+ * was walking them. The cost is that type-ahead during a command is dropped
+ * -- there is still no input queue (GAP-0055 item 4). */
+.align 8
+shell_state:
+    .skip 8
+    .size shell_state, 8
+    .type shell_state, @object
+
+/* The Multiboot1 information-structure pointer, copied here by shellInit()
+ * from the argument boot.S passes to kmain().
+ *
+ * A COPY rather than an accessor for boot.S's own stash, deliberately:
+ * exporting multiboot_info_ptr and taking its address from here would give
+ * kdata.o an undefined symbol, and kdata.o passing verify-freestanding.sh
+ * standalone is a documented property (docs/known-gaps.md GAP-0056). Eight
+ * bytes is the price of keeping it. */
+.align 8
+shell_mbinfo:
+    .skip 8
+    .size shell_mbinfo, 8
+    .type shell_mbinfo, @object
+
+/* "The previous scancode was 0xE0." One word for a one-byte state machine,
+ * because a word is the smallest thing an accessor can hand back cleanly.
+ *
+ * This closes GAP-0055 item 2, which was a WRONG behaviour rather than a
+ * missing one: extended keys (arrows, right-hand modifiers, keypad Enter)
+ * send 0xE0 and then an ordinary-looking make code in a second interrupt. The
+ * driver used to ignore the 0xE0 and then translate its follower as if it
+ * were a normal key, so the up arrow (0xE0 0x48) typed `8`. */
+.align 8
+kbd_prefix:
+    .skip 8
+    .size kbd_prefix, 8
+    .type kbd_prefix, @object
+
+/* ------------------------------------------------------------------
+ * M4 (ADR-0007): CPUID results, and the fault-recovery resume point.
+ * ------------------------------------------------------------------ */
+
+/* CPUID result strings, as ONE 64-byte block:
+ *
+ *     +0   12 bytes  vendor  (leaf 0: EBX, EDX, ECX, in that order)
+ *     +12   4 bytes  NUL pad, written by cpu_probe so the block is defined
+ *     +16  48 bytes  brand   (leaves 0x80000002..0x80000004)
+ *
+ * ONE block with fixed offsets rather than two symbols with two accessors,
+ * because each accessor is another `@extern` declaration on the DCDart side
+ * and the offsets are a fixed part of CPUID's own contract anyway.
+ *
+ * This is what "return a 12-byte string across the DCDart/asm boundary" costs
+ * in a language with no string type, no array type, and no `Pointer<T>` in an
+ * extern signature (DCDart GAP-0025): the string cannot be RETURNED at all.
+ * It is written into donated .bss by the assembly that produced it and read
+ * back a byte at a time by DCDart through an address. See docs/known-gaps.md
+ * GAP-0061. */
+.align 8
+.global cpu_info
+cpu_info:
+    .skip 64
+    .size cpu_info, 64
+    .type cpu_info, @object
+
+/* How many faults the kernel has caught and RECOVERED from since boot.
+ *
+ * Incremented by the DCDart fault handler and printed by shellRecover(), so
+ * `FAULT RECOVERED 0002` is a count the kernel kept rather than a constant it
+ * prints. M1's own boot-time deliberate #UD is NOT counted: it is not
+ * recovered from, it is the event that brings the console up. */
+.align 8
+fault_count:
+    .skip 8
+    .size fault_count, 8
+    .type fault_count, @object
+
+/* The stack pointer the shell loop runs on, recorded ONCE by
+ * `shell_run_forever` (core/boot/isr.S) at the moment the shell is entered.
+ *
+ * This is the whole of the recovery mechanism's state. A fault handler cannot
+ * `iretq` back to a faulting instruction, so recovery abandons the faulting
+ * computation entirely: `fault_resume` sets RSP back to this value and calls
+ * the shell's entry point again. Every frame between the mark and the fault --
+ * the command, the interrupt frame, whatever the command had called -- is
+ * discarded by that one store, which is also why N faults cost no stack.
+ *
+ * DCDart never reads or writes this word; it cannot read RSP at all. */
+.align 8
+.global shell_resume_rsp
+shell_resume_rsp:
+    .skip 8
+    .size shell_resume_rsp, 8
+    .type shell_resume_rsp, @object
+
+/* 1 once `shell_resume_rsp` holds a real value; 0 before that.
+ *
+ * NOT defensive decoration. `.bss` is not zeroed by anything in this kernel,
+ * so before `shell_run_forever` runs, `shell_resume_rsp` contains whatever the
+ * loader left in memory. A fault in the window between `m2Enter()` claiming
+ * the console and the shell actually starting would otherwise set RSP to
+ * garbage and triple-fault the machine -- while diagnosing a fault, which is
+ * the one failure this milestone must not introduce.
+ *
+ * shellInit() zeroes it at the top of kmain(), long before anything can fault;
+ * shell_run_forever sets it to 1 in the same breath as recording RSP;
+ * fault_resume refuses to switch stacks unless it reads exactly 1. */
+.align 8
+.global shell_resume_ok
+shell_resume_ok:
+    .skip 8
+    .size shell_resume_ok, 8
+    .type shell_resume_ok, @object
+
+/* ------------------------------------------------------------------
+ * M5 (ADR-0009): the framebuffer console's state.
+ * ------------------------------------------------------------------ */
+
+/* Linear-framebuffer console state, as ONE 32-byte block:
+ *
+ *     +0   u64  base physical address of the framebuffer, or 0 = none
+ *     +8   u64  bytes per scanline (pitch)
+ *     +16  u64  cursor column, in 8-pixel glyph cells
+ *     +24  u64  cursor row, in 16-pixel glyph cells
+ *
+ * ONE block with fixed offsets rather than four symbols with four accessors,
+ * for the reason cpu_info's own comment gives: each accessor is another
+ * `@extern external` declaration on the DCDart side and another `leaq` here.
+ *
+ * A base address of 0 is the "no framebuffer" state and EVERY writer checks
+ * it, which is why fbInit() zeroing this block is a correctness requirement
+ * and not hygiene: .bss is not zeroed by anything in this kernel, so a garbage
+ * base would make the first glyph blit scatter 32-bit stores across memory at
+ * an address nothing chose.
+ *
+ * THIS IS 32 OF THE 424 DONATED BYTES, and it is the first growth since M4.
+ * PCI enumeration (ADR-0008) added none because it retains nothing; a console
+ * has a cursor and cannot. docs/known-gaps.md GAP-0053. */
+.align 8
+fb_state:
+    .skip 32
+    .size fb_state, 32
+    .type fb_state, @object
+
+/* ==================================================================
+ * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
+ *
+ * RIP-relative `leaq`, not `movq $symbol`, for the same reason isr.S uses it:
+ * `movq $sym,%reg` assembles to a `movabs` needing a 64-bit absolute
+ * relocation, and this kernel links into an `elf32-i386` container (ADR-0001).
+ *
+ * These return an ADDRESS rather than taking or returning a `Pointer<T>`
+ * because DCDart still forbids `Pointer<T>` in an extern signature
+ * (DCDart GAP-0025).
+ * ================================================================== */
+.section .text
+.code64
+
+/* uint64_t vga_cursor_addr(void) */
+.align 16
+.global vga_cursor_addr
+.type vga_cursor_addr, @function
+vga_cursor_addr:
+    leaq vga_cursor(%rip), %rax
+    ret
+
+/* uint64_t m2_phase_addr(void) */
+.align 16
+.global m2_phase_addr
+.type m2_phase_addr, @function
+m2_phase_addr:
+    leaq m2_phase(%rip), %rax
+    ret
+
+/* uint64_t shell_line_addr(void) */
+.align 16
+.global shell_line_addr
+.type shell_line_addr, @function
+shell_line_addr:
+    leaq shell_line(%rip), %rax
+    ret
+
+/* uint64_t shell_len_addr(void) */
+.align 16
+.global shell_len_addr
+.type shell_len_addr, @function
+shell_len_addr:
+    leaq shell_len(%rip), %rax
+    ret
+
+/* uint64_t shell_state_addr(void) */
+.align 16
+.global shell_state_addr
+.type shell_state_addr, @function
+shell_state_addr:
+    leaq shell_state(%rip), %rax
+    ret
+
+/* uint64_t shell_mbinfo_addr(void) */
+.align 16
+.global shell_mbinfo_addr
+.type shell_mbinfo_addr, @function
+shell_mbinfo_addr:
+    leaq shell_mbinfo(%rip), %rax
+    ret
+
+/* uint64_t kbd_prefix_addr(void) */
+.align 16
+.global kbd_prefix_addr
+.type kbd_prefix_addr, @function
+kbd_prefix_addr:
+    leaq kbd_prefix(%rip), %rax
+    ret
+
+/* uint64_t cpu_info_addr(void) -- base of the 64-byte CPUID block. Vendor at
+ * +0 (12 bytes), brand at +16 (48 bytes). */
+.align 16
+.global cpu_info_addr
+.type cpu_info_addr, @function
+cpu_info_addr:
+    leaq cpu_info(%rip), %rax
+    ret
+
+/* uint64_t fault_count_addr(void) */
+.align 16
+.global fault_count_addr
+.type fault_count_addr, @function
+fault_count_addr:
+    leaq fault_count(%rip), %rax
+    ret
+
+/* uint64_t shell_resume_ok_addr(void) -- so shellInit() can clear the guard
+ * before anything is able to fault. The RSP word itself gets no accessor: no
+ * DCDart code has any business reading or writing a stack pointer. */
+.align 16
+.global shell_resume_ok_addr
+.type shell_resume_ok_addr, @function
+shell_resume_ok_addr:
+    leaq shell_resume_ok(%rip), %rax
+    ret
+
+/* uint64_t fb_state_addr(void) -- base of the 32-byte framebuffer console
+ * state block. Base at +0, pitch at +8, cursor column at +16, row at +24. */
+.align 16
+.global fb_state_addr
+.type fb_state_addr, @function
+fb_state_addr:
+    leaq fb_state(%rip), %rax
+    ret
+
+/* Mark the stack non-executable. Nothing here needs an executable stack, and
+ * without this note GNU ld warns (and, historically, silently marked the
+ * whole image's stack executable). Cosmetic on this kernel today -- the
+ * single PT_LOAD is already RWX, known-gaps GAP-0050 -- and free to get
+ * right. */
+.section .note.GNU-stack,"",@progbits

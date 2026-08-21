@@ -1,0 +1,25 @@
+oscortex> ticks
+TICKS 0000000000000064 +0010 LIVE
+oscortex> help
+commands:
+  help          this list
+  clear         clear the screen, home the cursor
+  mem           multiboot memory map + total usable RAM
+  ticks         prove the PIT tick counter advances
+  cpu           CPUID vendor, brand and leaf limits
+  pci           enumerate the PCI bus
+  fb            framebuffer console: BAR0, 800x600x32, 8x16 font
+  disk id       ATA PIO IDENTIFY: model and sector count
+  disk read <n> read one 512-byte sector, hexdumped as it arrives
+  crash ud      fault on purpose (#UD) and come back
+  crash div     fault on purpose (#DE) and come back
+  echo <rest>   print the rest of the line
+oscortex>
+
+
+
+
+
+
+
+

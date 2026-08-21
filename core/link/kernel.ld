@@ -27,6 +27,21 @@
  *    entirely. Confirmed via `readelf -S boot.o` showing an EMPTY
  *    flags column before the fix.
  *
+ * 3. `.got`/`.got.plt` are placed EXPLICITLY below, ahead of ever being
+ *    emitted. DCDart emits no globals today, so `kmain.o` currently has zero
+ *    GOT relocations and `kernel.elf` has no `.got` at all -- verified with
+ *    readelf, not assumed. But `backend/m0-target.md` §1 deliberately emits no
+ *    `dso_local`, which makes taking a global's address produce
+ *    `R_X86_64_REX_GOTPCRELX` (the code loads the address from a GOT slot
+ *    rather than computing it). ld.lld and GNU ld both usually RELAX that to a
+ *    plain `leaq`, so a `.got` may well never appear -- but "usually" is not a
+ *    guarantee, and an unplaced `.got` would be an ORPHAN section whose
+ *    placement is up to the linker's heuristics rather than to this script.
+ *    Bug 2 above is exactly what an orphan landing outside the loadable
+ *    segment looks like, and it cost real debugging time. Naming them costs
+ *    nothing (ld discards an empty output section) and removes the class.
+ *    This becomes live the moment DCDart's static-data work lands.
+ *
  * PHDRS below forces every section into ONE PT_LOAD segment (FLAGS(7)
  * = RWX -- fine for M0, no fine-grained page permissions exist yet, see
  * boot.S's identity-mapping comment). Tested WITHOUT it too, after both
@@ -50,7 +65,12 @@ SECTIONS
 
     .multiboot : { *(.multiboot) } :kernel
     .text      : { *(.text) }      :kernel
-    .rodata    : { *(.rodata) }    :kernel
+    .rodata    : { *(.rodata) *(.rodata.*) } :kernel
+
+    /* Explicitly placed, not orphaned -- see note 3 in the header. Empty
+       today; ld discards an empty output section, so this is free. */
+    .got       : { *(.got) }       :kernel
+    .got.plt   : { *(.got.plt) }   :kernel
     .data      : { *(.data) }      :kernel
     .bss       : { *(COMMON) *(.bss) } :kernel
 }

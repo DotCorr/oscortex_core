@@ -1,58 +1,153 @@
 // core/kernel/kmain.dart
 //
-// oscortex_core M0 kernel entry point (OSCORTEX_SPEC.md §2). Called from
+// oscortex_core kernel entry point (OSCORTEX_SPEC.md §2). Called from
 // core/boot/boot.S via a plain C-ABI call, once the CPU is in 64-bit long
 // mode with paging enabled -- the exact same call shape DCDart's own
 // m0-seam/m1-pointer conformance harnesses already prove works.
 //
-// Initializes COM1 (16550 UART) and writes a fixed proof-of-life message,
-// one byte at a time -- @bare has no String/array type yet, so there is
-// no other way to spell this. The UART init sequence mirrors DCDart's own
-// core/examples/m2-port/port_io.dart exactly (already verified there).
-//
-// KNOWN GAP (see docs/known-gaps.md): no busy-wait on the Line Status
-// Register's Transmit-Holding-Register-Empty bit before each write --
-// DCDart has no bitwise AND operator yet (DCDART_SPEC.md's own "Cut"
-// list), so a real "wait until ready" check isn't expressible. The
-// message below is 15 bytes, safely under the 16550's 16-byte TX FIFO
-// (enabled by the init sequence), so every byte is queued in one shot
-// without overflow -- fragile for a longer message, fine for M0.
+// This file is the LIBRARY ROOT. `uart.dart`, `multiboot.dart` and
+// `interrupts.dart` are `part` files, not imports: `dcc` compiles ONE library
+// per object file, and a `@bare` function in an imported library is not
+// compiled at all. That used to be SILENT (the only symptom was an undefined
+// symbol at link time); it is now a hard error naming the offending functions
+// and pointing at `part`/`part of`. The constraint itself is unchanged -- see
+// docs/known-gaps.md GAP-0004 item 4.
 //
 // Import path assumes the sibling-checkout convention (../../../DCDart)
-// documented in core/README.md -- same "only works from this exact
-// layout" limitation DCDart's own dcc/README.md already accepts for
-// itself (no real library resolver exists yet on either side).
+// documented in core/README.md -- same "only works from this exact layout"
+// limitation DCDart's own dcc/README.md already accepts for itself (no real
+// library resolver exists yet on either side). See known-gaps GAP-0003.
 import '../../../DCDart/core/runtime/dc-core-bare/prelude.dart';
 
-@bare
-void kmain() {
-  // --- COM1 (0x3F8) init -- identical sequence to core/examples/m2-port/
-  // port_io.dart's initCom1() in the DCDart repo, reused rather than
-  // reinvented.
-  Port.outb(u16(0x3F9), u8(0x00)); // disable interrupts
-  Port.outb(u16(0x3FB), u8(0x80)); // enable DLAB (divisor-latch access)
-  Port.outb(u16(0x3F8), u8(0x03)); // divisor low byte (38400 baud)
-  Port.outb(u16(0x3F9), u8(0x00)); // divisor high byte
-  Port.outb(u16(0x3FB), u8(0x03)); // 8 bits, no parity, one stop bit
-  Port.outb(u16(0x3FA), u8(0xC7)); // enable FIFO, clear, 14-byte threshold
-  Port.outb(u16(0x3FC), u8(0x0B)); // IRQs enabled, RTS/DSR set
+part 'uart.dart';
+part 'multiboot.dart';
+part 'interrupts.dart';
+part 'vga.dart';
+part 'keyboard.dart';
+part 'shell.dart';
+part 'pci.dart';
+part 'fb.dart';
+part 'ata.dart';
 
-  // --- Proof of life: "OSCORTEX M0 OK\n" (15 bytes), one Port.outb per
-  // byte -- see core/tests/conformance/m0-boot/run.sh for what asserts
-  // against this exact sequence.
-  Port.outb(u16(0x3F8), u8(0x4F)); // 'O'
-  Port.outb(u16(0x3F8), u8(0x53)); // 'S'
-  Port.outb(u16(0x3F8), u8(0x43)); // 'C'
-  Port.outb(u16(0x3F8), u8(0x4F)); // 'O'
-  Port.outb(u16(0x3F8), u8(0x52)); // 'R'
-  Port.outb(u16(0x3F8), u8(0x54)); // 'T'
-  Port.outb(u16(0x3F8), u8(0x45)); // 'E'
-  Port.outb(u16(0x3F8), u8(0x58)); // 'X'
-  Port.outb(u16(0x3F8), u8(0x20)); // ' '
-  Port.outb(u16(0x3F8), u8(0x4D)); // 'M'
-  Port.outb(u16(0x3F8), u8(0x30)); // '0'
-  Port.outb(u16(0x3F8), u8(0x20)); // ' '
-  Port.outb(u16(0x3F8), u8(0x4F)); // 'O'
-  Port.outb(u16(0x3F8), u8(0x4B)); // 'K'
-  Port.outb(u16(0x3F8), u8(0x0A)); // '\n'
+/// Kernel entry point.
+///
+/// [mbInfo] is the Multiboot1 information-structure pointer the loader left
+/// in EBX. boot.S stashes it at `_start` and moves it into EDI immediately
+/// before this call, so it arrives as the first System V AMD64 integer
+/// argument (RDI), zero-extended from the 32-bit value -- an ordinary C-ABI
+/// argument, needing nothing new from DCDart.
+///
+/// Serial output contract, asserted byte-for-byte by three harnesses:
+///
+///   line 1        `OSCORTEX M0 OK`      -- tests/conformance/m0-boot/run.sh
+///                                          asserts EXACTLY this first line
+///   `MB ...`      Multiboot report      -- tests/conformance/mb-info/run.sh
+///                                          asserts everything up to `MB END`
+///   `M1 ...`      interrupts report     -- tests/conformance/m1-interrupts/
+///                                          run.sh asserts the WHOLE capture
+///
+/// This function never returns. It ends in a deliberate fault whose handler
+/// halts -- see the end of the body.
+@bare
+void kmain(u64 mbInfo) {
+  // The VGA console FIRST, before anything can print. Two reasons, and the
+  // second one is a correctness requirement rather than an ordering
+  // preference:
+  //
+  //   1. every byte printed from here on is mirrored to the screen, so the
+  //      screen has to exist before the first byte;
+  //   2. the console cursor lives in `core/boot/kdata.S`'s `.bss`, nothing in
+  //      this kernel zeroes `.bss`, and a garbage cursor would scatter stores
+  //      across memory at `0xB8000 + 2 * garbage`. vgaInit() is what gives it
+  //      a known value.
+  //
+  // It prints nothing itself, so M0's banner is still the first byte on COM1.
+  vgaInit();
+
+  // M3: the same argument, for the same reason. `shellInit` gives every word
+  // of the shell's donated `.bss` (core/boot/kdata.S) a known value -- a
+  // garbage line length would make the first keystroke store hundreds of bytes
+  // past the end of a 256-byte buffer, and a garbage 0xE0-prefix flag would
+  // swallow the first real key. It also stashes [mbInfo], which is the only
+  // reason the `mem` command can re-walk the memory map long after this
+  // function's frame is gone. Prints nothing.
+  shellInit(mbInfo);
+
+  // M5: the framebuffer console's donated state, for the third time the same
+  // argument. A garbage base address would make the first glyph blit scatter
+  // 32-bit stores at an address nothing chose; zero is the "no framebuffer"
+  // value every writer checks. Prints nothing and touches no hardware -- the
+  // mode is not set until the `fb` command asks for it.
+  fbInit();
+
+  uartInit();
+  uartPutBanner(); // includes its own trailing newline (a @rodata table now)
+
+  // ---- M0's follow-up work: what the loader told us about memory ----
+  mbReport(mbInfo);
+
+  // ---- M1: interrupts ----
+  //
+  // Ordering here is the whole protocol, and every step depends on the one
+  // before it:
+  //
+  //   1. fill the IDT           -- gates must be valid BEFORE lidt, or the
+  //                                CPU is armed with 256 gates pointing at
+  //                                whatever .bss happened to contain
+  //   2. lidt                   -- arms them
+  //   3. int3                   -- delivery self-test, with interrupts still
+  //                                masked so nothing else can interleave
+  //   4. remap the PIC          -- BEFORE sti, or IRQ0 arrives on vector 8
+  //                                and is indistinguishable from #DF
+  //   5. program the PIT        -- starts the timer counting down
+  //   6. sti                    -- only now can an IRQ actually be delivered
+  final u64 installed = idtInstallAll();
+  m1ReportIdt(installed);
+
+  idt_load();
+  debug_break(); // -> vector 3 -> isrDispatch -> "M1 EXC 03 ..." -> iretq
+
+  picRemap();
+  pitInit();
+  interrupts_enable();
+
+  // ---- Wait for 100 ticks ----
+  //
+  // The COUNT is the trigger, not a duration, so the output is identical
+  // regardless of how fast the host is. tick_count() is an @extern call
+  // rather than a Pointer<u64> load precisely so this loop re-reads memory
+  // every iteration -- see interrupts.dart's declaration for why a plain
+  // load would be hoistable and would spin forever.
+  u64 ticks = tick_count();
+  while (ticks < u64(100)) {
+    ticks = tick_count();
+  }
+  m1ReportTicks(ticks);
+
+  // ---- The deliberate fault: M1's actual point ----
+  //
+  // Mask every IRQ and clear IF first, so a tick cannot arrive mid-diagnostic
+  // and interleave output into the middle of a line.
+  picMaskAll();
+  interrupts_disable();
+
+  // `ticks` is >= 100 and came from an opaque extern call, so adding
+  // 0xFFFFFFFFFFFFFFFF to it overflows a u64 for certain. It is spelled this
+  // way ON PURPOSE rather than as a constant expression: DCDart's arithmetic
+  // traps on overflow (DCDART_SPEC §4.1) by emitting a real conditional
+  // `ud2`, and with two constants LLVM would be free to fold the whole thing
+  // at compile time -- potentially into `unreachable`, which would delete the
+  // surrounding code rather than trap at runtime. An opaque operand forces a
+  // genuine runtime check. Verified by disassembly, not assumed.
+  //
+  // The resulting #UD (vector 6) lands in isrDispatch, which prints
+  // "M1 FAULT 06 ...", then "M1 END", then halts. At M0 this same fault would
+  // have triple-faulted the VM and printed nothing at all -- that difference
+  // IS the milestone.
+  final u64 boom = ticks + u64(0xFFFFFFFFFFFFFFFF);
+
+  // Not reached. Consuming `boom` keeps the overflowing add from being dead
+  // code that a future optimizer could drop.
+  uartPutHex(boom, u64(16));
+  halt_forever();
 }

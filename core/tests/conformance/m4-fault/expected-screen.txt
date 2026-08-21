@@ -1,0 +1,25 @@
+oscortex> crash ud
+CRASH: executing an invalid opcode (#UD)
+FAULT 06 ERR 0000000000000000 OP 0F0B
+FAULT RECOVERED 0003 -- faulting computation abandoned, shell resumed
+oscortex> cpu
+CPU VENDOR AuthenticAMD
+CPU BRAND QEMU Virtual CPU version 2.5+
+CPU LEAF 0000000D EXT 8000000A
+oscortex>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

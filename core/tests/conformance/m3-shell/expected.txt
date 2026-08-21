@@ -1,0 +1,70 @@
+OSCORTEX M0 OK
+MB FLAGS 0000024F
+MB LOW 0000027F
+MB UPP 0001FB80
+MB MAP 000000A8 00009000
+MB E 0000000000000000 000000000009FC00 00000001
+MB E 000000000009FC00 0000000000000400 00000002
+MB E 00000000000F0000 0000000000010000 00000002
+MB E 0000000000100000 0000000007EE0000 00000001
+MB E 0000000007FE0000 0000000000020000 00000002
+MB E 00000000FFFC0000 0000000000040000 00000002
+MB E 000000FD00000000 0000000300000000 00000002
+MB END
+M1 IDT 0100
+M1 EXC 03 0000000000000000
+M1 PIC 20
+M1 TICKS 0000000000000064
+M1 FAULT 06 0000000000000000
+M1 END
+helqp
+commands:
+  help          this list
+  clear         clear the screen, home the cursor
+  mem           multiboot memory map + total usable RAM
+  ticks         prove the PIT tick counter advances
+  cpu           CPUID vendor, brand and leaf limits
+  pci           enumerate the PCI bus
+  fb            framebuffer console: BAR0, 800x600x32, 8x16 font
+  disk id       ATA PIO IDENTIFY: model and sector count
+  disk read <n> read one 512-byte sector, hexdumped as it arrives
+  crash ud      fault on purpose (#UD) and come back
+  crash div     fault on purpose (#DE) and come back
+  echo <rest>   print the rest of the line
+oscortex> mem
+MB FLAGS 0000024F
+MB LOW 0000027F
+MB UPP 0001FB80
+MB MAP 000000A8 00009000
+MB E 0000000000000000 000000000009FC00 00000001
+MB E 000000000009FC00 0000000000000400 00000002
+MB E 00000000000F0000 0000000000010000 00000002
+MB E 0000000000100000 0000000007EE0000 00000001
+MB E 0000000007FE0000 0000000000020000 00000002
+MB E 00000000FFFC0000 0000000000040000 00000002
+MB E 000000FD00000000 0000000300000000 00000002
+MB END
+MEM USABLE 0000000007F7FC00
+MEM MIB 0000007F
+oscortex> frobnicate
+oscortex: unknown command: frobnicate
+oscortex> echo hello world
+hello world
+oscortex> clear
+oscortex> ticks
+TICKS 0000000000000064 +0010 LIVE
+oscortex> help
+commands:
+  help          this list
+  clear         clear the screen, home the cursor
+  mem           multiboot memory map + total usable RAM
+  ticks         prove the PIT tick counter advances
+  cpu           CPUID vendor, brand and leaf limits
+  pci           enumerate the PCI bus
+  fb            framebuffer console: BAR0, 800x600x32, 8x16 font
+  disk id       ATA PIO IDENTIFY: model and sector count
+  disk read <n> read one 512-byte sector, hexdumped as it arrives
+  crash ud      fault on purpose (#UD) and come back
+  crash div     fault on purpose (#DE) and come back
+  echo <rest>   print the rest of the line
+oscortex> 

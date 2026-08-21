@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # core/scripts/build-kernel.sh
 #
-# dcc build (kmain.dart) + assemble (boot.S) + link (kernel.ld) ->
-# build/kernel.elf. Mirrors DCDart's own conformance harnesses' PATH-
+# dcc build (kmain.dart + its part files) + assemble (boot.S, isr.S, kdata.S) +
+# link (kernel.ld) -> build/kernel.elf. Mirrors DCDart's own conformance harnesses' PATH-
 # then-fallback pattern for finding dcc.
 #
 # Usage:
@@ -43,9 +43,40 @@ fi
 if ! command -v clang >/dev/null 2>&1; then
   setup_error "clang not found on PATH"
 fi
-if ! command -v ld >/dev/null 2>&1; then
-  setup_error "ld not found on PATH"
-fi
+# Linker: needs to be an ELF linker that understands GNU linker scripts (-T).
+# Apple's ld64 (the default `ld` on macOS) does NOT -- it rejects -T outright --
+# so probe for a real ELF linker rather than assuming `ld` is one. Override with
+# LD explicitly if neither is on PATH under the name we look for.
+find_elf_linker() {
+  if [[ -n "${LD:-}" ]]; then
+    command -v "$LD" >/dev/null 2>&1 && { echo "$LD"; return 0; }
+    return 1
+  fi
+  local candidate
+  # GNU ld first, deliberately: core/link/kernel.ld sets OUTPUT_FORMAT(elf32-i386)
+  # (QEMU's Multiboot loader rejects a 64-bit ELF container -- see the script's
+  # own header comment), and GNU ld links x86-64 input objects into that output
+  # while lld refuses it as "incompatible with elf32-i386". lld is kept as a
+  # fallback only because it is the easier install; it will not work with the
+  # current link script.
+  for candidate in x86_64-elf-ld x86_64-linux-gnu-ld ld.lld; do
+    command -v "$candidate" >/dev/null 2>&1 && { echo "$candidate"; return 0; }
+  done
+  # Homebrew installs lld keg-only on macOS -- not on PATH by default.
+  local brewed
+  for brewed in /opt/homebrew/opt/x86_64-elf-binutils/bin/x86_64-elf-ld \
+                /opt/homebrew/opt/lld/bin/ld.lld; do
+    [[ -x "$brewed" ]] && { echo "$brewed"; return 0; }
+  done
+  # Plain `ld` only if it is NOT Apple's ld64 (which cannot link ELF at all).
+  if command -v ld >/dev/null 2>&1 && ! ld -v 2>&1 | grep -qi 'PROJECT:ld'; then
+    echo ld
+    return 0
+  fi
+  return 1
+}
+
+LD_CMD="$(find_elf_linker)" || setup_error "no ELF linker found (need x86_64-elf-ld or GNU ld; on macOS: brew install x86_64-elf-binutils). Set LD=<linker> to override."
 
 BUILD_DIR="$CORE_DIR/build"
 mkdir -p "$BUILD_DIR"
@@ -61,21 +92,46 @@ fi
 [[ -f "$BUILD_DIR/kmain.o" ]] || fail "dcc reported success but kmain.o was not produced"
 
 # ---------------------------------------------------------------------------
-# Step 2 — assemble boot.S
+# Step 2 — assemble boot.S, isr.S and kdata.S
+#
+# isr.S (M1: interrupt entry stubs, IDT/tick storage, the privileged-
+# instruction helpers DCDart calls through @extern) is a separate object
+# rather than more of boot.S: boot.S runs once, in 32-bit mode, before any
+# DCDart code exists, while isr.S is entirely 64-bit and entirely driven from
+# DCDart. Keeping them apart keeps CLAUDE.md rule 4's "boot-time assembly"
+# boundary meaningful.
+#
+# portio.S (M5) is a FOURTH object, and it is there for the reason kdata.S is
+# there taken one step further again: it is neither boot code, nor interrupt
+# code, nor storage -- it is a MISSING LANGUAGE PRIMITIVE standing in for
+# itself. DCDart's Port class is byte-wide only (its ADR-0029), and PCI
+# configuration mechanism #1 is defined in terms of 32-bit accesses to
+# 0xCF8/0xCFC, so `outl`/`inl` had to come from somewhere. Naming the file
+# after that keeps the workaround countable and makes its eventual deletion
+# mechanical -- docs/known-gaps.md GAP-0066.
+#
+# kdata.S (M2) is a third object for the same reason taken one step further:
+# it is not boot code and it is not interrupt code, it is DONATED MUTABLE
+# STORAGE, and it exists only because DCDart has no mutable static data of any
+# kind. Folding it into isr.S would have quietly turned "the interrupt file"
+# into "the file where we keep globals"; a separate file keeps the workaround
+# legible and its size countable (docs/known-gaps.md GAP-0053).
 # ---------------------------------------------------------------------------
-clang -c -target x86_64-unknown-none-elf "$CORE_DIR/boot/boot.S" -o "$BUILD_DIR/boot.o"
-ASM_STATUS=$?
-if [[ $ASM_STATUS -ne 0 ]]; then
-  fail "assembling boot.S exited $ASM_STATUS"
-fi
+for asm in boot isr kdata portio; do
+  clang -c -target x86_64-unknown-none-elf "$CORE_DIR/boot/$asm.S" -o "$BUILD_DIR/$asm.o"
+  ASM_STATUS=$?
+  if [[ $ASM_STATUS -ne 0 ]]; then
+    fail "assembling $asm.S exited $ASM_STATUS"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Step 3 — link via kernel.ld
 # ---------------------------------------------------------------------------
-ld -T "$CORE_DIR/link/kernel.ld" -o "$BUILD_DIR/kernel.elf" "$BUILD_DIR/boot.o" "$BUILD_DIR/kmain.o"
+"$LD_CMD" -T "$CORE_DIR/link/kernel.ld" -o "$BUILD_DIR/kernel.elf" "$BUILD_DIR/boot.o" "$BUILD_DIR/isr.o" "$BUILD_DIR/kdata.o" "$BUILD_DIR/portio.o" "$BUILD_DIR/kmain.o"
 LINK_STATUS=$?
 if [[ $LINK_STATUS -ne 0 ]]; then
-  fail "linking kernel.elf exited $LINK_STATUS"
+  fail "linking kernel.elf with $LD_CMD exited $LINK_STATUS"
 fi
 [[ -f "$BUILD_DIR/kernel.elf" ]] || fail "ld reported success but kernel.elf was not produced"
 
