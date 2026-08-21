@@ -396,6 +396,21 @@ void faultReport(u64 vector, u64 errorCode, u64 rip) {
     uartWrite(Rodata.addressOf(m1StrFaultOpUnmapped), u64(4));
   }
   uartNewline();
+
+  // M8. A page fault gets a SECOND line, because the line above is missing the
+  // one thing a #PF is actually about. Every other fault's subject is the
+  // instruction, which ` OP ` names; a page fault's subject is an ADDRESS the
+  // instruction touched, and that address exists only in CR2 -- which DCDart
+  // cannot read, and which nothing else in this frame carries.
+  //
+  // The error code is decoded there too. It is the same 16 hex digits already
+  // printed above, but four of its bits answer four different questions
+  // (present or unmapped, write or read, user or supervisor, fetch or data) and
+  // making a human decode them from a hex digit is exactly what a diagnostic
+  // exists to prevent. See vmPageFaultReport in core/kernel/vm.dart.
+  if (vector == u64(vectorPageFault)) {
+    vmPageFaultReport(errorCode);
+  }
 }
 
 /// `M1 IDT <count:4>`

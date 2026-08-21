@@ -138,10 +138,19 @@ hexnum() { python3 -c "import sys; print(int(sys.argv[1], 16))" "$1"; }
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
-if [[ "$KDATA_BSS" -ne 5096 ]]; then
-  fail "kdata.o .bss is $KDATA_BSS bytes, expected 5096 (424 before M7, plus 4672 for the allocator)."
+# M8 (ADR-0012) added a block AFTER M7's: `vm_store`, 128 bytes for the
+# virtual-memory subsystem. It is SUBTRACTED here rather than folded into the
+# total, for the same reason m5-pci and m6-disk subtract `pmm_store`: M7's claim
+# was never "the total is 5096", it was "the page allocator cost 4672 bytes and
+# everything before it cost 424", and a later milestone must not be able to
+# dilute that by growing the total. m8-paging/run.sh owns the 5224 now.
+VM_STORE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="vm_store"{print $3; exit}')
+[[ -n "$VM_STORE_SIZE" ]] || fail "vm_store is not in kdata.o — M8's virtual-memory state block is missing"
+NON_VM_BSS=$(( KDATA_BSS - VM_STORE_SIZE ))
+if [[ "$NON_VM_BSS" -ne 5096 ]]; then
+  fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $VM_STORE_SIZE are M8's vm_store, leaving $NON_VM_BSS — expected 5096 (424 before M7, plus 4672 for the allocator)."
 fi
-echo "STRUCTURAL: pass  kdata.o donates exactly 5096 bytes of .bss — 424 inherited, 4672 for the page allocator"
+echo "STRUCTURAL: pass  kdata.o donates exactly 5096 bytes of .bss outside M8's page-table block — 424 inherited, 4672 for the page allocator"
 
 # 2b. THE ALLOCATOR'S STATE IS ONE SYMBOL.
 PMM_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="pmm_store"{print $3; exit}')
@@ -253,7 +262,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M7 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1028
+check_table shellStrHelp 1155
 check_table pmmStrBase 9
 check_table pmmStrStore 7
 check_table pmmStrBitmap 8
@@ -329,7 +338,18 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
-[[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 32 (29 from M6 plus pmm_store_addr, kernel_image_start, kernel_image_end)"
+# M8 (ADR-0012) added TWELVE more, so the raw count is now 44. Subtracted BY
+# NAME rather than folded into a new total, the same way the donated-`.bss`
+# check above subtracts `vm_store`: M7's claim is about M7's three externs, and
+# a later milestone must not be able to move the number that states it.
+M8_EXTERNS="cr0_read cr2_read cr3_read paging_install vm_exec_probe vm_exec_ok_addr nx_enabled kernel_text_end kernel_rodata_start kernel_rodata_end kernel_data_start vm_store_addr"
+M8_PRESENT=0
+for sym in $M8_EXTERNS; do
+  grep -q "$sym" <<<"$VERIFY_OUT" && M8_PRESENT=$(( M8_PRESENT + 1 ))
+done
+[[ "$M8_PRESENT" -eq 12 ]] || fail "only $M8_PRESENT of M8's 12 externs are in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M8_PRESENT ))
+[[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's twelve, expected 32 (29 from M6 plus pmm_store_addr, kernel_image_start, kernel_image_end)"
 for sym in pmm_store_addr kernel_image_start kernel_image_end; do
   grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
 done
@@ -532,8 +552,14 @@ for n, r in enumerate(reports):
 
 # reports[0] before anything; [1] after one alloc and five rejections;
 # [2] after the drain; [3] after the refill; [4] after `clear`.
-wants = [(baseline, 0, 0), (baseline - 1, 1, 5), (0, None, 5),
-         (baseline, None, 5), (baseline, None, 5)]
+# M8: `vmInit()` allocates d.VM_FRAMES frames for the kernel's own page tables
+# at boot, before the shell exists, so the lifetime ALLOCS counter starts at
+# that number rather than at 0. The FREE counts are unaffected -- `build()`
+# above already reserves those frames, and `vmInit` re-takes the allocator's
+# BASELINE afterwards, so "FREE returns to BASELINE" still means "nothing is
+# leaked" rather than "six frames are missing and nobody counted them".
+wants = [(baseline, d.VM_FRAMES, 0), (baseline - 1, d.VM_FRAMES + 1, 5),
+         (0, None, 5), (baseline, None, 5), (baseline, None, 5)]
 for n, (wfree, wallocs, werrors) in enumerate(wants):
     freec = int(reports[n][9], 16)
     allocs = int(reports[n][12], 16)

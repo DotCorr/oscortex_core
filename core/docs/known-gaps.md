@@ -437,7 +437,47 @@ assembled.
 ## GAP-0050 — The kernel image is a single RWX segment: `.rodata` and `.text` are writable at runtime
 
 **Domain:** boot, link (M1, blocking for anything that trusts read-only data)
-**Status:** OPEN — not started. Surfaced while reviewing DCDart's static-`.rodata` design.
+**Status:** **CLOSED at M8 (2026-08-21)** for the kernel's own image, by
+`docs/decisions/0012-paging-and-w-xor-x.md`, verified by
+`tests/conformance/m8-paging/run.sh`. The original entry is kept below unedited, because what it
+predicted is exactly what happened and the entry is the reason it was done properly.
+
+**WHAT CLOSED IT.** `core/link/kernel.ld` now emits THREE `PT_LOAD` segments — `.multiboot`+`.text`
+`R E`, `.rodata` `R`, `.data`+`.bss` `RW`, each 4KiB-aligned — and `core/kernel/vm.dart` builds a real
+4-level page table out of six frames from the M7 allocator that honours those boundaries with actual
+PTE bits: `.text` RW=0/NX=0, `.rodata` RW=0/NX=1, `.data`/`.bss` RW=1/NX=1, plus `EFER.NXE` and
+`CR0.WP` set in `boot.S`. The new `CR3` is installed during `kmain()`.
+
+**THE EVIDENCE IS A FAULT, NOT A FLAG**, which is what this entry asked for. `vmtest ro` stores a byte
+through a pointer into a `@rodata` table:
+
+```
+VM TEST RO ADDR 0000000000114BE8
+FAULT 0E ERR 0000000000000003 OP 4889
+PF CR2 0000000000114BE8 ERR 00000003 PRESENT WRITE SUPER DATA
+FAULT RECOVERED 0001 -- faulting computation abandoned, shell resumed
+```
+
+and the canary's eight bytes are unchanged in the next report. `vmtest nx` calls into the same page and
+gets `ERR 00000011 PRESENT READ SUPER FETCH`. `vmtest rw` and `vmtest x` are the controls — the same
+two operations against a writable page and an executable page — and must NOT fault. The permissions are
+read out of the LIVE page tables in guest physical memory at the CR3 QEMU reports, walked by
+`m8-paging/derive.py`, never from the kernel's own report.
+
+**THIS ENTRY'S OWN WARNING WAS THE LOAD-BEARING PART.** It said the fix must not be a link-script-only
+change, because separate segments without page-table enforcement look like protection while providing
+none. That was right, and it was nearly right in a second way nobody predicted: with the segments split
+AND the page tables built AND every `.rodata` entry reading back RW=0, the write still landed, because
+`CR0.WP` was clear. See GAP-0080.
+
+**WHAT IS NOT CLOSED:** user/supervisor separation, per-process address spaces, TLB shootdown, a
+null-page trap, and compile-time const-ness on `Pointer` (a DCDart-side problem — a store into
+`.rodata` is now a fault instead of silent corruption, which is not the same as catching it before it
+runs). GAP-0081 has the full list.
+
+---
+
+### The original entry, as filed at M1 — unedited
 
 `core/link/kernel.ld`'s PHDRS block deliberately forces every section into ONE `PT_LOAD` with
 `FLAGS(7)`, and `boot.S` identity-maps with 2MiB pages and no per-section permissions. Verified, not
@@ -533,9 +573,22 @@ the evidence that made it true, and so the one uncovered half is named.
 
 ## GAP-0053 — DCDart still has no mutable static data, and the shell made that expensive rather than merely awkward
 
-**Domain:** kernel (M2, M3, M4, M5, M6, M7), DCDart-side language gap
+**Domain:** kernel (M2, M3, M4, M5, M6, M7, M8), DCDart-side language gap
 **Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
-M5, → 424 at M6 (unchanged), → 5096 at M7.** M5 is the first milestone whose two halves land on
+M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8.**
+
+**THE M8 MEASUREMENT: 5224 bytes**, asserted exactly by `tests/conformance/m8-paging/run.sh`, which
+owns the total now. The new 128 bytes are `vm_store` — the virtual-memory subsystem's entire state:
+the PML4 it built, the six frames it took from the allocator, the page counts it mapped, the last page
+fault it reported, and one deliberately writable scratch word so `vmtest rw` can be the control for
+`vmtest ro`. It is ONE symbol behind ONE accessor reached from ONE function, which is the tightest
+storage seam in this kernel and one notch tighter than M7's three (ADR-0012 §3).
+
+Every earlier harness still asserts its own milestone's number by SUBTRACTING the blocks that came
+after it — m5-pci and m6-disk assert 424 excluding `pmm_store` and `vm_store`, m7-frames asserts 5096
+excluding `vm_store` — so growing the total cannot dilute an older claim. The same discipline was
+extended to the declared-extern count at M8: m5/m6/m7 subtract M8's twelve **by name** rather than
+bumping a total, which also fails if one of them quietly disappears. M5 is the first milestone whose two halves land on
 opposite sides of this gap; see the M5 note. M6 is the first milestone that had an obvious 512-byte
 need and refused it; see the M6 note. **M7 is the milestone that stopped refusing** — and the M7 note
 is the one to read, because it is about the SHAPE of the workaround rather than its size.
@@ -1930,12 +1983,33 @@ a red run green.
 **Cost:** whoever grows this kernel next has to re-run `m7-frames/run.sh --regen` and read the diff.
 That is one extra step, and it is the same step GAP-0075 already imposes for `help`.
 
+**M8 EXERCISED IT, AND ADDED A SECOND REASON THE GOLDEN MOVES.** The image grew by seven frames (the
+page-table builder's code and tables, plus up to two pages of the 4KiB section alignment the new link
+script needs), and M8 also permanently spends **six** frames on the kernel's own page tables — so
+`FREE` went `00007EC5` → `00007EB8`, `ALLOCS` starts at 6 rather than 0, and the first `alloc`, the
+drain's `SUM`/`XOR`/`LOW` and the refill's `GAVE` all moved with them. The mitigation held exactly as
+written: `derive.py` gained the page-table reservation as a sixth rule and recomputed every one of
+those numbers, so the regenerated golden was checked against a derivation rather than blessed. The six
+frames are asserted equal to `vm.dart`'s `vmFrameCount` by `m8-paging/run.sh`, so the two cannot
+drift.
+
 ---
 
 ## GAP-0079 — LLVM emits a jump table into `.rodata`, and `.rodata` is writable in this image
 
 **Domain:** kernel (M7), toolchain
-**Status:** OPEN (the writability); RESOLVED (the assertion that noticed it).
+**Status:** **NARROWED at M8** — the writability is CLOSED (see below); the jump table itself is
+still there and still an indirect branch, which is now a statement about `.rodata`'s integrity rather
+than about its permissions. The assertion that noticed it remains RESOLVED, and M8 defended it a
+second time rather than relaxing it (GAP-0082).
+
+**M8 UPDATE.** Consequence 2 below — "the jump table is an indirect branch through memory this kernel
+maps WRITABLE" — is no longer true. `.rodata` is its own `PT_LOAD` with `R` flags and every one of its
+pages is mapped RW=0/NX=1 by `core/kernel/vm.dart`, enforced by `CR0.WP` and `EFER.NXE`, and a
+deliberate store into it is a reported page fault (GAP-0050, ADR-0012). What remains is the ordinary
+observation that a jump table is a branch through data: it cannot be rewritten by a stray kernel
+store any more, but it is still the one piece of `.rodata` whose *contents* decide control flow, and
+it is still anonymous data the source did not ask for.
 
 `pmmFreeStatus` dispatches on a DENSE `0..5` status code. LLVM lowered the if-chain into a **six-entry
 jump table**, placed it in `kmain.o`'s `.rodata` at offset 0 as anonymous data with six `R_X86_64_64`
@@ -1971,3 +2045,179 @@ than it did: the kernel now has data whose *integrity* is control-flow integrity
 **What would close the writability:** separate `PT_LOAD` segments with real page permissions, which
 needs runtime page-table manipulation, which needs a frame allocator to get page tables from. That
 prerequisite now exists (M7). GAP-0050 is the entry; this is a note that it acquired a second reason.
+
+---
+
+## GAP-0080 — `CR0.WP` was clear, so read-only page-table entries did not stop a kernel write
+
+**Domain:** kernel, boot (M8)
+**Status:** **RESOLVED at M8**, and recorded anyway because the near-miss is the entry.
+
+A page-table entry with `RW = 0` does **not** prevent a write from ring 0 unless `CR0.WP` (bit 16) is
+set. Its power-on state is clear, and this kernel had never set it: `boot.S` set `PG` (bit 31) and
+nothing else.
+
+**This was measured, not looked up.** With M8's three-segment image linked, the new page tables built
+and installed, and `vm` reporting every `.rodata` page as not-writable by *walking the live tables* —
+
+```
+VM RODATA 0000000000113000 0000000000115000 P 00000002 W 00 X 00
+```
+
+— `vmtest ro` still printed `VM TEST RO SURVIVED -- THE WRITE LANDED`, and the next report showed the
+canary as `EFBEADDEEFBEADDE`. Every entry was correct and the CPU was ignoring all of them.
+
+**Why it is worth an entry rather than a commit message.** In the same session `vmtest nx` faulted
+correctly, because NX is enforced whatever WP says. A milestone that had tested only the NX half would
+have shipped "W^X works" with the W half entirely absent — and every artefact it produced (the program
+headers, the page-table dump, the NX fault) would have been genuine. **The enforcement mechanism and
+the permission bits are two different things, and only one of them is visible in a page-table dump.**
+
+The fix is one instruction: `boot.S` now ORs `0x80010000` into `CR0` instead of `0x80000000`. It is set
+there, with `PG`, because it is a CPU-mode fact like `LME` and `NXE` and has no effect while the
+bootstrap tables (which mark everything writable) are live. `vm` prints it back off the register
+through `cr0_read()`, and `m8-paging/run.sh` checks it three ways: the instruction is in `boot.S`, the
+bit is set in QEMU's `info registers`, and the write faults.
+
+**Cost of the workaround:** none — nothing was worked around. The residual risk is the general one this
+entry names: a permission scheme can be entirely correct in the tables and entirely inert in the
+machine, and the only test that tells the difference is one that performs the forbidden operation.
+
+---
+
+## GAP-0081 — What the address space does NOT do, listed rather than discovered later
+
+**Domain:** kernel (M8)
+**Status:** OPEN — deliberately scoped out. Every item is absence, not wrongness: nothing below is
+mis-reported, and `vm` prints what is actually mapped rather than what was intended.
+
+1. **No user/supervisor separation.** Every page is mapped supervisor (U/S = 0). There is no ring 3, no
+   TSS to enter one from, no `syscall`/`sysret` path and no user page tables — so the `USER`/`SUPER`
+   field in the page-fault report has only ever printed `SUPER`, and the U bit in an error code has
+   never been observed set. This is the single largest thing between M8 and "an operating system"
+   rather than "a kernel with an address space".
+2. **One address space, and it is the kernel's.** There is one PML4, built once at boot. No second
+   `CR3`, no per-process mapping, no address-space switch on a context switch — because there are no
+   processes and no context switches.
+3. **Nothing ever CHANGES a mapping, so there is no `map`/`unmap` API.** `vmInit` installs a whole
+   address space once and never edits it again. `map(va, pa, flags)` and `unmap(va)` are the obvious
+   next thing and were deliberately not built: there is no caller for them yet, and the first one
+   brings item 4 with it.
+4. **No `invlpg`, and no TLB shootdown.** Writing `CR3` flushes every non-global TLB entry (PGE is
+   never enabled), which is why the one install needs no invalidation at all. The moment anything edits
+   a live mapping this becomes real, and on more than one CPU it becomes an IPI protocol.
+5. **No demand paging, no swap, no copy-on-write, no lazy allocation.** Every page that will ever be
+   mapped is mapped at boot.
+6. **Page 0 is mapped, and there is no guard page below the stack.** Leaving page 0 unmapped is a free
+   null-pointer trap and was not taken, because this milestone's brief was to preserve the identity
+   mapping the kernel already depends on and a guard page is a separate claim needing its own test.
+   Both are cheap and both are unclaimed.
+7. **The 4KiB window is 4MiB and the image must fit in it.** Permissions can only change at a page
+   boundary, so every section boundary has to be inside 4KiB-page territory. `vmInit` REFUSES (status
+   `TOOBIG`) rather than mis-mapping if `__kernel_end` ever passes 4MiB, and `m8-paging/run.sh` checks
+   it at build time so the refusal is a diagnostic rather than a silent `READY 0`. Raising it is
+   mechanical: `vmFineBytes` and `vmFrameCount` move together, one more frame per 2MiB.
+8. **`[128MiB, 1GiB)` is unmapped on purpose, and that is a behaviour change from the bootstrap map.**
+   boot.S mapped the whole gigabyte; vm.dart maps only what the allocator manages, so an access above
+   the bound now faults instead of silently writing into RAM nothing tracks. Anything that assumed the
+   old map reaches further will find a page fault rather than a wrong answer, which is the intended
+   direction.
+9. **`.rodata` is protected from the kernel's stray pointers, not from a type error.** DCDart's
+   `Pointer` still carries no const-ness and DC-IR still has no verifier, so a store into a constant
+   global is still expressible and still compiles. It is now a fault instead of silent corruption —
+   which is the whole difference M8 buys — but catching it before it runs is DCDart's side of the same
+   problem.
+10. **The self-check is a spot check, not a proof.** `vmSelfCheck` walks the new tables for the
+    fourteen-odd addresses the kernel is standing on before writing `CR3`. It does not walk all 1600
+    pages, and it cannot check the one thing that would matter most — that nothing ELSE the kernel will
+    later touch is unmapped. The harness's full page-by-page walk covers that from outside; the kernel
+    itself does not.
+
+---
+
+## GAP-0082 — A `@rodata` table accessed through a wider pointer acquires that width's alignment, and opens a hole
+
+**Domain:** kernel (M8), toolchain
+**Status:** OPEN (the toolchain behaviour); avoided rather than worked around (the kernel does not
+provoke it).
+
+`@rodata` tables are emitted 1-byte aligned and pack against each other with no padding. That is the
+observable form of DCDart ADR-0040's "a table is elements only, no header" promise, and
+`tests/conformance/m1-interrupts/run.sh` asserts it table-by-table: every adjacent pair must abut
+exactly, nothing may follow the last table, and anything preceding the first must be wholly accounted
+for by `.rela.rodata`.
+
+Writing M8's canary through a `Pointer<u64>` gave that ONE table 8-byte alignment — no other 8-byte
+table in the image moved, so it is the access width and not the size that does it — and the resulting
+five-byte hole failed the abutment assertion:
+
+```
+5 byte(s) between the end of the previous table and vmCanary at 0x13c0 --
+a per-table header or padding appeared
+```
+
+**The check was not relaxed.** GAP-0079 already records that this assertion had to change shape once
+and that the easy weakening was refused; weakening it again to accommodate a test's convenience would
+have thrown the property away for nothing. The deliberate write in `vmTestRo` was made **byte-wide**
+instead, which is also the more faithful statement of the hazard — `table[0] = x` is what a stray
+pointer into a byte table actually does — and the alignment went back to 1.
+
+**Cost of the workaround:** one byte instead of eight, in one test. Genuinely nothing today.
+
+**Why it is recorded anyway:** the day something legitimately needs a wide access to a `@rodata` table
+— a `u64` constant pool, a relocation table, a type descriptor read as a word — this assertion will
+fail for a good reason, and the fix will be to teach it that a gap explained by the *following*
+symbol's alignment is not a header. That is a deliberate change to a safety check and it should be made
+by someone who has read this entry, not by someone staring at a red harness.
+
+---
+
+## GAP-0083 — TLB management does not exist, and does not need to yet
+
+**Domain:** kernel (M8)
+**Status:** OPEN — genuinely not needed at M8, and named so the first thing that needs it does not
+discover it as a bug.
+
+`paging_install` is one instruction, `mov %rdi,%cr3`, and it needs no invalidation: writing `CR3`
+flushes every non-global TLB entry, and this kernel never enables `CR4.PGE`, so there are no global
+pages and the entire old mapping is gone the moment it returns. There is exactly one such write, at
+boot.
+
+There is no `invlpg` primitive, no per-page invalidation, and no shootdown protocol. All three become
+necessary together the moment anything **edits a live mapping** (GAP-0081 item 3) — and the third one
+also needs more than one CPU, which this kernel does not have. Stated now rather than discovered then.
+
+---
+
+## GAP-0084 — The pinned-DCDart verification clone needs `core/frontend/` copied in by hand
+
+**Domain:** tooling, conformance (M7, M8)
+**Status:** OPEN — a property of DCDart's repo layout, not something to fix here.
+
+ADR-0011 §7 established the method this project verifies with: an isolated clone of DCDart at
+`DCDART_PIN.txt`'s commit, mirrored beside a copy of this repo, because GAP-0003 fixes the sibling
+layout and the shared checkout is edited live by other sessions. M8 reused it and hit one step the ADR
+did not record.
+
+`git clone` + `git checkout <pin>` is **not sufficient**. DCDart's `.gitignore` excludes
+`core/frontend/vendor/` (a ~212MB sparse clone of dart-lang/sdk, per DCDart's own ADR-0005/0007), and
+in practice the whole of `core/frontend/` is untracked. Without it, `dart pub get` in `core/dcc` fails
+with
+
+```
+Because every version of dcc_lower from path depends on kernel from path which
+doesn't exist (could not find package kernel at "../frontend/vendor/dart-sdk/pkg/kernel")
+```
+
+and every harness then fails at `dcc build` with a wall of "Couldn't resolve the package 'backend'"
+errors that look like a toolchain break rather than a missing directory.
+
+**The step:** `cp -Rc <shared>/core/frontend <clone>/core/frontend` (APFS clone-copy, ~7 seconds and no
+extra disk), then `dart pub get --offline` in `<clone>/core/dcc`. The vendored SDK is a pinned,
+read-only artifact that no session edits, so copying it from the shared checkout does not weaken the
+isolation the pinned clone exists for — the isolation that matters is over DCDart's own tracked source,
+which the clone gets from the commit.
+
+**Cost of the workaround:** one command, and this entry so the next unit does not spend twenty minutes
+diagnosing it as a broken `dcc`.
+

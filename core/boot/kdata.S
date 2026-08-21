@@ -39,7 +39,17 @@
  * behind ONE accessor, so that when DCDart grows mutable statics the migration
  * is a three-function change in core/kernel/pmm.dart rather than a rewrite of
  * the allocator; the block's own comment states that as a rule.
- * `tests/conformance/m7-frames/run.sh` asserts the 5096 total and owns it now.
+ * `tests/conformance/m7-frames/run.sh` asserted the 5096 total and owned it
+ * until M8; it now asserts 5096 EXCLUDING `vm_store`, which is the same claim
+ * stated so that a later milestone cannot dilute it.
+ *
+ * M8 TAKES IT TO 5224. `vm_store` (below) is 128 bytes -- sixteen words for the
+ * virtual-memory subsystem: the PML4 it built, the six frames it took from the
+ * allocator, the page counts it mapped, the page-fault it last reported, and
+ * one deliberately WRITABLE scratch word that exists so `vmtest rw` can be the
+ * control for `vmtest ro`. It is ONE symbol behind ONE accessor called from ONE
+ * function, which is the tightest storage seam in this kernel;
+ * `tests/conformance/m8-paging/run.sh` asserts the 5224 total and owns it now.
  *
  * M6 ADDS NOTHING, AND THAT WAS A CHOICE RATHER THAN AN ABSENCE OF NEED.
  * An ATA PIO driver's obvious shape is `read(lba, buffer)` and the buffer is
@@ -361,6 +371,65 @@ pmm_store:
     .size pmm_store, 4672
     .type pmm_store, @object
 
+/* ------------------------------------------------------------------
+ * M8 (ADR-0012): the virtual-memory subsystem's ENTIRE mutable state.
+ *
+ * 128 bytes, sixteen `u64` words, ONE symbol, ONE accessor -- the same shape
+ * `pmm_store` above uses and for the same reason, taken one step tighter:
+ * `core/kernel/vm.dart` reaches this block through exactly ONE function
+ * (`vmMetaBase`), which is the only place in the kernel that calls
+ * `vm_store_addr`. `tests/conformance/m8-paging/run.sh` counts that call site
+ * the way `m7-frames/run.sh` counts the allocator's three, and for the same
+ * reason: it is what keeps the eventual DCDart mutable-statics migration a
+ * one-function change instead of an audit.
+ *
+ * WHY IT IS SIXTEEN WORDS AND NOT FOUR. Words 0..9 are what the subsystem
+ * needs; 10..15 are the page-table frame addresses it holds, which have to be
+ * kept because they are the answer to a question the page allocator asks on
+ * every `free` and every `frames refill`: "is this frame one the kernel's own
+ * address space is standing on?" Before M8 the allocator's reserved set was
+ * the memory map, the first megabyte and `[__kernel_start, __kernel_end)`; the
+ * page tables are the first permanently-owned kernel memory that is NOT inside
+ * the image, because they come out of `allocFrame()`. `pmmAllocatable` gained
+ * one clause and `vm.dart` answers it from these six words.
+ *
+ * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern
+ * `cpu_info`, `fb_state` and `pmm_store` already use:
+ *
+ *     +0    u64  ready:      0 until the new CR3 is live, 1 after
+ *     +8    u64  status:     why it refused, if it refused (a vmStatus* code)
+ *     +16   u64  pml4:       physical address of the PML4 this kernel built
+ *     +24   u64  frames:     how many frames the page tables consumed
+ *     +32   u64  pages4k:    4KiB pages mapped
+ *     +40   u64  pages2m:    2MiB pages mapped
+ *     +48   u64  scratch:    `vmtest rw`'s target -- a WRITABLE word, so that
+ *                            the control for the read-only test is a store of
+ *                            exactly the same shape to a different page
+ *     +56   u64  faults:     page faults reported since boot (vector 14 only)
+ *     +64   u64  lastCr2:    the faulting address of the most recent one
+ *     +72   u64  lastErr:    its error code
+ *     +80.. u64  frame[0..5] the six page-table frames, in allocation order
+ *
+ * NOT ZEROED HERE -- the same rule as every word above. `vmInit()` writes all
+ * sixteen before anything reads them, and it runs from `kmain()` before the
+ * first byte of output.
+ *
+ * `.global` because `tests/conformance/m8-paging/run.sh` reads this symbol's
+ * LINK-TIME ADDRESS out of `kernel.elf` and compares it against the address
+ * the kernel prints, exactly as m7-frames does for `pmm_store`.
+ *
+ * THIS TAKES DONATED `.bss` FROM 5096 BYTES TO 5224. docs/known-gaps.md
+ * GAP-0053 carries the running total and the reason. m5-pci, m6-disk and
+ * m7-frames each still assert their own milestone's number by SUBTRACTING the
+ * blocks that came after theirs, so no older claim is weakened by this.
+ * ------------------------------------------------------------------ */
+.align 8
+.global vm_store
+vm_store:
+    .skip 128
+    .size vm_store, 128
+    .type vm_store, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -482,9 +551,29 @@ pmm_store_addr:
     leaq pmm_store(%rip), %rax
     ret
 
+/* uint64_t vm_store_addr(void) -- base of the 128-byte virtual-memory state
+ * block. See `vm_store` above for the word layout.
+ *
+ * THE ENTIRE STORAGE SEAM FOR THE PAGE-TABLE BUILDER IS THIS ONE FUNCTION, and
+ * it is called from exactly ONE place: `vmMetaBase()` in core/kernel/vm.dart.
+ * Adding a second call site anywhere is the change this design exists to
+ * prevent -- the same rule `pmm_store_addr` states, one call site tighter
+ * because this block has one accessor's worth of structure rather than three.
+ * `tests/conformance/m8-paging/run.sh` counts it. */
+.align 16
+.global vm_store_addr
+.type vm_store_addr, @function
+vm_store_addr:
+    leaq vm_store(%rip), %rax
+    ret
+
 /* Mark the stack non-executable. Nothing here needs an executable stack, and
  * without this note GNU ld warns (and, historically, silently marked the
- * whole image's stack executable). Cosmetic on this kernel today -- the
- * single PT_LOAD is already RWX, known-gaps GAP-0050 -- and free to get
- * right. */
+ * whole image's stack executable).
+ *
+ * M8: this stopped being cosmetic. Until M8 the whole image was one RWX
+ * `PT_LOAD` (known-gaps GAP-0050) so the note protected nothing. The image is
+ * now three segments -- R E, R, RW -- and `core/kernel/vm.dart` maps the boot
+ * stack (which lives in `.bss`, inside the RW segment) writable and NX, so a
+ * fetch from the stack is a #PF and not a jump into whatever was pushed. */
 .section .note.GNU-stack,"",@progbits

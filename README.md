@@ -129,17 +129,17 @@ disk driver read. M7 closes it for physical memory.
 
 ```
 oscortex> frames
-PMM BASE 00000000001191B0 STORE 00001240 BITMAP 00001000 META 00000040 LEDGER 00000200
+PMM BASE 00000000001201B0 STORE 00001240 BITMAP 00001000 META 00000040 LEDGER 00000200
 PMM BOUND 00008000 FRAME 00001000 LIMIT 00000080 MIB
-PMM MANAGED 00008000 FREE 00007EC5 USED 0000013B BASELINE 00007EC5
-PMM ALLOCS 0000000000000000 ERRORS 00000000 OVER 00000000
+PMM MANAGED 00008000 FREE 00007EB8 USED 00000148 BASELINE 00007EB8
+PMM ALLOCS 0000000000000006 ERRORS 00000000 OVER 00000000
 oscortex> alloc
-PMM ALLOC 000000000011B000
+PMM ALLOC 0000000000128000
 oscortex> free 100000
 PMM FREE 0000000000100000 ERR RESERVED
 oscortex> frames drain
-PMM DRAIN TOOK 00007EC4 SUM 000000001FEF2516 XOR 0000000000000000
-PMM DRAIN LOW 000000000011C000 HIGH 0000000007FDF000
+PMM DRAIN TOOK 00007EB7 SUM 000000001FEF165C XOR 0000000000000128
+PMM DRAIN LOW 0000000000129000 HIGH 0000000007FDF000
 PMM DRAIN TOUCH 0000000007FDF000 C3C3C3C3C43E33C3 OK
 PMM DRAIN NEXT 0000000000000000 FREE 00000000
 ```
@@ -168,8 +168,70 @@ bound and say `CAPPED`; a 32MiB boot is the negative control, where every number
 
 **What this is, and is not:** a *physical* memory manager. It hands out one frame at a time, returns a
 `u64` rather than typed memory, does not zero frames, does not know who owns one, has no lock, and is
-not virtual memory — nothing maps anything at runtime. It is the prerequisite for paging, not paging.
+not virtual memory by itself — M8 is what maps anything at runtime, and the `ALLOCS 6` above is M8's page tables, taken from this allocator at boot. It is the prerequisite for paging.
 See `core/docs/decisions/0011-physical-memory-manager.md` and `docs/known-gaps.md` GAP-0076.
+
+**M8 — done. The kernel protects itself from itself.** Until now the whole image was one `PT_LOAD`
+with `FLAGS(7)` — read, write and execute on everything — and `boot.S`'s flat 2MiB identity map
+honoured exactly that. A stray pointer could rewrite code, and a store through a pointer derived from
+a constant global **succeeded silently**: no compile-time check, and no runtime check either.
+
+```
+oscortex> vm
+VM CR3 0000000000122000 PML4 0000000000122000 NX 1 WP 1 READY 1 STATUS 00000000
+VM FRAMES 00000006 SPAN 0000000000122000 0000000000127000
+VM PAGES 4K 00000400 2M 0000023E
+VM TEXT   0000000000100000 0000000000113000 P 00000013 W 00 X 11
+VM RODATA 0000000000113000 0000000000115000 P 00000002 W 00 X 00
+VM DATA   0000000000115000 0000000000400000 P 000002EB W 11 X 00
+VM CANARY C34F534352575821
+oscortex> vmtest rw
+VM TEST RW ADDR 0000000000121420 5A5A5A5A5A484E7A OK
+oscortex> vmtest ro
+VM TEST RO ADDR 0000000000114BE3
+FAULT 0E ERR 0000000000000003 OP C605
+PF CR2 0000000000114BE3 ERR 00000003 PRESENT WRITE SUPER DATA
+FAULT RECOVERED 0001 -- faulting computation abandoned, shell resumed
+oscortex> vmtest nx
+VM TEST NX ADDR 0000000000114BE3
+FAULT 0E ERR 0000000000000011 OP C34F
+PF CR2 0000000000114BE3 ERR 00000011 PRESENT READ SUPER FETCH
+```
+
+Three `PT_LOAD` segments now (`R E`, `R`, `RW`, 4KiB-aligned), and — the half that matters — a real
+4-level page table **built in DCDart out of six frames from the M7 allocator** and installed in `CR3`
+while the kernel runs. `.text` is read+execute, `.rodata` is neither writable nor executable,
+`.data`/`.bss` are writable and never executable. The `W 00` / `X 11` pairs above are an *all/any*
+fold the kernel produces by **walking its own live tables**, not by restating what it built.
+
+**The proof is a fault, and the controls come first.** `vmtest rw` and `vmtest x` do the same two
+operations against a writable page and an executable page and must *not* fault — otherwise "the store
+faulted" would be equally consistent with "stores fault". Then `vmtest ro` writes a byte into a
+`@rodata` table and `vmtest nx` calls into it, and both are page faults reported with the faulting
+address out of `CR2` and a decoded error code, survived by the shell through M4's recovery path. The
+canary's eight bytes are unchanged afterwards, which is a stronger statement than "a fault happened".
+
+**One bit was the whole difference, and testing found it, not reading.** With the segments split, the
+tables built and every `.rodata` entry reading back `RW=0`, the write *still landed* — because
+`CR0.WP` was clear, and without it a ring-0 store ignores the read-only bit entirely. The NX half
+faulted correctly the whole time. A milestone that had tested only NX would have shipped "W^X works"
+with every artefact genuine and the W half completely absent. `docs/known-gaps.md` GAP-0080.
+
+`core/tests/conformance/m8-paging/run.sh` boots four machines and never takes the kernel's word for
+anything: the permissions are read out of the **live page tables in guest physical memory**, at the
+`CR3` QEMU itself reports, and walked by an independent implementation of the x86-64 four-level walk.
+A `-cpu qemu64,nx=off` boot is the sharpest control — there `vmtest nx` must **survive** while
+`vmtest ro` still faults, which is what makes the fetch fault attributable to the NX bit and nothing
+else. A fourth boot drains and refills every frame the allocator has and requires `free <PML4>` to
+come back `ERR RESERVED`, because the page tables are the first kernel memory that lives outside the
+kernel image.
+
+**What this is, and is not:** W^X for the kernel's own image. There is no user/supervisor separation,
+no second address space, no `map`/`unmap` for changing a live mapping, and no TLB shootdown — and
+`.rodata` is protected from a stray pointer, not from a type error, because DCDart's `Pointer` still
+carries no const-ness. A store into a constant global is now a *fault* instead of silent corruption,
+which is the whole difference; catching it before it runs is DCDart's side of the same problem. See
+`core/docs/decisions/0012-paging-and-w-xor-x.md` and `docs/known-gaps.md` GAP-0081.
 
 **What this is, and is not:** fault survival with *abandonment* of the faulting computation. The
 command that faulted is gone — not repaired, not retried, not resumed. Resuming a failed computation

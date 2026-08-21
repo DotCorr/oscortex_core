@@ -31,7 +31,9 @@ kernel is not Python):
   2. a frame is freed only if it lies WHOLLY inside a type-1 region;
   3. frames above the bound are COUNTED and never freed;
   4. the first `LOW_RESERVED` frames are taken back unconditionally;
-  5. the frames the kernel image occupies are taken back.
+  5. the frames the kernel image occupies are taken back;
+  6. the `VM_FRAMES` lowest frames still free after all of that are the kernel's
+     own page tables (M8), taken at boot and never returned.
 
 If pmm.dart and this file disagree, one of them is wrong and run.sh says so.
 That is the point of writing it twice.
@@ -45,6 +47,20 @@ import sys
 FRAME_BYTES = 4096
 MAX_FRAMES = 32768
 LOW_RESERVED = 256
+
+# M8 (ADR-0012). The kernel's own page tables come out of THIS allocator, at
+# boot, before any command can run -- so the allocator a `frames` report
+# describes has already spent this many frames and can never get them back
+# (`pmmAllocatable` refuses them, `vmHoldsFrame`). They are the LOWEST
+# allocatable frames, because `vmInit` runs on an untouched allocator whose
+# next-fit cursor is 0.
+#
+# It is reserved here rather than subtracted from a count, so that everything
+# derived from the free SET -- the first `alloc`'s address, the drain's
+# SUM/XOR/LOW/HIGH, and the bitmap compared bit-for-bit -- follows automatically
+# instead of each needing its own fudge. m8-paging/run.sh asserts this number
+# against `vmFrameCount` in core/kernel/vm.dart.
+VM_FRAMES = 6
 
 
 def parse_mmap(serial_text):
@@ -91,6 +107,18 @@ def build(entries, kernel_start, kernel_end):
     k_last_ex = min((kernel_end + FRAME_BYTES - 1) // FRAME_BYTES, MAX_FRAMES)
     for f in range(k_first, k_last_ex):
         used[f] = True
+    # 6. M8: the kernel's page tables, which are the first VM_FRAMES frames
+    #    still free after everything above. Marked used because they are taken
+    #    at boot and can never be handed out or freed again.
+    taken = 0
+    for f in range(MAX_FRAMES):
+        if taken == VM_FRAMES:
+            break
+        if not used[f]:
+            used[f] = True
+            taken += 1
+    if taken != VM_FRAMES:
+        raise RuntimeError("only %d frames were free for the page tables" % taken)
     return used, over
 
 

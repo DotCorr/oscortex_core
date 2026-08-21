@@ -610,6 +610,148 @@ cpu_probe_done:
     ret
 
 /* ==================================================================
+ * M8 (docs/decisions/0012-paging-and-w-xor-x.md): the control registers, and
+ * the two instruction-fetch probes.
+ *
+ * WHY HERE AND NOT IN A FIFTH OBJECT FILE. `portio.S` set the precedent that a
+ * missing primitive can get its own file when it is a MISSING LANGUAGE
+ * PRIMITIVE standing in for itself. These are not that. They are the same
+ * category this file already exists for and states in its header: "privileged
+ * or control-flow instructions with no DCDart primitive", called from DCDart
+ * through the C ABI. `cpu_probe` (CPUID) is already here on exactly that
+ * argument, and `cr2_read` in particular belongs beside `isr_common` because
+ * the page-fault handler is the only thing that reads it. A fifth object file
+ * would have to be threaded through build-kernel.sh and eight harnesses to say
+ * something this file's header already says.
+ *
+ * WHY DCDART CANNOT DO ANY OF IT: `mov %cr3,%reg` and `mov %reg,%cr3` are
+ * privileged and have no DCDart primitive; CR2 is not addressable memory;
+ * and an indirect call through a computed address is a function pointer, which
+ * DCDart has none of (the same absence that makes `isrDispatch` a branch chain
+ * and `shellExecute` an if-chain).
+ * ================================================================== */
+
+/* uint64_t cr3_read(void) -- the physical address of the live PML4.
+ *
+ * Read back rather than remembered, so `vm` reports what the CPU is ACTUALLY
+ * using rather than what vm.dart believes it installed. The harness compares
+ * this against QEMU's own `info registers` CR3, which is a third opinion. */
+.align 16
+.global cr3_read
+.type cr3_read, @function
+cr3_read:
+    movq %cr3, %rax
+    ret
+
+/* uint64_t cr0_read(void) -- CR0, so `vm` can print WP back off the register.
+ *
+ * CR0.WP (bit 16) is the difference between a read-only page-table entry that
+ * the CPU obeys and one it ignores for ring-0 stores. `boot.S` sets it; this is
+ * how the report proves it rather than asserting it. See boot.S's CR0 write for
+ * the measurement that made this necessary. */
+.align 16
+.global cr0_read
+.type cr0_read, @function
+cr0_read:
+    movq %cr0, %rax
+    ret
+
+/* uint64_t cr2_read(void) -- the linear address that caused the last #PF.
+ *
+ * The CPU writes CR2 on every page fault and nothing else touches it, so it is
+ * still valid when the DCDart handler runs. It must be read BEFORE any further
+ * page fault, which is why the handler's own diagnostic never dereferences an
+ * address it has not bounds-checked -- a fault inside the fault handler would
+ * overwrite the value being reported and then double-fault. */
+.align 16
+.global cr2_read
+.type cr2_read, @function
+cr2_read:
+    movq %cr2, %rax
+    ret
+
+/* void paging_install(uint64_t pml4_physical) -- THE SWITCH.
+ *
+ * One instruction, and it is the most dangerous instruction in this kernel: if
+ * the table at `pml4_physical` does not map the very next instruction, the
+ * stack RSP points at, and the code that returns to the caller, the machine
+ * triple-faults and QEMU reboots with no diagnostic at all. `vm.dart` checks
+ * every one of those before calling this (see `vmSelfCheck`).
+ *
+ * Writing CR3 also flushes every non-global TLB entry, which is why nothing
+ * here has to invalidate anything: there are no global pages in either table
+ * (PGE is never enabled) so the entire old mapping is gone the moment this
+ * returns. `invlpg` and TLB shootdown belong to the milestone that changes a
+ * mapping while it is live; this one only ever installs a whole address space
+ * once. docs/known-gaps.md GAP-0083.
+ *
+ * The `ret` immediately after is itself the first proof the switch worked: the
+ * return address is on the stack and points into `.text`, so if either were
+ * unmapped this function could not get back to DCDart. */
+.align 16
+.global paging_install
+.type paging_install, @function
+paging_install:
+    movq %rdi, %cr3
+    ret
+
+/* uint64_t vm_exec_probe(uint64_t addr) -- CALL THROUGH AN ADDRESS.
+ *
+ * `vmtest nx`'s whole mechanism. An instruction fetch from `addr` either
+ * happens or raises #PF with the instruction-fetch bit set in the error code;
+ * there is no third outcome, and the difference between the two is exactly
+ * what a non-executable page means.
+ *
+ * A `call` and not a `jmp`, so that a target which DOES return (see
+ * `vm_exec_ok` below) comes back here and this function can return normally.
+ * The return value is 1 -- "the fetch happened" -- which the caller only ever
+ * observes when the page was executable, because otherwise the #PF never comes
+ * back to this frame at all (the fault handler abandons the stack).
+ *
+ * IT IS NOT AN ARBITRARY-CODE PRIMITIVE and must not become one. `vm.dart`
+ * passes it exactly two addresses: `vm_exec_ok`, and the address of a
+ * `@rodata` table. Both are in this image and both are known. */
+.align 16
+.global vm_exec_probe
+.type vm_exec_probe, @function
+vm_exec_probe:
+    pushq %rbx                    /* keeps RSP 16-byte aligned at the `call`:
+                                   * it is 8 (mod 16) on entry, and one push
+                                   * makes it 0 (mod 16), which is what the
+                                   * System V AMD64 ABI requires. RBX is
+                                   * callee-saved, so pushing it is free and
+                                   * correct rather than merely convenient. */
+    movq $1, %rbx
+    call *%rdi                    /* the instruction fetch under test */
+    movq %rbx, %rax
+    popq %rbx
+    ret
+
+/* void vm_exec_ok(void) -- a single `ret`, and nothing else, in `.text`.
+ *
+ * THE CONTROL FOR `vmtest nx`. Handing `vm_exec_probe` an address on an
+ * executable page must NOT fault; handing it an address on a `.rodata` page
+ * must. Without this half, "the indirect call faulted" would be equally
+ * consistent with "indirect calls fault", which proves nothing about page
+ * permissions. It is in `.text` because that is the section under test. */
+.align 16
+.global vm_exec_ok
+.type vm_exec_ok, @function
+vm_exec_ok:
+    ret
+
+/* uint64_t vm_exec_ok_addr(void) -- the address of the `ret` above, as DATA.
+ *
+ * The same pivot `isr_stub_table_addr` is: DCDart cannot name a code symbol,
+ * so a code address has to be handed to it as an ordinary integer. */
+.align 16
+.global vm_exec_ok_addr
+.type vm_exec_ok_addr, @function
+vm_exec_ok_addr:
+    leaq vm_exec_ok(%rip), %rax
+    ret
+
+/* ==================================================================
  * The stub address table.
  *
  * `isr_stubs + (n * 16)` is a link-time constant expression over one symbol

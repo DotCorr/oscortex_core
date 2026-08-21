@@ -876,7 +876,43 @@ u64 pmmAllocatable(u64 f) {
   if (pmmHitsKernel(f) > u64(0)) {
     return u64(0);
   }
+  // M8 (ADR-0012). The kernel's own page tables come out of THIS allocator, so
+  // they are the first memory the kernel cannot afford to lose that is not
+  // inside `[__kernel_start, __kernel_end)`. Without this clause
+  // `free <page-table-frame>` would hand the running address space back, and
+  // `frames refill` -- which frees everything that was ever allocatable --
+  // would free all six of them, after which the next `frames drain` would write
+  // test patterns into the live PML4.
+  //
+  // The predicate is asked of `core/kernel/vm.dart` rather than answered from a
+  // word in this file's metadata block, because the set of frames is VM state
+  // and belongs behind the VM's own storage seam. It is at most six word
+  // comparisons and it answers 0 for every frame until `vmInit()` has taken
+  // one, so `pmmInit()` -- which runs first and does not consult this function
+  // at all -- is unaffected.
+  if (vmHoldsFrame(f) > u64(0)) {
+    return u64(0);
+  }
   return pmmInUsable(f);
+}
+
+/// Re-takes the baseline free count. **Called once, by `vmInit()`.**
+///
+/// BASELINE means "the number `FREE` should return to when nothing is leaked",
+/// and `pmmInit` sets it to the free count of a completely untouched allocator.
+/// M8 then permanently spends six frames on the kernel's page tables, which is
+/// not a leak -- it is the address space, and `pmmAllocatable` refuses to hand
+/// those frames out or take them back. Leaving BASELINE at the pre-paging
+/// number would make `frames refill` report `FREE` six short of `BASELINE`
+/// forever, and the "free returns to baseline exactly" assertion that gives
+/// M7's drain/refill cycle its meaning would be measuring the wrong thing.
+///
+/// It is a function here rather than a `pmmSetMeta` call in `vm.dart` so that
+/// the metadata word indices stay private to this file -- the same reason
+/// `vm.dart` does not read the bitmap directly.
+@bare
+void pmmRebaseline() {
+  pmmSetMeta(u64(pmmMetaBaseline), pmmMeta(u64(pmmMetaFree)));
 }
 
 // ---------------------------------------------------------------------------

@@ -152,11 +152,19 @@ KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
 PMM_STORE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="pmm_store" {print $3; exit}')
 PMM_STORE_SIZE=${PMM_STORE_SIZE:-0}
-NON_PMM_BSS=$(( KDATA_BSS - PMM_STORE_SIZE ))
+# M8 added a second block after M7's (`vm_store`, 128 bytes: the virtual-
+# memory subsystem's entire state). Subtracted for exactly the reason
+# `pmm_store` is: this milestone's claim was never "the total is 424", it was
+# "MY subsystem cost this much", and a later milestone must not be able to
+# dilute that by growing the total. docs/known-gaps.md GAP-0053 carries the
+# running total; m8-paging/run.sh owns the 5224 now.
+VM_STORE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="vm_store"{print $3; exit}')
+[[ -n "$VM_STORE_SIZE" ]] || fail "vm_store is not in kdata.o — M8's virtual-memory state block is missing"
+NON_PMM_BSS=$(( KDATA_BSS - PMM_STORE_SIZE - VM_STORE_SIZE ))
 if [[ "$NON_PMM_BSS" -ne 424 ]]; then
-  fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $PMM_STORE_SIZE are M7's pmm_store, leaving $NON_PMM_BSS — expected 424. ATA PIO was supposed to add NONE. A 512-byte sector buffer is exactly what this driver does not have; if you meant to grow it, say so in kdata.S's header, in GAP-0053, and in docs/decisions/0010-ata-pio-disk-read.md."
+  fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $PMM_STORE_SIZE are M7's pmm_store and $VM_STORE_SIZE are M8's vm_store, leaving $NON_PMM_BSS — expected 424. ATA PIO was supposed to add NONE. A 512-byte sector buffer is exactly what this driver does not have; if you meant to grow it, say so in kdata.S's header, in GAP-0053, and in docs/decisions/0010-ata-pio-disk-read.md."
 fi
-echo "STRUCTURAL: pass  kdata.o donates 424 bytes of .bss outside M7's page-allocator block — the disk driver still adds ZERO (no sector buffer exists)"
+echo "STRUCTURAL: pass  kdata.o donates 424 bytes of .bss outside M7's page-allocator and M8's page-table blocks — the disk driver still adds ZERO (no sector buffer exists)"
 
 # 3b. `port_inw` MUST BE THE 16-BIT INSTRUCTION.
 #
@@ -224,7 +232,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M6 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1028
+check_table shellStrHelp 1155
 check_table ataCmdName 4
 check_table ataCmdIdName 7
 check_table ataCmdReadName 10
@@ -266,7 +274,20 @@ EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 
 # kernel_image_end -- m7-frames/run.sh names and owns those three). M6's claim
 # was "ATA PIO needed NO new assembly", which is asserted directly below: the
 # count is 32, and removing M7's three leaves M5's 29 exactly.
-[[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 32 (M5's 29 plus M7's pmm_store_addr, kernel_image_start, kernel_image_end). M6 itself was supposed to add NONE: ATA PIO reads the data port through port_inw, which portio.S already had for the Bochs VBE registers."
+# M8 (ADR-0012) added TWELVE more, so the raw count is now 44. They are
+# SUBTRACTED BY NAME rather than folded into a new total, for the same reason
+# the donated-`.bss` checks above subtract `pmm_store` and `vm_store`: this
+# milestone's claim is about the externs IT added, and a later milestone must
+# not be able to move the number that states it. Subtracting by name also fails
+# if one of M8's externs quietly disappears, which a bumped total would not.
+M8_EXTERNS="cr0_read cr2_read cr3_read paging_install vm_exec_probe vm_exec_ok_addr nx_enabled kernel_text_end kernel_rodata_start kernel_rodata_end kernel_data_start vm_store_addr"
+M8_PRESENT=0
+for sym in $M8_EXTERNS; do
+  grep -q "$sym" <<<"$VERIFY_OUT" && M8_PRESENT=$(( M8_PRESENT + 1 ))
+done
+[[ "$M8_PRESENT" -eq 12 ]] || fail "only $M8_PRESENT of M8's 12 externs are in kmain.o's manifest ($M8_EXTERNS)"
+EXTERN_COUNT=$(( EXTERN_COUNT - M8_PRESENT ))
+[[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's twelve, expected 32 (M5's 29 plus M7's pmm_store_addr, kernel_image_start, kernel_image_end). M6 itself was supposed to add NONE: ATA PIO reads the data port through port_inw, which portio.S already had for the Bochs VBE registers."
 M7_EXTERNS=0
 for sym in pmm_store_addr kernel_image_start kernel_image_end; do
   grep -q "$sym" <<<"$VERIFY_OUT" && M7_EXTERNS=$(( M7_EXTERNS + 1 ))

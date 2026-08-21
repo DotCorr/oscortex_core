@@ -56,8 +56,25 @@
  * pmmMaxFrames * 4KiB. Raising the allocator's bound means raising this,
  * and the harness fails if only one of them moves.
  *
- * Still not a real memory map (OSCORTEX_SPEC.md §4 -- deferred on
- * purpose): 64 entries of one page directory, identity, no permissions.
+ * M8 MAKES THESE THE *BOOTSTRAP* TABLES, AND THAT IS ALL THEY ARE NOW.
+ * `core/kernel/vm.dart` builds a second, real 4-level table out of frames from
+ * the M7 allocator -- with per-section permissions and NX -- and installs it in
+ * CR3 during `kmain()`. These four pages are what gets the CPU into long mode
+ * and keeps it alive until that switch succeeds, which is exactly the job
+ * CLAUDE.md rule 4 assigns to boot-time assembly, and no more than that.
+ *
+ * THEY ARE DELIBERATELY LEFT INTACT AFTER THE SWITCH. They cost 16KiB of
+ * `.bss` that is never reused, and in exchange the machine has a known-good
+ * table to fall back on and `vm.dart` can decline to switch (a malformed
+ * layout, a frame allocation that failed) and leave a running kernel rather
+ * than a half-built address space. Freeing them would also require them to
+ * stop being inside `[__kernel_start, __kernel_end)`, which is the range the
+ * page allocator reserves -- i.e. it would be a change to M7, for 16KiB.
+ *
+ * Still not a real memory map here (OSCORTEX_SPEC.md §4): 64 entries of one
+ * page directory, identity, present+writable, no NX, no permissions of any
+ * kind. That is the correct shape for a bootstrap table and the wrong shape
+ * for an address space, which is the whole subject of ADR-0012.
  * ------------------------------------------------------------------ */
 /* Number of 2MiB identity pages mapped at 0. 64 * 2MiB = 128MiB. */
 .set MAP_2MIB_PAGES, 64
@@ -108,6 +125,33 @@ p2_pci_table:
  * to be, this location is written before it is ever read. */
 multiboot_info_ptr:
     .skip 4
+
+/* M8: "this CPU has NX and EFER.NXE is set."  1 = yes, 0 = no.
+ *
+ * WHY IT IS A RECORDED FACT RATHER THAN AN ASSUMPTION. `EFER.NXE` (MSR
+ * 0xC0000080 bit 11) is only architecturally present if CPUID leaf
+ * 0x80000001 reports EDX bit 20. Setting a reserved bit in EFER on a CPU
+ * that does not have it raises #GP, and a #GP here -- before any IDT exists
+ * -- is a triple fault and a silently rebooting VM with no diagnostic. So
+ * the bit is ASKED FOR, and the answer is written here.
+ *
+ * And it is written here rather than merely acted on, because
+ * `core/kernel/vm.dart` needs the same answer: a page-table entry with bit
+ * 63 set is a RESERVED-bit violation when NXE is clear, which faults on
+ * every access to that page rather than protecting it. `nx_enabled()` below
+ * is how DCDart asks. On a CPU without NX the kernel still gets W^X for
+ * `.text` (a read-only page cannot be rewritten) and still gets a read-only
+ * `.rodata`; what it loses is "not executable", and `vm` says `NX 0` rather
+ * than pretending.
+ *
+ * In boot.S's `.bss` and not `kdata.S`'s for the same reason
+ * `multiboot_info_ptr` is: it is a fact the boot stub establishes about the
+ * machine before any DCDart code exists, written exactly once, never written
+ * again. `kdata.S` is DCDart's donated MUTABLE storage and its total is a
+ * measurement (docs/known-gaps.md GAP-0053); this is neither. */
+.align 8
+nx_flag:
+    .skip 8
 /* .align 16 is load-bearing, not decoration: the System V AMD64 ABI (the
  * calling convention DCDart's x86_64-unknown-none-elf backend targets)
  * requires RSP to be 16-byte aligned at every `call` site. Before this
@@ -248,18 +292,104 @@ map_p2_pci_table:
     movl $p4_table, %eax
     movl %eax, %cr3
 
-    /* --- Set EFER.LME (long mode enable), MSR 0xC0000080, bit 8 ------- */
+    /* --- M8: does this CPU have NX? ----------------------------------
+     * CPUID leaf 0x80000001, EDX bit 20 (NX / execute-disable). The
+     * extended leaves do not exist on every x86 CPU, so leaf 0x80000000 is
+     * asked FIRST for the highest extended leaf and 0x80000001 is only
+     * executed if it is within range -- executing an unsupported leaf
+     * returns whatever the highest supported one returns, which is garbage
+     * that could easily have bit 20 set.
+     *
+     * `cpuid` clobbers EAX/EBX/ECX/EDX. EBX held the Multiboot info
+     * pointer at entry and has already been stashed to memory above, which
+     * is exactly the class of accident that stash exists to prevent.
+     *
+     * The answer is left in EDI (which the page-table loops have finished
+     * with) so the EFER write below can consume it, AND is written to
+     * `nx_flag` for `core/kernel/vm.dart` to read through `nx_enabled()`. */
+    movl $0, %edi                  /* assume no NX until proven otherwise */
+    movl $0x80000000, %eax
+    xorl %ecx, %ecx
+    cpuid
+    cmpl $0x80000001, %eax
+    jb no_nx                       /* extended leaf 1 does not exist here */
+    movl $0x80000001, %eax
+    xorl %ecx, %ecx
+    cpuid
+    testl $(1 << 20), %edx         /* EDX[20] = NX */
+    jz no_nx
+    movl $1, %edi
+no_nx:
+    movl %edi, nx_flag             /* bare symbol = absolute disp32 memory
+                                    * operand -- see the p4_table store
+                                    * above for why NOT "(nx_flag)" */
+    movl $0, nx_flag + 4           /* the whole u64, so DCDart reading eight
+                                    * bytes never sees .bss garbage in the
+                                    * upper half (nothing zeroes .bss) */
+
+    /* --- Set EFER.LME (long mode enable), MSR 0xC0000080, bit 8 -------
+     * ...and EFER.NXE (bit 11) in the SAME write, if and only if the probe
+     * above said the CPU has it. One rdmsr/wrmsr pair rather than two,
+     * because EFER is one register and a second read-modify-write of it
+     * would be a second chance to clobber LME.
+     *
+     * NXE MUST BE SET BEFORE ANY PAGE-TABLE ENTRY WITH BIT 63 IS LOADED.
+     * With NXE clear, bit 63 of a PTE is a RESERVED bit, and touching a page
+     * whose entry has a reserved bit set is a page fault with the RSVD bit
+     * in the error code -- i.e. the entry that was supposed to protect the
+     * page instead makes it unusable. Setting it here, in the boot stub, is
+     * the earliest point at which it can be set at all, and it costs
+     * nothing: the bootstrap tables built above have bit 63 clear
+     * everywhere, so this changes no behaviour until vm.dart installs a
+     * table that uses it. */
     movl $0xC0000080, %ecx
     rdmsr
-    orl $(1 << 8), %eax
+    orl $(1 << 8), %eax            /* LME */
+    testl %edi, %edi
+    jz skip_nxe
+    orl $(1 << 11), %eax           /* NXE */
+skip_nxe:
     wrmsr
 
-    /* --- Enable paging (CR0 bit 31). PE (bit 0) is already set --
-     * Multiboot handoff guarantees protected mode. This is the
-     * instruction that actually activates long mode (the CPU only
-     * becomes a true 64-bit CPU once PG and LME are both set). */
+    /* --- Enable paging (CR0 bit 31) AND write protection (CR0 bit 16) --
+     * PE (bit 0) is already set -- the Multiboot handoff guarantees
+     * protected mode. Setting PG is the instruction that actually
+     * activates long mode (the CPU only becomes a true 64-bit CPU once
+     * PG and LME are both set).
+     *
+     * ===================================================================
+     * M8: CR0.WP, AND IT IS NOT AN EXTRA. IT IS HALF THE MILESTONE.
+     * ===================================================================
+     * A page-table entry with RW=0 does NOT stop a write from ring 0
+     * unless CR0.WP is set. With WP clear -- which is the power-on state,
+     * and which is what this kernel ran with until now -- supervisor code
+     * may write to ANY present page regardless of the entry's RW bit. The
+     * bit is there to make copy-on-write work for a kernel touching a
+     * user page; the side effect is that a kernel which never sets it has
+     * a read-only `.rodata` that is not read-only.
+     *
+     * THIS WAS MEASURED, NOT LOOKED UP. With the new three-segment image
+     * and `core/kernel/vm.dart`'s real page tables in CR3, `vm` reported
+     * `VM RODATA ... W 00` -- every page's entry said not-writable -- and
+     * `vmtest ro` still printed
+     *
+     *     VM TEST RO SURVIVED -- THE WRITE LANDED
+     *
+     * with the canary changed to DEADBEEF in the next report. The entries
+     * were right and the CPU was ignoring them. `vmtest nx` faulted
+     * correctly in the same session, because NX is enforced whatever WP
+     * says -- which is exactly the shape of bug that would have shipped as
+     * "W^X works" if only the NX half had been tested. docs/known-gaps.md
+     * GAP-0080.
+     *
+     * Set HERE, with PG, rather than in vm.dart: it is a CPU-mode fact
+     * like LME and NXE, it has no effect while the bootstrap tables (which
+     * mark everything writable) are live, and CLAUDE.md rule 4 puts mode
+     * setup in the boot stub. `cr0_read()` lets `vm` print it back, so the
+     * report says WP 1 on the evidence of the register rather than on the
+     * strength of this comment. */
     movl %cr0, %eax
-    orl $0x80000000, %eax
+    orl $0x80010000, %eax          /* bit 31 PG, bit 16 WP */
     movl %eax, %cr0
 
     /* --- Load the 64-bit GDT and far-jump into the 64-bit code segment.
@@ -345,6 +475,78 @@ kernel_image_start:
 .type kernel_image_end, @function
 kernel_image_end:
     leaq __kernel_end(%rip), %rax
+    ret
+
+/* ------------------------------------------------------------------
+ * M8 (ADR-0012): the image's PER-SECTION extents, for the page-table builder.
+ *
+ * Same argument as the pair above, one level finer. `core/kernel/vm.dart` maps
+ * `.text` read+execute, `.rodata` read-only and `.data`/`.bss` read+write, and
+ * the only thing that knows where those boundaries are is `core/link/kernel.ld`
+ * -- they move whenever anything is added to this kernel. A hardcoded address
+ * would be wrong on the next edit, and wrong here means either a writable
+ * `.text` (the gap this milestone closes) or a #PF on the first instruction
+ * fetch after the CR3 switch, which is a triple fault.
+ *
+ * `__rodata_start` and `__data_start` are 4KiB-aligned by construction (the
+ * link script puts `. = ALIGN(4096)` in front of each) and are the boundaries
+ * the mapping actually uses. `__text_end` and `__rodata_end` are the exact,
+ * unrounded section ends; `vm` prints them, and m8-paging/run.sh uses them to
+ * assert that the page rounding never lands a byte of one section on another
+ * section's page.
+ *
+ * Four accessors and not one block-with-offsets (the `cpu_info` / `fb_state`
+ * pattern) because these are LINK-TIME CONSTANTS, not storage: there is no
+ * block. Each is one `leaq` and one `ret`.
+ * ------------------------------------------------------------------ */
+
+/* uint64_t kernel_text_end(void) -- one past the last byte of `.text`. */
+.align 16
+.global kernel_text_end
+.type kernel_text_end, @function
+kernel_text_end:
+    leaq __text_end(%rip), %rax
+    ret
+
+/* uint64_t kernel_rodata_start(void) -- first byte of `.rodata`, page-aligned.
+ * ALSO one past the last text PAGE: the mapping uses [__kernel_start, this)
+ * as the read+execute range, so the tail padding of `.text`'s last page is
+ * executable and read-only, which is what padding should be. */
+.align 16
+.global kernel_rodata_start
+.type kernel_rodata_start, @function
+kernel_rodata_start:
+    leaq __rodata_start(%rip), %rax
+    ret
+
+/* uint64_t kernel_rodata_end(void) -- one past the last byte of `.rodata`. */
+.align 16
+.global kernel_rodata_end
+.type kernel_rodata_end, @function
+kernel_rodata_end:
+    leaq __rodata_end(%rip), %rax
+    ret
+
+/* uint64_t kernel_data_start(void) -- first byte of `.data`, page-aligned, and
+ * one past the last read-only PAGE. */
+.align 16
+.global kernel_data_start
+.type kernel_data_start, @function
+kernel_data_start:
+    leaq __data_start(%rip), %rax
+    ret
+
+/* uint64_t nx_enabled(void) -- 1 if EFER.NXE was set at boot, else 0.
+ *
+ * Reads the word `_start` wrote after probing CPUID leaf 0x80000001. See
+ * `nx_flag`'s declaration above for why the capability is probed rather than
+ * assumed, and why the answer has to reach DCDart rather than only being acted
+ * on here. */
+.align 16
+.global nx_enabled
+.type nx_enabled, @function
+nx_enabled:
+    movq nx_flag(%rip), %rax
     ret
 
 /* ------------------------------------------------------------------

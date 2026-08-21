@@ -29,6 +29,7 @@ part 'pci.dart';
 part 'fb.dart';
 part 'ata.dart';
 part 'pmm.dart';
+part 'vm.dart';
 
 /// Kernel entry point.
 ///
@@ -103,6 +104,33 @@ void kmain(u64 mbInfo) {
   // frees anything, so a frame is only ever free because the loader's memory
   // map said so.
   pmmInit();
+
+  // M8: the kernel's real address space. Builds a 4-level page table out of six
+  // frames from the allocator above, with per-section permissions and NX, and
+  // installs it in CR3 -- replacing the flat, writable, executable 2MiB
+  // identity map `boot.S` has been running on since M0 (docs/known-gaps.md
+  // GAP-0050).
+  //
+  // ORDER IS LOAD-BEARING THREE TIMES OVER:
+  //
+  //   * AFTER pmmInit(), because the page tables come from allocFrame(). This
+  //     is the first thing in the kernel that ALLOCATES rather than merely
+  //     addressing memory it was compiled to know about, and it is why M7 was
+  //     a prerequisite rather than a neighbour.
+  //   * AFTER fbInit() and shellInit() for no reason of its own, but BEFORE
+  //     anything can fault: it maps the pages every one of those subsystems
+  //     already wrote to, and a mistake in it is a triple fault rather than a
+  //     diagnostic. vmSelfCheck() walks the new tables for every address the
+  //     kernel is standing on and REFUSES to switch if any of them is wrong,
+  //     leaving the machine on boot.S's bootstrap tables.
+  //   * BEFORE the first byte of output, because it prints NOTHING and must
+  //     keep printing nothing -- `tests/conformance/m1-interrupts/run.sh`
+  //     asserts the ENTIRE 544-byte serial capture. The address space is
+  //     reported by `vm`, from a prompt.
+  //
+  // It also re-takes the allocator's baseline, because six frames are now
+  // permanently spoken for and that is the address space rather than a leak.
+  vmInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)
