@@ -197,6 +197,14 @@ echo "STRUCTURAL: pass  all four segment descriptors pre-set the accessed bit, a
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
+# M10 (ADR-0014) added a fourth block after M9's: `elf_store` (128 bytes, the
+# ELF loader's whole state, behind ONE accessor called from ONE function). It is
+# SUBTRACTED here rather than folded into this milestone's number, so this
+# harness keeps asserting ITS OWN claim exactly as it did before M10 existed --
+# the same discipline every earlier harness applies to every later block.
+M10_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
+[[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
+KDATA_BSS=$(( KDATA_BSS - M10_STORE ))
 [[ "$KDATA_BSS" -eq 5368 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 5368 (5224 through M8, plus 128 for the ring-3 state and 16 for the resume words). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 for pair in "user_store 128" "user_resume_rsp 8" "user_resume_ok 8"; do
   set -- $pair
@@ -305,6 +313,13 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+# M10 (ADR-0014) added exactly ONE more -- `elf_store_addr`, the ELF loader's
+# storage seam -- subtracted here so this harness keeps asserting M9's own
+# number, the same way m5/m6/m7/m8 subtract M9's eight.
+M10_EXTERNS="elf_store_addr"
+for sym in $M10_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && EXTERN_COUNT=$(( EXTERN_COUNT - 1 ))
+done
 [[ "$EXTERN_COUNT" -eq 52 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 52 (44 from M8 plus M9's eight)"
 for sym in enter_user user_return tr_read tlb_invlpg tss_base gdt_base \
            user_store_addr user_resume_ok_addr; do
@@ -327,7 +342,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M9 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1589
+check_table shellStrHelp 1658
 check_table userStrTss 9
 check_table userStrRsp0 6
 check_table userStrGdt 5
@@ -375,7 +390,7 @@ check_table userCmdBadptr 11
 check_table userCmdHold 9
 check_table userCmdPages 10
 check_table userCodeSizes 6
-echo "STRUCTURAL: pass  all 47 M9 message/command tables plus shellStrHelp (1155 -> 1589) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 47 M9 message/command tables are exactly the sizes their call sites pass, and shellStrHelp is 1658 (M9 took it 1155 -> 1589; M10 added one more command line)"
 
 # 2h. THE PAYLOAD LENGTH TABLE IS THE PAYLOADS' REAL SIZES.
 #

@@ -1320,6 +1320,16 @@ void userSysWho(u64 frame) {
 /// "len is inside the page" vacuously true for a pointer that is not.
 @bare
 u64 userOwns(u64 ptr, u64 len) {
+  // M10: two different things can be in ring 3 on this machine now -- a payload
+  // from this file's `@rodata`, whose two pages are inside the 4KiB identity
+  // window, and a program loaded from a disk, whose pages are in the 2MiB
+  // program window at an address a linker chose. They have nothing in common
+  // except that both are untrusted, so the ownership test is dispatched rather
+  // than widened: a single range check spanning both would accept every kernel
+  // page in between.
+  if (elfLive() > u64(0)) {
+    return elfOwns(ptr, len);
+  }
   if (ptr >= u64(vmFineBytes)) {
     return u64(0);
   }
@@ -1448,8 +1458,14 @@ void userSysExit(u64 frame) {
   uartWrite(Rodata.addressOf(userStrRefusals), u64(10));
   uartPutHex(userMeta(u64(userMetaRefusals)), u64(8));
   uartNewline();
-  userTeardown();
-  user_return(); // never returns; control reappears in shellUser
+  // M10: whichever of the two things that can be in ring 3 called this.
+  if (elfLive() > u64(0)) {
+    elfSetMeta(u64(elfMetaExit), code);
+    elfTeardown();
+  } else {
+    userTeardown();
+  }
+  user_return(); // never returns; control reappears in shellUser or shellElfRun
 }
 
 /// Vector 0x80. Called from [isrDispatch].
@@ -1487,8 +1503,13 @@ void userSyscall(u64 frame) {
     return;
   }
   if (userMeta(u64(userMetaLive)) < u64(1)) {
-    userRefuse(frame, no, cs, u64(0));
-    return;
+    // M10: or a loaded ELF program, which is the other thing that can be in
+    // ring 3. Nested rather than `||` because `@bare` DCDart has no boolean
+    // operators at all (GAP-0023).
+    if (elfLive() < u64(1)) {
+      userRefuse(frame, no, cs, u64(0));
+      return;
+    }
   }
   if (no == u64(userSysWhoNo)) {
     userSysWho(frame);
@@ -1520,16 +1541,15 @@ void userSyscall(u64 frame) {
 /// the kernel while a payload was live — inside the syscall handler, say — is a
 /// different event and the report says so, but the teardown happens either way,
 /// because the payload is not going to run again in either case.
+/// `USER FAULT VEC <n> ERR <code> RIP <rip> CPL <n>`
+///
+/// The CPU's own account of what happened, out of the frame it pushed: the
+/// vector, the error code, the address it faulted at, and the privilege level
+/// it believed it was running at. Shared by BOTH things that can be in ring 3
+/// on this machine — M9's payloads and M10's loaded programs — because it says
+/// nothing about either of them, only about the trap.
 @bare
-void userOnFault(u64 vector, u64 errorCode, u64 rip, u64 frame) {
-  if (userMeta(u64(userMetaLive)) < u64(1)) {
-    return;
-  }
-  final u64 cs = userFrame(frame, u64(userFrameCs));
-  userBump(u64(userMetaAborts));
-  userSetMeta(u64(userMetaRip), rip);
-  userSetMeta(u64(userMetaErr), errorCode);
-  userSetMeta(u64(userMetaCs), cs);
+void userFaultLine(u64 vector, u64 errorCode, u64 rip, u64 cs) {
   uartWrite(Rodata.addressOf(userStrFault), u64(15));
   uartPutHex(vector, u64(2));
   uartWrite(Rodata.addressOf(vmStrErr), u64(5));
@@ -1539,6 +1559,29 @@ void userOnFault(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   uartWrite(Rodata.addressOf(userStrCpl), u64(5));
   uartPutHex(cs & u64(3), u64(1));
   uartNewline();
+}
+
+@bare
+void userOnFault(u64 vector, u64 errorCode, u64 rip, u64 frame) {
+  // M10: a loaded ELF program is the other thing that can die here, and it is
+  // torn down through a different path because it owns a different kind of
+  // memory — a page table and a window, not two frames in the identity map.
+  if (elfLive() > u64(0)) {
+    final u64 ecs = userFrame(frame, u64(userFrameCs));
+    userFaultLine(vector, errorCode, rip, ecs);
+    elfTeardown();
+    Pointer<u64>.fromAddress(user_resume_ok_addr()).value = u64(0);
+    return;
+  }
+  if (userMeta(u64(userMetaLive)) < u64(1)) {
+    return;
+  }
+  final u64 cs = userFrame(frame, u64(userFrameCs));
+  userBump(u64(userMetaAborts));
+  userSetMeta(u64(userMetaRip), rip);
+  userSetMeta(u64(userMetaErr), errorCode);
+  userSetMeta(u64(userMetaCs), cs);
+  userFaultLine(vector, errorCode, rip, cs);
   uartWrite(Rodata.addressOf(userStrAbort), u64(17));
   uartPutHex(userMeta(u64(userMetaCodeFrame)), u64(16));
   uartWrite(Rodata.addressOf(userStrStack), u64(7));

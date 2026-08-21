@@ -1895,3 +1895,334 @@ u64 vmCountUser(u64 lo, u64 hi) {
   }
   return n;
 }
+
+// ---------------------------------------------------------------------------
+// M10 (docs/decisions/0014-elf-loader.md): A REAL `map(va, pa, flags)`, IN ONE
+// 2MiB WINDOW.
+//
+// M9 built the narrowest possible map/unmap API and said so: `vmMapUser` and
+// `vmClearUser` flip bits on a leaf that ALREADY EXISTS inside the 4KiB
+// identity window. That is enough for a payload that can be copied into
+// whatever frame the allocator hands out, and it is not enough for a program
+// linked at an address of its own choosing -- which is what an ELF executable
+// is. `e_entry` and every `p_vaddr` in the file are addresses the LINKER
+// picked, and honouring them is the difference between loading a program and
+// copying some bytes.
+//
+// So this is the real thing: it CREATES a mapping, at an address the caller
+// names, pointing at a frame the caller allocated, with permissions the caller
+// derived from `p_flags`. GAP-0081 item 3 is narrowed a long way further.
+//
+// WHAT IS STILL NOT GENERAL, stated here so the next reader does not have to
+// measure it:
+//
+//   * ONE 2MiB window, `[vmProgBase, vmProgEnd)`, and one page table for it.
+//     An address outside that range is refused, not mapped somewhere else.
+//   * The page table's frame is supplied by the CALLER. Nothing here allocates,
+//     so no mapping can fail half-way through for want of memory -- the failure
+//     happens at `vmProgTableInstall` or not at all.
+//   * ONE level of table is created. The PML4 entry, the PDPT entry and the
+//     page directory for `[0, 1GiB)` all already exist, because M8 built them
+//     for the identity map; this writes one page-directory entry and then leaf
+//     entries under it.
+//
+// WHY 256MiB. The window has to be somewhere that is NOT already mapped, or
+// installing it would silently replace part of the kernel's own address space.
+// `[0, 4MiB)` is the 4KiB identity window and holds the kernel image;
+// `[4MiB, 128MiB)` is 2MiB leaves and `vmMapBytes` says the allocator hands out
+// frames from it; `[3GiB, 4GiB)` is the PCI hole. `[128MiB, 1GiB)` is the gap
+// between the top of RAM this kernel maps and the top of the page directory it
+// already has -- 62 unused page-directory entries. 0x10000000 is the first
+// 2MiB-aligned address in it that is a round number, and PD entry 128 is
+// consequently untouched by anything M0-M9 built.
+//
+// W^X IS ENFORCED HERE, not only by the caller. `vmProgMap` REFUSES a request
+// that asks for writable and executable together, so an ELF segment with
+// PF_W|PF_X cannot be mapped even by a caller that forgot to check. ADR-0012
+// bought that property for the kernel; a guest does not get an exemption from
+// it.
+// ---------------------------------------------------------------------------
+
+/// Base of the program window: 256MiB. See the block comment above for why.
+const int vmProgBase = 0x10000000;
+
+/// One past its end: 258MiB. Exactly one page-directory entry's worth, so it
+/// needs exactly one page table.
+const int vmProgEnd = 0x10200000;
+
+/// Its size, and the number of 4KiB pages in it. Spelled out rather than
+/// computed for GAP-0077's reason (`dcc` at `DCDART_PIN.txt`'s commit refuses a
+/// `u64` literal built from a constant expression);
+/// `tests/conformance/m10-elf/run.sh` multiplies them against each other.
+const int vmProgBytes = 2097152;
+const int vmProgPages = 512;
+
+/// Index of the window's entry in the page directory for `[0, 1GiB)`:
+/// `vmProgBase / vmBigBytes`. Entries 0 and 1 are the 4KiB window's two page
+/// tables and 2..63 are the 2MiB leaves of `[4MiB, 128MiB)`, so 128 is well
+/// clear of everything M8 built.
+const int vmProgPdIndex = 128;
+
+/// The stack the loaded program is entered on: the LAST page of the window,
+/// with RSP starting at its top.
+const int vmProgStackPage = 0x101FF000;
+const int vmProgStackTop = 0x10200000;
+
+// [vmProgMap] / [vmProgTableInstall] status codes.
+const int vmProgOk = 0;
+
+/// The address space was never installed — `vmInit` refused.
+const int vmProgNotReady = 1;
+
+/// The address is outside `[vmProgBase, vmProgEnd)`. Nothing here maps anything
+/// anywhere else, on purpose.
+const int vmProgOutside = 2;
+
+/// No page table is installed for the window, so there is no leaf to write.
+const int vmProgNoTable = 3;
+
+/// Something is already there — a second `vmProgTableInstall`, or a second
+/// mapping of the same page. **Refused rather than overwritten**: two ELF
+/// segments that share a page is a file this loader does not understand, and
+/// silently letting the second one win would load half a program.
+const int vmProgBusy = 4;
+
+/// A virtual or physical address that is not 4KiB-aligned.
+const int vmProgBadAlign = 5;
+
+/// The caller asked for a page that is both writable and executable. See the
+/// block comment: this kernel does not have such pages and does not make one
+/// for a guest.
+const int vmProgWx = 6;
+
+/// Physical address of the window's page table, or 0 if none is installed.
+///
+/// Read out of the live page directory rather than remembered, for
+/// [vmFineLeafSlot]'s inverse reason: this entry is one this kernel writes and
+/// clears at runtime, so the only trustworthy answer is the one in the table.
+/// A 2MiB leaf in that slot answers 0 as well — it would not be a page table
+/// and walking it as one is how a loader corrupts an address space.
+@bare
+u64 vmProgTable() {
+  final u64 e = vmGetEntry(vmFrame(u64(vmIxPdLow)), u64(vmProgPdIndex));
+  if ((e & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  return vmEntryAddr(e);
+}
+
+/// Drops the TLB and paging-structure cache entries for the whole window.
+///
+/// **Every page, not only the ones that were mapped.** `invlpg` invalidates the
+/// cached INTERIOR entries for the page it names as well as the leaf, and the
+/// page directory entry this file installs and removes is exactly such an
+/// interior entry. There is no instruction that says "forget one page-directory
+/// entry", so the 512 pages it covers are named one at a time. GAP-0083's
+/// question, asked for the second time and answered the same way.
+@bare
+void vmProgFlush() {
+  u64 a = u64(vmProgBase);
+  while (a < u64(vmProgEnd)) {
+    tlb_invlpg(a);
+    a = a + u64(vmPageBytes);
+  }
+}
+
+/// Installs [ptFrame] as the window's page table. Zeroes it first.
+///
+/// The frame comes from the caller — from `allocFrame()`, in practice — and it
+/// is zeroed here rather than by the caller because 512 words of allocator
+/// litter installed as a page table is 512 mappings the CPU will believe, with
+/// the present bit set in roughly half of them. `vmZeroFrame`'s own note makes
+/// the same argument for `boot.S`.
+///
+/// The page-directory entry gets `present | writable | user`, and no NX. An
+/// interior entry is the ABSENCE of a veto (ADR-0012 §5, ADR-0013 §5): the leaf
+/// decides, and an interior entry that withheld W, U or X would make every leaf
+/// under it unable to have them whatever `p_flags` said.
+@bare
+u64 vmProgTableInstall(u64 ptFrame) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmProgNotReady);
+  }
+  if ((ptFrame & u64(vmPageMask)) > u64(0)) {
+    return u64(vmProgBadAlign);
+  }
+  if (vmProgTable() > u64(0)) {
+    return u64(vmProgBusy);
+  }
+  vmZeroFrame(ptFrame);
+  vmSetEntry(vmFrame(u64(vmIxPdLow)), u64(vmProgPdIndex),
+      ptFrame | u64(vmPresent) | u64(vmWritable) | u64(vmUser));
+  vmProgFlush();
+  return u64(vmProgOk);
+}
+
+/// Takes the window's page table back out of the page directory.
+///
+/// After this the whole of `[vmProgBase, vmProgEnd)` is unmapped again and
+/// `vmEffective` reports it as such — which is what makes "the program's
+/// address space is gone" a property of the tables rather than of a flag. The
+/// caller still owns the page-table frame and must free it.
+@bare
+u64 vmProgTableRemove() {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmProgNotReady);
+  }
+  vmSetEntry(vmFrame(u64(vmIxPdLow)), u64(vmProgPdIndex), u64(0));
+  vmProgFlush();
+  return u64(vmProgOk);
+}
+
+/// Address of the page-table ENTRY for [va], or 0 if [va] is outside the window
+/// or no page table is installed.
+@bare
+u64 vmProgLeafSlot(u64 va) {
+  if (va < u64(vmProgBase)) {
+    return u64(0);
+  }
+  if (va >= u64(vmProgEnd)) {
+    return u64(0);
+  }
+  final u64 t = vmProgTable();
+  if (t < u64(1)) {
+    return u64(0);
+  }
+  return t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+}
+
+/// The leaf ENTRY for [va] — the raw `u64`, including its flag bits — or 0 if
+/// there is none. Used by the teardown to recover the frame it has to free.
+@bare
+u64 vmProgLeaf(u64 va) {
+  final u64 slot = vmProgLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(0);
+  }
+  return Pointer<u64>.fromAddress(slot).value;
+}
+
+/// Maps the frame at physical address [pa] into the window at virtual address
+/// [va], user-accessible, with [write] and [exec] deciding the other two bits.
+///
+/// **This is the function `p_flags` turns into.** `PF_W` becomes [write] and
+/// `PF_X` becomes [exec], and the refusals below are the whole of what this
+/// kernel is willing to do for a guest:
+///
+///   * both set → [vmProgWx]. Not "the writable bit wins" and not "the
+///     executable bit wins": refused, so the caller has to decide out loud. A
+///     W+X page for a program that arrived on a disk is the hole ADR-0012
+///     closed for the kernel, reopened for the one thing that is actually
+///     untrusted;
+///   * a page that is already mapped → [vmProgBusy]. Two `PT_LOAD` segments
+///     sharing a page cannot both get their permissions, and whichever one lost
+///     would be wrong silently;
+///   * an address outside the window → [vmProgOutside]. Not relocated, not
+///     clamped.
+///
+/// The physical address is taken from [pa] rather than from [va], which is the
+/// difference between this and `vmMapUser`: there is no identity here, and
+/// there cannot be — the program's addresses were chosen by a linker on another
+/// machine.
+@bare
+u64 vmProgMap(u64 va, u64 pa, u64 write, u64 exec) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmProgNotReady);
+  }
+  if ((va & u64(vmPageMask)) > u64(0)) {
+    return u64(vmProgBadAlign);
+  }
+  if ((pa & u64(vmPageMask)) > u64(0)) {
+    return u64(vmProgBadAlign);
+  }
+  if (va < u64(vmProgBase)) {
+    return u64(vmProgOutside);
+  }
+  if (va >= u64(vmProgEnd)) {
+    return u64(vmProgOutside);
+  }
+  if (write > u64(0)) {
+    if (exec > u64(0)) {
+      return u64(vmProgWx);
+    }
+  }
+  final u64 t = vmProgTable();
+  if (t < u64(1)) {
+    return u64(vmProgNoTable);
+  }
+  final u64 slot = t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) > u64(0)) {
+    return u64(vmProgBusy);
+  }
+  u64 bits = u64(vmPresent) | u64(vmUser);
+  if (write > u64(0)) {
+    bits = bits | u64(vmWritable);
+  }
+  if (exec < u64(1)) {
+    bits = bits | vmNxBit();
+  }
+  Pointer<u64>.fromAddress(slot).value = pa | bits;
+  tlb_invlpg(va);
+  return u64(vmProgOk);
+}
+
+/// Clears the leaf for [va] and invalidates it. Returns [vmProgOk] even if
+/// nothing was mapped: the postcondition is "nothing is mapped here", and a
+/// teardown that walked 512 pages and reported a status per empty slot would
+/// bury the one that mattered.
+@bare
+u64 vmProgUnmap(u64 va) {
+  final u64 slot = vmProgLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmProgOutside);
+  }
+  Pointer<u64>.fromAddress(slot).value = u64(0);
+  tlb_invlpg(va);
+  return u64(vmProgOk);
+}
+
+/// 1 if the two bytes at [va] are present in the LIVE page tables, else 0.
+///
+/// **A safety question asked of the tables rather than of a constant.**
+/// `faultReport` prints the first two opcode bytes at the faulting RIP, and
+/// dereferencing an address that is not mapped INSIDE A FAULT HANDLER is a
+/// double fault and then a triple fault -- so it has always been guarded. Until
+/// M10 the guard was `rip < mappedLimit`, i.e. the 16MiB `boot.S` maps, which
+/// was right when it was written and became conservative at M8 (the address
+/// space maps 128MiB) and wrong at M10: a loaded program runs at 256MiB, so
+/// every fault it took printed `OP ----` for an address that was perfectly
+/// readable. That is not a false claim -- `----` means "not read" -- but it
+/// throws away the one field that identifies the faulting instruction, in
+/// exactly the case where the instruction came off a disk and is the thing in
+/// question. docs/known-gaps.md GAP-0064 is narrowed accordingly.
+///
+/// **[vmMetaReady] is checked first and it is not a formality.** If `vmInit`
+/// refused, the kernel is on `boot.S`'s bootstrap tables, `vmMetaPml4` is zero,
+/// and walking from address 0 would follow whatever the first page of memory
+/// contains as if it were a PML4 -- which is precisely the "diagnosing a fault
+/// kills the machine" outcome the guard exists to prevent. With it, the walk is
+/// over tables this kernel built, whose frames are all inside the mapped
+/// window.
+@bare
+u64 vmFetchSafe(u64 va) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(0);
+  }
+  // Bounded before the +1, for the reason every other bound in this kernel
+  // comes first: DCDart's arithmetic traps on overflow with a real `ud2`, and
+  // this runs inside a fault handler.
+  if (va >= u64(0xFFFFFFFFFFFFF000)) {
+    return u64(0);
+  }
+  if ((vmEffective(va) & u64(1)) < u64(1)) {
+    return u64(0);
+  }
+  if ((vmEffective(va + u64(1)) & u64(1)) < u64(1)) {
+    return u64(0);
+  }
+  return u64(1);
+}

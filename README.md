@@ -289,9 +289,63 @@ is nowhere in the table.** Both were fixed by removing the write rather than the
 GDT stays read-only.
 
 **What this is, and is not:** a privilege level with two pages, not a process. One PML4, still the
-kernel's. No scheduler, no preemption, no ELF loader, no `fork`, no `exec`, no SMEP/SMAP, and `user
-hold` cannot be stopped once started. See
-`core/docs/decisions/0013-ring-3-and-the-syscall-boundary.md` and `docs/known-gaps.md` GAP-0085.
+kernel's. No scheduler, no preemption, no `fork`, no `exec`, no SMEP/SMAP, and `user hold` cannot be
+stopped once started. See `core/docs/decisions/0013-ring-3-and-the-syscall-boundary.md` and
+`docs/known-gaps.md` GAP-0085.
+
+**M10 — done. The kernel runs something it did not compile.** Every line of code this machine had
+ever executed was written into it: M9's payloads are 136 bytes of hand-written machine code in the
+kernel's own `.rodata`, copied into whatever frame the allocator handed out and entered at that
+frame's first byte. **Every address the machine used was one the kernel chose.** A program in an ELF
+file is the opposite — `e_entry` and every `p_vaddr` were picked by a linker on another machine — and
+a kernel that does not honour them has not loaded a program, it has copied some bytes.
+
+```
+oscortex> run 20
+ELF DISK LBA 00000020 IMAGE 00000021 BYTES 00002378
+ELF IDENT CLASS 2 DATA 1 TYPE 0002 MACHINE 003E
+ELF ENTRY 0000000010000050 PHOFF 0000000000000040 PHNUM 0002
+ELF SEG 00 TYPE 00000001 FLAGS 00000005 VADDR 0000000010000000 OFF ... MEMSZ 0000000000000184
+ELF SEG 01 TYPE 00000001 FLAGS 00000006 VADDR 0000000010001040 OFF ... MEMSZ 0000000000000060
+ELF LOAD PAGES 00000003 SEGMENTS 00000002 ZEROED 00001E74 SECTORS 0000000A
+ELF PAGE 0000000010000000 P 1 U 1 W 0 X 1 PA 000000000013A000
+ELF PAGE 0000000010001000 P 1 U 1 W 1 X 0 PA 000000000013B000
+ELF PAGE 00000000101FF000 P 1 U 1 W 1 X 0 PA 000000000013C000
+ELF ENTER RIP 0000000010000050 RSP 0000000010200000
+USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000246 CPL 3
+USER WRITE HELLO FROM AN ELF ON DISK
+USER WRITE BSS[00] SUM=00
+USER EXIT CODE 00000000019B79EE SYSCALLS 00000004 REFUSALS 00000000
+```
+
+The program is a freestanding C file compiled by `clang` and linked by `x86_64-elf-ld` — **by the
+harness, so it is reproducible** — written onto a test disk, read back a sector at a time, and mapped
+where its own program headers say with the permissions its own `p_flags` ask for: `W 0 X 1` for the
+segment marked `PF_R|PF_X`, `W 1 X 0` for the one marked `PF_R|PF_W`, and **never both**, because
+this kernel enforces W^X on itself and does not make an exception for a guest. `0x19B79EE` is two
+constants added together — one in the read-only segment, one in the writable one — and the harness
+reads both out of the ELF file rather than being told them.
+
+**A malformed file is refused by name, not run.** Twenty-five refusal codes with twenty-five
+different sentences, and four of them are on the test disk as programs: a corrupted magic, a `PT_LOAD`
+that asks for writable *and* executable, a `PT_INTERP` (this loader does not link), and an `e_entry`
+pointing at the non-executable segment. Each is the good program with **one field changed**, so the
+difference between running and being refused is exactly that field.
+
+**Two findings, and the second is the useful kind.** The kernel has never set `CR4.OSFXSR`, so an SSE
+instruction — which `clang -O2` emits for an ordinary `memcpy` — is a `#UD` in ring 3 at an
+instruction nobody chose; the program is built `-mgeneral-regs-only` and the harness asserts the
+*disassembly* rather than trusting the flag (GAP-0092). And of six deliberately-broken kernels built
+to test the harness, **five were caught and one was not**: deleting the frame zeroing changed nothing
+observable, because QEMU hands out RAM that is already zero and nothing in this kernel can dirty a
+frame before the allocator gives it away. That is recorded as GAP-0094 with the three sequences that
+were tried, not quietly fixed with a weaker claim.
+
+**What this is, and is not:** a loader, not a process and not a filesystem. `run <lba>` takes the
+sector number of a 32-byte header, because there is no directory, no name and no write path. One
+program at a time, on the kernel's own PML4, in one 2MiB window that is handed back the moment it
+exits or dies. See `core/docs/decisions/0014-elf-loader.md` and `docs/known-gaps.md` GAP-0089,
+GAP-0090 and GAP-0091.
 
 **What this is, and is not:** fault survival with *abandonment* of the faulting computation. The
 command that faulted is gone — not repaired, not retried, not resumed. Resuming a failed computation

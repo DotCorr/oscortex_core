@@ -180,7 +180,7 @@ check_table shellStrPrompt 10
 # is the table's real size and both it and the literal in shellHelp() are
 # maintained by hand (GAP-0060) — the first M4 build printed 237 bytes of the
 # 395-byte table because only one of the two had been updated.
-check_table shellStrHelp 1589  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 six `user` lines; GAP-0060
+check_table shellStrHelp 1658  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`; GAP-0060
 check_table shellStrUnknown 27
 echo "STRUCTURAL: pass  all 8 shell @rodata tables are exactly the sizes the dispatcher compares"
 

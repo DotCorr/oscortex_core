@@ -816,6 +816,118 @@ void ataDumpSector() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// M10 (docs/decisions/0014-elf-loader.md): READ ONE SECTOR INTO MEMORY.
+//
+// M6 built a driver that could only PRINT what it read, because there was
+// nowhere to put 512 bytes: DCDart has no mutable static data (GAP-0053) and
+// the allocator did not exist yet. ROADMAP.md said so in the sharpest possible
+// terms -- "the kernel can now read a disk and has nowhere to put what it
+// read." M7 answered that, and this is the first caller to take it up.
+//
+// STILL ZERO DONATED `.bss`. The destination is an address the CALLER owns --
+// in practice a frame from `allocFrame()` -- so this adds nothing to
+// `kdata.S`'s block and m6-disk's "the disk driver has no sector buffer"
+// assertion is still true of this kernel. What changed is that the caller can
+// now own one.
+//
+// It does NOT share code with [shellDiskRead]. The two differ in the middle
+// (dump a word / store a word) and in the ends (report / return a status), and
+// the shape that would let them share -- a callback, or a flag threaded through
+// the transfer loop -- costs more than the twenty duplicated register writes.
+// Merging them would also put a `@rodata` message write inside the path an ELF
+// load takes 18 times, which is a real cost: m6's own golden is 7679 bytes of
+// hexdump.
+// ---------------------------------------------------------------------------
+
+/// [ataReadInto] succeeded and 512 bytes are at the destination.
+const int ataReadOk = 0;
+
+/// Nothing answered on the channel -- status all-zeroes or all-ones.
+const int ataReadNoDev = 1;
+
+/// The drive never became ready, or reported ERR/DF before the command.
+const int ataReadNotReady = 2;
+
+/// The drive never raised DRQ, so there is no data to take.
+const int ataReadNoDrq = 3;
+
+/// The drive reported ERR or DF after the transfer.
+const int ataReadError = 4;
+
+/// DRQ was still set after 256 words -- the drive has more to say than one
+/// sector, so the channel is not in a state the next command can trust.
+const int ataReadTrailing = 5;
+
+/// Reads LBA28 sector [lba] from the primary master into the 512 bytes at
+/// [dst]. Returns [ataReadOk] or one of the codes above.
+///
+/// **Every failure returns a code and prints nothing.** The caller is an ELF
+/// loader that has its own diagnostic vocabulary and its own idea of which
+/// sector of which structure failed to arrive; a driver that printed here would
+/// interleave `DISK ` lines into the middle of it and would still not say what
+/// the sector was for.
+///
+/// The bytes are stored ONE AT A TIME out of each 16-bit port read, low byte
+/// first, because that is the order they occupy in the sector -- the opposite
+/// of the IDENTIFY model string, and correct for the same reason: the model is
+/// a big-endian string field, sector data is just bytes. Byte stores rather
+/// than a `u16` store because DC-IR's `Load`/`Store` carry no alignment
+/// attribute and [dst] is chosen by the caller (multiboot.dart's split `u32`
+/// loads make the same argument).
+@bare
+u64 ataReadInto(u64 lba, u64 dst) {
+  final u64 st0 = ataSelect(lba);
+  if (ataAbsent(st0) > u64(0)) {
+    return u64(ataReadNoDev);
+  }
+  final u64 idle = ataWait(u64(ataStRdy));
+  if (ataFailed(idle) > u64(0)) {
+    return u64(ataReadNotReady);
+  }
+
+  Port.outb(u16(ataRegCount), u8(1));
+  Port.outb(u16(ataRegLbaLo), (lba & u64(0xFF)).toU8());
+  Port.outb(u16(ataRegLbaMid), ((lba >> u64(8)) & u64(0xFF)).toU8());
+  Port.outb(u16(ataRegLbaHi), ((lba >> u64(16)) & u64(0xFF)).toU8());
+  Port.outb(u16(ataRegCommand), u8(ataCmdReadSectors));
+
+  final u64 st1 = ataSettle();
+  if (ataAbsent(st1) > u64(0)) {
+    return u64(ataReadNoDev);
+  }
+  final u64 st2 = ataWait(u64(ataStDrq));
+  if (ataFailed(st2) > u64(0)) {
+    return u64(ataReadNoDrq);
+  }
+  // BSY is clear and neither error bit is set, so DRQ is the only remaining
+  // reason ataWait could have returned. Checked anyway, for shellDiskRead's
+  // reason: reading 512 bytes from a data port the drive has not filled is the
+  // one failure here that would produce plausible-looking output -- and here it
+  // would produce a plausible-looking PROGRAM.
+  if ((st2 & u64(ataStDrq)) < u64(1)) {
+    return u64(ataReadNoDrq);
+  }
+
+  u64 i = u64(0);
+  while (i < u64(ataWordsPerSector)) {
+    final u64 w = port_inw(u64(ataRegData));
+    final u64 at = dst + (i << u64(1));
+    Pointer<u8>.fromAddress(at).value = (w & u64(0xFF)).toU8();
+    Pointer<u8>.fromAddress(at + u64(1)).value = ((w >> u64(8)) & u64(0xFF)).toU8();
+    i = i + u64(1);
+  }
+
+  final u64 st3 = Port.inb(u16(ataRegStatus)).toU64();
+  if ((st3 & (u64(ataStErr) | u64(ataStDf))) > u64(0)) {
+    return u64(ataReadError);
+  }
+  if ((st3 & u64(ataStDrq)) > u64(0)) {
+    return u64(ataReadTrailing);
+  }
+  return u64(ataReadOk);
+}
+
 /// `disk read <lba>` -- one LBA28 sector from the primary master.
 @bare
 void shellDiskRead(u64 lba) {

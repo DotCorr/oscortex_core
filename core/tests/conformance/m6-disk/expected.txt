@@ -121,6 +121,7 @@ commands:
   user badptr   ring 3 hands write a kernel pointer -- refused
   user hold     run a ring-3 payload that never exits (last command)
   user pages    TSS, gate DPLs, and how many pages ring 3 can reach
+  run <lba>     load an ELF program from that disk sector and run it
   crash ud      fault on purpose (#UD) and come back
   crash div     fault on purpose (#DE) and come back
   echo <rest>   print the rest of the line

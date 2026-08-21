@@ -211,6 +211,14 @@ M9_RSP=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resum
 M9_OK=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resume_ok"{print $3; exit}')
 [[ -n "$M9_STORE" && -n "$M9_RSP" && -n "$M9_OK" ]] || fail "user_store / user_resume_rsp / user_resume_ok are not all in kdata.o — M9's ring-3 state block is missing"
 M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
+# M10 (ADR-0014) added a fourth block after M9's: `elf_store` (128 bytes, the
+# ELF loader's whole state, behind ONE accessor called from ONE function). It is
+# SUBTRACTED here rather than folded into this milestone's number, so this
+# harness keeps asserting ITS OWN claim exactly as it did before M10 existed --
+# the same discipline every earlier harness applies to every later block.
+M10_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
+[[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
+M9_BSS=$(( M9_BSS + M10_STORE ))
 [[ $(( KDATA_BSS - M9_BSS )) -eq 5224 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, of which $M9_BSS are M9's ring-3 blocks, leaving $(( KDATA_BSS - M9_BSS )) — expected 5224 (5096 through M7, plus 128 for the virtual-memory state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 echo "STRUCTURAL: pass  kdata.o donates exactly 5224 bytes of .bss outside M9's blocks — 5096 inherited, 128 for the address space"
 
@@ -351,6 +359,14 @@ M9_PRESENT=0
 for sym in $M9_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
 done
+# M10 (ADR-0014) added exactly ONE more -- `elf_store_addr`, the ELF loader's
+# storage seam -- and it is subtracted here for the reason M9's eight are: this
+# harness's claim is about ITS OWN milestone's count, and it must keep meaning
+# what it meant before M10 existed.
+M10_EXTERNS="elf_store_addr"
+for sym in $M10_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
+done
 EXTERN_COUNT=$(( EXTERN_COUNT - M9_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M9's eight, expected 44 (32 from M7 plus M8's twelve)"
 for sym in cr0_read cr2_read cr3_read paging_install vm_exec_probe vm_exec_ok_addr \
@@ -376,7 +392,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M8 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1589
+check_table shellStrHelp 1658  # M10 added `run <lba>`; GAP-0060
 check_table vmStrCr3 7
 check_table vmStrPml4 6
 check_table vmStrNx 4

@@ -31,6 +31,7 @@ part 'ata.dart';
 part 'pmm.dart';
 part 'vm.dart';
 part 'user.dart';
+part 'elf.dart';
 
 /// Kernel entry point.
 ///
@@ -151,6 +152,17 @@ void kmain(u64 mbInfo) {
   // after `idt_load()` below, so that a malformed TSS descriptor is a reported
   // #GP instead of a triple fault.
   userInit();
+
+  // M10: the ELF loader's donated state, and the same argument one more time.
+  // `userOnFault` asks [elfLive] on EVERY fault this kernel takes, so a garbage
+  // word here would make the first fault of the boot -- M1's own deliberate #UD
+  // a few dozen lines below -- try to tear down a program that has never
+  // existed: walking a 2MiB window through a page-directory entry read out of
+  // `.bss` litter and freeing whatever frame numbers it found. Prints nothing,
+  // for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  elfInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

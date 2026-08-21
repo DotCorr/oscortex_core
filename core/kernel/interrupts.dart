@@ -382,6 +382,12 @@ const int mappedLimit = 0x1000000;
 /// 16MiB `boot.S` maps, loading through it faults — inside a fault handler,
 /// which is a double fault and then a triple fault. Diagnosing a fault must not
 /// be the thing that kills the machine, so an unmapped RIP prints `----`.
+///
+/// M10 added a second chance rather than a wider constant: above 16MiB the
+/// question is put to the LIVE page tables ([vmFetchSafe]), because a loaded
+/// ELF program runs at 256MiB and `OP ----` for its faulting instruction throws
+/// away the only field that identifies it. Below 16MiB nothing changed, which
+/// is why four byte-exact goldens did not move.
 @bare
 void faultReport(u64 vector, u64 errorCode, u64 rip) {
   uartWrite(Rodata.addressOf(m1StrFaultHead), u64(6));
@@ -393,7 +399,19 @@ void faultReport(u64 vector, u64 errorCode, u64 rip) {
     uartPutHexByteAt(rip);
     uartPutHexByteAt(rip + u64(1));
   } else {
-    uartWrite(Rodata.addressOf(m1StrFaultOpUnmapped), u64(4));
+    // M10: above the 16MiB bootstrap map, ask the LIVE tables instead of
+    // giving up. A loaded ELF program runs at 256MiB, so before this every
+    // fault it took printed `OP ----` for a page that was mapped, readable and
+    // the entire subject of the diagnostic. [vmFetchSafe] answers the same
+    // safety question the bound above answers, from the tables the CPU walks.
+    // Nothing below 16MiB reaches this branch, so no earlier milestone's output
+    // can change.
+    if (vmFetchSafe(rip) > u64(0)) {
+      uartPutHexByteAt(rip);
+      uartPutHexByteAt(rip + u64(1));
+    } else {
+      uartWrite(Rodata.addressOf(m1StrFaultOpUnmapped), u64(4));
+    }
   }
   uartNewline();
 

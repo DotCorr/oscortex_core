@@ -171,7 +171,14 @@ M9_RSP=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resum
 M9_OK=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resume_ok"{print $3; exit}')
 [[ -n "$M9_STORE" && -n "$M9_RSP" && -n "$M9_OK" ]] || fail "user_store / user_resume_rsp / user_resume_ok are not all in kdata.o — M9's ring-3 state block is missing"
 M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
-NON_PMM_BSS=$(( KDATA_BSS - PMM_STORE_SIZE - VM_STORE_SIZE - M9_BSS ))
+# M10 (ADR-0014) added a fourth block after M9's: `elf_store` (128 bytes, the
+# ELF loader's whole state, behind ONE accessor called from ONE function). It is
+# SUBTRACTED here rather than folded into this milestone's number, so this
+# harness keeps asserting ITS OWN claim exactly as it did before M10 existed --
+# the same discipline every earlier harness applies to every later block.
+M10_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
+[[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
+NON_PMM_BSS=$(( KDATA_BSS - PMM_STORE_SIZE - VM_STORE_SIZE - M9_BSS - M10_STORE ))
 if [[ "$NON_PMM_BSS" -ne 424 ]]; then
   fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $PMM_STORE_SIZE are M7's pmm_store and $VM_STORE_SIZE are M8's vm_store, leaving $NON_PMM_BSS — expected 424. ATA PIO was supposed to add NONE. A 512-byte sector buffer is exactly what this driver does not have; if you meant to grow it, say so in kdata.S's header, in GAP-0053, and in docs/decisions/0010-ata-pio-disk-read.md."
 fi
@@ -243,7 +250,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M6 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1589
+check_table shellStrHelp 1658  # M10 added `run <lba>`; GAP-0060
 check_table ataCmdName 4
 check_table ataCmdIdName 7
 check_table ataCmdReadName 10
@@ -303,6 +310,14 @@ done
 M9_EXTERNS="enter_user gdt_base tlb_invlpg tr_read tss_base user_resume_ok_addr user_return user_store_addr"
 M9_PRESENT=0
 for sym in $M9_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
+done
+# M10 (ADR-0014) added exactly ONE more -- `elf_store_addr`, the ELF loader's
+# storage seam -- and it is subtracted here for the reason M9's eight are: this
+# harness's claim is about ITS OWN milestone's count, and it must keep meaning
+# what it meant before M10 existed.
+M10_EXTERNS="elf_store_addr"
+for sym in $M10_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
 done
 EXTERN_COUNT=$(( EXTERN_COUNT - M9_PRESENT ))

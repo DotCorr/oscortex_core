@@ -2246,15 +2246,62 @@ which the clone gets from the commit.
 **Cost of the workaround:** one command, and this entry so the next unit does not spend twenty minutes
 diagnosing it as a broken `dcc`.
 
+**M10 ADDS A SECOND STEP, and it is the one that makes the isolation real.** `core/kernel/kmain.dart`
+imports the prelude through a HARDCODED RELATIVE PATH — `import '../../../DCDart/core/runtime/
+dc-core-bare/prelude.dart';` — which is GAP-0003. So pointing `DCDART_HOME` at a pinned clone
+isolates the COMPILER and not the PRELUDE: `dcc` from the clone is then handed the shared checkout's
+prelude, and the two disagreeing produces
+
+```
+dcc build: DccLowerError: no @bare top-level function found in kmain.dart
+```
+
+which looks like a broken kernel and is not. **The repo has to be COPIED beside the clone**, so that
+`../../../DCDart` resolves inside the sandbox — which is what ADR-0011 §7 means by "mirrored beside a
+copy of this repo", stated here as a command rather than as a description:
+
+```bash
+rsync -a --delete --exclude __pycache__ <repo>/ <sandbox>/oscortex_core/
+cd <sandbox>/oscortex_core && DCDART_HOME=<sandbox>/DCDart bash core/tests/conformance/<h>/run.sh
+```
+
+**A symlink is not enough.** `ln -s <repo> <sandbox>/oscortex_core` produces the same error: Dart
+resolves a relative import through the file's REAL path, so the import walks out of the real repo and
+lands on the shared checkout again. This was measured at M10, where the shared checkout's `HEAD` was
+four commits ahead of the pin and the difference was visible immediately.
+
+**Cost:** an rsync per build, and a mirror that has to be re-synced after every edit. M10's sandbox
+did that with a three-line script.
+
 
 ---
 
 ## GAP-0085 — What ring 3 does NOT do, listed rather than discovered later
 
 **Domain:** kernel (M9)
-**Status:** OPEN — deliberately scoped out. Every item is absence, not wrongness: nothing below is
-mis-reported, and `user` prints what is actually mapped and what actually happened rather than what
-was intended.
+**Status:** OPEN, **NARROWED at M10 (ADR-0014)**. Item 5's ELF-loader half is CLOSED and item 4 is
+narrowed; the successors are GAP-0089 (processes), GAP-0090 (a filesystem) and GAP-0091 (dynamic
+linking). Every remaining item is absence, not wrongness: nothing below is mis-reported, and `user`
+and `run` print what is actually mapped and what actually happened rather than what was intended.
+
+**What M10 changed, item by item:**
+
+* **item 1** is unchanged and its successor is GAP-0089. There is still one PML4. A loaded program
+  gets a 2MiB window inside the kernel's own address space, temporarily, and it is handed back the
+  moment the program exits or dies.
+* **item 2** is unchanged and its successor is GAP-0089.
+* **item 4** is NARROWED. The same three syscalls now serve a program that arrived from outside this
+  repo, and `write`'s pointer check is a per-page walk of the live tables (`elfOwns`) rather than a
+  comparison against two frame numbers — because a loaded program's pages have unmapped gaps between
+  them and a range test would accept a pointer into one. There is still no `read`, no file
+  descriptor, no `brk` and no `mmap`.
+* **item 5** is HALF CLOSED. **There is an ELF loader.** A freestanding static ELF64 is read off a
+  disk, validated field by field, mapped at the `p_vaddr`s its own program headers name with the
+  permissions its own `p_flags` ask for, and entered at its own `e_entry` in ring 3. What is still
+  absent is `fork`, `exec`, relocation and dynamic linking — GAP-0091.
+* **items 3, 6, 7, 8, 9 and 10** are unchanged, and every one of them now applies to a loaded program
+  as well as to a `@rodata` payload. In particular item 10: a fault taken in the kernel while a
+  loaded program is live still tears that program down.
 
 1. **No per-process address space.** There is still one PML4 and it is the kernel's. A payload runs on
    the kernel's own page tables with exactly two leaves temporarily marked user-accessible, and it is
@@ -2276,6 +2323,8 @@ was intended.
 5. **No ELF loader, no `fork`, no `exec`, no relocation.** A payload is a run of machine-code bytes in
    this kernel's `.rodata`, copied into a frame and jumped to. ADR-0013 §4 explains why building a
    loader to prove a privilege boundary would have made the loader the thing under test.
+   **CLOSED IN PART at M10 (ADR-0014): the ELF loader exists.** `fork`, `exec`, relocation and
+   dynamic linking do not — GAP-0091.
 6. **No SMEP, no SMAP, no PCID, no KPTI.** `CR4.SMEP` would stop the KERNEL executing a
    user-accessible page and `CR4.SMAP` would stop it reading one without `stac`; neither is enabled, so
    the `write` syscall's pointer check is software-only. It is a real check (ADR-0013 §5) and it is the
@@ -2403,3 +2452,233 @@ M1 assertion tests. The two are different claims and the assertion tests the nar
 
 **Cost of the workaround:** one hand-written table, and this entry so the next dense `if`-chain in
 `@bare` DCDart is recognised as the same thing rather than diagnosed as a toolchain break.
+
+---
+
+## GAP-0089 — There is still no process: one address space, one program, no scheduler
+
+**Domain:** kernel (M10)
+**Status:** OPEN — deliberately scoped out. GAP-0085 items 1 and 2, restated for the thing that now
+runs in ring 3, because "the payload is not a process" was easy to accept about 136 bytes of
+`@rodata` and is easier to forget about a program that arrived on a disk.
+
+1. **One PML4, and it is the kernel's.** A loaded program gets ONE 2MiB window
+   (`[0x10000000, 0x10200000)`) inside the kernel's own address space, carried by one
+   page-directory entry that is installed at load and removed at teardown. Two programs cannot be
+   loaded at once and `run` refuses the second with `ELF REFUSED 02 a program is already running` —
+   a state nothing can currently produce, and therefore exactly the kind of thing that has to say so
+   out loud.
+2. **A second `CR3` is the obvious next thing and was deliberately not built.** It needs per-process
+   page tables, a switch on entry and exit, and the whole of GAP-0083's TLB question. It also needs
+   something to schedule.
+3. **No scheduler, no preemption, no `fork`, no `exec`, no wait, no exit status anyone can collect.**
+   One program at a time, entered synchronously from a shell command, running until it exits or
+   faults. The timer interrupt fires while it runs and returns to it.
+4. **A program that never exits cannot be stopped**, exactly as `user hold` cannot. The `spin`
+   variant on m10-elf's test disk is that program, and it is the LAST command any session can run.
+5. **The program's memory is the kernel's memory.** Its frames come from the same allocator as
+   everything else and its page table is a page-directory entry in the kernel's page directory.
+   Nothing accounts for a program's memory as belonging to it — `frames` shows the total and cannot
+   say who has what.
+
+**Why this is not a bug:** every item is absence. `run` reports what it actually mapped, `ELF WINDOW
+PAGES` counts what is actually user-accessible, and the teardown is asserted from outside on both the
+exit path and the fault path.
+
+---
+
+## GAP-0090 — There is no filesystem, and this is the list of what one has to add
+
+**Domain:** kernel (M10)
+**Status:** OPEN — deliberately scoped out. ADR-0014 §4 makes the argument; this is the accounting,
+written down rather than gestured at, because "we will add a filesystem later" hides how much of one
+is missing.
+
+**What exists** is a 32-byte header sector — `"OSCXPRG1"`, a byte count, a starting LBA — written by
+`core/tests/conformance/m10-elf/make-image.py` at an LBA `run` is told. That is the entire metadata
+format.
+
+**What a real filesystem has to add, none of which exists:**
+
+1. **Names.** There is no way to refer to a program except by the sector number of its header. `run
+   20` is not a path.
+2. **A directory**, and therefore a way to enumerate what is on a disk at all. `disk read <lba>` can
+   show you a sector; nothing can tell you which sectors are worth reading.
+3. **Allocation.** Nothing tracks which sectors are in use. `make-image.py` places programs 64
+   sectors apart by hand and asserts they fit.
+4. **A write path.** This kernel has never written a byte to a disk: `ataReadInto` and
+   `shellDiskRead` are the whole driver, and `WRITE SECTORS` (0x30) is not implemented. Everything
+   downstream of that — a free list, an inode table, a journal, crash consistency — is therefore
+   absent by construction rather than by choice.
+5. **Metadata.** No size beyond the header's byte count, no timestamps, no ownership, no
+   permissions. In particular nothing says "this file is executable"; `run` will try to load
+   anything a header sector points at, and the ELF checks are the only gate.
+6. **Partitions.** The image has an MBR signature at sector 0 (m6-disk put it there) and nothing
+   reads it. The disk is a flat array of sectors.
+7. **More than one device.** The driver knows the primary master and nothing else (ADR-0010).
+8. **Buffering or caching.** Every sector is read from the drive every time. Loading the same program
+   twice reads it twice.
+9. **Concurrency of any kind.** There is one caller, no locking, and no notion of a file being open.
+
+**What it costs today:** a program must be placed by a generator that also tells the harness where it
+put it, and the kernel can only run programs somebody wrote down the sector number of. That is
+enough to prove a loader and is not enough for anything else.
+
+---
+
+## GAP-0091 — The loader links nothing: no relocation, no `ET_DYN`, no dynamic linking
+
+**Domain:** kernel (M10)
+**Status:** OPEN — deliberately scoped out, and REFUSED BY NAME rather than half-supported.
+
+`core/kernel/elf.dart` loads `ET_EXEC` and nothing else. Every one of the following is refused with
+its own sentence rather than attempted:
+
+1. **`PT_INTERP` or `PT_DYNAMIC`** → `ELF REFUSED 11 PT_INTERP or PT_DYNAMIC: this loader does not
+   link`. A file that names an interpreter needs one, and this kernel has neither an interpreter nor
+   anywhere to load it.
+2. **`ET_DYN`** (a position-independent executable) → `ELF REFUSED 0C e_type is not 2 (ET_EXEC)`. A
+   PIE would need `R_X86_64_RELATIVE` processing and a `PT_DYNAMIC` walk. Loading one at its nominal
+   `p_vaddr` without relocating would produce a program whose every absolute reference is wrong —
+   which is why the refusal is on `e_type` rather than a best effort.
+3. **Relocations of any kind.** `build-prog.sh` asserts the built program has none left to apply.
+4. **Symbol resolution.** The loader reads the program headers and never looks at the section
+   headers or the symbol table. `derive.py` reads the symbol table, but that is the HARNESS deriving
+   its expectations from the file, on the host, not the kernel resolving anything.
+5. **`.init_array`/`.fini_array`, `DT_INIT`, constructors.** Nothing runs before `e_entry` and
+   nothing runs after `exit`.
+6. **`PT_TLS`, `PT_GNU_STACK`, `PT_GNU_RELRO`, `PT_NOTE`.** Ignored, per the gABI's rule for
+   unrecognised segment types — with the deliberate exception of the two in item 1. **`PT_GNU_STACK`
+   being ignored is safe here only because nothing derives stack permissions from it:** the stack is
+   mapped writable and non-executable unconditionally, and a `PT_GNU_STACK` asking for `PF_X` would
+   be silently not honoured. That is the right answer and it is not the answer the file asked for.
+
+**What it costs today:** the test program is built `-fno-pic -fno-pie -static -nostdlib`, and any
+program for this OS has to be. `run` on an ordinary Linux binary gets `ELF REFUSED 11` or
+`ELF REFUSED 0C`, which is at least a sentence that says what to do about it.
+
+---
+
+## GAP-0092 — The kernel never enables SSE, so ordinary compiler output faults in ring 3
+
+**Domain:** boot, kernel (M10)
+**Status:** OPEN — a real limit on what this OS can run, found while building the first program for
+it.
+
+`core/boot/boot.S` sets exactly one bit of CR4: PAE (bit 5). It has never set **`CR4.OSFXSR`** (bit
+9) or `CR4.OSXMMEXCPT` (bit 10), and it has never executed `fxsave`/`fxrstor` or reserved anywhere to
+save an FPU state to. So **any SSE instruction raises #UD**, in ring 0 and in ring 3 alike.
+
+That has never mattered before, because `dcc` emits integer code only and every line of assembly in
+this repo was written by hand. It matters now: at `-O2`, clang emits SSE for an ordinary `memcpy`, a
+struct copy, or a vectorised loop — and the x86-64 SysV ABI assumes SSE exists. A program compiled
+the way anybody would compile one dies in ring 3 at whatever instruction happened to get one, with a
+`#UD` whose cause looks like a loader bug.
+
+**The mitigation, and it is only a mitigation:** `build-prog.sh` compiles with `-mgeneral-regs-only`
+and then asserts the DISASSEMBLY contains no `%xmm`/`%ymm`/`%zmm` register, because a flag is not
+evidence. `prog.c`'s header says why.
+
+**What closing it needs:** `CR4.OSFXSR | CR4.OSXMMEXCPT` in the boot stub, `CR0.EM` clear and
+`CR0.MP` set, and — the part that is a milestone rather than three bits — somewhere to save and
+restore 512 bytes of FPU/SSE state per program, which needs a notion of a program that owns
+registers, which is GAP-0089. Setting the bits without the save area would be worse than not setting
+them: two things sharing `%xmm0` across a syscall is a corruption nobody would look for.
+
+**Cost of the workaround:** every program for this OS must be built with SSE disabled, and a program
+built without that flag fails in a way that does not name the cause.
+
+---
+
+## GAP-0093 — m3-shell's, m4-fault's, m5-pci's, m6-disk's, m7-frames', m8-paging's and m9-ring3's goldens were regenerated at M10, deliberately
+
+**Domain:** conformance (M10)
+**Status:** OPEN — the same recurring cost GAP-0059, GAP-0065, GAP-0069, GAP-0072, GAP-0075, GAP-0078
+and GAP-0087 record, at the seventh milestone that has paid it. Recorded again because the METHOD is
+what makes it safe, and the method differed between the two groups exactly as it did at M9.
+
+**Two different causes, and only one of them was a fresh capture.**
+
+* **m3, m4, m5 and m6 moved because `help` grew by ONE LINE.** `shellStrHelp` went 1589 → **1658**:
+  `  run <lba>     load an ELF program from that disk sector and run it`, because a command that is
+  not in `help` is undiscoverable. Those four goldens were NOT regenerated from a boot. The line was
+  inserted mechanically after `user pages` in each file and the kernel was then required to reproduce
+  the result byte-for-byte — which it did, at 4533, 3523, 3307 and 7817 bytes. m3's 80×25 screen
+  golden was rebuilt the same way: one line inserted, one line dropped off the top, which is exactly
+  what one more line of `help` does to an 80×25 buffer. A substitution that produced a file the kernel
+  does not print fails immediately, which is the whole reason this is substitution and not a fresh
+  capture.
+* **m7, m8 and m9 moved because the image grew**, which is GAP-0078 exercised for the fourth time.
+  M10 adds `elf.dart`'s code and its 59 `@rodata` tables, `vm.dart`'s program-window API and 128
+  bytes of donated `.bss` — about 20KiB — so `__kernel_end` moved and every address, count and fold in
+  all three goldens moved with it: m7's free count and its drain's `SUM`/`XOR`/`LOW`; m8's `CR3`/`PML4`
+  `12C000` → `131000` and all six `VM SECT` boundaries; m9's TSS, RSP0, GDT and IDT bases and every
+  payload frame. Those three were regenerated with `run.sh --regen`, and **each harness's derived
+  checks recomputed every one of those numbers from the boot's own `MB E` memory-map lines and from
+  `kernel.elf`'s extents**. The mitigation held exactly as GAP-0078 says it does.
+
+**What did NOT move: `m1-interrupts/expected.txt`.** All 544 bytes are byte-for-byte identical, and
+that is the assertion that says the ELF loader costs the boot path nothing — `elfInit()` prints
+nothing and runs before the first byte of output. m0-boot, mb-info and m2-console are likewise
+untouched.
+
+**What ALSO did not move, and it is worth noting:** `faultReport`'s widened `OP` field (ADR-0014 §6)
+changed no golden at all, because nothing below 16MiB reaches the new branch. A change to a
+diagnostic every fault in the kernel goes through, with four byte-exact goldens unaffected, is the
+evidence that it was added rather than altered.
+
+**Cost:** whoever adds the next shell command pays the substitution again for four goldens, and
+whoever grows the image pays the `--regen` again for four.
+
+---
+
+## GAP-0094 — The frame-zeroing has no behavioural test that can fail, and this was measured
+
+**Domain:** conformance, kernel (M10)
+**Status:** OPEN — a hole in the TEST, not in the kernel. The kernel zeroes correctly; nothing in
+this harness would notice if it stopped.
+
+`core/kernel/elf.dart` zeroes every frame with `vmZeroFrame` before anything is copied into it, so
+`.bss` is zero because the frame is zero (ADR-0014 §5). Two checks claim to prove that:
+
+* the test program reads all 64 bytes of its own `.bss` and reports `BSS[00] SUM=00`;
+* boot B reads every loaded page out of GUEST PHYSICAL MEMORY and requires everything outside
+  `[p_vaddr, p_vaddr + p_filesz)` to be zero.
+
+**A kernel built in the sandbox mirror with `vmZeroFrame(frame)` DELETED from `elfLoadSegment`
+passed both of them, and the whole harness exited 0.**
+
+**Why.** A freshly-booted QEMU hands out RAM that is already zero, and nothing in this kernel dirties
+a frame before the loader gets one. Every frame the loader touches it zeroes; the two scratch frames
+it fills with file bytes are freed after the load and, because the allocator is next-fit from a
+FORWARD-MOVING cursor (ADR-0011), never handed back to a later `run` in the same session.
+
+**Three shell sequences were tried against the broken kernel and none of them worked**, which is why
+this entry says "cannot" rather than "does not":
+
+* `frames test` writes a pattern into word 0 and the last word of 64 frames — and leaves the cursor
+  past all 64, so the next `run` gets clean frames;
+* `frames drain` writes to exactly ONE frame (the highest) and, being next-fit, ends with the cursor
+  back where it started, so `frames drain; frames refill; run` lands just past whatever came before;
+* running the program twice does not reuse its frames: the cursor advances by six each time, and
+  wrapping it would take ~5,400 loads.
+
+**What is asserted instead.** `m10-elf/run.sh` requires each of `elf.dart`'s five `allocFrame()`
+calls to be paired with a zeroing (four in `elf.dart`, the page table's inside
+`vmProgTableInstall`), and requires the exact line `vmZeroFrame(frame);` in `elfLoadSegment`. **A
+structural check is weaker than a behavioural one and neither ADR-0014 nor this entry pretends
+otherwise.**
+
+**What is NOT weakened.** The behavioural checks are not vacuous in general — they caught a mutation
+that read sectors straight into the destination frame instead of through the scratch frame, which is
+the same bug's other half: `BSS[00] SUM=C2` and an exit status 0x2C2 too high. What they cannot see
+is the difference between "the loader zeroed it" and "it was already zero".
+
+**What would close it:** a way to dirty a frame before the allocator hands it out. The cheapest
+honest one is a shell command that fills every free frame with a pattern and returns them — the
+inverse of `frames drain`, which already owns every frame at the moment it could do it. That is a
+change to M7's code and M7's goldens, and it belongs to whoever needs it rather than to the milestone
+that found the hole.
+
+**Cost of the workaround:** one class of loader bug — handing ring 3 a page of stale kernel data — is
+caught by reading the source rather than by running the kernel.

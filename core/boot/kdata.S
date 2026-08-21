@@ -62,6 +62,19 @@
  * exactly like M4's `shell_resume_rsp`. `tests/conformance/m9-ring3/run.sh`
  * asserts the 5368 total and owns it now.
  *
+ * M10 TAKES IT TO 5496. `elf_store` (below) is 128 bytes -- sixteen words for
+ * the ELF loader: where on the disk the program came from, the entry point read
+ * out of its header, the page-table and scratch frames it borrowed, the extent
+ * it mapped, and the counters. It is ONE symbol behind ONE accessor called from
+ * ONE function, the same seam `vm_store` and `user_store` use, and a SEPARATE
+ * one from `user_store` on purpose -- see `elf_store`'s own note.
+ * `tests/conformance/m10-elf/run.sh` asserts the 5496 total and owns it now.
+ *
+ * M10 ADDS NO SECTOR BUFFER EITHER, which is the sentence M6 below could not
+ * write. `ataReadInto` reads into an address the caller supplies, and every
+ * caller supplies a frame from `allocFrame()`. The 512 bytes M6 had nowhere to
+ * put now come out of the allocator instead of out of this file.
+ *
  * M6 ADDS NOTHING, AND THAT WAS A CHOICE RATHER THAN AN ABSENCE OF NEED.
  * An ATA PIO driver's obvious shape is `read(lba, buffer)` and the buffer is
  * 512 bytes, which would have taken this file from 424 to 936 -- more than
@@ -528,6 +541,63 @@ user_resume_ok:
     .size user_resume_ok, 8
     .type user_resume_ok, @object
 
+/* ------------------------------------------------------------------
+ * M10 (ADR-0014): the ELF loader's ENTIRE mutable state.
+ *
+ * 128 bytes, sixteen `u64` words, ONE symbol, ONE accessor -- `pmm_store`'s,
+ * `vm_store`'s and `user_store`'s shape exactly, for their exact reason.
+ * `core/kernel/elf.dart` reaches this block through ONE function
+ * (`elfMetaBase`), the only place in the kernel that calls `elf_store_addr`,
+ * and `tests/conformance/m10-elf/run.sh` counts that call site.
+ *
+ * It is a SEPARATE block from `user_store` rather than four more words inside
+ * it, and that is a decision rather than an oversight. M9's block describes a
+ * payload that is bytes in this kernel's own `.rodata`; this one describes a
+ * program that arrived on a disk, in an address space of its own, with an entry
+ * point nobody here chose. Folding them together would make one seam serve two
+ * subsystems, and the whole content of the seam pattern (ADR-0011 §0) is that
+ * each subsystem's donated storage is one symbol reached from one function, so
+ * that the eventual mutable-statics migration is a deletion per subsystem
+ * rather than an audit.
+ *
+ * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern:
+ *
+ *     +0    u64  live:        1 while the loaded program is executing in ring 3
+ *     +8    u64  headerLba:   the LBA of the header sector `run` was given
+ *     +16   u64  imageLba:    the LBA of the ELF image's first sector
+ *     +24   u64  imageBytes:  the image's length, from the header sector
+ *     +32   u64  entry:       e_entry, AS READ OUT OF THE FILE. Nothing in this
+ *                             kernel chooses it and nothing may default it
+ *     +40   u64  ptFrame:     the frame holding the program window's page
+ *                             table, or 0
+ *     +48   u64  scratch:     the frame sectors are read into, or 0
+ *     +56   u64  pages:       4KiB pages of the program currently mapped
+ *     +64   u64  segments:    PT_LOAD segments loaded
+ *     +72   u64  loMapped:    lowest mapped virtual address
+ *     +80   u64  hiMapped:    one past the highest -- the two together are what
+ *                             a syscall pointer is bounded against
+ *     +88   u64  exitCode:    what the program's `exit` syscall was given
+ *     +96   u64  status:      the last load's status code (an elfErr*)
+ *     +104  u64  sectors:     sectors read off the disk for this load
+ *     +112  u64  stackFrame:  the frame behind the user stack page, or 0
+ *     +120  u64  zeroed:      bytes of `p_memsz - p_filesz` tail zeroed
+ *
+ * NOT ZEROED HERE -- the same rule as every word above. `elfInit()` writes all
+ * sixteen from `kmain()` before the first byte of output, and it must, because
+ * `elfOnFault` reads the live flag on EVERY fault this kernel takes.
+ *
+ * THIS TAKES DONATED `.bss` FROM 5368 BYTES TO 5496. docs/known-gaps.md
+ * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging and
+ * m9-ring3 each still assert their own milestone's number by SUBTRACTING the
+ * blocks that came after theirs, so no older claim is weakened by this.
+ * ------------------------------------------------------------------ */
+.align 8
+.global elf_store
+elf_store:
+    .skip 128
+    .size elf_store, 128
+    .type elf_store, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -688,6 +758,20 @@ user_store_addr:
 .type user_resume_ok_addr, @function
 user_resume_ok_addr:
     leaq user_resume_ok(%rip), %rax
+    ret
+
+/* uint64_t elf_store_addr(void) -- base of the 128-byte ELF-loader state block.
+ * See `elf_store` above for the word layout.
+ *
+ * THE ENTIRE STORAGE SEAM FOR THE ELF LOADER IS THIS ONE FUNCTION, and it is
+ * called from exactly ONE place: `elfMetaBase()` in core/kernel/elf.dart. The
+ * same rule `vm_store_addr` and `user_store_addr` state, and
+ * `tests/conformance/m10-elf/run.sh` counts it the same way. */
+.align 16
+.global elf_store_addr
+.type elf_store_addr, @function
+elf_store_addr:
+    leaq elf_store(%rip), %rax
     ret
 
 /* Mark the stack non-executable. Nothing here needs an executable stack, and
