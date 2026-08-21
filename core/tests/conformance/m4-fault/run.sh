@@ -191,27 +191,34 @@ echo "STRUCTURAL: pass  divide_by_zero is exactly 'xor; xor; mov \$1; div %rcx (
 #   cmpq $1    the guard. .bss is not zeroed, so an unset resume point is
 #              garbage, and using it would triple-fault the machine WHILE
 #              REPORTING A FAULT
+#   mov x6     M9. The kernel's own segment selectors, put back before the stack
+#              switch. A fault taken in RING 3 arrives with DS/ES/FS/GS holding
+#              the ring-3 data selector and with SS NULL (the CPU nulls it on a
+#              privilege-changing interrupt in long mode). Harmless in long mode,
+#              and a no-op on a ring-0 fault, but the shell would otherwise run
+#              on inherited ring-3 selectors for the rest of the boot.
 #   mov -> rsp the abandonment: every frame between the shell loop and the
 #              fault disappears in this one store
 #   and $-16   System V AMD64 stack alignment for the calls that follow
 #
 # Asserted as an ordered opcode sequence rather than by grepping for `rsp`,
 # because "it contains a mov to rsp somewhere" would pass with the guard
-# deleted.
+# deleted. The seven `mov`s are counted exactly: six segment loads and the stack
+# switch, in that order, so neither the guard nor the switch can move.
 FR_DIS=$(x86_64-elf-objdump -d --disassemble=fault_resume "$CORE_DIR/build/isr.o")
 FR_OPS=$(mnemonics <<<"$FR_DIS")
 case "$FR_OPS" in
-  "cli cmpq jne mov and call call jmp"*) ;;
+  "cli cmpq jne mov mov mov mov mov mov mov and call call jmp"*) ;;
   *)
     echo "$FR_DIS" >&2
-    fail "fault_resume is not 'cli; cmpq; jne; mov->rsp; and; call; call; jmp' (got: $FR_OPS) — the stack switch, its guard, or the interrupt disable around it has moved"
+    fail "fault_resume is not 'cli; cmpq; jne; 6x mov->segment; mov->rsp; and; call; call; jmp' (got: $FR_OPS) — the stack switch, its guard, or the interrupt disable around it has moved"
     ;;
 esac
 if ! grep -qE 'mov +0x[0-9a-f]*\(%rip\),%rsp' <<<"$FR_DIS"; then
   echo "$FR_DIS" >&2
   fail "fault_resume's mov does not load %rsp from memory — it is not restoring the recorded resume point"
 fi
-echo "STRUCTURAL: pass  fault_resume is 'cli; guard; load %rsp from the recorded mark; align; call' in that order"
+echo "STRUCTURAL: pass  fault_resume is 'cli; guard; restore the kernel's six segment selectors; load %rsp from the recorded mark; align; call' in that order"
 
 # 2e. `shell_run_forever` MUST RECORD THE MARK IT WILL LATER BE RESTORED TO.
 #
@@ -276,7 +283,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M4 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1155  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`; GAP-0060
+check_table shellStrHelp 1589  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 six `user` lines; GAP-0060
 check_table shellCmdCpu 3
 check_table shellCmdCrash 5
 check_table shellCmdCrashUd 8

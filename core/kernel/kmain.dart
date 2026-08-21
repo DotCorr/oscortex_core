@@ -30,6 +30,7 @@ part 'fb.dart';
 part 'ata.dart';
 part 'pmm.dart';
 part 'vm.dart';
+part 'user.dart';
 
 /// Kernel entry point.
 ///
@@ -132,6 +133,25 @@ void kmain(u64 mbInfo) {
   // permanently spoken for and that is the address space rather than a leak.
   vmInit();
 
+  // M9: the ring-3 subsystem's donated state. Sixteen words, and the same
+  // `.bss`-is-not-zeroed argument as every init above it -- with one addition
+  // that makes it the earliest of them in spirit if not in order.
+  //
+  // `userOnFault` reads the "a payload is live" word on EVERY FAULT THIS KERNEL
+  // TAKES, including M1's own deliberate #UD a few dozen lines below. A garbage
+  // word would make that fault try to tear down a payload that has never
+  // existed: unmapping and freeing two frame numbers read out of `.bss` litter,
+  // in the middle of diagnosing something else. So this runs before anything can
+  // fault, which means before `uartInit()` and therefore before the first byte
+  // of output -- and it prints nothing, for the reason pmmInit() and vmInit()
+  // print nothing (`tests/conformance/m1-interrupts/run.sh` asserts the entire
+  // 544-byte capture).
+  //
+  // It does NOT load the task register or touch the IDT. Both of those happen
+  // after `idt_load()` below, so that a malformed TSS descriptor is a reported
+  // #GP instead of a triple fault.
+  userInit();
+
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)
 
@@ -155,6 +175,12 @@ void kmain(u64 mbInfo) {
   //   6. sti                    -- only now can an IRQ actually be delivered
   final u64 installed = idtInstallAll();
   m1ReportIdt(installed);
+
+  // M9: gate 0x80 is rewritten with DPL 3, so that -- and only that -- one
+  // vector can be reached by `int` from ring 3. A second pass rather than a
+  // special case inside the loop above, so `M1 IDT 0100` keeps meaning "the
+  // loop installed 256 gates" exactly as it always has. Prints nothing.
+  idtSetUserGate();
 
   idt_load();
   debug_break(); // -> vector 3 -> isrDispatch -> "M1 EXC 03 ..." -> iretq

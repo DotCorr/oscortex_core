@@ -490,6 +490,28 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     return;
   }
 
+  // --- The syscall (int 0x80) — M9 ---
+  //
+  // The only vector in this kernel whose gate has DPL 3, and therefore the only
+  // way a ring-3 program can reach any of this code deliberately. It is placed
+  // before the breakpoint arm and after the two IRQ arms for no reason but
+  // frequency; the dispatch is an if-chain because DCDart has no function
+  // pointers (see this function's own comment).
+  //
+  // [frame] stops being "still unused and still named" here. `userSyscall`
+  // reads the syscall number out of the saved RAX, the arguments out of RDI and
+  // RSI, and the CPL out of the CS the CPU pushed — and writes the return value
+  // back into the RAX slot, which is how a value gets to ring 3 at all, since
+  // `isr_common`'s `popq %rax` on the way out is what puts it in the register.
+  //
+  // It RETURNS, and returning is the whole point: this is a trap serviced on
+  // behalf of the interrupted code, not a fault that abandons it. The one
+  // exception is the `exit` syscall, which never comes back here.
+  if (vector == u64(vectorSyscall)) {
+    userSyscall(frame);
+    return;
+  }
+
   // --- Breakpoint (int3), the delivery self-test ---
   //
   // A TRAP: the pushed RIP already points past the `int3`, so returning from
@@ -541,5 +563,14 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   }
   faultCountBump();
   faultReport(vector, errorCode, rip);
+  // M9. If a ring-3 payload was running, it has just been killed, and the M4
+  // recovery path below is about to discard every frame between here and the
+  // shell loop -- including `shellUser`'s, which is the only thing that would
+  // otherwise unmap the payload's pages and give its frames back. This hook is
+  // what makes a faulting payload a KILLED PROGRAM rather than two
+  // user-accessible pages left behind for the rest of the boot. It prints
+  // nothing and does nothing when no payload is live, which is why the three
+  // pre-M9 goldens that contain a deliberate fault are unaffected by it.
+  userOnFault(vector, errorCode, rip, frame);
   fault_resume(); // never returns; control reappears in shellRecover()
 }

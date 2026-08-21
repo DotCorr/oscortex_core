@@ -233,6 +233,66 @@ carries no const-ness. A store into a constant global is now a *fault* instead o
 which is the whole difference; catching it before it runs is DCDart's side of the same problem. See
 `core/docs/decisions/0012-paging-and-w-xor-x.md` and `docs/known-gaps.md` GAP-0081.
 
+**M9 — done. The kernel runs something it does not trust.** Everything above ran at CPL 0, and not by
+choice: the GDT had no DPL-3 descriptor, so nothing `iretq` could load would produce any other CPL;
+there was no TSS, so an interrupt taken in ring 3 would have had no stack to be delivered on; every
+page was supervisor-only; and every IDT gate was DPL 0. In nine milestones the `USER`/`SUPER` field of
+the page-fault report had printed `SUPER` every single time, because the CPU had never had an
+opportunity to set that bit.
+
+```
+oscortex> user
+USER TSS 0000000000124010 RSP0 0000000000128080 GDT 0000000000118000 TR 0028
+USER GATE 80 DPL 3 GATE 03 DPL 0 IDT 0000000000129000
+USER MAP CODE 0000000000132000 STACK 0000000000133000
+USER PAGE CODE 0000000000132000 P 1 U 1 W 0 X 1
+USER PAGE STACK 0000000000133000 P 1 U 1 W 1 X 0
+USER WINDOW PAGES 00000400 USER 00000002
+USER ENTER RIP 0000000000132000 RSP 0000000000134000 ARG 0000000000000000
+USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000202 CPL 3
+USER WRITE HELLO FROM RING 3
+USER EXIT CODE 0000000000000000 SYSCALLS 00000003 REFUSALS 00000000
+oscortex> user pf
+...
+FAULT 0E ERR 0000000000000007 OP C607
+PF CR2 000000000012B4D8 ERR 00000007 PRESENT WRITE USER DATA
+USER FAULT VEC 0E ERR 0000000000000007 RIP 0000000000136000 CPL 3
+USER CANARY 4B45524E454C2121 OK
+FAULT RECOVERED 0002 -- faulting computation abandoned, shell resumed
+```
+
+`USER` in that error code is the bit that had never been observed. The payload is 17 bytes of
+hand-written machine code that stores one byte into kernel `.bss`; the store is refused by the
+hardware, the address in `CR2` is exactly the one it aimed at, and the target word is read back
+afterwards and compared — *"the store did not land"* is a comparison, not the absence of a fault.
+
+Seven commands, four of them designed to fail, because **a privilege boundary is proved by refusals**:
+`mov %cr3` from ring 3 (#GP), a store into kernel memory (#PF with `USER`), `int $3` through a DPL-0
+gate (#GP `0x1A` = "IDT entry 3"), and a syscall handed a kernel pointer (refused, and the payload
+exits with the refusal it was given). `user` itself is the control — without a payload that runs to
+completion, "ring 3 faulted" would be equally consistent with "nothing executes in ring 3 at all".
+
+**The CPL is never asked of the code under test.** The `whoami` syscall reports the `CS` the *CPU*
+pushed when it took the `int 0x80`; its low two bits are the privilege level the processor believed
+the code was running at. And `user hold` leaves a payload spinning in ring 3 so the harness can stop
+the machine mid-flight: QEMU's own `info registers` says `CPL=3`, `CS =0023`, and the live page tables
+show exactly **two of 1024** pages in the 4KiB window user-accessible — the payload's code
+(read+execute) and stack (read+write), W^X applying to ring 3 exactly as it applies to the kernel —
+while no page of `.text`, `.rodata`, `.data`/`.bss` or the first megabyte is.
+
+**Two writes nearly stopped it, and both were the M8 lesson in a mirror.** M8 made `.rodata`
+read-only, and the GDT is in `.rodata`. `ltr` sets the *busy* bit in the TSS descriptor; loading a
+segment selector sets the *accessed* bit. Both are writes into the GDT, and both produced a page fault
+on a descriptor that was perfectly correct. Where M8's near-miss was entries that were right and a CPU
+that ignored them, this was tables that were right and a CPU that refused them — **for a reason that
+is nowhere in the table.** Both were fixed by removing the write rather than the protection, so the
+GDT stays read-only.
+
+**What this is, and is not:** a privilege level with two pages, not a process. One PML4, still the
+kernel's. No scheduler, no preemption, no ELF loader, no `fork`, no `exec`, no SMEP/SMAP, and `user
+hold` cannot be stopped once started. See
+`core/docs/decisions/0013-ring-3-and-the-syscall-boundary.md` and `docs/known-gaps.md` GAP-0085.
+
 **What this is, and is not:** fault survival with *abandonment* of the faulting computation. The
 command that faulted is gone — not repaired, not retried, not resumed. Resuming a failed computation
 after fixing its cause is a condition system, and that needs language support neither this kernel nor

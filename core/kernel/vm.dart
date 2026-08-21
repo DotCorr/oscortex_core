@@ -617,6 +617,23 @@ const int vmPresent = 1;
 const int vmWritable = 2;
 const int vmHuge = 128;
 
+/// **U/S — bit 2. The bit this whole kernel did not have until M9.**
+///
+/// With it clear, a page is SUPERVISOR-ONLY: any access from CPL 3 is a page
+/// fault whatever else the entry says. Every page this kernel has ever mapped
+/// has had it clear, which is why the `USER`/`SUPER` field of the page-fault
+/// report had only ever printed one of its two values (docs/known-gaps.md
+/// GAP-0081 item 1).
+///
+/// Like every other permission it is the AND of the whole chain, so a page is
+/// user-accessible only if the PML4 entry, the PDPT entry, the page-directory
+/// entry AND the leaf all set it. [vmBuild] sets it on the four interior
+/// entries that lead to the 4KiB window and on NO leaf; [vmMapUser] sets it on
+/// exactly the leaves a payload needs, and [vmClearUser] takes it away again.
+/// That is what makes "the kernel's pages are not user-accessible" a property
+/// of every leaf rather than of one interior entry someone might later change.
+const int vmUser = 4;
+
 /// Donated storage: sixteen `u64` words. See `core/boot/kdata.S`.
 const int vmStoreBytes = 128;
 const int vmStoreWords = 16;
@@ -743,6 +760,18 @@ external u64 vm_exec_probe(u64 addr);
 /// `vmtest nx`: the same probe against an executable page.
 @extern
 external u64 vm_exec_ok_addr();
+
+/// `invlpg (%rdi)` — drop the TLB entries for one page.
+///
+/// **M9 is the first thing in this kernel that edits a live mapping**, which is
+/// exactly the moment docs/known-gaps.md GAP-0083 named. Until now there was
+/// one `mov %rdi,%cr3` at boot and writing CR3 flushes everything, so no
+/// invalidation was needed anywhere. [vmMapUser] and [vmClearUser] change two
+/// leaf entries while the CPU is running on the table those entries are in; a
+/// stale translation would make the payload's first instruction fetch fault for
+/// a permission that is no longer in the table.
+@extern
+external void tlb_invlpg(u64 va);
 
 // ---------------------------------------------------------------------------
 // Metadata primitives. Everything below goes through the seam.
@@ -1119,12 +1148,26 @@ void vmBuild() {
 
   final u64 nx = vmNxBit();
   final u64 pw = u64(vmPresent) | u64(vmWritable);
+  // M9. U/S on the four interior entries that lead into the 4KiB window, and on
+  // nothing else. Exactly the same argument the comment above makes for W and
+  // NX: an interior entry is not a permission, it is the ABSENCE OF A VETO. A
+  // U/S=0 entry on `PML4[0]` would make every leaf under it supervisor-only no
+  // matter what the leaf said, so a kernel that wanted ONE user page would have
+  // to clear the veto for the whole gigabyte anyway.
+  //
+  // **Nothing becomes user-accessible because of these four bits.** Every leaf
+  // in the table is written with U/S clear below, and the effective permission
+  // is the AND. `[4MiB, 128MiB)`'s 2MiB entries and the PCI hole's are leaves,
+  // and they do not get it. The conformance harness reads the U bit of all 1600
+  // pages out of guest memory and requires every one of them to be 0 before any
+  // payload is mapped, which is the only way this claim is worth anything.
+  final u64 pwu = pw | u64(vmUser);
 
-  vmSetEntry(pml4, u64(0), pdpt | pw);
-  vmSetEntry(pdpt, u64(0), pdLow | pw);
+  vmSetEntry(pml4, u64(0), pdpt | pwu);
+  vmSetEntry(pdpt, u64(0), pdLow | pwu);
   vmSetEntry(pdpt, u64(3), pdPci | pw | nx);
-  vmSetEntry(pdLow, u64(0), pt0 | pw);
-  vmSetEntry(pdLow, u64(1), pt1 | pw);
+  vmSetEntry(pdLow, u64(0), pt0 | pwu);
+  vmSetEntry(pdLow, u64(1), pt1 | pwu);
 
   // The 4KiB window: [0, 4MiB), one entry per page, permissions per section.
   u64 pages4k = u64(0);
@@ -1631,4 +1674,224 @@ void vmTestX() {
 @bare
 void vmTestUsage() {
   uartWrite(Rodata.addressOf(vmStrTestUsage), u64(39));
+}
+
+// ---------------------------------------------------------------------------
+// M9 (docs/decisions/0013-ring-3-and-the-syscall-boundary.md): THE NARROWEST
+// POSSIBLE map/unmap API.
+//
+// GAP-0081 item 3 said this kernel had no `map(va, pa, flags)` / `unmap(va)`
+// and that they were "the obvious next thing", deliberately not built because
+// nothing needed them. Something needs them now: a ring-3 payload has to have
+// two pages the CPU will let CPL 3 touch, and there is no way to express that
+// in a table where every leaf is supervisor-only.
+//
+// WHAT IS BUILT IS NOT `map(va, pa, flags)`. These two functions do not create
+// a mapping, do not choose an address, do not allocate a page table and cannot
+// map anything that is not already mapped. They flip the U/S bit and the
+// W/NX pair of a leaf that already exists inside the 4KiB window, and put it
+// back. That is the whole of what M9 needs, and it is a much smaller claim: no
+// new level of table can be required, no frame can be needed part-way through,
+// and the refusals are three range checks rather than an allocation path.
+//
+// The general API is still unbuilt and still GAP-0081 item 3. What has changed
+// is that the TLB half of it (GAP-0083) is no longer theoretical: both
+// functions invalidate, and they invalidate because they were measured to need
+// it, not because it seemed prudent.
+// ---------------------------------------------------------------------------
+
+/// [vmMapUser] / [vmClearUser] status codes.
+const int vmUserOk = 0;
+
+/// The address space was never installed — `vmInit` refused, and the kernel is
+/// running on `boot.S`'s bootstrap tables, which this code does not own.
+const int vmUserNotReady = 1;
+
+/// Outside `[0, vmFineBytes)`. Only the 4KiB window has per-page leaves; a
+/// 2MiB page cannot be given to one payload without giving it 511 more.
+const int vmUserOutside = 2;
+
+/// The leaf is not present. Nothing here creates a mapping — see the header.
+const int vmUserNotMapped = 3;
+
+/// Address of the page-table ENTRY that maps [va], or 0 if [va] is outside the
+/// 4KiB window.
+///
+/// The window is two page tables, `pt0` covering `[0, 2MiB)` and `pt1` covering
+/// `[2MiB, 4MiB)`, and the index within either is bits 20..12 of the address.
+/// The frames come from [vmFrame] rather than from a walk, because these two
+/// tables are the ones this kernel built and their addresses are recorded; a
+/// walk would be a longer way of reaching the same words and would also succeed
+/// on a 2MiB page, which is precisely the case that must fail here.
+@bare
+u64 vmFineLeafSlot(u64 va) {
+  if (va >= u64(vmFineBytes)) {
+    return u64(0);
+  }
+  u64 t = vmFrame(u64(vmIxPt0));
+  if (va >= u64(vmBigBytes)) {
+    t = vmFrame(u64(vmIxPt1));
+  }
+  return t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+}
+
+/// Makes the 4KiB page at [va] reachable from ring 3.
+///
+/// [exec] selects which of the two shapes a payload page can have, and there
+/// are only two on purpose:
+///
+/// | [exec] | bits | for |
+/// |---|---|---|
+/// | 1 | present, user, **not writable**, executable | the payload's code |
+/// | 0 | present, user, writable, **not executable** | the payload's stack |
+///
+/// **W^X applies to ring 3 as well, and that is not decoration.** The code page
+/// holds the payload's instructions and its message bytes and nothing writes to
+/// it after the copy, so it does not need to be writable; the stack is written
+/// on every push and nothing is ever fetched from it. A payload that could
+/// write its own code, or execute its own stack, would be the same hole this
+/// kernel closed for itself at M8, reopened for the one program that is
+/// actually untrusted.
+///
+/// The physical address is preserved out of the existing entry rather than
+/// taken from [va], even though the map is identity throughout: this function's
+/// job is to change permissions, and reading the frame number back out of the
+/// entry means it cannot silently re-point a page at itself if the map ever
+/// stops being identity.
+@bare
+u64 vmMapUser(u64 va, u64 exec) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmUserNotReady);
+  }
+  final u64 slot = vmFineLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmUserOutside);
+  }
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) < u64(1)) {
+    return u64(vmUserNotMapped);
+  }
+  u64 bits = u64(vmPresent) | u64(vmUser);
+  if (exec < u64(1)) {
+    bits = bits | u64(vmWritable) | vmNxBit();
+  }
+  Pointer<u64>.fromAddress(slot).value = vmEntryAddr(old) | bits;
+  tlb_invlpg(va);
+  return u64(vmUserOk);
+}
+
+/// Puts the 4KiB page at [va] back the way [vmBuild] would have written it.
+///
+/// The restored bits come from [vmPageFlags], the same function that wrote them
+/// at boot, so there is one definition of what a kernel page's permissions are
+/// and this cannot drift from it. In particular the page goes back to
+/// **supervisor**: after this returns, ring 3 cannot reach it, and the `user`
+/// command's second permission report says so from a fresh walk of the tables.
+///
+/// Called on the normal exit path from `shellUser` and on the fault path from
+/// `userAbort`, so a payload that dies with a #GP does not leave a
+/// user-accessible page behind. That is the difference between a privilege
+/// boundary and a privilege boundary that is open whenever something went
+/// wrong.
+@bare
+u64 vmClearUser(u64 va) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmUserNotReady);
+  }
+  final u64 slot = vmFineLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmUserOutside);
+  }
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) < u64(1)) {
+    return u64(vmUserNotMapped);
+  }
+  Pointer<u64>.fromAddress(slot).value = vmEntryAddr(old) | vmPageFlags(va);
+  tlb_invlpg(va);
+  return u64(vmUserOk);
+}
+
+/// The EFFECTIVE permissions of [va], combined across all four levels, packed
+/// into one `u64` because `@bare` DCDart has no tuple, record or struct.
+///
+/// | bit | meaning |
+/// |---|---|
+/// | 0 | present |
+/// | 1 | user-accessible (U/S set at EVERY level) |
+/// | 2 | writable (RW set at every level) |
+/// | 3 | executable (NX clear at every level) |
+///
+/// **The AND, not the leaf**, for the reason `m8-paging/derive.py` gives: a
+/// directory entry with U/S clear makes everything under it supervisor-only
+/// whatever the leaf says, so a report that read only the leaf would claim a
+/// page was user-accessible when the CPU would refuse it — and, worse, would
+/// claim a page was NOT user-accessible for the wrong reason.
+///
+/// Zero means "not mapped", unambiguously: a present page always has bit 0.
+@bare
+u64 vmEffective(u64 va) {
+  final u64 pml4 = vmMeta(u64(vmMetaPml4));
+  final u64 e4 = vmGetEntry(pml4, (va >> u64(39)) & u64(511));
+  if ((e4 & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  final u64 e3 = vmGetEntry(vmEntryAddr(e4), (va >> u64(30)) & u64(511));
+  if ((e3 & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  final u64 e2 = vmGetEntry(vmEntryAddr(e3), (va >> u64(vmBigShift)) & u64(511));
+  if ((e2 & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  u64 both = e4 & e3;
+  both = both & e2;
+  u64 either = e4 | e3;
+  either = either | e2;
+  if ((e2 & u64(vmHuge)) < u64(1)) {
+    final u64 e1 = vmGetEntry(vmEntryAddr(e2), (va >> u64(vmPageShift)) & u64(511));
+    if ((e1 & u64(vmPresent)) < u64(1)) {
+      return u64(0);
+    }
+    both = both & e1;
+    either = either | e1;
+  }
+  u64 r = u64(1);
+  if ((both & u64(vmUser)) > u64(0)) {
+    r = r | u64(2);
+  }
+  if ((both & u64(vmWritable)) > u64(0)) {
+    r = r | u64(4);
+  }
+  // NX is a VETO, so it combines the other way: any level with bit 63 set makes
+  // the page non-executable. On a CPU with no NX, `vmNxBit()` is 0, the mask is
+  // empty, and every present page reads back executable — which is the truth
+  // about that machine rather than a default.
+  if ((either & vmNxBit()) < u64(1)) {
+    r = r | u64(8);
+  }
+  return r;
+}
+
+/// How many 4KiB pages in `[lo, hi)` are user-accessible.
+///
+/// The kernel's own half of M9's central claim, and a COUNT rather than a
+/// yes/no on purpose: `user` prints it over the whole 4MiB window, so the
+/// statement is "none of the 1024 pages" before a payload is mapped, "exactly
+/// two" while one is running, and "none" again afterwards. A boundary that held
+/// only for the pages somebody thought to check would not be one.
+///
+/// `tests/conformance/m9-ring3/run.sh` performs the same scan out of guest
+/// physical memory with its own walk, because the kernel's report is evidence
+/// and not proof.
+@bare
+u64 vmCountUser(u64 lo, u64 hi) {
+  u64 n = u64(0);
+  u64 a = lo;
+  while (a < hi) {
+    if ((vmEffective(a) & u64(2)) > u64(0)) {
+      n = n + u64(1);
+    }
+    a = a + u64(vmPageBytes);
+  }
+  return n;
 }

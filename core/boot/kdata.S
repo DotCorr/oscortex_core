@@ -51,6 +51,17 @@
  * function, which is the tightest storage seam in this kernel;
  * `tests/conformance/m8-paging/run.sh` asserts the 5224 total and owns it now.
  *
+ * M9 TAKES IT TO 5368. `user_store` (below) is 128 bytes -- sixteen words for the
+ * ring-3 subsystem: which payload is loaded, the two frames it is running in,
+ * the CS/SS/RFLAGS the CPU pushed on its last syscall, the counters, and the
+ * canary word `user pf` aims at and must not reach. It is ONE symbol behind ONE
+ * accessor called from ONE function, the same seam `vm_store` uses.
+ * `user_resume_rsp` and `user_resume_ok` add 16 more and are DIFFERENT IN KIND:
+ * they hold a stack pointer and its guard, DCDart cannot read or write RSP, and
+ * they will still be assembly-owned on the day DCDart grows mutable statics --
+ * exactly like M4's `shell_resume_rsp`. `tests/conformance/m9-ring3/run.sh`
+ * asserts the 5368 total and owns it now.
+ *
  * M6 ADDS NOTHING, AND THAT WAS A CHOICE RATHER THAN AN ABSENCE OF NEED.
  * An ATA PIO driver's obvious shape is `read(lba, buffer)` and the buffer is
  * 512 bytes, which would have taken this file from 424 to 936 -- more than
@@ -430,6 +441,93 @@ vm_store:
     .size vm_store, 128
     .type vm_store, @object
 
+/* ------------------------------------------------------------------
+ * M9 (ADR-0013): the ring-3 subsystem's ENTIRE mutable state.
+ *
+ * 128 bytes, sixteen `u64` words, ONE symbol, ONE accessor -- `vm_store`'s
+ * shape exactly, for `vm_store`'s exact reason. `core/kernel/user.dart` reaches
+ * this block through ONE function (`userMetaBase`), the only place in the
+ * kernel that calls `user_store_addr`, and
+ * `tests/conformance/m9-ring3/run.sh` counts that call site.
+ *
+ * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern
+ * `cpu_info`, `fb_state`, `pmm_store` and `vm_store` already use:
+ *
+ *     +0    u64  live:       1 while a payload is executing in ring 3
+ *     +8    u64  mode:       which payload is loaded (a userMode* code)
+ *     +16   u64  codeFrame:  physical frame the payload's code is in, or 0
+ *     +24   u64  stackFrame: physical frame the payload's stack is in, or 0
+ *     +32   u64  entries:    ring-3 entries since boot
+ *     +40   u64  syscalls:   syscalls serviced since boot
+ *     +48   u64  lastCs:     the CS the CPU pushed on the last syscall. Its low
+ *                            two bits ARE the CPL the payload was running at,
+ *                            and reading them out of the interrupt frame is the
+ *                            only honest way to know it
+ *     +56   u64  lastSs:     likewise SS
+ *     +64   u64  lastFlags:  likewise RFLAGS
+ *     +72   u64  exitCode:   what the last `exit` syscall was given
+ *     +80   u64  refusals:   syscalls the kernel REFUSED (a bad pointer, an
+ *                            unknown number, a caller that was not in ring 3)
+ *     +88   u64  written:    bytes accepted by the `write` syscall
+ *     +96   u64  aborts:     payloads killed by a fault instead of exiting
+ *     +104  u64  canary:     THE TARGET of `user pf`. A word in supervisor
+ *                            `.bss` that ring 3 tries to store into and must
+ *                            not reach. Its value is set before the attempt and
+ *                            checked after, so "the store did not land" is a
+ *                            comparison rather than the absence of a fault
+ *     +112  u64  lastRip:    the RIP the CPU pushed on the last fault taken in
+ *                            ring 3, so the report can say WHERE in the payload
+ *     +120  u64  lastErr:    that fault's error code
+ *
+ * NOT ZEROED HERE -- the same rule as every word above. `userInit()` writes all
+ * sixteen from `kmain()` before the first byte of output.
+ *
+ * THIS TAKES DONATED `.bss` FROM 5224 BYTES TO 5368: 128 here and 16 more in
+ * the two asm-owned resume words below. docs/known-gaps.md GAP-0053 carries the
+ * running total. m5-pci, m6-disk, m7-frames and m8-paging each still assert
+ * their own milestone's number by SUBTRACTING the blocks that came after
+ * theirs, so no older claim is weakened by this.
+ * ------------------------------------------------------------------ */
+.align 8
+.global user_store
+user_store:
+    .skip 128
+    .size user_store, 128
+    .type user_store, @object
+
+/* The stack pointer `shellUser` was running on when it called `enter_user`,
+ * recorded by `enter_user` (core/boot/isr.S) at the moment it is called.
+ *
+ * The `exit` syscall's return path. The handler runs in interrupt context on
+ * the RING-0 stack, so it cannot simply return: the frames between it and the
+ * shell command belong to a different stack entirely. `user_return` sets RSP
+ * back to this value and `ret`s, which lands in `shellUser` immediately after
+ * its call -- the same one-store abandonment `shell_resume_rsp` performs for a
+ * fault, with the difference that nothing here went wrong.
+ *
+ * DCDart never reads or writes this word; it cannot read RSP at all. */
+.align 8
+.global user_resume_rsp
+user_resume_rsp:
+    .skip 8
+    .size user_resume_rsp, 8
+    .type user_resume_rsp, @object
+
+/* 1 once `user_resume_rsp` holds a real value; 0 otherwise.
+ *
+ * `shell_resume_ok`'s argument, verbatim: `.bss` is not zeroed by anything in
+ * this kernel, so loading `user_resume_rsp` into RSP without this guard would
+ * put a garbage stack pointer in RSP and triple-fault the machine. Unlike the
+ * shell's, this one is also CLEARED on every return -- an `exit` syscall is a
+ * one-shot event and a second one, from ring 0, from a payload that has already
+ * finished, has nothing to return to. */
+.align 8
+.global user_resume_ok
+user_resume_ok:
+    .skip 8
+    .size user_resume_ok, 8
+    .type user_resume_ok, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -565,6 +663,31 @@ pmm_store_addr:
 .type vm_store_addr, @function
 vm_store_addr:
     leaq vm_store(%rip), %rax
+    ret
+
+/* uint64_t user_store_addr(void) -- base of the 128-byte ring-3 state block.
+ * See `user_store` above for the word layout.
+ *
+ * THE ENTIRE STORAGE SEAM FOR THE RING-3 SUBSYSTEM IS THIS ONE FUNCTION, and it
+ * is called from exactly ONE place: `userMetaBase()` in core/kernel/user.dart.
+ * The same rule `vm_store_addr` states, and `tests/conformance/m9-ring3/run.sh`
+ * counts it the same way. */
+.align 16
+.global user_store_addr
+.type user_store_addr, @function
+user_store_addr:
+    leaq user_store(%rip), %rax
+    ret
+
+/* uint64_t user_resume_ok_addr(void) -- so `userInit()` can clear the guard
+ * before anything can enter ring 3. The RSP word itself gets no accessor, for
+ * the reason `shell_resume_rsp` gets none: no DCDart code has any business
+ * reading or writing a stack pointer. */
+.align 16
+.global user_resume_ok_addr
+.type user_resume_ok_addr, @function
+user_resume_ok_addr:
+    leaq user_resume_ok(%rip), %rax
     ret
 
 /* Mark the stack non-executable. Nothing here needs an executable stack, and

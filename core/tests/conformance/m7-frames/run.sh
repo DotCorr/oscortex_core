@@ -146,7 +146,18 @@ KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
 # dilute that by growing the total. m8-paging/run.sh owns the 5224 now.
 VM_STORE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="vm_store"{print $3; exit}')
 [[ -n "$VM_STORE_SIZE" ]] || fail "vm_store is not in kdata.o — M8's virtual-memory state block is missing"
-NON_VM_BSS=$(( KDATA_BSS - VM_STORE_SIZE ))
+# M9 (ADR-0013) added a third block after M8's: `user_store` (128 bytes, the
+# ring-3 subsystem's state) plus the two asm-owned resume words
+# `user_resume_rsp`/`user_resume_ok` (8 each). They are SUBTRACTED here rather
+# than folded into the total, for the same reason `vm_store` and `pmm_store`
+# are: this milestone's claim is about ITS OWN number, and a later milestone
+# must not be able to dilute it by growing the total.
+M9_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_store"{print $3; exit}')
+M9_RSP=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resume_rsp"{print $3; exit}')
+M9_OK=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resume_ok"{print $3; exit}')
+[[ -n "$M9_STORE" && -n "$M9_RSP" && -n "$M9_OK" ]] || fail "user_store / user_resume_rsp / user_resume_ok are not all in kdata.o — M9's ring-3 state block is missing"
+M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
+NON_VM_BSS=$(( KDATA_BSS - VM_STORE_SIZE - M9_BSS ))
 if [[ "$NON_VM_BSS" -ne 5096 ]]; then
   fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $VM_STORE_SIZE are M8's vm_store, leaving $NON_VM_BSS — expected 5096 (424 before M7, plus 4672 for the allocator)."
 fi
@@ -262,7 +273,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M7 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1155
+check_table shellStrHelp 1589
 check_table pmmStrBase 9
 check_table pmmStrStore 7
 check_table pmmStrBitmap 8
@@ -348,6 +359,15 @@ for sym in $M8_EXTERNS; do
   grep -q "$sym" <<<"$VERIFY_OUT" && M8_PRESENT=$(( M8_PRESENT + 1 ))
 done
 [[ "$M8_PRESENT" -eq 12 ]] || fail "only $M8_PRESENT of M8's 12 externs are in kmain.o's manifest"
+# M9 (ADR-0013) added eight more, and they are subtracted BY NAME for the reason
+# the donated-`.bss` check above subtracts M9's blocks: this milestone's claim is
+# about its own externs.
+M9_EXTERNS="enter_user gdt_base tlb_invlpg tr_read tss_base user_resume_ok_addr user_return user_store_addr"
+M9_PRESENT=0
+for sym in $M9_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - M9_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M8_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's twelve, expected 32 (29 from M6 plus pmm_store_addr, kernel_image_start, kernel_image_end)"
 for sym in pmm_store_addr kernel_image_start kernel_image_end; do

@@ -21,6 +21,23 @@
 
 .extern kmain
 
+/* M9: GDT selectors, named once so the value and the meaning stay together.
+ * The low two bits of a selector are its RPL, so the ring-3 selectors are
+ * spelled with the |3 that `iretq` actually needs -- a bare 0x20 in the CS
+ * slot of an `iretq` frame is a #GP, and the reason is invisible in hex. */
+.set SEL_KCODE,     0x08
+.set SEL_KDATA,     0x10
+.set SEL_UDATA,     0x18 | 3      /* 0x1B */
+.set SEL_UCODE,     0x20 | 3      /* 0x23 */
+.set SEL_TSS,       0x28
+/* A 64-bit TSS is 104 bytes; the limit is one less, and `iomap_base` is set to
+ * the size itself so it lies PAST the limit, which is how x86 spells "there is
+ * no I/O permission bitmap". */
+.set TSS_SIZE,      104
+.set TSS_LIMIT,     TSS_SIZE - 1
+.set TSS_RSP0_OFF,  4
+.set TSS_IOMAP_OFF, 102
+
 /* ------------------------------------------------------------------
  * Multiboot1 header -- must be within the first 8KiB of the file and
  * 4-byte aligned. kernel.ld places .multiboot first in the image.
@@ -164,6 +181,79 @@ stack_bottom:
     .skip 16384                   /* 16KiB boot stack */
 stack_top:
 
+/* ------------------------------------------------------------------
+ * M9 (docs/decisions/0013-ring-3-and-the-syscall-boundary.md): THE TSS, AND THE
+ * RING-0 STACK IT NAMES.
+ *
+ * WHERE RSP0 COMES FROM, STATED RATHER THAN INHERITED.
+ * When the CPU takes an interrupt while CPL == 3 it does NOT keep using the
+ * current stack: it reads RSP0 out of the TSS, loads it into RSP, and pushes
+ * the five-word frame there. With no TSS loaded, or with RSP0 zero, that push
+ * is to an unusable address, the page fault it raises cannot be delivered
+ * either, and the machine triple-faults and reboots with no diagnostic. RSP0 is
+ * therefore not bookkeeping; it is the whole reason a ring-3 program can be
+ * interrupted at all -- and this kernel's payloads reach the kernel ONLY by
+ * being interrupted, on their second instruction.
+ *
+ * WHY IT IS A SEPARATE STACK FROM `stack_top` ABOVE, AND NOT THE SAME ONE.
+ * The boot stack is IN USE when a payload runs: the `user` shell command is a
+ * frame on it, `shellMain` is a frame under that, and M4's recovery mark
+ * (`shell_resume_rsp`) points into the middle of it. Setting RSP0 to
+ * `stack_top` would make the first syscall push its interrupt frame over the
+ * TOP of that stack -- i.e. over `shellMain`'s own frame -- and the corruption
+ * would only become visible after control returned to the shell, which is the
+ * worst possible time to discover it. 16KiB, the same size as the boot stack,
+ * because a fault taken in ring 3 is delivered here too and gets the same
+ * headroom the kernel's own faults get.
+ *
+ * IT IS IN boot.S's `.bss` AND NOT IN kdata.S, on purpose, for exactly the
+ * reason `nx_flag` above is: `kdata.S` is DCDart's donated MUTABLE storage and
+ * its byte count is a measurement of a language gap (docs/known-gaps.md
+ * GAP-0053). A CPU stack is neither -- no DCDart code reads or writes it, and
+ * DCDart cannot read RSP at all. It is also inside `[__kernel_start,
+ * __kernel_end)`, so the M7 frame allocator already reserves it, and
+ * `core/kernel/vm.dart` maps `.bss` writable and non-executable, which is
+ * exactly what a kernel stack must be.
+ *
+ * THE TSS IS DECLARED BEFORE THE STACK, AND THE ORDER IS A CHOICE.
+ * They are adjacent whichever way round they go, and there is no guard page
+ * (docs/known-gaps.md GAP-0081 item 6 is still open). This way RSP0 is
+ * `kstack0_top`, a distinct address from `tss_base()`, so the two are
+ * distinguishable in the `USER TSS ... RSP0 ...` report -- with the other order
+ * they are the SAME address and the report reads like a bug. It also puts the
+ * TSS where a stack that overflows lands on it, which corrupts RSP0 and makes
+ * the next entry from ring 3 a triple fault: loud, immediate, and attributable,
+ * rather than silently overwriting the boot stack's live frames.
+ * ------------------------------------------------------------------ */
+
+/* The 64-bit Task State Segment. 104 bytes, and this kernel uses exactly one
+ * field of it -- RSP0, at offset 4.
+ *
+ * Long mode deleted hardware task switching, so a TSS is no longer a saved
+ * context: it is a table of stack pointers (RSP0-2) and interrupt-stack-table
+ * entries (IST1-7), plus the I/O permission bitmap base. There is no IST here
+ * (isr.S's header records why M1 removed it and what would bring it back), and
+ * there is no I/O bitmap -- `iomap_base` is set to 104, i.e. PAST the segment
+ * limit, which is the architecturally-defined way to say "no bitmap, so every
+ * `in`/`out` from CPL > IOPL is a #GP". That is a permission this milestone
+ * wants: a ring-3 payload must not be able to reach a device port.
+ *
+ * ZEROED EXPLICITLY by `_start` below. `.bss` is not cleared by anything in
+ * this kernel, and a garbage RSP1/RSP2/IST word is harmless only until
+ * something uses it, while a garbage `iomap_base` pointing INSIDE the segment
+ * would hand ring 3 whatever `.bss` happened to contain as an I/O permission
+ * bitmap. */
+.align 16
+tss64:
+    .skip 104
+
+/* The ring-0 stack RSP0 points at. See the note above for why it is separate
+ * from the boot stack and why it sits above the TSS. */
+.align 16
+kstack0_bottom:
+    .skip 16384                   /* 16KiB */
+kstack0_top:
+
 /* ------------------------------------------------------------------ */
 .section .text
 .code32
@@ -282,6 +372,77 @@ map_p2_pci_table:
     incl %ecx
     cmpl $512, %ecx
     jl map_p2_pci_table
+
+    /* --- M9: build the TSS, and the GDT descriptor that names it ------
+     * DONE HERE, IN 32-BIT MODE, BEFORE PAGING, for two reasons that happen to
+     * coincide: the descriptor needs `tss64`'s address split across three
+     * non-adjacent byte-fields (no ELF relocation can express that -- see the
+     * GDT at the bottom of this file), and `.rodata` stops being writable the
+     * moment core/kernel/vm.dart installs its tables. This is the last window
+     * in which both are true.
+     *
+     * Nothing here loads the task register. `ltr` runs later, from DCDart,
+     * once an IDT exists -- see `tss_load` in core/boot/isr.S for why a #GP on
+     * a malformed descriptor is worth a diagnostic instead of a triple fault. */
+
+    /* Zero all 104 bytes of the TSS. `.bss` is not cleared by anything in this
+     * kernel; a garbage `iomap_base` inside the limit would hand ring 3
+     * whatever `.bss` contained as an I/O permission bitmap. */
+    movl $tss64, %edi
+    movl %edi, %ecx
+    addl $TSS_SIZE, %ecx
+    xorl %eax, %eax
+zero_tss:
+    movb %al, (%edi)
+    incl %edi
+    cmpl %ecx, %edi
+    jl zero_tss
+
+    /* RSP0 -- the stack an interrupt taken in ring 3 is delivered on. Written
+     * as two dwords because the field is 64 bits and this is 32-bit code; the
+     * high half is zero because every address in this image is below 4GiB. */
+    movl $kstack0_top, %eax
+    movl %eax, tss64 + TSS_RSP0_OFF
+    movl $0, tss64 + TSS_RSP0_OFF + 4
+
+    /* iomap_base = 104: past the limit, so there is no bitmap and every `in`
+     * or `out` from CPL 3 (IOPL is 0) is a #GP. */
+    movw $TSS_SIZE, tss64 + TSS_IOMAP_OFF
+
+    /* The 16-byte system descriptor at gdt64_tss:
+     *
+     *   bytes 0-1  limit 15:0                       = 103
+     *   bytes 2-3  base 15:0
+     *   byte  4    base 23:16
+     *   byte  5    P(1) DPL(00) S(0) type(1001)     = 0x89, available 64-bit TSS
+     *   byte  6    G(0) 0 0 AVL(0) limit 19:16(0)   = 0
+     *   byte  7    base 31:24
+     *   bytes 8-11 base 63:32                       = 0
+     *   bytes 12-15 reserved                        = 0
+     *
+     * S = 0 is what makes it a SYSTEM descriptor rather than a code/data one,
+     * and it is the bit that makes the descriptor sixteen bytes wide instead of
+     * eight. Type 9 (not 11) is "available"; the CPU sets it to 11 (busy) when
+     * `ltr` loads it, and loading a descriptor that is ALREADY busy is a #GP --
+     * which is why this must be written as 9 even though a dump taken after
+     * boot will read 11. */
+    movl $tss64, %eax
+    movl %eax, %ecx
+    shll $16, %ecx                 /* base 15:0 into bits 31:16 */
+    orl $TSS_LIMIT, %ecx           /* limit 15:0 into bits 15:0 */
+    movl %ecx, gdt64_tss
+    movl %eax, %ecx
+    shrl $16, %ecx
+    andl $0xFF, %ecx               /* base 23:16 -> byte 4 */
+    orl $0x8900, %ecx              /* byte 5: present, DPL 0, system, type 9 */
+    movl %eax, %edx
+    andl $0xFF000000, %edx         /* base 31:24 -> byte 7 */
+    orl %edx, %ecx
+    movl %ecx, gdt64_tss + 4
+    movl $0, gdt64_tss + 8         /* base 63:32 */
+    movl $0, gdt64_tss + 12        /* reserved; a non-zero value here is a #GP
+                                    * on `ltr`, so it is written rather than
+                                    * inherited from .rodata's file bytes */
 
     /* --- Enable PAE (CR4 bit 5) -------------------------------------- */
     movl %cr4, %eax
@@ -412,6 +573,46 @@ long_mode_start:
     movw %ax, %gs
     movw %ax, %ss
 
+    /* --- M9: load the task register ---------------------------------
+     * =================================================================
+     * THIS IS HERE BECAUSE `ltr` WRITES TO THE GDT, AND THAT WAS MEASURED.
+     * =================================================================
+     * `ltr` does not merely load a register. It sets the BUSY bit in the TSS
+     * descriptor it loads -- type 9 (available) becomes type 11 (busy) -- so it
+     * is a STORE INTO THE GDT, and this kernel's GDT is in `.rodata`.
+     *
+     * Since M8 that is a read-only page with `CR0.WP` set, and the first
+     * revision of this milestone called `ltr` from DCDart after `idt_load()`,
+     * on the deliberate theory that a malformed descriptor should produce a
+     * reported #GP rather than a triple fault. What it produced instead was:
+     *
+     *     M1 FAULT 0E 0000000000000003
+     *
+     * -- a page fault, present + write + supervisor, on the descriptor itself.
+     * The descriptor was fine. The page was read-only, and W^X was working
+     * exactly as ADR-0012 says it does.
+     *
+     * The two available fixes were "move the GDT into `.data`" and "load the
+     * task register before the address space is installed". The second one is
+     * taken, because the first one gives up a property M8 paid for: the GDT is
+     * a table the CPU re-reads on every privilege transition and every
+     * interrupt, and it has no business being writable. Here, paging is on but
+     * `core/kernel/vm.dart` has not run, so the bootstrap tables -- which mark
+     * everything present and writable -- are still what the MMU is walking. The
+     * busy bit is written once, in the only window in which it can be, and the
+     * GDT is immutable from the CR3 switch onwards.
+     *
+     * What is given up is a diagnostic: a malformed TSS descriptor is a #GP
+     * here, before any IDT exists, which is a triple fault and a silently
+     * rebooting VM. That is the same risk every other line in this stub carries
+     * and it is why CLAUDE.md rule 4 puts GDT setup here in the first place.
+     * `tr_read()` (core/boot/isr.S) lets the kernel print the selector back out
+     * of the register afterwards, and `tests/conformance/m9-ring3/run.sh` reads
+     * the descriptor out of guest physical memory and asserts its type is 11 --
+     * busy -- which is a state only `ltr` can produce. */
+    movw $SEL_TSS, %ax
+    ltr %ax
+
     /* rsp already holds stack_top's (zero-extended) value from the
      * 32-bit setup above -- a valid 64-bit stack pointer, no extra
      * work needed. */
@@ -536,6 +737,37 @@ kernel_data_start:
     leaq __data_start(%rip), %rax
     ret
 
+/* uint64_t tss_base(void) -- the address of the 104-byte TSS.
+ *
+ * M9. Handed to DCDart so `user` can report RSP0 by READING IT BACK OUT OF THE
+ * TSS the CPU is using, rather than by reprinting the constant this file wrote
+ * -- the same discipline `cr0_read` gives WP and `cr3_read` gives the PML4. A
+ * kernel that printed `kstack0_top` would say nothing about whether the
+ * descriptor, the zeroing loop and `ltr` all did what they were supposed to.
+ *
+ * It is also how the conformance harness gets a start address for reading the
+ * TSS out of guest physical memory, though it cross-checks that against the
+ * link-time symbol rather than trusting this. */
+.align 16
+.global tss_base
+.type tss_base, @function
+tss_base:
+    leaq tss64(%rip), %rax
+    ret
+
+/* uint64_t gdt_base(void) -- the address of the GDT.
+ *
+ * M9, and for the same reason: the DPL bits in the two user descriptors are
+ * what makes ring 3 possible at all, and the harness reads them out of guest
+ * memory at the base the CPU's own GDTR reports. This accessor lets the kernel
+ * print the base it built so the two can be compared. */
+.align 16
+.global gdt_base
+.type gdt_base, @function
+gdt_base:
+    leaq gdt64(%rip), %rax
+    ret
+
 /* uint64_t nx_enabled(void) -- 1 if EFER.NXE was set at boot, else 0.
  *
  * Reads the word `_start` wrote after probing CPUID leaf 0x80000001. See
@@ -558,15 +790,89 @@ nx_enabled:
  * descriptor-type=code-or-data(44), present(47), executable(43),
  * long-mode(53)) -- not guessed, this exact shape is the standard
  * long-mode bootstrap pattern.
+ *
+ * ===================================================================
+ * M9: THREE MORE DESCRIPTORS, AND THE PRIVILEGE FIELD IS THE POINT.
+ * ===================================================================
+ * Everything above ran at CPL 0 because there was no descriptor in this table
+ * that could produce any other CPL. A segment's DPL is where the privilege
+ * level of running code comes from: `iretq` loads CS from a descriptor and the
+ * CPL becomes that descriptor's DPL (RPL, for a conforming/non-conforming
+ * check). So "run something unprivileged" is, first and last, "have a code
+ * descriptor with DPL 3 to load".
+ *
+ *   0x18  user data, DPL 3  -- loaded as 0x1B (selector | RPL 3) into SS and
+ *                              the data selectors
+ *   0x20  user code, DPL 3  -- loaded as 0x23 by `iretq`; the L bit makes it
+ *                              64-bit, exactly as the kernel's own does
+ *   0x28  the TSS, 16 bytes -- a SYSTEM descriptor, which in long mode is two
+ *                              GDT entries wide (it carries a 64-bit base),
+ *                              so it occupies 0x28 and 0x30
+ *
+ * ORDER IS NOT SIGNIFICANT HERE and that is worth saying, because it usually
+ * is: `syscall`/`sysret` require the user descriptors to sit at fixed offsets
+ * from `IA32_STAR`, in the order data-then-code. This kernel enters and leaves
+ * ring 3 with `iretq` and `int 0x80` (ADR-0013 §4 says why), which read the
+ * selector out of the stack frame and the IDT gate respectively, so any order
+ * would work. The `sysret` order is used anyway, so that adding `syscall`
+ * later is a new instruction and not a GDT rearrangement.
+ *
+ * THE TSS DESCRIPTOR IS PATCHED AT RUNTIME, IN 32-BIT MODE, BY `_start`.
+ * It cannot be written here: it needs `tss64`'s ADDRESS deposited into three
+ * separate bit-fields (base 15:0, base 23:16, base 31:24), and an ELF
+ * relocation can add a constant to a symbol but cannot shift it or split it
+ * across non-adjacent bytes. `_start` builds it with ordinary shifts before
+ * paging is enabled, which is also the last moment at which this page is
+ * writable at all -- `core/kernel/vm.dart` maps `.rodata` read-only, so the
+ * GDT is immutable from the CR3 switch onwards. That is the right property for
+ * a table the CPU re-reads on every privilege transition, and it is why the
+ * placeholder is here rather than in `.data`.
  * ------------------------------------------------------------------ */
 .section .rodata
 .align 8
+/* =====================================================================
+ * BIT 40 -- THE ACCESSED BIT -- IS PRE-SET ON ALL FOUR, AND THAT WAS MEASURED.
+ * =====================================================================
+ * The CPU SETS BIT 40 IN A DESCRIPTOR THE FIRST TIME IT IS LOADED into a
+ * segment register. That is a write into the GDT, and since M8 the GDT is on a
+ * read-only page with `CR0.WP` set. The kernel's own two descriptors have
+ * always had it set by the CPU during `long_mode_start`, before paging
+ * protections existed, so nothing ever noticed.
+ *
+ * The user descriptors are first loaded much later -- `enter_user` writes the
+ * user data selector into DS, and `iretq` loads the user code selector into CS
+ * -- long after `core/kernel/vm.dart` has made this page read-only. The first
+ * revision of this milestone got, from `mov %eax,%ds`:
+ *
+ *     FAULT 0E ERR 0000000000000003 OP 8ED8
+ *     PF CR2 000000000011701C ERR 00000003 PRESENT WRITE SUPER DATA
+ *
+ * CR2 is `gdt64 + 0x1C`: byte 4 of the user data descriptor. The descriptor was
+ * correct; the CPU was trying to stamp it as accessed and the page said no.
+ *
+ * This is the SECOND instance of the same class in this file -- `ltr` writes the
+ * busy bit, a segment load writes the accessed bit -- and the lesson is the one
+ * ADR-0012 §2 already stated in a different key: **a table can be correct and
+ * the hardware can still refuse to use it, for a reason that is nowhere in the
+ * table.** Both are fixed by making the write unnecessary rather than by making
+ * the page writable, so the GDT stays read-only, which is what a table the CPU
+ * consults on every privilege transition should be.
+ * ===================================================================== */
 gdt64:
     .quad 0                                              /* null descriptor */
 gdt64_code:
-    .quad (1<<41) | (1<<43) | (1<<44) | (1<<47) | (1<<53) /* RW, E, S, P, L */
+    .quad (1<<40) | (1<<41) | (1<<43) | (1<<44) | (1<<47) | (1<<53)
+                                                          /* A, RW, E, S, P, L */
 gdt64_data:
-    .quad (1<<41) | (1<<44) | (1<<47)                     /* RW, S, P */
+    .quad (1<<40) | (1<<41) | (1<<44) | (1<<47)           /* A, RW, S, P */
+gdt64_user_data:
+    .quad (1<<40) | (1<<41) | (1<<44) | (3<<45) | (1<<47) /* A, RW, S, DPL 3, P */
+gdt64_user_code:
+    .quad (1<<40) | (1<<41) | (1<<43) | (1<<44) | (3<<45) | (1<<47) | (1<<53)
+                                                          /* A, RW, E, S, DPL 3, P, L */
+gdt64_tss:
+    .quad 0                       /* patched by _start: limit/base/type/P */
+    .quad 0                       /* patched by _start: base 63:32 */
 gdt64_pointer:
     .word . - gdt64 - 1
     .quad gdt64

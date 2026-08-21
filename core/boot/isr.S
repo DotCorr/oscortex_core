@@ -56,6 +56,18 @@
  * CLAUDE.md rule 3 forbids. It comes back with the milestone that adds a real
  * double-fault test and can prove it works.
  *
+ * M9 BROUGHT THE TSS BACK -- AND ONLY THE TSS. `core/boot/boot.S` now builds a
+ * 104-byte TSS and loads it, because a ring-3 program cannot be interrupted at
+ * all without RSP0: the CPU reads it out of the TSS and switches to it on every
+ * entry from CPL 3. That is a scenario M9 DOES create, on the payload's second
+ * instruction, which is precisely the test the paragraph above said would have
+ * to exist first.
+ *
+ * THE IST IS STILL GONE, and the argument above is unchanged: every gate this
+ * kernel installs still has IST 0, every interrupt is still delivered on a
+ * healthy stack, and there is still no double-fault test. `m9-ring3/run.sh`
+ * asserts IST 0 on all 256 gates so that stays a decision rather than a drift.
+ *
  * WHAT M4 ADDED, AND WHY IT IS STILL THIS FILE
  * ------------------------------------------------------------------
  * Four routines, each one squarely inside the charter above -- something
@@ -69,6 +81,21 @@
  *                                      instead (known-gaps GAP-0063).
  *   cpu_probe                          executes `cpuid`. No DCDart primitive,
  *                                      and no general inline asm.
+ *
+ * WHAT M9 ADDED (docs/decisions/0013-ring-3-and-the-syscall-boundary.md)
+ * ------------------------------------------------------------------
+ *   enter_user    writes segment registers, builds an interrupt frame by hand
+ *                 and executes `iretq`. DCDart has none of the three.
+ *   user_return   sets RSP to a recorded value and returns onto a stack
+ *                 belonging to a different call -- fault_resume's sibling.
+ *   tr_read       `str`, so the report reads the task register rather than
+ *                 restating the selector this kernel meant to load.
+ *   tlb_invlpg    `invlpg`. Privileged, no DCDart primitive, and the first
+ *                 thing in this kernel that has ever needed it (GAP-0083).
+ *
+ * `ltr` is NOT here. It writes the busy bit into the TSS descriptor, which
+ * since M8 is on a read-only page, so it has to run in `boot.S` before
+ * `vm.dart` installs the real tables -- see ADR-0013 §2 and GAP-0086.
  *
  * STATUS: LIVE. Unlike this file's first revision, it is assembled and linked
  * by core/scripts/build-kernel.sh and executed by
@@ -485,6 +512,23 @@ fault_resume:
     cli
     cmpq $1, shell_resume_ok(%rip)
     jne halt_forever
+    /* M9: put the kernel's own segment selectors back before switching stacks.
+     *
+     * A fault taken in RING 3 arrives here with DS/ES/FS/GS holding the ring-3
+     * data selector `enter_user` loaded, and with SS NULL (the CPU nulls it on
+     * a privilege-changing interrupt in long mode). None of that is harmful in
+     * long mode -- segmentation is off for data -- and none of it was harmful
+     * before M9 either, because a fault could only ever come from ring 0. It is
+     * reloaded anyway, because "the shell is running on a ring-3 stack selector
+     * because something faulted forty commands ago" is exactly the kind of
+     * inherited state that is fine until the day it is not. On a ring-0 fault
+     * these five writes store the values that are already there. */
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+    movw %ax, %ss
     movq shell_resume_rsp(%rip), %rsp
     andq $-16, %rsp
     call shellRecover             /* DCDart: reset shell state, say so, prompt */
@@ -749,6 +793,191 @@ vm_exec_ok:
 .type vm_exec_ok_addr, @function
 vm_exec_ok_addr:
     leaq vm_exec_ok(%rip), %rax
+    ret
+
+/* ==================================================================
+ * M9 (docs/decisions/0013-ring-3-and-the-syscall-boundary.md): THE PRIVILEGE
+ * BOUNDARY. Four routines, and every one of them is something DCDart cannot
+ * express in the strict sense this file's header means:
+ *
+ *   tr_read       `str` -- reads the task register, which DCDart cannot name.
+ *   enter_user    writes SS:RSP:RFLAGS:CS:RIP onto the stack and executes
+ *                 `iretq`. DCDart cannot write a segment register, cannot
+ *                 construct a stack frame, and has no `iretq`.
+ *   user_return   sets RSP to a recorded value and returns onto a stack whose
+ *                 frames belong to a different call. Same category as
+ *                 `fault_resume` above, and it is a deliberate sibling of it.
+ *   tlb_invlpg    `invlpg` -- privileged, no DCDart primitive.
+ *
+ * WHY NOT `syscall`/`sysret`. `int 0x80` needs one IDT gate whose DPL this
+ * kernel already knows how to write, and it lands in `isr_common`, which
+ * already saves all fifteen registers into the frame a DCDart handler reads.
+ * `syscall` needs three MSRs, a stack switch this kernel would have to write
+ * itself (SYSCALL does not change RSP), and a separate entry path. It is
+ * faster and it is a different milestone -- ADR-0013 §8.
+ * ================================================================== */
+
+/* M9: the resume point the `exit` syscall returns to, in core/boot/kdata.S.
+ * Written from here because DCDart cannot read RSP -- the same reason
+ * `shell_resume_rsp` is written from `shell_run_forever` above. */
+.extern user_resume_rsp
+.extern user_resume_ok
+
+/* uint64_t tr_read(void) -- `str`, the task register's current selector.
+ *
+ * Read BACK rather than remembered, the same discipline `cr0_read` and
+ * `cr3_read` follow: `user pages` prints what the CPU is actually using as its
+ * TSS, so the report says the task register was loaded rather than that
+ * `tss_load` was called. Zero here means `ltr` never ran, and zero is exactly
+ * what the register holds after reset. */
+.align 16
+.global tr_read
+.type tr_read, @function
+tr_read:
+    xorl %eax, %eax               /* `str` writes only the low 16 bits */
+    str %ax
+    ret
+
+/* void enter_user(uint64_t rip, uint64_t rsp, uint64_t arg,
+ *                 uint64_t cs, uint64_t ss)  -- DOES NOT RETURN NORMALLY.
+ *
+ * The transition. `iretq` is the only instruction that lowers CPL on this
+ * machine without `sysret`, and it does it by loading CS from the stack: the
+ * new CPL is that descriptor's DPL. Everything below is the frame `iretq`
+ * consumes, pushed in the order it pops.
+ *
+ *     rsp+32  SS       user data selector, RPL 3
+ *     rsp+24  RSP      the payload's own stack, in ITS page
+ *     rsp+16  RFLAGS   0x202
+ *     rsp+8   CS       user code selector, RPL 3
+ *     rsp+0   RIP      the payload's first instruction
+ *
+ * RFLAGS = 0x202 IS THREE DECISIONS, not a magic number:
+ *   bit 1  reserved, and it must be 1. A zero here is not ignored.
+ *   bit 9  IF -- INTERRUPTS STAY ENABLED IN RING 3, on purpose. A payload that
+ *          ran with interrupts off would never exercise RSP0, which is the one
+ *          field of the TSS this kernel fills and the one whose absence
+ *          triple-faults. With IF set, a timer or keyboard IRQ taken while the
+ *          payload is running is delivered on the ring-0 stack and `iretq`s
+ *          back to ring 3 -- the mechanism working, unprompted.
+ *   bits 12-13  IOPL = 0. `in`/`out` from CPL 3 is therefore a #GP, and the
+ *          TSS has no I/O permission bitmap to override it.
+ *
+ * THE REGISTER SCRUB IS NOT TIDINESS. Whatever is in a register at the moment
+ * of the `iretq` is readable by the payload, and at this point the registers
+ * hold kernel addresses -- the return address, the frame this function was
+ * called with, pointers into donated `.bss`. Ring 3 is supposed to know nothing
+ * it was not handed. Every general-purpose register is zeroed and exactly one,
+ * RDI, is given the argument, which is the only channel in.
+ *
+ * The resume point is recorded FIRST, before `cli`, because `user_return`
+ * cannot be reached until the payload makes a syscall and the payload cannot
+ * run until the `iretq` below. */
+.align 16
+.global enter_user
+.type enter_user, @function
+enter_user:
+    movq %rsp, user_resume_rsp(%rip)
+    movq $1, user_resume_ok(%rip)
+    cli                           /* RSP is about to stop describing this stack
+                                   * for the interrupted-from-ring-3 case; an
+                                   * IRQ in the middle of building the frame
+                                   * would push into the middle of it */
+    movq %rdi, %r9                /* rip */
+    movq %rsi, %r10               /* user rsp */
+    movq %rdx, %r11               /* arg -> the payload's RDI */
+
+    movq %r8, %rax                /* the user data selector */
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+
+    pushq %r8                     /* SS     */
+    pushq %r10                    /* RSP    */
+    pushq $0x202                  /* RFLAGS */
+    pushq %rcx                    /* CS     */
+    pushq %r9                     /* RIP    */
+
+    movq %r11, %rdi               /* the one thing ring 3 is told */
+    xorl %eax, %eax
+    xorl %ebx, %ebx
+    xorl %ecx, %ecx
+    xorl %edx, %edx
+    xorl %esi, %esi
+    xorl %ebp, %ebp
+    xorl %r8d, %r8d
+    xorl %r9d, %r9d
+    xorl %r10d, %r10d
+    xorl %r11d, %r11d
+    xorl %r12d, %r12d
+    xorl %r13d, %r13d
+    xorl %r14d, %r14d
+    xorl %r15d, %r15d
+    iretq                         /* CPL 0 -> CPL 3 */
+
+/* void user_return(void) -- NEVER RETURNS TO ITS CALLER.
+ *
+ * The `exit` syscall's second half. Called by the DCDart syscall handler while
+ * it is still running in interrupt context on the RING-0 stack, having decided
+ * the payload is finished. It abandons that stack -- the interrupt frame, the
+ * handler's frames, everything the syscall was standing on -- and RETURNS INTO
+ * `shellUser`, at the instruction after its `call enter_user`.
+ *
+ * This is `fault_resume`'s shape with one deliberate difference: it is not a
+ * recovery. Nothing went wrong, the payload ran to completion, and the shell
+ * command that started it gets to print what happened and clean up. That is why
+ * it `ret`s rather than calling `shellMain`: the frame it returns to is still
+ * live and still wants to run.
+ *
+ * SS IS RELOADED BECAUSE THE CPU NULLED IT. On an interrupt from CPL 3 in long
+ * mode the processor loads SS with the null selector; that is legal at CPL 0
+ * and the kernel has been running that way since the `int 0x80`, but leaving it
+ * null after this point would mean the shell ran with a null stack segment for
+ * the rest of the boot for no reason. DS/ES/FS/GS still hold the ring-3 data
+ * selector `enter_user` put there, which is equally harmless in long mode and
+ * equally worth not leaving behind.
+ *
+ * THE GUARD IS THE SAME GUARD `fault_resume` HAS, and for the same reason:
+ * `.bss` is not zeroed by anything in this kernel, so `user_resume_rsp` is
+ * garbage until `enter_user` writes it, and loading garbage into RSP triple-
+ * faults the machine. `userInit()` clears the flag at the top of `kmain()`. */
+.align 16
+.global user_return
+.type user_return, @function
+user_return:
+    cli
+    cmpq $1, user_resume_ok(%rip)
+    jne halt_forever
+    movq $0, user_resume_ok(%rip)
+    movw $0x10, %ax               /* the kernel data selector, gdt64_data */
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+    movw %ax, %ss
+    movq user_resume_rsp(%rip), %rsp
+    ret
+
+/* void tlb_invlpg(uint64_t va) -- invalidate one page's TLB entries.
+ *
+ * docs/known-gaps.md GAP-0083 said this becomes necessary "the moment anything
+ * EDITS a live mapping", and M9 is that moment: `user` gives two already-mapped
+ * pages new permission bits while the CPU is running on the table they are in.
+ * Without this the CPU may keep using a cached translation that says
+ * supervisor-only, and the payload's first instruction fetch would fault for a
+ * reason that no longer exists in the tables.
+ *
+ * ONE PAGE, NOT A CR3 RELOAD. Rewriting CR3 flushes everything and would also
+ * work; `invlpg` is what the edit actually needs, it says which page changed,
+ * and it does not throw away the other 1600 translations to change two. The
+ * shootdown half of GAP-0083 -- an IPI to other CPUs -- is still absent and
+ * still needs a second CPU to matter. */
+.align 16
+.global tlb_invlpg
+.type tlb_invlpg, @function
+tlb_invlpg:
+    invlpg (%rdi)
     ret
 
 /* ==================================================================

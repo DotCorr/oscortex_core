@@ -200,8 +200,19 @@ echo "STRUCTURAL: pass  the six section boundaries from kernel.ld are ordered, p
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
-[[ "$KDATA_BSS" -eq 5224 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 5224 (5096 through M7, plus 128 for the virtual-memory state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
-echo "STRUCTURAL: pass  kdata.o donates exactly 5224 bytes of .bss — 5096 inherited, 128 for the address space"
+# M9 (ADR-0013) added a third block after M8's: `user_store` (128 bytes, the
+# ring-3 subsystem's state) plus the two asm-owned resume words
+# `user_resume_rsp`/`user_resume_ok` (8 each). They are SUBTRACTED here rather
+# than folded into the total, for the same reason `vm_store` and `pmm_store`
+# are: this milestone's claim is about ITS OWN number, and a later milestone
+# must not be able to dilute it by growing the total.
+M9_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_store"{print $3; exit}')
+M9_RSP=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resume_rsp"{print $3; exit}')
+M9_OK=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="user_resume_ok"{print $3; exit}')
+[[ -n "$M9_STORE" && -n "$M9_RSP" && -n "$M9_OK" ]] || fail "user_store / user_resume_rsp / user_resume_ok are not all in kdata.o — M9's ring-3 state block is missing"
+M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
+[[ $(( KDATA_BSS - M9_BSS )) -eq 5224 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, of which $M9_BSS are M9's ring-3 blocks, leaving $(( KDATA_BSS - M9_BSS )) — expected 5224 (5096 through M7, plus 128 for the virtual-memory state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
+echo "STRUCTURAL: pass  kdata.o donates exactly 5224 bytes of .bss outside M9's blocks — 5096 inherited, 128 for the address space"
 
 # 2d. THE VM SUBSYSTEM'S STATE IS ONE SYMBOL.
 VM_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="vm_store"{print $3; exit}')
@@ -332,7 +343,16 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
-[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 (32 from M7 plus M8's twelve)"
+# M9 (ADR-0013) added eight more, and they are subtracted BY NAME for the reason
+# the donated-`.bss` check above subtracts M9's blocks: this milestone's claim is
+# about its own externs.
+M9_EXTERNS="enter_user gdt_base tlb_invlpg tr_read tss_base user_resume_ok_addr user_return user_store_addr"
+M9_PRESENT=0
+for sym in $M9_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - M9_PRESENT ))
+[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M9's eight, expected 44 (32 from M7 plus M8's twelve)"
 for sym in cr0_read cr2_read cr3_read paging_install vm_exec_probe vm_exec_ok_addr \
            nx_enabled kernel_text_end kernel_rodata_start kernel_rodata_end \
            kernel_data_start vm_store_addr; do
@@ -348,7 +368,7 @@ echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 32 from M7 plu
 #
 # GAP-0060: a @rodata table carries no length (DCDart ADR-0040), so every byte
 # count is a hand-maintained literal. M8 adds 48 tables and grows shellStrHelp
-# again (1028 -> 1155, two new command lines), so this is not hypothetical here
+# again (1028 -> 1155 at M8, 1589 at M9), so this is not hypothetical here
 # either.
 check_table() {
   local sym="$1" want="$2" got
@@ -356,7 +376,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M8 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1155
+check_table shellStrHelp 1589
 check_table vmStrCr3 7
 check_table vmStrPml4 6
 check_table vmStrNx 4
@@ -405,7 +425,7 @@ check_table vmCmdTestRw 9
 check_table vmCmdTestX 8
 check_table vmCmdTest 6
 check_table vmStrWp 4
-echo "STRUCTURAL: pass  all 48 M8 @rodata tables plus shellStrHelp (1028 -> 1155) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 48 M8 @rodata tables plus shellStrHelp (1028 -> 1155 -> 1589) are exactly the sizes their call sites pass"
 
 # ---------------------------------------------------------------------------
 # Step 4 — the boots.

@@ -573,11 +573,20 @@ the evidence that made it true, and so the one uncovered half is named.
 
 ## GAP-0053 — DCDart still has no mutable static data, and the shell made that expensive rather than merely awkward
 
-**Domain:** kernel (M2, M3, M4, M5, M6, M7, M8), DCDart-side language gap
+**Domain:** kernel (M2, M3, M4, M5, M6, M7, M8, M9), DCDart-side language gap
 **Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
-M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8.**
+M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9.**
 
-**THE M8 MEASUREMENT: 5224 bytes**, asserted exactly by `tests/conformance/m8-paging/run.sh`, which
+**THE M9 MEASUREMENT: 5368 bytes**, asserted exactly by `tests/conformance/m9-ring3/run.sh`. M9's 144
+bytes are 128 for `user_store` — the ring-3 subsystem's entire state, one symbol behind one accessor
+reached through one function, the same shape `vm_store` uses — plus 16 for `user_resume_rsp` and
+`user_resume_ok`, which hold a stack pointer and its guard and are therefore ASSEMBLY-owned forever:
+DCDart cannot read or write RSP, so those two will still be in `kdata.S` on the day mutable statics
+land. m8-paging now asserts its own 5224 by subtracting M9's blocks by name, as m5/m6/m7 already did
+for `pmm_store` and `vm_store`.
+
+**THE M8 MEASUREMENT: 5224 bytes**, asserted by `tests/conformance/m8-paging/run.sh` (excluding M9's
+blocks), which
 owns the total now. The new 128 bytes are `vm_store` — the virtual-memory subsystem's entire state:
 the PML4 it built, the six frames it took from the allocator, the page counts it mapped, the last page
 fault it reported, and one deliberately writable scratch word so `vmtest rw` can be the control for
@@ -1993,6 +2002,13 @@ those numbers, so the regenerated golden was checked against a derivation rather
 frames are asserted equal to `vm.dart`'s `vmFrameCount` by `m8-paging/run.sh`, so the two cannot
 drift.
 
+**M9 EXERCISED IT AGAIN, AND ONLY FOR THE FIRST REASON.** Ring 3 costs ~36KiB of image — a 16KiB
+ring-0 stack for RSP0, 104 bytes of TSS, 144 bytes of donated `.bss`, and `core/kernel/user.dart`'s
+code and tables — so `__kernel_end` moved by ten frames and `FREE` went `00007EB8` → `00007EAE`. It
+spends NO permanent frames of its own: the payload's two come from `allocFrame()` at command time and
+go back on every exit, including the three that are faults, which is what `user pages` reporting
+`USER 00000000` afterwards is for. `derive.py` needed no new rule. GAP-0087 records the regeneration.
+
 ---
 
 ## GAP-0079 — LLVM emits a jump table into `.rodata`, and `.rodata` is writable in this image
@@ -2088,24 +2104,31 @@ machine, and the only test that tells the difference is one that performs the fo
 ## GAP-0081 — What the address space does NOT do, listed rather than discovered later
 
 **Domain:** kernel (M8)
-**Status:** OPEN — deliberately scoped out. Every item is absence, not wrongness: nothing below is
-mis-reported, and `vm` prints what is actually mapped rather than what was intended.
+**Status:** PARTIALLY RESOLVED at M9. **Item 1 (no user/supervisor separation) is CLOSED**
+(`docs/decisions/0013-ring-3-and-the-syscall-boundary.md`, verified by
+`tests/conformance/m9-ring3/run.sh`); **item 3 (no map/unmap API) is NARROWED**; items 2 and 4-10 are
+still OPEN and item 2's successor list is GAP-0085. Every remaining item is absence, not wrongness:
+nothing below is mis-reported, and `vm` prints what is actually mapped rather than what was intended.
 
-1. **No user/supervisor separation.** Every page is mapped supervisor (U/S = 0). There is no ring 3, no
-   TSS to enter one from, no `syscall`/`sysret` path and no user page tables — so the `USER`/`SUPER`
-   field in the page-fault report has only ever printed `SUPER`, and the U bit in an error code has
-   never been observed set. This is the single largest thing between M8 and "an operating system"
-   rather than "a kernel with an address space".
+1. ~~**No user/supervisor separation.**~~ **RESOLVED at M9.** There is a ring-3 code and data
+   descriptor at DPL 3, a TSS with a real RSP0 loaded by `ltr`, an `int 0x80` gate at DPL 3, and
+   `vmMapUser`/`vmClearUser` to set and clear U/S on a leaf. The `USER`/`SUPER` field has now printed
+   both of its values — `PF CR2 ... ERR 00000007 PRESENT WRITE USER DATA` is a store from ring 3 into
+   kernel `.bss`, refused by the hardware, with the target word verified unchanged afterwards. What
+   M9 does NOT add is a process: the payload runs on the kernel's own PML4 with two pages temporarily
+   user-accessible. See ADR-0013 and GAP-0085.
 2. **One address space, and it is the kernel's.** There is one PML4, built once at boot. No second
    `CR3`, no per-process mapping, no address-space switch on a context switch — because there are no
    processes and no context switches.
-3. **Nothing ever CHANGES a mapping, so there is no `map`/`unmap` API.** `vmInit` installs a whole
-   address space once and never edits it again. `map(va, pa, flags)` and `unmap(va)` are the obvious
-   next thing and were deliberately not built: there is no caller for them yet, and the first one
-   brings item 4 with it.
-4. **No `invlpg`, and no TLB shootdown.** Writing `CR3` flushes every non-global TLB entry (PGE is
-   never enabled), which is why the one install needs no invalidation at all. The moment anything edits
-   a live mapping this becomes real, and on more than one CPU it becomes an IPI protocol.
+3. **NARROWED at M9, and only narrowed.** `vmInit` still installs a whole address space once, but it
+   is no longer true that nothing edits a mapping: `vmMapUser(va, exec)` and `vmClearUser(va)` flip
+   the U/S bit and the W/NX pair of a leaf that ALREADY EXISTS inside the 4KiB window, and they
+   invalidate (item 4, and GAP-0083, are consequently narrowed too). They cannot create a mapping,
+   choose an address, or allocate a page table, which is why the general `map(va, pa, flags)` /
+   `unmap(va)` is still unbuilt — the narrow pair is everything M9 needed and a much smaller claim.
+4. **PARTIALLY RESOLVED at M9: `invlpg` exists, shootdown does not.** M9 is the thing that edits a
+   live mapping, so `tlb_invlpg` was built and both `vmMapUser` and `vmClearUser` use it. TLB
+   SHOOTDOWN — the IPI protocol — is still absent and still needs more than one CPU to matter.
 5. **No demand paging, no swap, no copy-on-write, no lazy allocation.** Every page that will ever be
    mapped is mapped at boot.
 6. **Page 0 is mapped, and there is no guard page below the stack.** Leaving page 0 unmapped is a free
@@ -2175,8 +2198,10 @@ by someone who has read this entry, not by someone staring at a red harness.
 ## GAP-0083 — TLB management does not exist, and does not need to yet
 
 **Domain:** kernel (M8)
-**Status:** OPEN — genuinely not needed at M8, and named so the first thing that needs it does not
-discover it as a bug.
+**Status:** PARTIALLY RESOLVED at M9 — `invlpg` now exists and is used; shootdown does not and still
+needs a second CPU. Named at M8 so the first thing that needed it would not discover it as a bug,
+which is exactly what happened: `vmMapUser` edits two leaf entries while the CPU is running on the
+table they are in, and `core/boot/isr.S`'s `tlb_invlpg` was written for it. See ADR-0013.
 
 `paging_install` is one instruction, `mov %rdi,%cr3`, and it needs no invalidation: writing `CR3`
 flushes every non-global TLB entry, and this kernel never enables `CR4.PGE`, so there are no global
@@ -2221,3 +2246,160 @@ which the clone gets from the commit.
 **Cost of the workaround:** one command, and this entry so the next unit does not spend twenty minutes
 diagnosing it as a broken `dcc`.
 
+
+---
+
+## GAP-0085 — What ring 3 does NOT do, listed rather than discovered later
+
+**Domain:** kernel (M9)
+**Status:** OPEN — deliberately scoped out. Every item is absence, not wrongness: nothing below is
+mis-reported, and `user` prints what is actually mapped and what actually happened rather than what
+was intended.
+
+1. **No per-process address space.** There is still one PML4 and it is the kernel's. A payload runs on
+   the kernel's own page tables with exactly two leaves temporarily marked user-accessible, and it is
+   handed back the moment the payload exits or dies. **The payload is not a process; it is a privilege
+   level with two pages.** A second `CR3`, a per-process table, and a switch on entry and exit are the
+   obvious next thing and were deliberately not built: they bring the whole of GAP-0083's TLB question
+   with them and they need something to schedule.
+2. **No scheduler, no preemption, no processes.** One payload at a time, entered synchronously from a
+   shell command, running until it exits or faults. The timer interrupt fires while ring 3 is running
+   and returns to it — it does not and cannot decide to run something else.
+3. **`user hold` cannot be stopped.** Its payload spins forever and this kernel has no way to kill a
+   running program: that needs either preemption (a timer handler that declines to return to ring 3)
+   or a scheduler. `user hold` is therefore the LAST command any session can run, which is said out
+   loud in its own doc comment, in the shell dispatcher and in this entry rather than left to be
+   discovered.
+4. **Three syscalls, and two of them exist to be refused.** `exit`, `write` and `whoami`. No `read`, no
+   file descriptors, no `brk`, no `mmap`, no way for ring 3 to ask for memory at all. `write` is bounded
+   at 128 bytes and only accepts a pointer inside the payload's own two pages.
+5. **No ELF loader, no `fork`, no `exec`, no relocation.** A payload is a run of machine-code bytes in
+   this kernel's `.rodata`, copied into a frame and jumped to. ADR-0013 §4 explains why building a
+   loader to prove a privilege boundary would have made the loader the thing under test.
+6. **No SMEP, no SMAP, no PCID, no KPTI.** `CR4.SMEP` would stop the KERNEL executing a
+   user-accessible page and `CR4.SMAP` would stop it reading one without `stac`; neither is enabled, so
+   the `write` syscall's pointer check is software-only. It is a real check (ADR-0013 §5) and it is the
+   only one: a bug in it is not backstopped by hardware the way `.rodata` is backstopped by `CR0.WP`.
+7. **The syscall ABI is not DCDart's `@syscall`.** `DCDART_SPEC.md` §2 anticipates `@hosted` code
+   reaching `@bare` kernel services across "a syscall boundary, declared with `@syscall`". That is a
+   language feature and it exists on neither side. What M9 builds is the MACHINE boundary such a
+   declaration would compile down to.
+8. **A keystroke typed while a payload runs is dropped.** `shell_state` is 2 for the whole of a
+   command, including the part of it that is executing in ring 3, and `kbdHandle` discards keys in that
+   state. That is GAP-0055 item 4 (no input queue) reaching a new place rather than a new bug.
+9. **The `write` syscall prints straight to the console, with no arbitration.** A payload's bytes and
+   the kernel's own diagnostics go down the same UART in whatever order they are emitted. With one
+   payload and no preemption they cannot interleave; the moment either of those changes, they can.
+10. **A fault taken in the KERNEL while a payload is live still tears the payload down.** `userOnFault`
+    reports the CPL it actually read rather than assuming 3, but it reclaims either way — the payload
+    is not going to run again in either case. That is the right call for a kernel with no processes and
+    the wrong one for a kernel with them, because it would then be reclaiming somebody else's memory
+    on the strength of an unrelated fault.
+
+---
+
+## GAP-0086 — `ltr` runs before any IDT exists, so a malformed TSS descriptor is a triple fault
+
+**Domain:** boot, kernel (M9)
+**Status:** OPEN — accepted deliberately, with the mitigation that makes it safe.
+
+`ltr` SETS THE BUSY BIT IN THE TSS DESCRIPTOR, which is a write into the GDT, and since M8 the GDT is
+in `.rodata` — a read-only page with `CR0.WP` set. M9's first revision called it from DCDart after
+`idt_load()`, precisely so a malformed descriptor would be a reported `FAULT 0D` on a running kernel
+rather than a triple fault. It produced `M1 FAULT 0E ... ERR 3` instead: a page fault on the descriptor
+itself. See ADR-0013 §2 for the measurement.
+
+The fix moved `ltr` into `core/boot/boot.S`'s 64-bit stub, where paging is on but `vmInit` has not run,
+so the bootstrap tables still mark everything writable. **The cost is the diagnostic.** A malformed TSS
+descriptor now raises #GP before any IDT exists, which is a double fault and then a triple fault: a VM
+that reboots with no output at all.
+
+**Why the alternative was worse.** Moving the GDT into `.data` would have made it writable — a table
+the CPU re-reads on every privilege transition and every interrupt, on a writable page, giving up a
+property ADR-0012 paid for. The same argument applies to the ACCESSED bit, which is pre-set on all four
+segment descriptors for exactly this reason.
+
+**The mitigation:** `m9-ring3/run.sh` reads the TSS descriptor out of guest physical memory and
+requires its type to be **11 (busy)**, a state only `ltr` can produce, plus its base, limit, DPL and
+present bit; and requires the task register to report the same base. So `ltr` having run correctly is
+asserted from outside rather than inferred from the machine not having crashed. The structural half
+also asserts that `ltr` is in `boot.S` and NOT in `isr.S`, so the diagnostic-shaped mistake cannot be
+made again by accident.
+
+**Cost of the workaround:** one class of boot-time bug has no diagnostic. It is the same class every
+other line of the boot stub carries, which is why CLAUDE.md rule 4 puts GDT setup there.
+
+---
+
+## GAP-0087 — m3-shell's, m4-fault's, m5-pci's, m6-disk's, m7-frames' and m8-paging's goldens were regenerated at M9, deliberately
+
+**Domain:** conformance (M9)
+**Status:** OPEN — the same recurring cost GAP-0059, GAP-0065, GAP-0069, GAP-0072, GAP-0075 and
+GAP-0078 record, at the sixth milestone that has paid it. Recorded again because the METHOD is what
+makes it safe, and the method differed between the two groups.
+
+**Two different causes, and only one of them was a fresh capture.**
+
+* **m3, m4, m5 and m6 moved because `help` grew.** `shellStrHelp` went 1155 → **1589** bytes: seven new
+  command lines, because a command that is not in `help` is undiscoverable. Those four goldens were NOT
+  regenerated from a boot. The old seven-line block was located in each file and **mechanically
+  substituted** with the new one, and the kernel was then required to reproduce the result byte-for-byte
+  — which it did, at 4257, 3385, 3169 and 7679 bytes. m3's 80×25 screen golden was rebuilt the same
+  way: the seven lines were inserted after `vmtest` and seven lines were dropped off the top, which is
+  exactly what one more screenful of `help` does to an 80x25 buffer. (The first six of those seven were
+  constructed and then asserted equal to a real capture before being written; the seventh was
+  constructed and left to the harness to confirm, which it did.) A substitution that produced a file
+  the kernel does not print fails immediately — which is the whole reason this is substitution and not
+  a fresh capture.
+* **m7 and m8 moved because the image grew**, which is GAP-0078 exercised for the third time. M9 adds
+  ~36KiB — 16KiB of ring-0 stack, 104 bytes of TSS, 144 bytes of donated `.bss`, and `user.dart`'s code
+  and tables — so `__kernel_end` moved by ten frames and every address, count and fold in both goldens
+  moved with it: m7's `FREE 00007EB8` → `00007EAE`, its first `alloc` `128000` → `132000`, its drain's
+  `SUM`/`XOR`/`LOW`; m8's `CR3`/`PML4` `122000` → `12C000` and all six `VM SECT` boundaries. Those two
+  were regenerated with `run.sh --regen`, and **`derive.py` recomputed every one of those numbers from
+  the boot's own `MB E` memory-map lines and from `kernel.elf`'s extents**. The mitigation held exactly
+  as GAP-0078 says it does: regenerating cannot make a wrong allocator or a wrong map pass, because the
+  derived checks run against the same capture.
+
+**What did NOT move: `m1-interrupts/expected.txt`.** All 544 bytes are byte-for-byte identical, and
+that is the assertion that says ring 3 costs the boot path nothing — `userInit()` prints nothing, the
+DPL-3 gate is installed between `idtInstallAll` and `lidt`, and `ltr` runs in the boot stub. m0-boot,
+mb-info and m2-console are likewise untouched.
+
+**Cost:** whoever adds the next shell command pays the substitution again for four goldens, and whoever
+grows the image pays the `--regen` again for three. Both steps are mechanical and both are checked.
+
+---
+
+## GAP-0088 — LLVM will build a table out of a chain of `if`s, and it does not always land in `.rodata`
+
+**Domain:** toolchain, kernel (M9)
+**Status:** OPEN — a property of the backend, recorded so the next milestone that writes a dense
+constant chain knows what to expect.
+
+GAP-0079 recorded that LLVM lowered `pmmFreeStatus`'s dense dispatch into a jump table in `.rodata`.
+M9 hit the same behaviour in a different section. `userCodeLen` was written as five `if`s returning five
+constants, and `dcc`/LLVM lowered it into
+
+```
+.Lswitch.table.userCodeLen   ->  section .rodata.cst32
+```
+
+— a MERGEABLE-CONSTANT section, not `.rodata`. `m1-interrupts/run.sh` asserts that every `OBJECT`
+symbol `dcc` emits lives in `.rodata`'s section index, on the grounds that a table landing elsewhere
+might be writable or might not be loaded at all, and it failed.
+
+**The assertion was not relaxed.** ADR-0012 §8's rule applies: an assertion a milestone weakens in
+order to pass is not an assertion. The table LLVM wanted to build is written explicitly instead, as a
+six-byte `@rodata` table indexed by mode — which is where it belonged anyway, and which let the harness
+check its bytes against the payload symbols' real sizes in `kmain.o` rather than against a literal in a
+comment. That is a strictly stronger check than the one it replaced.
+
+**What is still true and still unfixed:** the backend is free to synthesise a table from ordinary
+control flow, and the section it chooses is not something this repo controls. The link script does
+place `*(.rodata.*)` into the read-only segment, so such a table WOULD have been read-only in the final
+image; what it would not have been is inside `.rodata`'s *object-file* section index, which is what the
+M1 assertion tests. The two are different claims and the assertion tests the narrower one on purpose.
+
+**Cost of the workaround:** one hand-written table, and this entry so the next dense `if`-chain in
+`@bare` DCDart is recognised as the same thing rather than diagnosed as a toolchain break.
