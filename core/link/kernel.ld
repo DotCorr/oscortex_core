@@ -42,6 +42,23 @@
  *    nothing (ld discards an empty output section) and removes the class.
  *    This becomes live the moment DCDart's static-data work lands.
  *
+ * 4. `__kernel_start` / `__kernel_end` (M7, ADR-0011) are the image's own
+ *    extents, exported so the physical memory manager can RESERVE the frames
+ *    the kernel is running in rather than hardcoding a guess about how big it
+ *    is. They are defined INSIDE output sections, deliberately: a symbol
+ *    assigned between sections is SHN_ABS, and `leaq __kernel_end(%rip)` on an
+ *    absolute symbol is not a relocation this `elf32-i386` container can carry
+ *    (the same class of problem note 1 records for `movabs`). Defined inside
+ *    `.multiboot` and `.bss` they are section-relative and reach DCDart through
+ *    two ordinary RIP-relative accessors in `core/boot/boot.S`.
+ *
+ *    `__kernel_end` is after `.bss` ON PURPOSE and not after `.data`: `.bss`
+ *    holds the boot stack, the four page-table pages and every donated word in
+ *    `kdata.S` -- including the page allocator's own bitmap. A reservation that
+ *    stopped at `.data` would let the allocator hand out the frames its own
+ *    bitmap lives in, which is the most self-referential corruption available
+ *    to this kernel.
+ *
  * PHDRS below forces every section into ONE PT_LOAD segment (FLAGS(7)
  * = RWX -- fine for M0, no fine-grained page permissions exist yet, see
  * boot.S's identity-mapping comment). Tested WITHOUT it too, after both
@@ -63,7 +80,7 @@ SECTIONS
 {
     . = 1M;
 
-    .multiboot : { *(.multiboot) } :kernel
+    .multiboot : { __kernel_start = .; *(.multiboot) } :kernel
     .text      : { *(.text) }      :kernel
     .rodata    : { *(.rodata) *(.rodata.*) } :kernel
 
@@ -72,5 +89,5 @@ SECTIONS
     .got       : { *(.got) }       :kernel
     .got.plt   : { *(.got.plt) }   :kernel
     .data      : { *(.data) }      :kernel
-    .bss       : { *(COMMON) *(.bss) } :kernel
+    .bss       : { *(COMMON) *(.bss) __kernel_end = .; } :kernel
 }

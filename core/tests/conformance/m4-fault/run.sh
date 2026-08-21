@@ -276,7 +276,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M4 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 621  # M5 added `pci`/`fb`, M6 the two `disk` lines; GAP-0060
+check_table shellStrHelp 1028  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines; GAP-0060
 check_table shellCmdCpu 3
 check_table shellCmdCrash 5
 check_table shellCmdCrashUd 8

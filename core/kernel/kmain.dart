@@ -28,6 +28,7 @@ part 'shell.dart';
 part 'pci.dart';
 part 'fb.dart';
 part 'ata.dart';
+part 'pmm.dart';
 
 /// Kernel entry point.
 ///
@@ -79,6 +80,29 @@ void kmain(u64 mbInfo) {
   // value every writer checks. Prints nothing and touches no hardware -- the
   // mode is not set until the `fb` command asks for it.
   fbInit();
+
+  // M7: the physical memory manager. Builds the frame bitmap out of the
+  // Multiboot memory map -- the map this kernel has read and thrown away on
+  // every boot since M0 now becomes 4KiB of retained state instead of a
+  // printed report.
+  //
+  // ORDER IS LOAD-BEARING TWICE OVER, and neither reason is style:
+  //
+  //   * AFTER shellInit(), because pmmInit() reads the Multiboot pointer out
+  //     of the word shellInit() stashes it in. Called before it, the allocator
+  //     would parse whatever `.bss` happened to contain and mark a bitmap from
+  //     it.
+  //   * BEFORE the first byte of output, because it prints NOTHING and must
+  //     keep printing nothing: `tests/conformance/m1-interrupts/run.sh`
+  //     asserts the ENTIRE 544-byte serial capture, and one diagnostic line
+  //     here would break a green milestone. The allocator is reported by the
+  //     `frames` command, from a prompt, not at boot.
+  //
+  // It is also the fourth time the same `.bss`-is-not-zeroed argument applies:
+  // the bitmap starts as garbage and pmmInit() fills it with 0xFF before it
+  // frees anything, so a frame is only ever free because the loader's memory
+  // map said so.
+  pmmInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

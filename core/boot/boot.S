@@ -39,10 +39,28 @@
     .long MB_CHECKSUM
 
 /* ------------------------------------------------------------------
- * Page tables (PAE, 2MiB pages) -- identity-mapped, first 16MiB. Enough
- * to cover the kernel image + boot stack with real margin; not a real
- * memory map (OSCORTEX_SPEC.md §4 -- deferred on purpose).
+ * Page tables (PAE, 2MiB pages) -- identity-mapped, first 128MiB.
+ *
+ * M7 (ADR-0011) RAISED THIS FROM 16MiB, AND THE NUMBER IS NOT ARBITRARY.
+ * It is the same number as the page allocator's frame bound
+ * (`pmmMaxFrames` = 32768 frames of 4KiB = 128MiB, core/kernel/pmm.dart),
+ * and they have to be the same number for the allocator to mean anything:
+ * a frame this kernel cannot ADDRESS is not a frame it can hand out. With
+ * eight entries the allocator would have managed 128MiB of RAM and been
+ * able to write to 16MiB of it, and the difference would have surfaced as
+ * a page fault inside whatever first used a high frame -- not as a
+ * diagnosable allocator bug.
+ *
+ * So the invariant, stated once and asserted by
+ * `tests/conformance/m7-frames/run.sh`: MAP_2MIB_PAGES * 2MiB ==
+ * pmmMaxFrames * 4KiB. Raising the allocator's bound means raising this,
+ * and the harness fails if only one of them moves.
+ *
+ * Still not a real memory map (OSCORTEX_SPEC.md §4 -- deferred on
+ * purpose): 64 entries of one page directory, identity, no permissions.
  * ------------------------------------------------------------------ */
+/* Number of 2MiB identity pages mapped at 0. 64 * 2MiB = 128MiB. */
+.set MAP_2MIB_PAGES, 64
 .section .bss
 .align 4096
 p4_table:
@@ -161,23 +179,37 @@ zero_tables:
     orl $0x3, %eax
     movl %eax, p3_table
 
-    /* --- PD[0..7] -> 2MiB huge pages covering 0..16MiB, identity ----
+    /* --- PD[0..MAP_2MIB_PAGES-1] -> 2MiB huge pages, identity -------
      * (physical address == virtual address). Each entry's low 21 bits
      * are flag bits for a PS=1 (huge page) entry; every base address
      * here is already 2MiB-aligned (i * 0x200000), so ORing in the
-     * flags below never corrupts the address bits. */
+     * flags below never corrupts the address bits.
+     *
+     * MAPPING PAST THE END OF INSTALLED RAM IS SAFE AND IS NOT AN
+     * ACCIDENT. On a machine with less than 128MiB the high entries
+     * point at addresses no DIMM answers, and nothing ever touches them:
+     * the page allocator marks a frame free only if the loader's memory
+     * map calls it type-1 usable, so an address that is not RAM is never
+     * handed out. A present PTE is not a promise that memory is there;
+     * it is only the removal of one of the two reasons a store could
+     * fail. The memory map removes the other one. */
     movl $0, %ecx
 map_p2_table:
     movl $0x200000, %eax           /* 2MiB */
-    mull %ecx                      /* eax = 2MiB * ecx (edx unused: result
-                                    * never exceeds 32 bits for ecx < 8) */
+    mull %ecx                      /* eax = 2MiB * ecx. edx is unused and
+                                    * that is checked, not assumed: the
+                                    * largest product is 63 * 2MiB =
+                                    * 0x7E00000, which fits in 32 bits. A
+                                    * MAP_2MIB_PAGES above 2048 would
+                                    * overflow into edx and silently map
+                                    * the wrong pages. */
     orl $0x83, %eax                /* bit0 present, bit1 writable, bit7 PS (huge page) */
     movl %eax, p2_table(, %ecx, 8) /* each PD entry is 8 bytes; upper 32
                                     * bits of the entry stay zero from the
                                     * zeroing loop above, which is correct
                                     * since every address here is <32 bits */
     incl %ecx
-    cmpl $8, %ecx
+    cmpl $MAP_2MIB_PAGES, %ecx
     jl map_p2_table
 
     /* --- PDPT[3] -> the 3-4GiB page directory (present, writable) ----
@@ -270,6 +302,50 @@ halt_forever:
     cli
     hlt
     jmp halt_forever                /* hlt can wake on NMI; loop to be sure */
+
+/* ------------------------------------------------------------------
+ * M7 (ADR-0011): the kernel image's own extents, for the page allocator.
+ *
+ * `__kernel_start` and `__kernel_end` are defined by core/link/kernel.ld,
+ * which is the only place that knows the real answer -- `.text`, `.rodata`
+ * and `.bss` all move whenever anything is added to this kernel, and a
+ * hardcoded "the kernel is N bytes" would be wrong the next time someone
+ * edits it. The allocator has to reserve these frames: handing out a frame
+ * the kernel is executing from, or one holding the allocator's own bitmap,
+ * is the failure this pair exists to prevent.
+ *
+ * IN boot.S RATHER THAN kdata.S, on purpose. `kdata.S` currently passes
+ * `verify-freestanding.sh` standalone with zero undefined symbols, which
+ * docs/known-gaps.md GAP-0056 records as a real data point; referencing a
+ * linker-script symbol from there would end that. This file already has an
+ * undefined `kmain`, and the image's layout is a link-time fact, which
+ * makes boot.S where it belongs (CLAUDE.md rule 4).
+ *
+ * RIP-relative `leaq`, not `movq $sym`, for the reason ADR-0001 gives:
+ * `movabs` needs a 64-bit absolute relocation and this image links into an
+ * `elf32-i386` container. The link script defines both symbols INSIDE
+ * output sections so they are section-relative and this relocation is
+ * expressible at all.
+ * ------------------------------------------------------------------ */
+
+/* uint64_t kernel_image_start(void) -- first byte of the loaded image. */
+.align 16
+.global kernel_image_start
+.type kernel_image_start, @function
+kernel_image_start:
+    leaq __kernel_start(%rip), %rax
+    ret
+
+/* uint64_t kernel_image_end(void) -- one past the last byte, AFTER .bss.
+ * `.bss` is where the boot stack, the four page-table pages and every
+ * donated word in kdata.S live, so stopping short of it would let the
+ * allocator hand out its own bitmap. */
+.align 16
+.global kernel_image_end
+.type kernel_image_end, @function
+kernel_image_end:
+    leaq __kernel_end(%rip), %rax
+    ret
 
 /* ------------------------------------------------------------------
  * 64-bit GDT: null, code (0x08), data (0x10). Long mode ignores most

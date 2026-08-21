@@ -75,8 +75,9 @@
 #   9. STRUCTURAL: `port_inl`/`port_outl` are the exact 32-bit instructions.
 #  10. STRUCTURAL: every `@rodata` table is the size its call site passes, and
 #      the class-name table is self-consistent record by record.
-#  11. STRUCTURAL: donated `.bss` is exactly 424 bytes -- PCI added none, the
-#      framebuffer console's cursor and geometry added 32.
+#  11. STRUCTURAL: donated `.bss` outside M7's page-allocator block is exactly
+#      424 bytes -- PCI added none, the framebuffer console's cursor and
+#      geometry added 32. (M7 owns the grand total; this owns M5's own claim.)
 #  12. STRUCTURAL: the font is 96 whole glyphs, the space is blank, the FALLBACK
 #      is not blank, and no glyph strays outside its 5-pixel column range.
 #  13. THE DISCOVERED BAR: the kernel read 0xFD000000 out of configuration
@@ -164,20 +165,33 @@ mnemonics() {
 #   framebuffer console  +32  fb_state: base, pitch, cursor column, cursor row.
 #                             A console has a cursor and cannot not have one.
 #
-# This harness INHERITS ownership of the exact total from m4-fault/run.sh, by
-# the same rule that moved it m2 -> m3 -> m4: one harness owns the number, and
-# it is the harness for the milestone that grew it. Growing it is allowed;
-# growing it ACCIDENTALLY is not, and the number is quoted in GAP-0053 and in
-# kdata.S's own header so the three move together.
+# OWNERSHIP OF THE EXACT TOTAL MOVED TO m7-frames/run.sh AT M7, AND WHAT THIS
+# HARNESS ASSERTS INSTEAD IS STILL M5'S OWN CLAIM.
+#
+# The total went 424 -> 5096 at M7, because the page allocator's bitmap,
+# metadata and self-test ledger are 4672 bytes in one donated block. By the
+# rule that has moved this number since M2 -- one harness owns it, and it is
+# the harness for the milestone that grew it -- m7-frames owns 5096 now.
+#
+# M5's claim was never "the total is 424". It was "the framebuffer console cost
+# 32 bytes and PCI enumeration cost nothing", and that claim is unaffected by a
+# later milestone donating more. So this now asserts the total EXCLUDING the
+# page allocator's block, which is exactly the pre-M7 number and is still 424:
+# if anything else in this kernel grew donated storage, this fails, and if the
+# allocator's block changed size, m7-frames fails. Neither can hide behind the
+# other.
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
-if [[ "$KDATA_BSS" -ne 424 ]]; then
-  fail "kdata.o .bss is $KDATA_BSS bytes, expected 424 (392 through M4, plus 32 for the framebuffer console's state; PCI enumeration adds NONE). That number is the measured cost of DCDart having no mutable statics (known-gaps GAP-0053) — if you meant to change it, change it in kdata.S's header and in GAP-0053 too."
+PMM_STORE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="pmm_store" {print $3; exit}')
+PMM_STORE_SIZE=${PMM_STORE_SIZE:-0}
+NON_PMM_BSS=$(( KDATA_BSS - PMM_STORE_SIZE ))
+if [[ "$NON_PMM_BSS" -ne 424 ]]; then
+  fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $PMM_STORE_SIZE are M7's pmm_store, leaving $NON_PMM_BSS — expected 424 (392 through M4, plus 32 for the framebuffer console's state; PCI enumeration adds NONE). That number is the measured cost of DCDart having no mutable statics (known-gaps GAP-0053) — if you meant to change it, change it in kdata.S's header and in GAP-0053 too."
 fi
 FB_STATE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fb_state" {print $3; exit}')
 [[ "$FB_STATE_SIZE" == "32" ]] || fail "kdata.o's fb_state is ${FB_STATE_SIZE:-missing} bytes, expected 32 (four u64: base, pitch, cursor column, cursor row) — fbSetState indexes it by fixed offset and a shorter block would write past the end of its own object"
-echo "STRUCTURAL: pass  kdata.o donates exactly 424 bytes of .bss (392 through M4 + 32 for fb_state; PCI enumeration added zero)"
+echo "STRUCTURAL: pass  kdata.o donates 424 bytes of .bss outside M7's page-allocator block (392 through M4 + 32 for fb_state; PCI enumeration added zero)"
 
 # 2b. `port_inl` AND `port_outl` MUST BE THE 32-BIT INSTRUCTIONS.
 #
@@ -245,7 +259,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M5 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 621
+check_table shellStrHelp 1028
 check_table shellCmdPci 3
 check_table pciStrLine 4
 check_table pciStrTotal 10
@@ -261,7 +275,7 @@ check_table fbStrNoDev 59
 check_table fbStrNoVbe 44
 check_table fbStrBanner 52
 check_table fbFont8x16 1536
-echo "STRUCTURAL: pass  all 16 M5 @rodata tables are exactly the sizes their call sites pass (shellStrHelp 395 -> 498 at M5, 621 at M6; the font is 96 glyphs x 16 bytes)"
+echo "STRUCTURAL: pass  all 16 M5 @rodata tables are exactly the sizes their call sites pass (shellStrHelp 395 -> 498 at M5, 621 at M6, 1028 at M7; the font is 96 glyphs x 16 bytes)"
 
 # 2d. THE CLASS-NAME TABLE IS SELF-CONSISTENT, RECORD BY RECORD.
 #
@@ -379,7 +393,14 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
-[[ "$EXTERN_COUNT" -eq 29 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 29 (M4's 24, plus port_inl/port_outl for PCI configuration space, port_inw/port_outw for the Bochs VBE registers, and fb_state_addr for the framebuffer console's donated state)"
+# M7 took this from 29 to 32 (pmm_store_addr, kernel_image_start,
+# kernel_image_end -- m7-frames/run.sh names and owns those three). M5's claim
+# is about the five externs M5 itself added, so it is asserted directly rather
+# than through a total a later milestone moved.
+[[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 32 (M4's 24, plus M5's port_inl/port_outl for PCI configuration space, port_inw/port_outw for the Bochs VBE registers and fb_state_addr for the framebuffer console's donated state, plus M7's pmm_store_addr/kernel_image_start/kernel_image_end)"
+for sym in port_inl port_outl port_inw port_outw fb_state_addr; do
+  grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest — one of the five externs M5 added is gone"
+done
 for sym in port_inl port_outl port_inw port_outw fb_state_addr; do
   grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest — the code that should be calling it is not"
 done

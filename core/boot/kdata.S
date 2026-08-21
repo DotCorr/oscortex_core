@@ -32,6 +32,15 @@
  * and retains nothing -- so the 32 bytes are precisely the cost of a console
  * having a cursor. `tests/conformance/m5-pci/run.sh` asserts the total.
  *
+ * M7 TAKES IT TO 5096, AND THAT IS THE MILESTONE THIS FILE WAS WAITING FOR.
+ * `pmm_store` (below) is 4672 bytes -- a 4KiB frame bitmap, 64 bytes of
+ * allocator metadata and a 512-byte self-test ledger -- which is eleven times
+ * everything M2 through M6 donated put together. It is deliberately ONE symbol
+ * behind ONE accessor, so that when DCDart grows mutable statics the migration
+ * is a three-function change in core/kernel/pmm.dart rather than a rewrite of
+ * the allocator; the block's own comment states that as a rule.
+ * `tests/conformance/m7-frames/run.sh` asserts the 5096 total and owns it now.
+ *
  * M6 ADDS NOTHING, AND THAT WAS A CHOICE RATHER THAN AN ABSENCE OF NEED.
  * An ATA PIO driver's obvious shape is `read(lba, buffer)` and the buffer is
  * 512 bytes, which would have taken this file from 424 to 936 -- more than
@@ -275,6 +284,83 @@ fb_state:
     .size fb_state, 32
     .type fb_state, @object
 
+/* ------------------------------------------------------------------
+ * M7 (ADR-0011): the physical memory manager's ENTIRE mutable state.
+ *
+ * ONE SYMBOL, ONE ACCESSOR, AND THAT IS THE WHOLE POINT.
+ *
+ * This block is 4672 bytes -- eleven times everything above it put together
+ * -- and it is the block that a previous unit correctly argued should not be
+ * built on this workaround, because doing so would make assembly-donated
+ * `.bss` load-bearing for the kernel's most important subsystem and turn the
+ * eventual DCDart mutable-statics fix into a rewrite.
+ *
+ * The answer is the shape rather than the wait. There is exactly ONE symbol
+ * and exactly ONE accessor for the whole allocator, and `core/kernel/pmm.dart`
+ * routes every read and write of every byte below through three functions
+ * (`pmmBitmapBase`, `pmmMetaBase`, `pmmLedgerBase`) that call it. Nothing else
+ * in the allocator knows this file exists. When DCDart grows mutable statics,
+ * those three functions change and nothing else does -- which is a deletion,
+ * not a rewrite, and is exactly the property that was at risk.
+ *
+ * WHAT MUST NOT HAPPEN, stated so it is a rule and not a hope: do not scatter
+ * `@extern` address calls through the allocator. A second call site for
+ * `pmm_store_addr` outside the seam is the moment the migration stops being a
+ * three-function change.
+ *
+ * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern
+ * `cpu_info` and `fb_state` already use:
+ *
+ *     +0     4096 bytes  frame bitmap. One bit per 4KiB physical frame,
+ *                        1 = in use or reserved, 0 = free. 4096 bytes is
+ *                        32768 frames is 128MiB of RAM, which is also the
+ *                        extent boot.S identity-maps -- see below.
+ *     +4096    64 bytes  eight u64 words of metadata: ready flag, frames
+ *                        managed, free count, baseline free count, the
+ *                        allocation cursor, the count of usable frames ABOVE
+ *                        the bound, the rejected-operation count, and the
+ *                        lifetime allocation count.
+ *     +4160   512 bytes  the self-test's allocation ledger: 64 physical
+ *                        addresses. `frames test` allocates 64 frames and has
+ *                        to hold them all at once to prove they are pairwise
+ *                        distinct and to give every one of them back; there is
+ *                        no array type and no allocator to ask (the allocator
+ *                        IS what is being tested).
+ *
+ * WHY 128MiB AND NOT MORE. The bound has to be picked, not discovered, and
+ * three things want to be the same number: the bitmap's size, the identity
+ * map's extent, and the largest machine this kernel claims to manage. 4096
+ * bytes of bitmap is exactly one page and exactly 128MiB of RAM at 4KiB
+ * granularity, and boot.S maps exactly 128MiB (MAP_2MIB_PAGES = 64), so a
+ * frame that is tracked is a frame that can be written. Raising it is
+ * mechanical and costs `.bss` linearly: 4GiB would be 128KiB of bitmap and
+ * 2048 page-directory entries.
+ *
+ * EXCEEDING IT IS LOUD, NOT SILENT. Usable frames above the bound are COUNTED
+ * at init and reported by `frames` as `OVER nnnnnnnn CAPPED`; they are never
+ * marked free, so they cannot be handed out.
+ *
+ * NOT ZEROED HERE -- the same rule as every word above. `pmmInit()` fills the
+ * whole bitmap with 0xFF (everything reserved) before it frees anything, which
+ * is the safe direction to be wrong in: a garbage bitmap read as free would
+ * hand out the kernel's own image.
+ *
+ * `.global` because `tests/conformance/m7-frames/run.sh` reads this symbol's
+ * LINK-TIME ADDRESS out of `kernel.elf` and compares it against the address the
+ * kernel prints, then dumps the bitmap out of guest memory at that address and
+ * checks it bit-for-bit against one the harness computes itself. The storage
+ * seam is checked from outside rather than taken on the kernel's word.
+ *
+ * THIS TAKES DONATED `.bss` FROM 424 BYTES TO 5096. docs/known-gaps.md
+ * GAP-0053 carries the running total and the reason.
+ * ------------------------------------------------------------------ */
+.align 8
+.global pmm_store
+pmm_store:
+    .skip 4672
+    .size pmm_store, 4672
+    .type pmm_store, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -379,6 +465,21 @@ shell_resume_ok_addr:
 .type fb_state_addr, @function
 fb_state_addr:
     leaq fb_state(%rip), %rax
+    ret
+
+/* uint64_t pmm_store_addr(void) -- base of the 4672-byte physical-memory-
+ * manager storage block. Bitmap at +0 (4096 bytes), metadata at +4096 (64),
+ * self-test ledger at +4160 (512).
+ *
+ * THE ENTIRE STORAGE SEAM FOR THE PAGE ALLOCATOR IS THIS ONE FUNCTION. It is
+ * called from exactly three places, all of them in core/kernel/pmm.dart's
+ * "storage seam" section. Adding a fourth call site anywhere else is the
+ * change this design exists to prevent -- see the comment on `pmm_store`. */
+.align 16
+.global pmm_store_addr
+.type pmm_store_addr, @function
+pmm_store_addr:
+    leaq pmm_store(%rip), %rax
     ret
 
 /* Mark the stack non-executable. Nothing here needs an executable stack, and

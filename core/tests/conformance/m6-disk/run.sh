@@ -138,15 +138,25 @@ FLIP_DIFF=$(cmp -l "$DISK_IMG" "$NEG_IMG" | wc -l | tr -d ' ')
 # 936 -- more than doubling in one milestone, for one command.
 #
 # It is still 424 because the driver HEXDUMPS EACH WORD AS IT ARRIVES and
-# retains nothing. m5-pci still owns the number; this harness asserts that M6
-# did not move it.
+# retains nothing.
+#
+# M7 TOOK THE GRAND TOTAL TO 5096 (a 4672-byte page-allocator block), and
+# m7-frames/run.sh owns that number now. M6's claim is untouched by it: the
+# disk driver still has no sector buffer, and that is asserted here by
+# EXCLUDING the allocator's block, which leaves exactly the 424 bytes M6
+# inherited. If any non-allocator storage appeared, this fails; if the
+# allocator's block changed size, m7-frames fails. Neither hides behind the
+# other.
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
-if [[ "$KDATA_BSS" -ne 424 ]]; then
-  fail "kdata.o .bss is $KDATA_BSS bytes, expected 424 — ATA PIO was supposed to add NONE. A 512-byte sector buffer is exactly what this driver does not have; if you meant to grow it, say so in kdata.S's header, in GAP-0053, and in docs/decisions/0010-ata-pio-disk-read.md."
+PMM_STORE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="pmm_store" {print $3; exit}')
+PMM_STORE_SIZE=${PMM_STORE_SIZE:-0}
+NON_PMM_BSS=$(( KDATA_BSS - PMM_STORE_SIZE ))
+if [[ "$NON_PMM_BSS" -ne 424 ]]; then
+  fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $PMM_STORE_SIZE are M7's pmm_store, leaving $NON_PMM_BSS — expected 424. ATA PIO was supposed to add NONE. A 512-byte sector buffer is exactly what this driver does not have; if you meant to grow it, say so in kdata.S's header, in GAP-0053, and in docs/decisions/0010-ata-pio-disk-read.md."
 fi
-echo "STRUCTURAL: pass  kdata.o still donates exactly 424 bytes of .bss — the disk driver added ZERO (no sector buffer exists)"
+echo "STRUCTURAL: pass  kdata.o donates 424 bytes of .bss outside M7's page-allocator block — the disk driver still adds ZERO (no sector buffer exists)"
 
 # 3b. `port_inw` MUST BE THE 16-BIT INSTRUCTION.
 #
@@ -214,7 +224,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M6 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 621
+check_table shellStrHelp 1028
 check_table ataCmdName 4
 check_table ataCmdIdName 7
 check_table ataCmdReadName 10
@@ -232,7 +242,7 @@ check_table ataStrStTail 4
 check_table ataStrErrLbl 12
 check_table ataStrErTail 4
 check_table ataStrNotAta 20
-echo "STRUCTURAL: pass  all 17 M6 @rodata tables plus shellStrHelp (498 -> 621) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 17 M6 @rodata tables plus shellStrHelp (498 -> 621 at M6, 1028 at M7) are exactly the sizes their call sites pass"
 
 # ---------------------------------------------------------------------------
 # Step 4 — verify-freestanding.sh (CLAUDE.md rule 1).
@@ -252,9 +262,18 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
-[[ "$EXTERN_COUNT" -eq 29 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 29 — M6 was supposed to add NONE. ATA PIO reads the data port through port_inw, which portio.S already had for the Bochs VBE registers."
+# M7 took this from 29 to 32 (pmm_store_addr, kernel_image_start,
+# kernel_image_end -- m7-frames/run.sh names and owns those three). M6's claim
+# was "ATA PIO needed NO new assembly", which is asserted directly below: the
+# count is 32, and removing M7's three leaves M5's 29 exactly.
+[[ "$EXTERN_COUNT" -eq 32 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 32 (M5's 29 plus M7's pmm_store_addr, kernel_image_start, kernel_image_end). M6 itself was supposed to add NONE: ATA PIO reads the data port through port_inw, which portio.S already had for the Bochs VBE registers."
+M7_EXTERNS=0
+for sym in pmm_store_addr kernel_image_start kernel_image_end; do
+  grep -q "$sym" <<<"$VERIFY_OUT" && M7_EXTERNS=$(( M7_EXTERNS + 1 ))
+done
+[[ $(( EXTERN_COUNT - M7_EXTERNS )) -eq 29 ]] || fail "kmain.o declares $EXTERN_COUNT externs of which $M7_EXTERNS are M7's, leaving $(( EXTERN_COUNT - M7_EXTERNS )) — expected M5's 29, because the disk driver needed no new assembly"
 grep -q "port_inw" <<<"$VERIFY_OUT" || fail "port_inw is not in kmain.o's extern manifest — the ATA data port is not being read through the 16-bit helper"
-echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — UNCHANGED from M5; the disk driver needed no new assembly"
+echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — $M7_EXTERNS of them M7's, leaving M5's 29 UNCHANGED; the disk driver needed no new assembly"
 
 # ---------------------------------------------------------------------------
 # Step 5 — boot with the disk attached and drive a real session.
@@ -603,5 +622,5 @@ if cmp -s "$NEG_SERIAL" "$EXPECTED_SERIAL"; then
 fi
 echo "ASSERT: pass  negative control B — with no drive attached, both commands report \`DISK ERR NODEV ST 00\`, no hexdump line is printed anywhere, and \`DISK READ END\` never appears"
 
-echo "M6-disk: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S + portio.S) -> link -> 4 structural checks (donated .bss still 424, port_inw exactly '66 ed', ataWait's poll bound in the compiled code, 18 @rodata sizes) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED) -> THREE real QEMU boots (-m 128M -cpu qemu64 -vga std) over QMP. A deterministic ${IMG_SECTORS}-sector image generated and re-verified from disk, attached as the primary master; a ${SERIAL_BYTES}-byte serial match with M1's golden intact as a prefix; IDENTIFY reporting a model and a capacity that equals the image's real size and that QEMU's own \`info block\` confirms; sectors 0000, 002A and 0005 hexdumped as they arrived and equal, byte for byte, to the bytes this harness wrote — the expectation DERIVED from the image, never typed; two identical IDENTIFY lines, the second after a deliberate #UD; and two negative controls — one flipped bit changing exactly one dumped byte, and a no-drive boot that reports NODEV and prints no hexdump at all. Screenshot at $SHOT_PNG"
+echo "M6-disk: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S + portio.S) -> link -> 4 structural checks (donated .bss outside M7's allocator block still 424, port_inw exactly '66 ed', ataWait's poll bound in the compiled code, 18 @rodata sizes) -> verify-freestanding pass ($EXTERN_COUNT declared externs, M5's 29 UNCHANGED plus M7's three) -> THREE real QEMU boots (-m 128M -cpu qemu64 -vga std) over QMP. A deterministic ${IMG_SECTORS}-sector image generated and re-verified from disk, attached as the primary master; a ${SERIAL_BYTES}-byte serial match with M1's golden intact as a prefix; IDENTIFY reporting a model and a capacity that equals the image's real size and that QEMU's own \`info block\` confirms; sectors 0000, 002A and 0005 hexdumped as they arrived and equal, byte for byte, to the bytes this harness wrote — the expectation DERIVED from the image, never typed; two identical IDENTIFY lines, the second after a deliberate #UD; and two negative controls — one flipped bit changing exactly one dumped byte, and a no-drive boot that reports NODEV and prints no hexdump at all. Screenshot at $SHOT_PNG"
 exit 0

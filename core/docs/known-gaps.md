@@ -533,14 +533,23 @@ the evidence that made it true, and so the one uncovered half is named.
 
 ## GAP-0053 — DCDart still has no mutable static data, and the shell made that expensive rather than merely awkward
 
-**Domain:** kernel (M2, M3, M4, M5, M6), DCDart-side language gap
+**Domain:** kernel (M2, M3, M4, M5, M6, M7), DCDart-side language gap
 **Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
-M5, → 424 at M6 (unchanged).** M5 is the first milestone whose two halves land on opposite sides of
-this gap; see the M5 note. M6 is the first milestone that had an obvious 512-byte need and refused
-it; see the M6 note.
+M5, → 424 at M6 (unchanged), → 5096 at M7.** M5 is the first milestone whose two halves land on
+opposite sides of this gap; see the M5 note. M6 is the first milestone that had an obvious 512-byte
+need and refused it; see the M6 note. **M7 is the milestone that stopped refusing** — and the M7 note
+is the one to read, because it is about the SHAPE of the workaround rather than its size.
 
-**THE CURRENT MEASUREMENT (M5/M6, 2026-08-21).** `core/boot/kdata.S` donates **424 bytes** of `.bss`,
-asserted exactly by `tests/conformance/m5-pci/run.sh` — which inherited ownership of the exact total
+**THE CURRENT MEASUREMENT (M7, 2026-08-21): 5096 bytes**, asserted exactly by
+`tests/conformance/m7-frames/run.sh`, which owns the total now. Of that, **4672 bytes are one
+symbol** — `pmm_store`, the page allocator's bitmap, metadata and self-test ledger — and **424 are
+everything M2 through M6 donated put together**. `m5-pci/run.sh` and `m6-disk/run.sh` still assert
+that 424, restated as "the total EXCLUDING `pmm_store`", so each older milestone still asserts its
+own claim and neither can hide behind the other.
+
+**The pre-M7 measurement, kept because the table below is M4's 392.** `core/boot/kdata.S` donated
+**424 bytes** of `.bss` through M6, asserted exactly by `tests/conformance/m5-pci/run.sh` — which
+inherited ownership of the exact total
 from `m4-fault/run.sh` the same way m4-fault inherited it from m3-shell and m3-shell from
 m2-console, because one harness should own the number and it should be the milestone that grew it.
 The table below is M4's 392; M5's `fb_state` (32 bytes: base, pitch, cursor column, cursor row) is
@@ -615,6 +624,39 @@ partition parse and a block cache are all the same missing thing (GAP-0074 item 
 So M6 did not spend any of the budget the allocator's decision is about — which is deliberate, since
 spending it would have prejudged that decision — and it ends by making the case for spending it
 unanswerable.
+
+
+**M7 NOTE (2026-08-21): 424 → 5096, and the number is the least interesting thing about it.**
+
+The page allocator donated **4672 bytes** — a 4096-byte frame bitmap, 64 bytes of metadata, and a
+512-byte ledger the self-test needs to hold 64 addresses at once. That is **eleven times everything
+the previous five milestones donated put together**, and it is exactly the growth four earlier
+milestones deferred rather than take.
+
+**The objection that deferred it was about load-bearingness, not size, and it was answered by shape.**
+The recorded argument was: building the kernel's most important subsystem on assembly-donated `.bss`
+would make the workaround load-bearing and turn the eventual language fix into a rewrite. So the
+allocator's state is **ONE symbol behind ONE accessor**, and `core/kernel/pmm.dart` reaches it through
+exactly **three** functions marked as a storage seam. Nothing else in the kernel knows the storage
+exists. When DCDart grows mutable statics the migration is: declare three statics, rewrite three
+functions, delete `pmm_store` and `pmm_store_addr`. The allocator does not move.
+
+**This is the first entry in this file with a mechanically-enforced migration plan.**
+`tests/conformance/m7-frames/run.sh` counts the seam's call sites — exactly three in `pmm.dart`, zero
+in every other kernel source — and fails on a fourth. It is the only structural check in this project
+that protects a *future* change rather than a present property, and it is the reason this milestone
+was buildable before the language decision was made.
+
+**What it costs while the workaround stands**, stated plainly: 4672 bytes of hand-written assembly
+`.bss`; one `@extern` call (`pmm_store_addr`) on *every* bitmap bit test, every metadata read and
+every metadata write, none of which `-O2` can inline because it crosses an object boundary this kernel
+does not LTO — a full 32768-frame drain makes roughly 200,000 of them; and the same `.bss`-is-not-
+zeroed footgun every other donated word has, answered by `pmmInit()` filling the bitmap with 0xFF
+before it frees anything.
+
+**The trajectory prediction in this entry was right and can now be closed out.** It said "a keyboard
+input queue, a scheduler run queue and a page-allocator bitmap are each larger than this, and each one
+lands in the same file." The bitmap landed. It was 4KiB. The other two are still ahead.
 
 ---
 
@@ -1368,13 +1410,32 @@ mis-reported, it is simply not attempted.
 
 ## GAP-0068 — `dcc` cannot compile a nested `while` loop
 
-**Domain:** kernel (M5, M6), DCDart-side language gap
-**Status:** **RESOLVED UPSTREAM, NOT YET ADOPTED HERE.** DCDart commit `e3cfe18` lowers nested
-`while` loops (27/27 conformance, verified with an inner loop assigning an outer variable, triple
-nesting, and an early return out of both loops). This repo still builds against `DCDART_PIN.txt` =
-`9e836a3`, which predates it, so every decomposition below is still forced by the compiler that
-actually builds this kernel. The workaround is described in the present tense because it is still
-what the code does.
+**Domain:** kernel (M5, M6, M7), DCDart-side language gap
+**Status:** **RESOLVED AND ADOPTED AT M7.** `DCDART_PIN.txt` moved from `9e836a3` to `e3cfe18` for
+the physical memory manager, and `core/kernel/pmm.dart` contains two genuinely nested `while` loops:
+`pmmInit`'s memory-map walk (entries outside, frames inside) and `shellFramesTest`'s pairwise
+distinctness proof. This entry's own prediction — "a page-table walk and a **memory-map merge** are
+each naturally a loop inside a loop" — named the milestone that would need it, one milestone early.
+
+**How the pin bump was verified, because a pin bump is a toolchain migration.** An isolated clone of
+DCDart at `e3cfe18` was mirrored beside a copy of this repo (GAP-0003 fixes the sibling layout, so
+the layout has to be reproduced rather than pointed at), and **all eight pre-existing harnesses were
+run against it with the kernel unchanged, before any M7 code was written: 8/8.** One run failed on a
+QMP ephemeral-port collision — `Address already in use`, not a kernel fault — and passed on re-run.
+The same eight, plus m7-frames, pass against `e3cfe18` after the milestone.
+
+**Only that far, deliberately.** Three DCDart commits were available past `9e836a3`. `ff9aa89`
+(instance methods) came along for the ride as an ancestor and is unused. `b3f0ed9` (word/doubleword
+port I/O) was NOT taken: it deletes `core/boot/portio.S` outright and rewrites M5's and M6's port
+access, which is a different unit's work and would have mixed a toolchain migration into an
+allocator. `fbd21e4` (compile-time folding in sized-int literals) was not taken either, and its
+absence cost two named constants — GAP-0077.
+
+**The three decompositions below are still in the tree and were NOT undone.** `pciScanFunctions1To7`,
+`fbFillRow` and `ataDumpLine` still exist as separate functions. Rewriting three working, tested
+subsystems to inline them would have put unrelated churn in an allocator milestone; they are now
+optional cleanups rather than forced workarounds, which is a different status and is why the present
+tense below is left as it was written.
 
 **Worth recording about the fix itself, because the lesson generalises:** the refusal was never
 protecting against a real hazard. `_lowerWhile` declined to nest with a well-written comment naming
@@ -1672,6 +1733,21 @@ diagnostic naming a value it read out of the hardware.
    they are all waiting on the same decision the physical memory manager is waiting on. It cost zero
    donated `.bss` — and, exactly as with `pci` (GAP-0067 item 1), that is the bill rather than the
    win.
+
+   **M7 UPDATE (2026-08-21): the stated reason for this item is no longer true, and the item is
+   still open.** "There is nowhere for 512 bytes to go" was accurate when it was written. There is
+   now: `allocFrame()` returns a 4KiB physical frame, and a sector is 512 bytes. `disk read <lba>`
+   into an allocated frame — `Pointer<u16>.fromAddress(frame + offset)` in the transfer loop instead
+   of `ataDumpLine` — is **writable today with no new language feature and no new donated storage**,
+   and nobody has written it. That is a much smaller statement than this item used to make, and the
+   honest version of it is: *the driver still cannot give you a sector because nobody has changed
+   it, not because the kernel cannot hold one.*
+
+   What M7 does **not** give this item is a way to say what the 512 bytes *are*. A frame is a
+   physical address, not a typed buffer; `@bare` DCDart still has no array type, so a filesystem
+   that wants to read a directory entry out of that frame is doing pointer arithmetic on a `u64`.
+   See GAP-0076 item 2 — that is the boundary between "a physical memory manager" and "an
+   allocator" in the sense a program would use, and M7 is deliberately only the first one.
 2. **Primary master only.** The secondary channel (`0x170`/`0x376`) and the slave device on either
    channel are not probed. A machine whose disk is the slave, or is on the secondary channel, reports
    `DISK ERR NODEV ST 00` — correctly, and unhelpfully.
@@ -1698,3 +1774,200 @@ diagnostic naming a value it read out of the hardware.
    driver uses and it assumes an ISA-speed port access is ~100ns. On a modern machine a port access
    is much slower than that, so the delay is conservative; on some future faster path it would not
    be. There is no calibrated delay to use instead (GAP-0073).
+
+---
+
+## GAP-0075 — m3-shell's, m4-fault's, m5-pci's and m6-disk's goldens were regenerated at M7, deliberately
+
+**Domain:** kernel (M7), conformance
+**Status:** RECORDED — the fifth link in a chain that is itself the finding.
+
+`help` gained **six lines** at M7 (`frames`, `frames test`, `frames drain`, `frames refill`, `alloc`,
+`free <addr>`), so `shellStrHelp` went **621 -> 1028 bytes** and every golden that types `help`
+moved with it. Four serial goldens and one screen golden changed:
+
+| Golden | Bytes before | Bytes after |
+|---|---|---|
+| `m3-shell/expected.txt` | 2459 | 3273 (two `help` blocks) |
+| `m4-fault/expected.txt` | 2486 | 2893 |
+| `m5-pci/expected.txt` | 2270 | 2677 |
+| `m6-disk/expected.txt` | 6780 | 7187 |
+| `m3-shell/expected-screen.txt` | 25 rows, 8 blank at the bottom | 25 rows, 2 blank |
+
+**How they were regenerated, because "regenerated" is where a bug hides.** Not by copying a capture.
+The four serial goldens were transformed **mechanically**: the exact 621-byte `help` block was
+replaced by the exact 1028-byte one, by a script that asserted how many times the old block occurred
+in each file and changed nothing else. The kernel then had to reproduce the result byte-for-byte, and
+did. That is a stronger check than reading a diff: a capture that had drifted anywhere *else* would
+have failed.
+
+`m3-shell/expected-screen.txt` was transformed the same way, with the extra assertion that the six
+rows pushed off the bottom of the 25-row window were blank — so no content was silently truncated.
+
+**m1-interrupts' 544-byte golden did not move and must never move for this reason.** It ends at the
+newline after `M1 END`, before any shell exists. It was re-verified byte-for-byte identical.
+
+**The chain, which is the actual finding.** GAP-0059 (M3), GAP-0065 (M4), GAP-0069 (M5), GAP-0072
+(M6) and now this. **Five milestones, five regenerations, every one caused by `help` growing.** Every
+byte this kernel prints is in a byte-exact golden, `help` lists every command, and a command that is
+not in `help` is undiscoverable — so adding any command necessarily moves every golden that types
+`help`. The cost is not the regeneration; it is that a *real* regression in one of those captures
+would arrive in the same commit as a legitimate diff, and the only thing separating them is that the
+diff was checked. Mechanically transforming rather than re-capturing is this project's answer so far,
+and it is a mitigation rather than a fix.
+
+**What would close it:** a `help` whose text is generated from the command table rather than being a
+literal — which needs a command table, which needs function pointers, which `@bare` DCDart does not
+have (GAP-0057). Or goldens that assert everything *except* the `help` block, which trades a real
+assertion for convenience and should not be done.
+
+---
+
+## GAP-0076 — What the frame allocator does NOT do, listed rather than discovered later
+
+**Domain:** kernel (M7)
+**Status:** OPEN — deliberately scoped out. Every item is absence, not wrongness: nothing below is
+mis-reported, and every operation the allocator refuses prints a status naming the reason.
+
+1. **It allocates ONE frame at a time, and there is no contiguous multi-frame request.** `allocFrame()`
+   returns one 4KiB frame. A DMA landing buffer, a larger-than-page structure and a 2MiB huge page all
+   need N *adjacent* frames, and asking for them is a different search (and, done properly, a
+   different data structure). Nothing in this kernel needs it yet; the first thing that will is
+   bus-master DMA, which needs much more than an allocator anyway (ADR-0010).
+2. **It returns a `u64`, not memory.** There is no `alloc(n) -> typed memory` and there cannot be one
+   today: `@bare` DCDart has no array type, no String, and no type a heap allocation could be returned
+   *as*. **This is the honest boundary between "a physical memory manager" and "an allocator" in the
+   sense a program would use.** Callers get a physical address and do `Pointer<T>.fromAddress` on it,
+   which is exactly as unchecked as it sounds.
+3. **No virtual memory.** Nothing maps anything at runtime. `core/boot/boot.S`'s identity map IS the
+   address space — 0..128MiB plus 3..4GiB for the PCI hole — and the allocator's bound is pinned to it
+   (ADR-0011 §2). A frame allocator is a *prerequisite* for paging (page tables have to come from
+   somewhere) and this is that prerequisite, not paging itself.
+4. **The bound is 128MiB and a bigger machine is capped, not managed.** Counted and reported as
+   `OVER nnnnnnnn CAPPED`, never silently. Raising it is linear in `.bss` and in page-directory
+   entries.
+5. **No zeroing.** `allocFrame()` hands back whatever the frame contained. Every future user that
+   cares — page tables, in particular — must zero it, exactly as `boot.S` already zeroes its four
+   page-table pages by explicit address range. A zero-on-free policy was rejected as 4KiB of stores
+   per free with no caller that needs it yet.
+6. **No accounting beyond counts.** The allocator knows how many frames are free; it does not know
+   who has one. There is no owner, no tag, no leak detection. `frames drain` exists because "allocate
+   everything and see" is the only whole-system question this bookkeeping can answer.
+7. **Not reentrant, and not interrupt-safe.** `allocFrame` and `freeFrame` read-modify-write the
+   bitmap and the metadata with no lock and no `cli`. Commands run in task context with interrupts
+   enabled (ADR-0006), so an IRQ arriving mid-allocation is possible today; it is harmless only
+   because no interrupt handler in this kernel allocates. The moment one does, this is a real race.
+   Stated now rather than discovered then.
+8. **The memory map is consulted, not cached.** `pmmAllocatable` re-walks the Multiboot structure on
+   every call — seven entries, a few loads. Caching it needs somewhere to put a parsed copy, which is
+   the same missing thing this milestone closed for *frames* and did not close for *records*
+   (item 2). A second copy that could disagree with the first would be a worse bug than a slow loop.
+9. **`frames refill` is a test fixture, not a memory-management operation.** "Free everything that was
+   ever allocatable" is not something a real system does. It exists so the drain has an inverse that
+   goes through `freeFrame`'s real checks 32768 times, which is what makes "the free count returns to
+   the baseline" mean something.
+10. **The self-test's ledger is 64 entries because 64 is what fits.** 512 bytes of donated `.bss`. It
+    is not a limit on the allocator, only on how many frames one `frames test` can hold at once to
+    prove them pairwise distinct.
+
+---
+
+## GAP-0077 — `dcc` cannot fold compile-time integer arithmetic inside a sized-int literal
+
+**Domain:** kernel (M7), DCDart-side language gap
+**Status:** **RESOLVED UPSTREAM, NOT ADOPTED HERE.** DCDart commit `fbd21e4` ("Fold compile-time
+integer arithmetic in sized-int literals", its ADR-0046) fixes it. `DCDART_PIN.txt` is `e3cfe18`,
+which predates it.
+
+`u64(pmmFrameBytes - 1)` — a `u64` literal built from two compile-time constants — is rejected:
+
+```
+dcc build: DccLowerError: "pmmInit": a Instance of 'DCInt' literal constructed from a non-constant
+expression InstanceInvocation(InstanceAccessKind.Instance, 4096.-(1)) (InstanceInvocation) — the
+argument must be an integer literal or a compile-time integer constant
+```
+
+A clear, named error rather than a miscompile, and it names the function. **The workaround** is to
+give every derived constant its own name: `core/kernel/pmm.dart` declares `pmmFrameMask = 4095` and
+`pmmFrameLastWord = 4088` next to `pmmFrameBytes = 4096`, with a comment saying why they are spelled
+out. Nine call sites use them.
+
+**Cost of the workaround today:** two constants and a paragraph — genuinely small, which is why the
+pin was not moved a second time for it. The reason it is recorded anyway is that the cost is *not*
+constant: every alignment mask, every `size - 1`, every "last element" offset is this expression, and
+a subsystem with several page sizes or several structure layouts would name a dozen of them. The pin
+bump is a lookup rather than an excavation now that the commit hash is here.
+
+**Worth noting about the pin discipline itself:** M7 moved the pin exactly as far as the capability it
+needed (`e3cfe18`, nested `while`) and no further, even though two later commits were available and
+one of them would have removed this entry. Taking a toolchain forward past the thing you verified is
+how a pin stops meaning anything.
+
+---
+
+## GAP-0078 — m7-frames' golden is a function of the kernel's own image size
+
+**Domain:** kernel (M7), conformance
+**Status:** OPEN — accepted deliberately, with the mitigation that makes it safe.
+
+The allocator reserves the real image extents, `[__kernel_start, __kernel_end)`, read from
+`core/link/kernel.ld`. So **adding code to this kernel changes the number of free frames**, and every
+count, address and fold in `m7-frames/expected.txt` moves with it: `FREE 00007EC5`, the first
+`alloc`'s address, the drain's `TOOK`/`SUM`/`XOR`/`LOW`, the refill's `GAVE`. A future milestone that
+adds a page of `.text` will find this golden red.
+
+**This is the reservation being real, not fragility to be engineered away.** The alternative —
+reserving a fixed `[1MiB, 2MiB)` — is a guess, is wrong the moment the kernel outgrows it, and
+discards information the linker already has. It was rejected in ADR-0011 §8.
+
+**The mitigation, which is the part that matters.** Every number in the golden is *also* recomputed
+by `core/tests/conformance/m7-frames/derive.py` from the boot's own `MB E` memory-map lines and from
+`__kernel_start`/`__kernel_end` read out of `kernel.elf`. So regenerating the golden **cannot** make a
+wrong allocator pass: the derived checks run against the same capture, and they do not care what the
+golden says. `run.sh --regen` exists for exactly this and its own comment says it is not a way to make
+a red run green.
+
+**Cost:** whoever grows this kernel next has to re-run `m7-frames/run.sh --regen` and read the diff.
+That is one extra step, and it is the same step GAP-0075 already imposes for `help`.
+
+---
+
+## GAP-0079 — LLVM emits a jump table into `.rodata`, and `.rodata` is writable in this image
+
+**Domain:** kernel (M7), toolchain
+**Status:** OPEN (the writability); RESOLVED (the assertion that noticed it).
+
+`pmmFreeStatus` dispatches on a DENSE `0..5` status code. LLVM lowered the if-chain into a **six-entry
+jump table**, placed it in `kmain.o`'s `.rodata` at offset 0 as anonymous data with six `R_X86_64_64`
+relocations into `.text`, and reaches it with `jmp *0x0(,%rdi,8)`. Verified by disassembly, not
+inferred.
+
+**Two consequences, and the second one is the real entry.**
+
+**1. A structural assertion had to change shape, and it got stronger.** `m1-interrupts/run.sh`
+asserted `sum(@rodata table symbol sizes) == .rodata section size` — ADR-0040's promise that a
+`@rodata` table is *elements only, no header*. The 48 anonymous bytes broke the equality, and the
+check's own comment had pre-authorised relaxing it to `>=`. **Relaxing it would have thrown the
+property away.** What ADR-0040 actually promises is a statement about the space *between* tables,
+which a total never measured directly, so the check now asserts:
+
+  1. every pair of adjacent table symbols abuts exactly — zero bytes between them;
+  2. nothing follows the last table;
+  3. whatever precedes the first table is entirely accounted for by `.rela.rodata`, 8 bytes per
+     relocation — i.e. it is a relocated jump table and not data masquerading as one. Anonymous bytes
+     with no relocations still fail.
+
+A per-table header violates (1) and still fails. This is recorded because **a structural assertion
+that moves is exactly the kind of thing that should never move quietly**, and because the easy move
+was available and was not taken.
+
+**2. The jump table is an indirect branch through memory this kernel maps WRITABLE.** GAP-0050:
+the image is a single RWX `PT_LOAD`, so `.rodata` is writable at runtime. A stray store into that
+table redirects a branch. This is **not a new hazard in kind** — `.text` is writable too, so anything
+that can rewrite the jump table can rewrite the code it points at — and it is not a reason to contort
+`pmmFreeStatus` into something LLVM will not optimise. It is a reason GAP-0050 matters slightly more
+than it did: the kernel now has data whose *integrity* is control-flow integrity.
+
+**What would close the writability:** separate `PT_LOAD` segments with real page permissions, which
+needs runtime page-table manipulation, which needs a frame allocator to get page tables from. That
+prerequisite now exists (M7). GAP-0050 is the entry; this is a note that it acquired a second reason.

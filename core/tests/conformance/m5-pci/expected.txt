@@ -36,6 +36,12 @@ commands:
   fb            framebuffer console: BAR0, 800x600x32, 8x16 font
   disk id       ATA PIO IDENTIFY: model and sector count
   disk read <n> read one 512-byte sector, hexdumped as it arrives
+  frames        physical frame allocator: totals and its own footprint
+  frames test   allocate 64 frames, prove them distinct, give them back
+  frames drain  allocate every free frame, then prove the next one fails
+  frames refill free every frame drain took, back to the baseline count
+  alloc         allocate one 4KiB frame, print its physical address
+  free <addr>   free one frame by physical address
   crash ud      fault on purpose (#UD) and come back
   crash div     fault on purpose (#DE) and come back
   echo <rest>   print the rest of the line

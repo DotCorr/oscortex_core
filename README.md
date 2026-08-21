@@ -122,6 +122,55 @@ is no `read(lba) -> bytes`, so there is no filesystem, no partition table and no
 three are the same missing thing, and it is the same missing thing the memory manager is waiting on.
 See `core/docs/decisions/0010-ata-pio-disk-read.md` and `docs/known-gaps.md` GAP-0073 and GAP-0074.
 
+**M7 — done. The kernel remembers what memory it has.** Since M0 it has parsed the loader's memory
+map, printed it, and thrown it away — because nothing in this kernel could outlive the call that
+produced it. Three subsystems were shaped by that: the memory map, the PCI bus, and every sector the
+disk driver read. M7 closes it for physical memory.
+
+```
+oscortex> frames
+PMM BASE 00000000001191B0 STORE 00001240 BITMAP 00001000 META 00000040 LEDGER 00000200
+PMM BOUND 00008000 FRAME 00001000 LIMIT 00000080 MIB
+PMM MANAGED 00008000 FREE 00007EC5 USED 0000013B BASELINE 00007EC5
+PMM ALLOCS 0000000000000000 ERRORS 00000000 OVER 00000000
+oscortex> alloc
+PMM ALLOC 000000000011B000
+oscortex> free 100000
+PMM FREE 0000000000100000 ERR RESERVED
+oscortex> frames drain
+PMM DRAIN TOOK 00007EC4 SUM 000000001FEF2516 XOR 0000000000000000
+PMM DRAIN LOW 000000000011C000 HIGH 0000000007FDF000
+PMM DRAIN TOUCH 0000000007FDF000 C3C3C3C3C43E33C3 OK
+PMM DRAIN NEXT 0000000000000000 FREE 00000000
+```
+
+A bitmap over 4KiB frames: 4096 bytes of bitmap covering 128MiB, built from the type-1 regions of the
+Multiboot map, with the first megabyte and **the kernel's own image** reserved — extents read from the
+linker script, `.bss` included, so the allocator reserves the frame its own bitmap lives in.
+`allocFrame()` returns a physical address or 0; `freeFrame()` catches double frees, unaligned
+addresses, out-of-range frames and frames that were never allocatable, and counts every refusal.
+
+**Why this took until M7, and what changed.** DCDart has no mutable static data, so the bitmap can
+only be assembly-donated `.bss` — and four earlier milestones declined to build the kernel's most
+important subsystem on a workaround, because that would make the workaround load-bearing and turn the
+eventual language fix into a rewrite. That objection was answered by *shape* rather than by waiting:
+every mutable byte lives in **one** block behind **one** accessor, reached through **three** functions
+marked as a storage seam, and the harness **counts the call sites** so it stays that way. When DCDart
+grows mutable statics the migration is three functions and a deletion.
+
+`core/tests/conformance/m7-frames/run.sh` boots four machines. Every number the kernel prints is also
+recomputed by `derive.py` from the boot's own memory-map lines and the ELF's kernel extents, so
+regenerating the golden cannot make a wrong allocator pass. The whole 4096-byte bitmap is read out of
+**guest physical memory** and compared bit-for-bit; a second boot dumps it in the *drained* state,
+where N allocations must leave all 32768 bits set — which is what makes "no frame was handed out
+twice" a proof rather than a hope. A 256MiB boot must report the exact number of frames above the
+bound and say `CAPPED`; a 32MiB boot is the negative control, where every number must change.
+
+**What this is, and is not:** a *physical* memory manager. It hands out one frame at a time, returns a
+`u64` rather than typed memory, does not zero frames, does not know who owns one, has no lock, and is
+not virtual memory — nothing maps anything at runtime. It is the prerequisite for paging, not paging.
+See `core/docs/decisions/0011-physical-memory-manager.md` and `docs/known-gaps.md` GAP-0076.
+
 **What this is, and is not:** fault survival with *abandonment* of the faulting computation. The
 command that faulted is gone — not repaired, not retried, not resumed. Resuming a failed computation
 after fixing its cause is a condition system, and that needs language support neither this kernel nor

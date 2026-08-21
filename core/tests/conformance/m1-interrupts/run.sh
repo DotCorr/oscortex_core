@@ -151,21 +151,107 @@ echo "STRUCTURAL: pass  all $TABLE_COUNT @rodata message tables are in .rodata"
 
 # ADR-0040's core layout promise: ELEMENTS ONLY, no header of any kind. If a
 # length word or class pointer were emitted in front of element 0, every
-# uartWrite() would read from the wrong address — and the section would be
-# larger than the sum of the declared table sizes. Summing the symbol sizes and
-# comparing against the section size catches exactly that.
+# uartWrite() would read from the wrong address.
 #
-# Exact equality holds while every table is a List<u8> (1-byte aligned, so no
-# inter-table padding). Adding a wider table would introduce legitimate
-# alignment padding; at that point this becomes a >= check, and relaxing it
-# should be a deliberate edit rather than a surprise.
-SYM_TOTAL=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v ix="$RODATA_IDX" '$4=="OBJECT" && $7==ix {n+=$3} END{print n+0}')
+# ---------------------------------------------------------------------------
+# THIS CHECK CHANGED AT M7, DELIBERATELY, AND IT GOT STRONGER RATHER THAN
+# WEAKER. The reason is recorded here rather than only in a commit message
+# because a structural assertion that moves is exactly the kind of thing that
+# should never move quietly.
+#
+# It used to be `sum(table symbol sizes) == .rodata section size`, with a note
+# saying that a wider table would introduce legitimate padding and that this
+# would then become a `>=` check. What actually happened was neither: M7's
+# `pmmFreeStatus` dispatches on a DENSE 0..5 status code, LLVM lowered the
+# if-chain into a six-entry JUMP TABLE, and put it in `.rodata` at offset 0 as
+# anonymous data with six `R_X86_64_64` relocations into `.text`
+# (`jmp *0x0(,%rdi,8)`, verified by disassembly). The section grew by 48 bytes
+# that belong to no symbol, and the old equality failed.
+#
+# Relaxing to `>=` would have been the easy move and would have thrown away the
+# property. What is actually promised is that NO TABLE HAS A HEADER — that is a
+# statement about the space BETWEEN tables, which the total never measured
+# directly. So the check now asserts:
+#
+#   1. every pair of adjacent table symbols is exactly abutting — zero bytes
+#      between them, which is the no-header promise stated precisely;
+#   2. nothing at all follows the last table;
+#   3. whatever precedes the first table is entirely accounted for by
+#      `.rela.rodata` — 8 bytes per relocation, i.e. it is a relocated jump
+#      table and not data masquerading as one. Anonymous bytes with no
+#      relocations pointing out of them would still fail.
+#
+# A per-table header would violate (1) and still fails. Note that a jump table
+# in `.rodata` is an indirect branch through memory this kernel maps writable
+# (GAP-0050, one RWX segment) — not a new hazard, since `.text` is writable
+# too, but recorded in GAP-0079.
+# ---------------------------------------------------------------------------
+if ! python3 - "$CORE_DIR/build/kmain.o" "$RODATA_IDX" <<'PY'
+import re, subprocess, sys
+
+obj, idx = sys.argv[1], sys.argv[2]
+
+
+def run(*args):
+    return subprocess.run(args, capture_output=True, text=True).stdout
+
+
+syms = []
+for line in run("x86_64-elf-readelf", "-sW", obj).splitlines():
+    f = line.split()
+    if len(f) >= 8 and f[3] == "OBJECT" and f[6] == idx:
+        syms.append((int(f[1], 16), int(f[2]), f[7]))
+syms.sort()
+if not syms:
+    sys.exit("no @rodata table symbols at all in section %s" % idx)
+
+sec = None
+for line in run("x86_64-elf-objdump", "-h", obj).splitlines():
+    f = line.split()
+    if len(f) >= 3 and f[1] == ".rodata":
+        sec = int(f[2], 16)
+        break
+if sec is None:
+    sys.exit("kmain.o has no .rodata section")
+
+# (1) adjacent tables must abut exactly.
+end = syms[0][0] + syms[0][1]
+for addr, size, name in syms[1:]:
+    if addr != end:
+        sys.exit("%d byte(s) between the end of the previous table and %s at "
+                 "0x%x -- a per-table header or padding appeared, and every "
+                 "message's element 0 would be at the wrong address "
+                 "(ADR-0040 promises elements only)" % (addr - end, name, addr))
+    end = addr + size
+
+# (2) nothing after the last table.
+if end != sec:
+    sys.exit("%d byte(s) follow the last table (.rodata is %d bytes, the last "
+             "table ends at %d)" % (sec - end, sec, end))
+
+# (3) anything before the first table must be a relocated jump table.
+lead = syms[0][0]
+relocs = len(re.findall(r"^[0-9a-f]{16} ", run("x86_64-elf-readelf", "-rW", obj)
+                        .split("'.rela.rodata'")[-1], re.M)) if ".rela.rodata" \
+    in run("x86_64-elf-readelf", "-SW", obj) else 0
+if lead:
+    if relocs == 0:
+        sys.exit("%d anonymous byte(s) precede the first table and .rodata has "
+                 "no relocations -- that is not a jump table, it is unexplained "
+                 "data in front of element 0" % lead)
+    if lead != relocs * 8:
+        sys.exit("%d anonymous byte(s) precede the first table but .rela.rodata "
+                 "has %d entries (%d bytes' worth) -- the leading block is not "
+                 "wholly a relocated jump table" % (lead, relocs, relocs * 8))
+print("    (%d tables, all abutting; %d leading bytes = %d relocated jump-table "
+      "entries; %d bytes total)" % (len(syms), lead, relocs, sec))
+PY
+then
+  fail "kmain.o's .rodata layout is not 'elements only, no header' (ADR-0040)"
+fi
 SEC_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".rodata"{print $3; exit}')
 SEC_TOTAL=$((16#$SEC_HEX))
-if [[ "$SYM_TOTAL" -ne "$SEC_TOTAL" ]]; then
-  fail "kmain.o .rodata is $SEC_TOTAL bytes but its table symbols sum to $SYM_TOTAL — a per-table header or unexpected padding appeared, which would shift every message's element 0 (ADR-0040 promises elements only)"
-fi
-echo "STRUCTURAL: pass  .rodata is exactly $SEC_TOTAL bytes = sum of $TABLE_COUNT table sizes (elements only, no header)"
+echo "STRUCTURAL: pass  .rodata's $TABLE_COUNT table symbols abut exactly with no header or padding between any pair, and nothing but a relocated jump table precedes them ($SEC_TOTAL bytes total)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh.
