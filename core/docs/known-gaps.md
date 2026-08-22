@@ -3140,9 +3140,13 @@ command pays the substitution for four, and now has a structural check telling t
 ## GAP-0107 — The heap is a monotonic bump pointer: no `free`, no shrink, no reuse, no quota
 
 **Domain:** kernel (M12)
-**Status:** OPEN — deliberately scoped out, and named in the source rather than discovered. ADR-0016
-§4 makes the argument; this is the accounting, because "the kernel has a heap now" is exactly the kind
-of sentence that gets read as more than it says.
+**Status:** OPEN, NARROWED at M13 — item 3 is answered: `core/user/libc/malloc.c` is the `malloc`
+this entry said userland still had to write, and it keeps exactly the free list item 2 says the
+kernel does not. Everything else here is unchanged, and item 1 is why GAP-0111 item 1 exists: a
+userland `free` gives memory back to the PROGRAM, and there is still no way to give it back to the
+MACHINE. Deliberately scoped out, and named in the source rather than discovered. ADR-0016 §4 makes
+the argument; this is the accounting, because "the kernel has a heap now" is exactly the kind of
+sentence that gets read as more than it says.
 
 1. **The break only ever moves up.** `sbrk(0)` reports it, a positive increment advances it, and
    nothing lowers it. A negative increment is not expressible — RDI arrives as a `u64`, so a C
@@ -3154,7 +3158,9 @@ of sentence that gets read as more than it says.
    process that grows its heap and stops using it holds those frames until it exits.
 3. **A `malloc` is therefore still entirely userland's problem**, which is the normal division of
    labour and is stated because it is the reason this milestone exists. What M12 removes is the wall:
-   at M11 no `malloc` could have been written at all.
+   at M11 no `malloc` could have been written at all. **RESOLVED at M13** — `core/user/libc/malloc.c`
+   is that `malloc` (ADR-0017 §6): a first-fit free list with splitting and coalescing, over this
+   `sbrk`, whose reuse is measured against a second build of the same source with `free()` disabled.
 4. **Granularity is one 4KiB page.** `sbrk(1)` costs a whole page. `m12-heap`'s program asks for
    exactly one byte and checks that the break moved by 4096, so the rounding is a measured property.
 5. **There is no per-process quota and nothing limits how much of a machine one process can take.**
@@ -3214,6 +3220,17 @@ reading the source rather than by running it. The honest closing move is either 
 shell command that leaves a chosen number of frames free (one command, one help line, four goldens by
 substitution — GAP-0106) or a per-process page quota, which GAP-0107 item 5 wants anyway.
 
+**M13 NOTE, measured while scoping that closing move and recorded so the next unit does not
+re-measure it.** The command has to be a *partial drain*, not a *hold*. To reach `heapRetNoMem` the
+free count must be below ~500 while a process runs, and on the suite's 128 MiB machine that means
+withholding **31 900 of 32 417 frames** — so a command that records the frames it is holding cannot
+be the shape. `pmm.dart`'s existing ledger is `pmmLedgerN = 64` entries / `pmmLedgerBytes = 512`
+(`shellFramesTest` fills it), and growing it is not free: `m12-heap/run.sh` and `m13-libc/run.sh`
+BOTH assert `kdata.o`'s donated `.bss` is exactly 9664, so any new per-frame storage is a deliberate
+change to two harnesses' structural checks as well as to `kdata.S`'s header and GAP-0053. The shape
+that avoids all of it is `frames drain` with a keep-count — the drain path already frees everything
+back without a list, so keeping `n` is a loop bound, not a table.
+
 ---
 
 ## GAP-0109 — The heap's frame-zeroing has no behavioural test that can fail, for the same reason as GAP-0094 and GAP-0102, and this was measured
@@ -3261,6 +3278,14 @@ allocator's cursor somewhere chosen, so a dirtied frame can be handed straight b
 command, one `help` line, and four goldens by substitution (GAP-0106) — the same price GAP-0108's
 closing move costs, and the two would share it.
 
+**M13 NOTE.** Unlike GAP-0108's version (see its own M13 note), THIS one fits inside what already
+exists: `pmm.dart`'s ledger holds 64 frames (`pmmLedgerN`), which is enough to allocate a few dozen
+frames, write a nonzero pattern into each, and free them all — leaving dirty frames at the head of
+the free list with **no new donated `.bss`**, and therefore without touching the `9664` assertion
+that `m12-heap/run.sh` and `m13-libc/run.sh` both make. The cost that remains is the `help` line and
+the goldens: `shellStrHelp` is asserted at exactly 1871 bytes by m12's and m13's harnesses as well
+as m3–m6's, so a new command is a seven-file change even before anything is proved with it.
+
 ---
 
 ## GAP-0110 — The pinned-DCDart sandbox must live at a REAL path: `/tmp` breaks it silently, with GAP-0084's error message
@@ -3303,5 +3328,187 @@ directory the whole sandbox sits in, and `mktemp -d` on this machine hands you o
 
 **Cost:** one line in whatever script builds the sandbox, and this entry, because the error message
 points at the one thing that is not wrong.
+
+---
+## GAP-0111 — What `core/user/libc`'s `malloc` does NOT do, listed rather than discovered later
+
+**Domain:** userland (M13)
+**Status:** OPEN — deliberately scoped out, and named in the source rather than found later.
+ADR-0017 §6 makes the argument; this is the accounting, because "oscortex has a `malloc` now" is
+exactly the kind of sentence that gets read as more than it says.
+
+`malloc` IS a real allocator: a first-fit free list with splitting and with coalescing, whose `free`
+returns a block to the program and whose next `malloc` of a fitting size gives the same address
+back. `m13-libc`'s program measures all three behaviours at runtime and a second build of the same
+source with `free()` disabled measures their absence. What it does not do:
+
+1. **It never returns memory to the KERNEL.** `sbrk` cannot shrink (GAP-0107 item 1), so a freed
+   block stays in this process's address space until it exits. `free` returns memory to the program,
+   not to the machine, and a program whose peak footprint is 400 KiB holds 400 KiB until it dies
+   however little it is using.
+2. **There is no `realloc` and no `calloc`.** Both are three lines on top of what is here and
+   neither has a caller yet; adding an untested `realloc` would be adding the buggiest function in
+   every C library with nothing exercising it.
+3. **First fit, linear, from the head.** No bins, no size classes, no best fit. A program that frees
+   many small blocks and then asks for a large one walks the whole list every time — O(free blocks)
+   per `malloc`. Nothing here is allocation-rate-bound yet.
+4. **No double-free detection, no guard bytes, no canary, no heap-consistency check.** Freeing a
+   pointer twice corrupts the free list and nothing will say so; freeing a pointer that `malloc` did
+   not return reads a 16-byte header out of whatever is there. The allocator trusts its caller
+   completely, which is what every allocator of this size does and is worth writing down anyway.
+5. **Not reentrant and not thread-safe.** There are no threads and no signals on this OS, so this
+   costs nothing today and would cost everything on the day there are.
+6. **No per-process quota.** GAP-0107 item 5 is unchanged: the only bound on how much of the machine
+   one process can take is its own 2 MiB window.
+7. **The `heapRetNoSpace` arm of `malloc` is not walked by any boot here.** `m13-libc`'s program
+   shows a 4 MiB request refused with `heapRetBadArg` — the increment is larger than the whole window
+   — and shows `malloc` returning `NULL` and the program running on. A request refused because the
+   window filled up *part-way through a program's life* needs the ~500-page growth loop that
+   `m12-heap` runs for eight seconds, and `m13-libc` deliberately does not repeat it. So `grow()`
+   returning 0 IS exercised; it is exercised through only one of the kernel's three refusal values.
+8. **The alignment is 16 bytes and is not negotiable.** There is no `aligned_alloc` and no way to ask
+   for more. 16 is what the x86-64 ABI wants for anything a `movaps` might touch, which is why the
+   header is 16 bytes rather than 8.
+
+**Why this is not a bug:** every item is absence. The two that could be mistaken for presence — "it
+frees" and "it gives memory back" — are different sentences, and the difference between them is item
+1, which is stated in the library's own header, in ADR-0017 §6, and here.
+
+---
+
+## GAP-0112 — `printf` implements five conversions, and everything else is a visible refusal
+
+**Domain:** userland (M13)
+**Status:** OPEN by design — this entry exists so that "oscortex has `printf`" is never read as
+"oscortex has C's `printf`".
+
+**Implemented, and exactly these:** `%s`, `%d`, `%x`, `%c`, `%%`. That is five.
+
+**Not implemented, and each one produces the two characters `%!` in the output rather than being
+skipped:** every width (`%5d`), every flag (`%-s`, `%+d`, `%08x`), every precision (`%.3s`), every
+length modifier (`%ld`, `%zu`, `%hhd`), `%u`, `%p`, `%o`, `%f`, `%g`, `%e`, `%n`, and a `%` at the
+very end of the format string. `m13-libc/run.sh` reads the set of implemented conversions **out of
+printf.c** and requires it to be exactly those five, and requires the final `else` to emit the marker
+and to consume no varargs argument.
+
+**Other absences of the same kind:**
+
+* **There is no `stdout`, no `FILE`, no file descriptor and no buffering.** One `printf` call is one
+  `write` syscall is one line on the console. A `\n` in a format string is a byte that goes to the
+  UART, not a flush.
+* **A formatted string longer than 120 bytes cannot be printed.** `elfOwns` refuses a write above
+  `userWriteMax` (128), so the library caps its buffer at 120, appends `%!OVF`, and returns `-1`.
+  It does not wrap, and it does not chunk into several writes — several `USER WRITE` lines for one
+  logical line reads as a bug in the program and becomes one in every golden that captures it.
+* **`%d` is `int` and `%x` is `unsigned int` — both 32-bit.** A 64-bit value has to be printed as two
+  `%x`es or cast down, and `%ld`/`%lx` are conversions that produce `%!`. `m13-libc`'s program prints
+  addresses with `%x` and gets away with it only because the program window is at 256 MiB and fits in
+  32 bits; a program above 4 GiB would silently print the low half, and there is no conversion here
+  that would not.
+* **There is no `snprintf`, no `sprintf` and no `vprintf`.** There is nowhere to put a formatted
+  string except the console.
+* **`%s` with a NULL pointer prints `(null)`** rather than faulting, which is a choice and not a
+  standard.
+
+**Cost:** ordinary C that formats anything with a width or a `%u` compiles and runs and prints `%!`
+where the number should be. That is the intended failure and it is loud; the alternative — printing
+nothing where the number should be — is the failure this library was arranged to avoid.
+
+---
+
+## GAP-0113 — There is no I/O in the library, because there is no filesystem under it
+
+**Domain:** userland, storage (M13)
+**Status:** OPEN — and it does NOT narrow GAP-0090, which is the entry for the filesystem itself.
+
+`core/user/libc` has `write` and nothing else that touches the outside world. Specifically absent:
+
+* **`open`, `close`, `read`, `lseek`, and any notion of a file descriptor.** `write` takes a pointer
+  and a length and always goes to the console, because `userSysWrite` always goes to the console.
+* **`FILE`, `fopen`, `fprintf`, `fgets`, `stdin`.** There is no console *input* syscall at all: the
+  keyboard belongs to the shell, in ring 0, and a process has no way to read a character.
+* **`errno`.** `sbrk_last_error()` exists and returns the kernel's own refusal value for the last
+  `sbrk`, which is one function's error for one function's caller. A global `errno` that only `sbrk`
+  ever set would be a convention pretending to be an interface, and every later syscall would have to
+  remember to clear it.
+* **`exit` runs no atexit handlers and flushes nothing**, because there is nothing registered and
+  nothing buffered.
+* **`argc`/`argv`/`envp`.** `_start` calls `progMain()` with nothing. The kernel's `proc run` passes
+  a probe address to slot 1 and nothing to slot 0 (ADR-0015), and there is no place in the ELF
+  loading path where a command line could come from.
+
+**What it would take**, briefly, so the size is visible: a filesystem (GAP-0090 lists what that
+needs), a per-process descriptor table in the process slot, three or four more syscalls, and a
+decision about whether `read` blocks — which needs a scheduler that can block a process, and this one
+is cooperative (GAP-0097).
+
+**Cost:** a C program for this OS can compute and can print, and cannot read anything. That is the
+honest boundary of M13 and it is drawn here rather than discovered by somebody porting something.
+
+---
+
+## GAP-0114 — What `m13-libc` checks by RUNNING and what it checks by READING, and the mutations that survived
+
+**Domain:** conformance (M13)
+**Status:** OPEN — the accounting of this harness's own reach, in the shape m10, m11 and m12 each
+established: every milestone here has found exactly one check that passed for the wrong reason, and
+the way it found it was mutation testing followed by writing down what survived.
+
+**Every mutation was run TWICE**: once against the committed golden, and once with the golden
+**regenerated from the mutated library**, so that a byte-exact-serial mismatch could not count as a
+kill and only a derived or structural check could.
+
+| mutation | pass 1 (committed golden) | pass 2 (golden regenerated from the mutant) |
+|---|---|---|
+| `free()` returns without doing anything | killed | killed — *structural*: `free() does not consult libcFreeEnabled` |
+| the forward merge deleted from `insertFree` | killed | killed — `process 0 reported ROUND2 0, expected 1` |
+| the backward merge deleted from `insertFree` | killed | killed — `offsets [… 0x1010, 0x470, 0x490]; derive.py computes […]` |
+| splitting removed (a fitting block is always taken whole) | killed | killed — `offsets [0x10, 0x1010, 0x2010, …]` |
+| `malloc`'s overflow guard deleted | killed | killed — `process 0 reported 1 failed self-check(s)` (`MALLOCMAX`) |
+| the payload returned at `+8` instead of `+16` | killed | killed — `offsets [0x8, 0x38, 0x438, …]` |
+| `%d` prints the digits without the sign | killed | killed — `1 failed self-check` (`FMTRET`), and the `FMT` line text |
+| the unsupported-conversion branch made silent | killed | killed — *structural*: `printf's final else does not emit %!` |
+| the over-long line truncated with no marker and a positive return | killed | killed — `1 failed self-check` (`OVFRET`) |
+| `%x` made uppercase | killed | killed — `process 0 printed 1 BLK lines, expected 2` |
+| `strcmp` comparing as signed `char` | killed | killed — `1 failed self-check` (`STRCMPSIGN`) |
+| **every `volatile` removed from `string.c`** | killed *(golden only)* | **SURVIVED** |
+| **`sbrk`'s refusal test `>=` weakened to `>`** | **SURVIVED** | **SURVIVED** |
+
+**The two survivors, and what they mean.**
+
+* **`string.c` without `volatile`.** The `volatile` is there to stop a loop-idiom pass rewriting
+  `memcpy`'s body into a call to `memcpy`. It was then measured: **Apple clang 17 at `-O2` for
+  `x86_64-unknown-none-elf` does not do it** — with `-fno-builtin` or without — because LLVM's
+  `LoopIdiomRecognize` declines to rewrite a loop into a call to the function containing it. So the
+  plain version behaves identically and the only difference in pass 1 was the size of the generated
+  code moving every address in the capture. `build-progs.sh`'s "not one `call` inside any of the five"
+  check is correct and would catch the hazard the day a toolchain introduced it; **on this toolchain
+  it currently has nothing to catch**, and `string.c`'s header comment now says exactly that instead
+  of implying the recursion was observed here. This is the finding of M13's mutation pass.
+* **`sbrk`'s floor test.** `if (r >= SBRK_ERR_FLOOR)` weakened to `>` is an EQUIVALENT mutant given
+  this kernel: `heap.dart` returns exactly three refusal values, all of them strictly above
+  `heapRetFloor`, so no call can produce the boundary value that distinguishes the two tests. It is
+  left as `>=` because the floor is documented as "at or above is a refusal" (ADR-0016 §1) and a
+  fourth refusal value added at the boundary would make the difference real.
+
+**What is checked by reading the source rather than by running anything**, and is therefore only as
+good as the parser:
+
+* that `printf.c` implements exactly five conversions (a sixth one that worked would fail this check
+  even though the output would be fine — that is the intended direction);
+* that the final `else` consumes no varargs argument;
+* that the negative control is a `volatile const` word rather than an `#ifdef`;
+* that `free()` mentions `libcFreeEnabled` and `insertFree`;
+* that there is exactly one `int $0x80` instruction in the library.
+
+**What no boot in this harness exercises at all:**
+
+* `malloc` failing because the window filled up part-way through a program's life
+  (`heapRetNoSpace`) — GAP-0111 item 7;
+* a double `free`, a `free` of a pointer `malloc` did not return, or any other caller error;
+* `memcpy` with overlapping ranges (it is not `memmove` and does not claim to be);
+* `strcpy` into a buffer that is too small;
+* `printf` with more conversions than arguments, or fewer;
+* any allocation pattern long enough to make first-fit's O(n) scan visible.
 
 ---

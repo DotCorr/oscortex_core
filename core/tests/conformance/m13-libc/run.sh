@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+# core/tests/conformance/m13-libc/run.sh
+#
+# Mechanical check of ROADMAP.md's M13 exit criterion: ORDINARY C SOURCE, USING
+# A LIBRARY, RUNS ON THIS OPERATING SYSTEM.
+#
+# WHAT THIS ASSERTS THAT NO EARLIER HARNESS COULD
+# ---------------------------------------------------------------------------
+# M12 gave a process a way to ask the kernel for pages. What no program had was
+# a library: m10's, m11's and m12's test programs each hand-rolled their own
+# `int $0x80` stub, their own hex formatter and their own byte loops, and none
+# of them could call `malloc`, `printf` or `strcmp` because none of those
+# existed anywhere on this machine. M13 adds core/user/libc -- one header and
+# four .c files -- and runs a program written the way C is normally written.
+#
+#   * A REAL ALLOCATOR ON TOP OF A BUMP POINTER. `sbrk` is monotone and never
+#     gives anything back (ADR-0016 §4, GAP-0107). `malloc` keeps a first-fit
+#     free list over it WITH SPLITTING AND WITH COALESCING, and the program
+#     demonstrates all three: a freed block comes back at the same address, two
+#     freed neighbours merge into one that satisfies a request neither could,
+#     and after everything is freed six fresh allocations land on the same six
+#     addresses having taken NOT ONE MORE BYTE from the kernel.
+#
+#   * THE ADDRESSES ARE DERIVED, NOT OBSERVED. derive.py recomputes where every
+#     block must land from `mallocHdrBytes`, `mallocAlign` and `reqSize` -- all
+#     three READ OUT OF THE ELF -- and this harness requires the program to have
+#     printed exactly those offsets. The total taken from the kernel is derived
+#     a SECOND, different way and checked against the KERNEL's own
+#     `PROC HEAP ... NEW` line, which knows nothing about any allocator.
+#
+#   * THE NEGATIVE CONTROL IS A SECOND BUILD OF THE SAME SOURCE. progN is progL
+#     with `free()` disabled by one `volatile const` word, so the two binaries
+#     have byte-identical segment geometry and the same heap base. progL must
+#     report REUSE 1 / COALESCE 1 / ROUND2 1 and progN must report 0 / 0 / 0,
+#     the two exit statuses must differ by exactly the constant derive.py
+#     computes, and progN must take MORE memory from the kernel than progL.
+#     Check 6d then runs progL's expectations against progN's transcript and
+#     REQUIRES THEM TO FAIL: a reuse check that passed for both would be
+#     measuring nothing, which is the exact failure three previous milestones
+#     found in their own checks.
+#
+#   * printf's CONVERSIONS ARE COUNTED. Five are implemented. The program
+#     formats all five and four unsupported ones in the same session, and this
+#     harness requires the five to be exactly right and each of the four to be
+#     the visible marker `%!` -- including a trailing `%` with nothing after it,
+#     and including a string too long for this kernel's 128-byte write, which
+#     must come back marked `%!OVF` and with a return value of -1.
+#
+#   * THE COMPILER'S OWN memcpy AND memset. build-progs.sh requires progL.o to
+#     have UNDEFINED references to both, emitted by clang -O2 from source that
+#     names neither, and requires not one `call` instruction inside any of the
+#     five string functions -- which is what would catch LLVM's loop-idiom pass
+#     rewriting `memcpy`'s body into a call to `memcpy`.
+#
+#   * THE KERNEL VALIDATES A malloc'd POINTER. The program copies a message into
+#     memory `malloc` gave it and passes that pointer to `write`; `elfOwns`
+#     walks the live page tables before believing it, so the line appearing on
+#     the console is the kernel confirming the mapping from its own side.
+#
+# WHAT IT DOES NOT ASSERT, SO NOBODY INFERS IT
+# ---------------------------------------------------------------------------
+#   * THIS MILESTONE CHANGES NO KERNEL CODE AT ALL, and the checks below say so
+#     rather than the commit message: donated .bss UNCHANGED at 9664, externs
+#     UNCHANGED at 58, `shellStrHelp` UNCHANGED at 1871 (no new shell command,
+#     so m3-m6's goldens do not move -- GAP-0105's incident, designed around
+#     again).
+#   * `malloc` NEVER RETURNS MEMORY TO THE KERNEL, because `sbrk` cannot shrink.
+#     GAP-0107 item 1 is unchanged; GAP-0111 is this library's own accounting.
+#   * There is no `realloc`, no `calloc`, no `open`, no `read`, no `FILE`, no
+#     `errno` and no `%u`/`%p`/`%f`/`%ld`. GAP-0112 and GAP-0113 list what is
+#     absent, so that "oscortex has a libc now" cannot be read as more than it
+#     says.
+#   * `heapRetNoMem` is still unreachable (GAP-0108) and the heap's frame
+#     zeroing still has no behavioural test (GAP-0109). A library does not
+#     change either.
+#
+# Usage:
+#   core/tests/conformance/m13-libc/run.sh
+#   ... --regen    rewrite the goldens from this boot (the derived checks below
+#                  still have to pass, so a wrong library cannot enshrine itself)
+#
+# Exit status: 0 on PASS, 1 on FAIL, 2 on a setup error.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CORE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO_DIR="$(cd "$CORE_DIR/.." && pwd)"
+LIBC_DIR="$CORE_DIR/user/libc"
+
+fail() { echo "M13-libc: FAIL — $1" >&2; exit 1; }
+setup_error() { echo "M13-libc: FAIL — $1" >&2; exit 2; }
+
+for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
+            x86_64-elf-readelf x86_64-elf-nm; do
+  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+done
+
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m13.XXXXXX")" || setup_error "mktemp failed"
+cleanup() { [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"; }
+trap cleanup EXIT
+
+REGEN=0
+[[ "${1:-}" == "--regen" ]] && REGEN=1
+
+KERNEL_ELF="$CORE_DIR/build/kernel.elf"
+EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
+EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
+M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
+DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+DERIVE="$SCRIPT_DIR/derive.py"
+[[ -f "$DRIVER" ]] || setup_error "qmp-drive.py not found at $DRIVER"
+[[ -f "$M1_EXPECTED" ]] || setup_error "m1-interrupts/expected.txt not found"
+[[ -d "$LIBC_DIR" ]] || setup_error "no C library at $LIBC_DIR"
+
+# ---------------------------------------------------------------------------
+# Step 1 — build the kernel. UNCHANGED by this milestone, which is itself
+# checked below.
+# ---------------------------------------------------------------------------
+BUILD_OUT="$(bash "$CORE_DIR/scripts/build-kernel.sh" 2>&1)"
+BUILD_STATUS=$?
+echo "$BUILD_OUT"
+[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
+[[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
+
+dartconst() {
+  python3 - "$CORE_DIR/kernel/$2" "$1" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"^const int %s = (0x[0-9A-Fa-f]+|\d+);" % re.escape(sys.argv[2]), src, re.M)
+print(int(m.group(1), 0) if m else "")
+PY
+}
+
+cdefine() {
+  # `#define NAME VALUE` out of core/user/libc/oslibc.h, decimal or hex, with an
+  # optional UL suffix.
+  python3 - "$LIBC_DIR/oslibc.h" "$1" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"^#define %s\s+(0x[0-9A-Fa-f]+|\d+)U?L?\b" % re.escape(sys.argv[2]), src, re.M)
+print(int(m.group(1), 0) if m else "")
+PY
+}
+
+# ---------------------------------------------------------------------------
+# Step 2 — structural checks.
+# ---------------------------------------------------------------------------
+
+# 2a. THE KERNEL DID NOT MOVE. M13 is a userland milestone and this is where
+#     that is a measurement rather than a claim in a commit message.
+KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
+KDATA_BSS=$((16#$KDATA_BSS_HEX))
+[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11/M12. A C LIBRARY IS USERLAND. If the kernel needed new mutable state to host one, that is a different milestone and it needs its own ADR."
+grep -rq "oslibc" "$CORE_DIR/kernel/" && fail "a kernel source mentions oslibc — the C library must not be reachable from ring 0"
+echo "STRUCTURAL: pass  kdata.o still donates exactly 9664 bytes of .bss and no kernel source mentions the library — M13 is entirely userland"
+
+# 2b. EVERY SYSCALL NUMBER THE LIBRARY USES IS THE KERNEL'S OWN.
+#
+# Before this milestone each test program carried its own copy of these five
+# numbers. Three copies is three chances for one to drift, and the drift shows
+# up as a program that faults rather than as a build error. There is one copy
+# now, in oslibc.h, and this is the check that it is the right one.
+declare -A WANT_SYS=( [SYS_EXIT]="userSysExitNo user.dart" [SYS_WRITE]="userSysWriteNo user.dart" \
+                      [SYS_WHO]="userSysWhoNo user.dart" [SYS_YIELD]="procSysYieldNo proc.dart" \
+                      [SYS_SBRK]="heapSysSbrkNo heap.dart" )
+for name in SYS_EXIT SYS_WRITE SYS_WHO SYS_YIELD SYS_SBRK; do
+  set -- ${WANT_SYS[$name]}
+  k=$(dartconst "$1" "$2")
+  c=$(cdefine "$name")
+  [[ -n "$k" ]] || fail "could not read $1 out of core/kernel/$2"
+  [[ -n "$c" ]] || fail "oslibc.h does not define $name"
+  [[ "$k" -eq "$c" ]] || fail "oslibc.h has $name = $c and core/kernel/$2 says $1 = $k"
+done
+echo "STRUCTURAL: pass  all five syscall numbers in oslibc.h are the kernel's own ($(cdefine SYS_EXIT)/$(cdefine SYS_WRITE)/$(cdefine SYS_WHO)/$(cdefine SYS_YIELD)/$(cdefine SYS_SBRK)), read back out of user.dart, proc.dart and heap.dart"
+
+# 2c. AND SO IS EVERY REFUSAL VALUE AND THE WRITE LIMIT.
+for pair in "SBRK_ERR_FLOOR heapRetFloor heap.dart" "SBRK_ENOMEM heapRetNoMem heap.dart" \
+            "SBRK_ENOSPACE heapRetNoSpace heap.dart" "SBRK_EBADARG heapRetBadArg heap.dart" \
+            "SYS_REFUSED userRefused user.dart" "WRITE_MAX userWriteMax user.dart"; do
+  set -- $pair
+  k=$(dartconst "$2" "$3")
+  c=$(cdefine "$1")
+  [[ -n "$k" && -n "$c" ]] || fail "could not compare $1 against $2 in core/kernel/$3"
+  [[ "$k" -eq "$c" ]] || fail "oslibc.h has $1 = $c and core/kernel/$3 says $2 = $k. A library that disagrees with the kernel about what a refusal LOOKS LIKE will treat one as an address."
+done
+PRINTF_MAX=$(cdefine PRINTF_MAX)
+WRITE_MAX=$(cdefine WRITE_MAX)
+[[ -n "$PRINTF_MAX" && "$PRINTF_MAX" -lt "$WRITE_MAX" ]] \
+  || fail "PRINTF_MAX ($PRINTF_MAX) is not below WRITE_MAX ($WRITE_MAX) — printf's overflow marker must still fit inside one write the kernel will accept"
+[[ $(( PRINTF_MAX + 5 )) -le "$WRITE_MAX" ]] \
+  || fail "PRINTF_MAX + the 5-byte overflow marker is $(( PRINTF_MAX + 5 )), above the kernel's $WRITE_MAX-byte limit: an overflowing printf would be REFUSED instead of printing its marker"
+echo "STRUCTURAL: pass  the four sbrk refusal values, the syscall refusal value and the 128-byte write limit in oslibc.h are all the kernel's own, and PRINTF_MAX ($PRINTF_MAX) plus the 5-byte overflow marker still fits inside one legal write"
+
+# 2d. printf IMPLEMENTS EXACTLY FIVE CONVERSIONS, AND HAS AN ELSE THAT MARKS.
+#
+# The claim this whole milestone rests on is "every unsupported conversion is a
+# visible failure". A sixth conversion added without a test, or an `else` that
+# fell through silently, would make the claim false while every golden still
+# matched. So the set is read out of the source.
+python3 - "$LIBC_DIR/printf.c" <<'PY' || fail "printf.c does not implement exactly the five conversions its header promises, with a marking else"
+import re, sys
+src = open(sys.argv[1]).read()
+body = src[src.index("int printf("):]
+bad = []
+got = set(re.findall(r"k == '(.)'", body))
+want = {"%", "c", "s", "d", "x"}
+if got != want:
+    bad.append("printf.c tests for %s; oslibc.h promises exactly %s"
+               % (sorted(got), sorted(want)))
+# The final else must emit '%' then '!' and must consume no argument.
+tail = body[body.rindex("} else {"):]
+if "put(n, '%')" not in tail or "put(n, '!')" not in tail:
+    bad.append("printf's final else does not emit the two characters `%!` — an unsupported "
+               "conversion would vanish silently, which is the one thing this printf exists "
+               "not to do")
+if "va_arg" in tail:
+    bad.append("printf's final else consumes a varargs argument for a conversion it does not "
+               "understand; every later conversion in the same call would be out of step")
+# The trailing-`%` branch is separate and must also mark.
+if not re.search(r"if \(k == 0\) \{\s*(/\*.*?\*/\s*)?\s*n = put\(n, '%'\);\s*n = put\(n, '!'\);", body, re.S):
+    bad.append("a `%` at the very end of the format is not marked `%!`")
+for b in bad:
+    print("    - " + b, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+echo "STRUCTURAL: pass  printf.c tests for exactly %s %d %x %c %% and nothing else, its final else emits \`%!\` and consumes no argument, and a trailing \`%\` is marked too"
+
+# 2e. THE NEGATIVE CONTROL IS A RUNTIME WORD, NOT A #ifdef.
+#
+# If `free`'s body were removed by the preprocessor the two builds would be
+# different sizes, would have different heap bases, and their two transcripts
+# could differ for reasons that have nothing to do with `free`. It is one
+# `volatile const` load instead, and this is where that stays true.
+grep -q 'volatile const unsigned long libcFreeEnabled = LIBC_FREE_ENABLED;' "$LIBC_DIR/malloc.c" \
+  || fail "malloc.c does not define libcFreeEnabled as a volatile const word"
+grep -qE '^\s*#if(n?def)? .*LIBC_FREE_ENABLED' "$LIBC_DIR/malloc.c" \
+  && ! grep -q '#ifndef LIBC_FREE_ENABLED' "$LIBC_DIR/malloc.c" \
+  && fail "malloc.c switches on LIBC_FREE_ENABLED with the preprocessor; the control build must differ only in one word of .rodata"
+python3 - "$LIBC_DIR/malloc.c" <<'PY' || fail "free() does not consult libcFreeEnabled, so the negative-control build would behave exactly like the real one"
+import sys
+src = open(sys.argv[1]).read()
+body = src[src.index("void free(void *p) {"):]
+sys.exit(0 if "libcFreeEnabled" in body and "insertFree" in body else 1)
+PY
+echo "STRUCTURAL: pass  the negative control is one volatile const word read at runtime by free(), not a preprocessor switch — so both builds have identical geometry"
+
+# 2f. THE LIBRARY IS SELF-CONTAINED AND STANDS ON THE FIVE SYSCALLS.
+#
+# `malloc` may reach the kernel only through `sbrk` and `printf` only through
+# `write`, or the library has more surface than its header admits.
+python3 - "$LIBC_DIR" <<'PY' || fail "the library reaches the kernel from somewhere other than syscall.c"
+import os, re, sys
+d = sys.argv[1]
+bad = []
+for f in ("malloc.c", "string.c", "printf.c"):
+    src = open(os.path.join(d, f)).read()
+    if re.search(r'__asm__[^;]*int \$0x80', src) or "__asm__ volatile" in src:
+        bad.append("%s contains inline assembly; every syscall must go through syscall.c" % f)
+    if re.search(r"\bsys_call\s*\(", src):
+        bad.append("%s calls sys_call directly instead of a named wrapper" % f)
+src = open(os.path.join(d, "syscall.c")).read()
+# The INSTRUCTION, not the prose: this file's own header names it too.
+n = len(re.findall(r'__asm__ volatile\("int \$0x80"', src))
+if n != 1:
+    bad.append("syscall.c has %d `int $0x80` instructions; there must be exactly one" % n)
+for b in bad:
+    print("    - " + b, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY
+echo "STRUCTURAL: pass  exactly one \`int \$0x80\` in the whole library, in syscall.c, and no other file contains assembly or calls it directly"
+
+# 2g. shellStrHelp UNCHANGED, so m3-m6's goldens do not move (GAP-0105).
+check_table() {
+  local sym="$1" want="$2" got
+  got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
+  [[ -n "$got" ]] || fail "$sym not found in kmain.o"
+  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
+}
+check_table shellStrHelp 1871
+check_table heapStrLine 10
+check_table procStrPages 7
+echo "STRUCTURAL: pass  shellStrHelp is UNCHANGED at 1871 bytes — M13 adds no shell command, so m3-m6's goldens do not move (GAP-0105)"
+
+# ---------------------------------------------------------------------------
+# Step 3 — verify-freestanding.sh (CLAUDE.md rule 1). 58 externs, unchanged.
+# ---------------------------------------------------------------------------
+ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
+[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
+  "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$CORE_DIR/build/portio.o" "$KERNEL_ELF" 2>&1)"
+VERIFY_STATUS=$?
+echo "$VERIFY_OUT"
+if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+  fail "verify-freestanding.sh did not report a clean pass"
+fi
+EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+[[ "$EXTERN_COUNT" -eq 58 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 58 — UNCHANGED from M11/M12"
+grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
+echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — unchanged from M12, and kdata.o still passes standalone"
+
+# ---------------------------------------------------------------------------
+# Step 4 — the library, the two programs, and the disk.
+# ---------------------------------------------------------------------------
+PROGS_OUT="$(bash "$SCRIPT_DIR/build-progs.sh" "$WORKDIR/progs" 2>&1)"
+PROGS_STATUS=$?
+echo "$PROGS_OUT"
+[[ $PROGS_STATUS -eq 0 ]] || fail "build-progs.sh exited $PROGS_STATUS"
+PROG_L="$WORKDIR/progs/progL.elf"
+PROG_N="$WORKDIR/progs/progN.elf"
+
+DISK_IMG="$WORKDIR/m13.img"
+LAYOUT_JSON="$WORKDIR/layout.json"
+python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROG_L" "$PROG_N" --json >"$LAYOUT_JSON" \
+  || fail "make-image.py could not write the test disk"
+lba_of() { python3 -c "import json,sys; print('%X' % json.load(open(sys.argv[1]))['slots'][sys.argv[2]]['lba'])" "$LAYOUT_JSON" "$1"; }
+LBA_L=$(lba_of L)
+LBA_N=$(lba_of N)
+IMG_BYTES=$(wc -c <"$DISK_IMG" | tr -d ' ')
+echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 2 program slots (progL at 0x$LBA_L, the free()-disabled control progN at 0x$LBA_N), generated and re-read from disk"
+
+# ---------------------------------------------------------------------------
+# Step 5 — the boot.
+#
+# ONE boot, not m12's four. M12 needed three extra ones to read page tables out
+# of guest RAM at chosen moments; M13 asserts nothing about page tables that M12
+# did not already assert about the same unchanged kernel, and a harness that
+# re-proves a neighbour's property at four times the cost is a harness people
+# stop running.
+# ---------------------------------------------------------------------------
+drive_session() {
+  local outdir="$1" keys="$2" png="$3" label="$4" portoff="$5" mem="$6" cpu="$7"
+  shift 7
+  mkdir -p "$outdir"
+  local ser="$outdir/serial.txt"
+  : >"$ser"
+  local port=$(( 47000 + ($$ % 8000) + portoff ))
+  timeout 420 qemu-system-x86_64 \
+    -kernel "$KERNEL_ELF" \
+    -m "$mem" \
+    -cpu "$cpu" \
+    -vga std \
+    -serial "file:$ser" \
+    -display none \
+    -no-reboot \
+    -drive "file=$DISK_IMG,format=raw,if=ide,index=0,media=disk" \
+    -qmp "tcp:127.0.0.1:$port,server,nowait" \
+    >"$outdir/qemu.log" 2>&1 &
+  local qemu_pid=$!
+  python3 "$DRIVER" \
+    --port "$port" \
+    --serial "$ser" \
+    --wait-for 'M1 END\n' \
+    --png "$png" \
+    --screen-text "$outdir/screen.txt" \
+    --keys "$keys" \
+    "$@"
+  local drive_status=$?
+  wait "$qemu_pid" 2>/dev/null
+  local qemu_status=$?
+  if [[ $drive_status -ne 0 ]]; then
+    cat "$outdir/qemu.log" >&2
+    echo "--- serial captured so far ---" >&2
+    cat "$ser" >&2
+    fail "qmp-drive.py exited $drive_status for the $label boot."
+  fi
+  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+    cat "$outdir/qemu.log" >&2
+    fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
+  fi
+}
+
+typekeys() { python3 -c "
+import sys
+out = []
+for c in sys.argv[1]:
+    out.append({' ': 'spc'}.get(c, c.lower()))
+print(','.join(out))
+" "$1"; }
+
+# `frames` brackets the whole thing, which is the leak check; `proc` after it
+# shows the table is empty again.
+SESSION_KEYS="f,r,a,m,e,s,ret,wait:800"
+SESSION_KEYS="$SESSION_KEYS,$(typekeys "proc run $LBA_L $LBA_N"),ret,wait:12000"
+SESSION_KEYS="$SESSION_KEYS,f,r,a,m,e,s,ret,wait:1200"
+SESSION_KEYS="$SESSION_KEYS,p,r,o,c,ret,wait:800"
+
+SHOT_PNG="$CORE_DIR/build/screenshot-libc.png"
+rm -f "$SHOT_PNG"
+drive_session "$WORKDIR/session" "$SESSION_KEYS" "$SHOT_PNG" "session" 150 128M qemu64
+
+SERIAL_CAPTURE="$WORKDIR/session/serial.txt"
+SCREEN_TEXT="$WORKDIR/session/screen.txt"
+
+if [[ $REGEN -eq 1 ]]; then
+  cp "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"
+  cp "$SCREEN_TEXT" "$EXPECTED_SCREEN"
+  echo "REGEN: wrote $EXPECTED_SERIAL and $EXPECTED_SCREEN — the derived checks below still have to pass"
+fi
+[[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL (run with --regen once to create it)"
+[[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
+
+# ---------------------------------------------------------------------------
+# Step 6 — assert.
+# ---------------------------------------------------------------------------
+
+# 6a. M1's whole golden must still be a byte-exact PREFIX.
+M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
+head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
+if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+  cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
+  fail "the first $M1_BYTES bytes of this boot do not match m1-interrupts/expected.txt — M13 changed M0/M1 serial output, which a userland library cannot legitimately do"
+fi
+echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
+
+# 6b. The whole serial capture.
+if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
+  echo "--- first difference ---" >&2
+  cmp "$SERIAL_CAPTURE" "$EXPECTED_SERIAL" >&2
+  diff <(cat -v "$EXPECTED_SERIAL") <(cat -v "$SERIAL_CAPTURE") | head -60 >&2
+  fail "captured serial output did not exactly match $EXPECTED_SERIAL"
+fi
+SERIAL_BYTES=$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')
+echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byte-for-byte"
+
+# 6c. EVERY EXPECTATION ABOUT THE SESSION COMES OUT OF THE TWO BINARIES.
+python3 "$SCRIPT_DIR/check-session.py" "$SERIAL_CAPTURE" "$DERIVE" "$PROG_L" "$PROG_N" \
+        --reuse-ids 0 \
+  || fail "the session capture does not match what the two ELF files say must have happened"
+echo "ASSERT: pass  every number in the session is derived from the two ELF files: the heap base is the top of progL's own PT_LOADs, all six malloc addresses are recomputed from the allocator's own exported header size and alignment and from the request sizes in .rodata, the total taken from the kernel is derived a second way and cross-checked against the KERNEL's PROC HEAP line, both exit statuses and both teardown counts are computed from the binaries, the five printf conversions are exact and the four unsupported ones are all marked, the over-long line is marked and still fits in one legal write, an oversized malloc returns NULL with heap.dart's own refusal value, the kernel printed a line it read out of a malloc'd buffer for BOTH processes, and the allocator's free count is identical before and after"
+
+# 6d. THE NEGATIVE CONTROL ON THE CHECK ITSELF.
+#
+# The same checker, told to expect reuse from BOTH processes, must FAIL — because
+# progN's `free()` returns immediately and it cannot reuse anything. A reuse
+# check that passed here would be a check that passes for a program with no
+# `free` at all, which is precisely the shape of the wrong-for-the-right-reason
+# bug m10, m11 and m12 each found exactly one of in their own harnesses.
+if python3 "$SCRIPT_DIR/check-session.py" "$SERIAL_CAPTURE" "$DERIVE" "$PROG_L" "$PROG_N" \
+        --reuse-ids 0,1 >/dev/null 2>&1; then
+  fail "negative control — the reuse/coalesce/round-trip checks PASSED when applied to the process whose free() does nothing. They are not measuring anything."
+fi
+echo "ASSERT: pass  negative control — the same checks that find REUSE 1, COALESCE 1 and ROUND2 1 in the process with a working free() FAIL when applied to the process built without one, and the control build took strictly more memory from the kernel than the real one"
+
+# 6e. The framebuffer and the screenshot.
+if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
+  diff "$EXPECTED_SCREEN" "$SCREEN_TEXT" | head -30 >&2
+  fail "the 80x25 VGA text buffer does not match $EXPECTED_SCREEN"
+fi
+echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen.txt exactly"
+[[ -s "$SHOT_PNG" ]] || fail "no screenshot at $SHOT_PNG"
+head -c 8 "$SHOT_PNG" | cmp -s - <(printf '\x89PNG\r\n\x1a\n') || fail "$SHOT_PNG is not a PNG"
+echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -d ' ') bytes, PNG)"
+
+echo "M13-libc: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's FOUR OBJECTS AND ONE PROGRAM SOURCE TWICE into two freestanding static ELF64 executables with byte-identical segment geometry, the second with free() disabled as a negative control -> make-image.py writes two program slots onto a disk -> 7 structural checks (donated .bss UNCHANGED at 9664 and externs UNCHANGED at $EXTERN_COUNT and shellStrHelp UNCHANGED at 1871, because a C library is entirely userland; all eleven numbers in oslibc.h -- five syscall numbers, four sbrk refusal values, the syscall refusal value and the write limit -- read back out of user.dart, proc.dart and heap.dart; PRINTF_MAX plus its overflow marker inside the kernel's own write limit; printf.c implementing exactly five conversions with a marking else that consumes no argument; the control being one volatile const word rather than a preprocessor switch; and exactly one \`int \$0x80\` in the whole library) -> verify-freestanding pass -> ONE real QEMU boot. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; ordinary C compiled at -O2 with SSE on, calling malloc, free, printf, strcpy, strcmp, strlen, memset and a memcpy CLANG ITSELF emitted; six blocks of six different sizes landing on the six addresses derive.py computes from the allocator's exported header size and alignment and the request sizes in .rodata; a freed block coming back at the same address; two freed neighbours merging into one that satisfies a request neither could; everything freed and all six allocated again onto the same six addresses having taken not one more byte from the kernel; the free()-disabled build of the same source taking strictly more and reporting 0 where the real one reports 1, with the harness's own reuse checks REQUIRED to fail against it; five printf conversions exact and four unsupported ones each marked %! including a trailing %; an over-long line marked %!OVF, returning -1, and still inside the kernel's 128-byte write limit; an oversized malloc returning NULL with heap.dart's own refusal value and the program running on; the kernel reading a line out of a malloc'd buffer through its own ring-3 pointer validator for both processes; both teardown counts derived from the ELFs; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
+exit 0
