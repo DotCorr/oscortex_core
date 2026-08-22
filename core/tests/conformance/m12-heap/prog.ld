@@ -1,0 +1,73 @@
+/* core/tests/conformance/m12-heap/prog.ld
+ *
+ * m10-elf/prog.ld, unchanged, copied rather than shared for m11-proc's reason:
+ * the milestone that owns a harness owns its inputs, and a link script edited
+ * for one milestone must not silently relayout another's programs.
+ *
+ * M12 NOTE. This script places the program at the BOTTOM of the window and its
+ * stack at the top; everything between is what `sbrk` grows into. So the heap's
+ * size is a consequence of this file -- a program linked higher gets a smaller
+ * heap, and build-progs.sh refuses a build with fewer than 400 pages of room.
+ *
+ * The link script for prog.c. TWO PT_LOAD segments and no third, because the
+ * whole of what this milestone asserts about permissions is read out of
+ * p_flags:
+ *
+ *   text  FLAGS(5) = PF_R | PF_X   .text + .rodata   -- never writable
+ *   data  FLAGS(6) = PF_R | PF_W   .data + .bss      -- never executable
+ *
+ * A segment with FLAGS(7) would be W+X and core/kernel/elf.dart REFUSES it by
+ * name. That is deliberate: this kernel enforces W^X on itself (ADR-0012) and
+ * does not make an exception for a guest.
+ *
+ * 0x10000000 is 256MiB, and the address is not arbitrary. It is above
+ * `vmMapBytes` (128MiB), so nothing in the kernel's identity map is anywhere
+ * near it, and below 1GiB, so the page directory the kernel already built for
+ * [0, 1GiB) is the one that gets the program's page table -- see ADR-0014 §3.
+ * The kernel REJECTS a segment outside [0x10000000, 0x10200000) rather than
+ * mapping it somewhere else.
+ *
+ * ALIGN(0x1000) plus -z max-page-size=0x1000 is what makes p_offset and
+ * p_vaddr congruent modulo 4096 for both segments, which is the property
+ * elfLoadSegment relies on and checks.
+ */
+
+ENTRY(_start)
+
+PHDRS
+{
+  text PT_LOAD FLAGS(5);   /* PF_R | PF_X */
+  data PT_LOAD FLAGS(6);   /* PF_R | PF_W */
+}
+
+SECTIONS
+{
+  . = 0x10000000;
+
+  /* .rodata BEFORE .text, and that is not a layout preference.
+   *
+   * With .text first, `_start` would be the very first byte of the very first
+   * PT_LOAD -- so e_entry would equal p_vaddr would equal vmProgBase, and a
+   * kernel that IGNORED e_entry and jumped to the start of the segment (or to
+   * a hardcoded 0x10000000) would pass every check in m10-elf/run.sh for the
+   * wrong reason. Putting .rodata first moves the entry point to a non-zero,
+   * non-page-aligned offset inside the segment, so "the kernel jumped to
+   * e_entry" is a claim only a kernel that read e_entry can satisfy.
+   * build-prog.sh asserts the offset is non-zero. */
+  .rodata : { *(.rodata) *(.rodata.*) } :text
+  .text : { *(.text) *(.text.*) } :text
+
+  /* NOT a plain ALIGN(0x1000): +0x40 puts the RW segment's p_vaddr at a
+   * non-page-aligned address on purpose, so the loader's handling of a
+   * segment that does not start on a page boundary is exercised by the
+   * program that actually runs rather than by a case nobody tests. The
+   * congruence p_offset == p_vaddr (mod 4096) still holds -- ld maintains it
+   * -- and the 0x40 bytes below p_vaddr on that page must come out ZERO,
+   * because the frame is zeroed before anything is copied into it. */
+  . = ALIGN(0x1000) + 0x40;
+
+  .data : { *(.data) *(.data.*) } :data
+  .bss  : { *(.bss) *(.bss.*) *(COMMON) } :data
+
+  /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) *(.debug*) }
+}

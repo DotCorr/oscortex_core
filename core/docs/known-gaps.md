@@ -2467,6 +2467,14 @@ process's frames are recorded in its slot and recovered from its own page table 
 **Items 3 and 4 are NOT done and are restated as GAP-0097 (cooperative, not preemptive; no fork, exec
 or wait) and GAP-0096 (everything else a process does not have).**
 
+**NARROWED AGAIN at M12 (ADR-0016). Item 5 is narrowed a second time**: a process's memory is still
+the kernel's memory, but a process now *asks for* memory and the kernel now *accounts for what it
+gave*. `sbrk` (syscall 4) maps frames into the calling process's own window; each slot records its
+own heap base, break and page count; `PROC HEAP` prints them on every call; and `PROC KILL SLOT n
+FREED c` counts the heap pages back with the program's, which `m12-heap/run.sh` checks against a
+number derived from the ELF. What is still true is the last sentence of item 5: **`frames` shows the
+total and cannot say who has what**, and there is no per-process quota (GAP-0107 items 5 and 6).
+
 The original entry follows, unedited.
 
 **Original status:** OPEN — deliberately scoped out. GAP-0085 items 1 and 2, restated for the thing that now
@@ -2504,6 +2512,15 @@ exit path and the fault path.
 **Status:** OPEN — deliberately scoped out. ADR-0014 §4 makes the argument; this is the accounting,
 written down rather than gestured at, because "we will add a filesystem later" hides how much of one
 is missing.
+
+**NOT NARROWED at M11 or M12, and this line exists so that is not mistaken for an oversight.** M11
+put three program slots on its test disk and M12 puts four (two of them the same binary with two
+bytes changed), so the number of things a disk carries has gone up and the metadata format has not
+changed by one byte: it is still `"OSCXPRG1"`, a length and an LBA, written by a generator that also
+tells the harness where it put things. A heap is a memory question and this is a storage one; nothing
+in M12 touches items 1–9 below. The one thing M12 does change about the picture is that a program can
+now allocate at runtime, which means the day a `read()` syscall exists it will have somewhere to read
+INTO — item 4's write path and everything downstream of it are still absent.
 
 **What exists** is a 32-byte header sector — `"OSCXPRG1"`, a byte count, a starting LBA — written by
 `core/tests/conformance/m10-elf/make-image.py` at an LBA `run` is told. That is the entire metadata
@@ -2780,8 +2797,14 @@ vagueness starts.
 5. **The stack is one page and it does not grow.** A process gets exactly the page at
    `[0x101FF000, 0x10200000)`; a #PF just below it is a fault, not a stack extension. This is M10's
    arrangement unchanged.
-6. **No process can allocate memory.** There is no `brk`, no `mmap`, and no syscall that returns a
-   page. A process's address space is exactly what its ELF asked for plus one stack page, forever.
+6. ~~**No process can allocate memory.** There is no `brk`, no `mmap`, and no syscall that returns a
+   page. A process's address space is exactly what its ELF asked for plus one stack page, forever.~~
+   **CLOSED at M12 (ADR-0016).** `sbrk` (syscall 4) takes frames from the PMM, zeroes them and maps
+   them into the calling process's window as user + writable + NX, growing on demand from the top of
+   the program's own image up to a guard page below the stack. It refuses with a checkable return
+   value rather than faulting, and every page goes back at teardown. **What replaces this item is
+   GAP-0107**: what exists is a monotonic page-granular break with no `free`, no reuse and no quota —
+   the interface a `malloc` needs, and not an allocator.
 7. **A process cannot create a process.** No `fork`, no `exec`, no `spawn`. Both processes are created
    by the shell before either runs.
 8. **Nothing is shared between address spaces except the kernel.** Which is the point, and is also
@@ -3076,5 +3099,209 @@ every `wait:` constant in the suite.
 
 **Cost:** four harnesses carry a timing constant that has to be revisited whenever the output of the
 command before it grows, and the failure it prevents is intermittent and looks like something else.
+
+---
+
+## GAP-0106 — m7/m8/m9/m10/m11's goldens moved at M12 by `--regen`, and m3–m6's did NOT
+
+**Domain:** conformance (M12)
+**Status:** OPEN — the same recurring cost GAP-0059, GAP-0065, GAP-0069, GAP-0072, GAP-0075,
+GAP-0078, GAP-0087, GAP-0093 and GAP-0095 record, at the ninth milestone that has paid it. Recorded
+again because the interesting half of this one is the half that did NOT happen.
+
+**Why five goldens moved.** `core/kernel/heap.dart` adds code and six `@rodata` tables, so
+`__kernel_end` moved past a 4KiB boundary: the kernel image grew by exactly one page. Everything
+downstream of `kernel_image_end` moved with it — the six page-table frames `vmInit` takes
+(`0x138000` → `0x139000`), `pmm_store`'s base (`0x1351B8` → `0x1361B8`), the free-frame count
+(`0x7EA2` → `0x7EA1`), and every process and program frame in m9's, m10's and m11's captures. All
+five were regenerated with `run.sh --regen`, and **each harness's derived checks recomputed every one
+of those numbers from the boot's own `MB E` memory-map lines and from `kernel.elf`'s extents**, so a
+kernel that had regressed could not have enshrined itself. GAP-0078's mitigation held for the sixth
+time.
+
+**Why FOUR goldens did not move, and this was designed rather than lucky.** m3-shell, m4-fault,
+m5-pci and m6-disk contain `help` output and have no `--regen`; their goldens can only be edited by
+mechanical substitution, which is slow and is the thing GAP-0105's intermittent failure came out of.
+**M12 adds no shell command**, so `shellStrHelp` is unchanged at 1871 bytes and those four goldens are
+byte-identical to M11's. The heap is a syscall; the shell has nothing to say about it that `proc run`
+does not already say (ADR-0016 §8). That was a design decision taken *because* of what GAP-0095 and
+GAP-0105 cost, and `m12-heap/run.sh` asserts `shellStrHelp` is still 1871 so that the next person to
+reach for a `help` line finds out at a structural check rather than in four goldens.
+
+**What did NOT move: `m1-interrupts/expected.txt`.** All 544 bytes byte-for-byte identical.
+`heapInit()` prints nothing and is called from `procCreate`, which no boot path reaches before the
+shell exists. m0-boot, mb-info and m2-console are likewise untouched.
+
+**Cost:** whoever grows the image pays the `--regen` for five harnesses. Whoever adds the next shell
+command pays the substitution for four, and now has a structural check telling them so.
+
+---
+
+## GAP-0107 — The heap is a monotonic bump pointer: no `free`, no shrink, no reuse, no quota
+
+**Domain:** kernel (M12)
+**Status:** OPEN — deliberately scoped out, and named in the source rather than discovered. ADR-0016
+§4 makes the argument; this is the accounting, because "the kernel has a heap now" is exactly the kind
+of sentence that gets read as more than it says.
+
+1. **The break only ever moves up.** `sbrk(0)` reports it, a positive increment advances it, and
+   nothing lowers it. A negative increment is not expressible — RDI arrives as a `u64`, so a C
+   program's `sbrk(-1)` becomes `0xFFFFFFFFFFFFFFFF`, which is refused as `heapRetBadArg`. That
+   refusal is exercised by both processes in `m12-heap`, so the behaviour is stated by the machine
+   rather than only here.
+2. **Nothing is ever reused inside a process's lifetime.** There is no free list, no coalescing, no
+   size class and no header on an allocation, because there is no allocation — there are pages. A
+   process that grows its heap and stops using it holds those frames until it exits.
+3. **A `malloc` is therefore still entirely userland's problem**, which is the normal division of
+   labour and is stated because it is the reason this milestone exists. What M12 removes is the wall:
+   at M11 no `malloc` could have been written at all.
+4. **Granularity is one 4KiB page.** `sbrk(1)` costs a whole page. `m12-heap`'s program asks for
+   exactly one byte and checks that the break moved by 4096, so the rounding is a measured property.
+5. **There is no per-process quota and nothing limits how much of a machine one process can take.**
+   `m12-heap`'s progH takes 507 pages — every page its window has room for — and the only thing that
+   stopped it was the address space, not a policy. A second process asking for the same on a small
+   machine would take frames the first one is holding and nothing would arbitrate. The bound that
+   exists is accidental (the 2MiB window) rather than chosen.
+6. **The heap is not visible to `proc` or to `frames`.** GAP-0089 item 5 is narrowed but not closed:
+   a slot now records its own base, break and page count, and `PROC HEAP` prints them on every call,
+   but `frames` still reports one global total and cannot say who has what.
+
+**Why this is not a bug:** every item is absence, and the two that could be mistaken for presence —
+"there is a heap" and "there is an allocator" — are separated in the file's own header, in its
+milestone's ADR, and in the harness's summary line.
+
+---
+
+## GAP-0108 — `heapRetNoMem` cannot be reached on any machine this kernel boots, and this was measured
+
+**Domain:** kernel + conformance (M12)
+**Status:** OPEN — a refusal path that exists, is correct as far as anybody can tell by reading it,
+and that **no boot in the conformance suite walks**. Recorded loudly because m11-proc/run.sh's check
+3g found the previous instance of this shape — a refusal code with a sentence and no `return` that
+could produce it — and this is the same risk one step further along: a `return` nothing can reach.
+
+**What it is.** `heapSbrk` takes frames one at a time. If `allocFrame()` returns 0 part-way through a
+multi-page grow, every page that call already mapped is unmapped and freed (`heapRollback`), the break
+does not move, and `heapRetNoMem` (`0xFFFFFFFFFFFFFFFC`) goes back to ring 3.
+
+**Why no boot reaches it.** The heap is bounded by the address space at `heapTopIndex` = 510 pages
+minus the program, which is 507 for `m12-heap`'s program. To reach `heapRetNoMem` the frame allocator
+would have to have fewer than ~500 free frames while a process is running. Measured:
+
+| machine | free frames | enough to exhaust? |
+|---|---|---|
+| 128MiB (the suite's default) | 32417 | no, by 64× |
+| 32MiB (m7/m8/m9/m10/m11's small-machine boot) | 7842 | no, by 15× |
+| 8MiB | — | **the kernel does not get past `M1 END`**; no shell, no `frames` |
+| 6MiB, 5MiB | — | no serial output at all |
+
+So the window always fills first, on every machine size this kernel is known to boot on, and there is
+no shell command that drains the allocator *partially* — `frames drain` takes everything, after which
+`proc run` refuses and no process exists to call `sbrk` at all.
+
+**What stands in for a behavioural test.**
+
+* `m12-heap/run.sh` check 2g requires `heapRetNoMem` to be returned somewhere in `heap.dart`, so it
+  cannot become dead text.
+* Check 2f parses `heapSbrk`'s body and requires `heapRollback` to appear **before** the
+  `heapRetNoMem` return, and requires exactly one `allocFrame()` call in the function, because the
+  rollback is written for one.
+* A deliberate mutation that deleted the rollback was run against the whole harness and was killed by
+  that structural check — and by nothing else, which is exactly what this entry says.
+
+**Cost:** the one arm of this syscall that a real out-of-memory machine would exercise is checked by
+reading the source rather than by running it. The honest closing move is either a `frames hold <n>`
+shell command that leaves a chosen number of frames free (one command, one help line, four goldens by
+substitution — GAP-0106) or a per-process page quota, which GAP-0107 item 5 wants anyway.
+
+---
+
+## GAP-0109 — The heap's frame-zeroing has no behavioural test that can fail, for the same reason as GAP-0094 and GAP-0102, and this was measured
+
+**Domain:** kernel, conformance (M12)
+**Status:** OPEN — the third subsystem in this kernel whose zeroing is correct, load-bearing, and
+**unfalsifiable from outside**. GAP-0094 recorded it for `allocFrame`'s callers at M10 and GAP-0102 for
+`procSpaceBuild`'s page tables at M11. This entry exists because M12 built what looked like the test
+that would finally close it, and then measured that it does not.
+
+**What the test looks like.** `m12-heap`'s program reads every heap page it is given BEFORE it writes
+one and reports the number of non-zero words as `ZBAD`; the harness requires zero. On paper that is
+exactly the behavioural check GAP-0094 asks for: `allocFrame()` hands back whatever the frame last
+held, this kernel recycles frames between processes, and an unzeroed heap page is another process's
+data delivered to the one place a program is guaranteed to look.
+
+**What was measured.** `vmZeroFrame(f)` was deleted from `heapSbrk` and the kernel rebuilt. The
+harness's *structural* check (2f: `vmZeroFrame` must appear before `vmProgMap`) killed it. With that
+check bypassed and the whole session run anyway, **`ZBAD` was `00000000` for both processes** — 512
+heap pages read as zero on a kernel that zeroes nothing.
+
+Two further attempts were made and both failed to produce a dirty page:
+
+* **Two `proc run` sessions in one boot.** Session 2's frames come from the allocator's cursor, which
+  is monotone: session 1's PML4 landed at `0x13F000` and session 2's at `0x353000` — one frame past
+  session 1's last heap page. Nothing was reused.
+* **`frames drain` + `frames refill` between the two sessions**, to try to force the cursor to wrap.
+  It did not: session 2 still started immediately above session 1's range, and `ZBAD` was still 0.
+
+**Why it cannot fail.** `allocFrame` scans forward from a cursor and only wraps after a full pass over
+the bitmap (ADR-0011). A 128MiB machine has 32417 free frames and one full `m12-heap` session uses
+about 531, so a frame would have to be handed out and freed roughly **sixty times over** before one
+came back dirty. On the 32MiB machine the other harnesses use it is still about fifteen sessions, each
+of which takes forty seconds of emulated growth. **Within any boot a harness can drive, every frame a
+heap ever receives is virgin RAM, which QEMU has already zero-filled.** The check is therefore
+measuring QEMU's `-m` allocation, not the kernel's.
+
+**What actually guards the property**, and it is worth being precise because the property is real: the
+structural check that `vmZeroFrame` textually precedes `vmProgMap` inside `heapSbrk`. That is a check
+on the source, it dies to a compiler that reorders (it cannot — both are calls with side effects), and
+it says nothing about `vmZeroFrame` itself being correct.
+
+**What would close it:** a `frames cursor <n>` or `frames hold <n>` shell command that puts the
+allocator's cursor somewhere chosen, so a dirtied frame can be handed straight back out. That is one
+command, one `help` line, and four goldens by substitution (GAP-0106) — the same price GAP-0108's
+closing move costs, and the two would share it.
+
+---
+
+## GAP-0110 — The pinned-DCDart sandbox must live at a REAL path: `/tmp` breaks it silently, with GAP-0084's error message
+
+**Domain:** tooling, conformance (M12)
+**Status:** OPEN — a third step for GAP-0084's procedure, found the hard way at M12 and recorded so the
+next unit does not spend an hour proving the pin is broken when it is not.
+
+GAP-0084 establishes the sandbox: a `git clone` of DCDart at `DCDART_PIN.txt`'s commit, `core/frontend`
+copied in, and an **rsync'd copy of this repo beside it** so that `kmain.dart`'s hardcoded relative
+prelude import (GAP-0003) resolves inside the sandbox. M12 followed it exactly, put the sandbox in
+`/tmp/m12-pinned/`, and got
+
+```
+dcc build: DccLowerError: no @bare top-level function found in kmain.dart
+```
+
+on **every one of the fourteen harnesses** — which is GAP-0084's own documented symptom of the prelude
+coming from the wrong checkout, so the first hour went into proving the prelude was right. It was. So
+was the compiler. The pin was fine, and **the same failure reproduced with `DCDART_HOME` pointed at the
+SHARED checkout**, which is what finally identified it as a sandbox problem rather than a pin problem.
+
+**On macOS `/tmp` is a symlink to `/private/tmp`.** Dart resolves a library's identity through its
+REAL path, so the entry file canonicalises to `/private/tmp/…/kmain.dart` while the relative import is
+resolved against the `/tmp/…` URI it was given. The prelude is then loaded as **two different
+libraries**, the `bare` annotation on `kmain` resolves to neither, and `dcc` correctly reports that it
+found no `@bare` top-level function. Nothing about the pin, the clone, the rsync or the kernel is
+wrong.
+
+**The fix is one character of path:**
+
+```bash
+SANDBOX=/private/tmp/m12-pinned        # NOT /tmp/m12-pinned
+```
+
+With that, all fourteen harnesses build and run against the pinned clone unchanged. This is the same
+class of hazard GAP-0084's own "a symlink is not enough" paragraph records — Dart resolving through
+real paths — arriving from the other direction: there the symlink was the repo, here it is the parent
+directory the whole sandbox sits in, and `mktemp -d` on this machine hands you one by default.
+
+**Cost:** one line in whatever script builds the sandbox, and this entry, because the error message
+points at the one thing that is not wrong.
 
 ---

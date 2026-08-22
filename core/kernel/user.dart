@@ -1545,6 +1545,17 @@ void userSyscall(u64 frame) {
     procYield(frame);
     return;
   }
+  // M12: `sbrk` (syscall 4). Refused unless a PROCESS is live, for `yield`'s
+  // reason and one more: the heap it grows lives in the CALLING process's slot,
+  // and there is no slot to grow without one.
+  if (no == u64(heapSysSbrkNo)) {
+    if (procLive() < u64(1)) {
+      userRefuse(frame, no, cs, u64(0));
+      return;
+    }
+    heapSysSbrk(frame);
+    return;
+  }
   if (no == u64(userSysWhoNo)) {
     userSysWho(frame);
     return;

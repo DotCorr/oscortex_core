@@ -33,6 +33,7 @@ part 'vm.dart';
 part 'user.dart';
 part 'elf.dart';
 part 'proc.dart';
+part 'heap.dart';
 
 /// Kernel entry point.
 ///

@@ -1056,6 +1056,9 @@ u64 procSpaceFree(u64 s) {
   procSet(s, u64(procSlotPd), u64(0));
   procSet(s, u64(procSlotPt), u64(0));
   procSet(s, u64(procSlotPages), u64(0));
+  // M12: the heap's pages were present leaves in the page table this function
+  // just walked, so they have ALREADY gone back. This clears the bookkeeping.
+  heapReset(s);
   return freed;
 }
 
@@ -1364,6 +1367,9 @@ u64 procCreate(u64 lba) {
   procBumpHead(u64(procHeadCreated));
   procSet(s, u64(procSlotId), procHead(u64(procHeadCreated)));
   procFxInit(s);
+  // M12: the heap starts at the first page above the highest page the LOADER
+  // mapped -- a number elf.dart computed from this file's own p_vaddrs.
+  heapInit(s, elfMeta(u64(elfMetaHi)));
   procInitFrame(s);
   procSet(s, u64(procSlotState), u64(procStateReady));
   procBumpHead(u64(procHeadLive));
