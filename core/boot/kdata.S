@@ -648,6 +648,55 @@ proc_store:
     .size proc_store, 4160
     .type proc_store, @object
 
+/* ------------------------------------------------------------------
+ * M14 (docs/decisions/0018-a-read-only-fat16-filesystem.md): THE FILESYSTEM'S
+ * STATE.  1824 bytes, four regions, ONE symbol.
+ *
+ *   +0      256 bytes   metadata, 32 u64 words (fatMeta* in fat.dart)
+ *   +256    1024 bytes  the open file's cluster chain, 256 x u32
+ *   +1280   512 bytes   one sector buffer -- every FAT and directory read
+ *   +1792   32 bytes    the 11 raw bytes of the 8.3 name being looked up
+ *
+ * ONE SYMBOL AND NOT FOUR, for ADR-0011's reason repeated a fifth time: the
+ * storage seam's whole value is that the number of places that know where this
+ * memory came from is a number a harness can count. Four symbols would be four
+ * accessors and four call sites to audit on the day DCDart grows mutable
+ * statics; one symbol is four OFFSETS behind four seam functions in
+ * `core/kernel/fat.dart`, and `tests/conformance/m14-fat/run.sh` counts
+ * exactly four `return fat_store_addr()` in that file and zero anywhere else.
+ *
+ * WHY 256 CHAIN ENTRIES. A chain entry is a cluster, and this driver refuses a
+ * file longer than 256 of them (`fatChainMax`) rather than reading part of it.
+ * At the 1KiB clusters `m14-fat`'s volume uses that is 256KiB, four times
+ * `elfImageMax`; at the 32KiB clusters a large FAT16 volume uses it is 8MiB.
+ * The bound is a REFUSAL with its own sentence, not a truncation.
+ *
+ * WHY A SECTOR BUFFER AT ALL. The FAT and the root directory are read
+ * repeatedly and are not the caller's business -- `elf.dart` reads file DATA
+ * straight into the frame it owns, and never through this buffer. One sector
+ * of cache turns a chain confined to one FAT sector, which is what every chain
+ * on a small volume is, into one disk read instead of one per link.
+ *
+ * NOT ZEROED HERE -- the same rule as every block above. `fatInit()` writes all
+ * 32 metadata words from `kmain()` before the first byte of output, and it
+ * must: `elfReadSectors` reads the "a file is open" word on EVERY sector of
+ * EVERY `run`, including `run <lba>`, which has nothing to do with a
+ * filesystem. A garbage word there would send the ELF loader's reads through a
+ * chain array full of `.bss` litter.
+ *
+ * THIS TAKES DONATED `.bss` FROM 9664 BYTES TO 11488. docs/known-gaps.md
+ * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
+ * m9-ring3, m10-elf and m11-proc each still assert their own milestone's number
+ * by SUBTRACTING the blocks that came after theirs, so no older claim is
+ * weakened by this.
+ * ------------------------------------------------------------------ */
+.align 8
+.global fat_store
+fat_store:
+    .skip 1824
+    .size fat_store, 1824
+    .type fat_store, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -840,6 +889,24 @@ elf_store_addr:
 .type proc_store_addr, @function
 proc_store_addr:
     leaq proc_store(%rip), %rax
+    ret
+
+/* uint64_t fat_store_addr(void) -- base of the 1824-byte filesystem block.
+ * See `fat_store` above for the four regions and their offsets.
+ *
+ * THE ENTIRE STORAGE SEAM FOR THE FILESYSTEM IS THIS ONE FUNCTION, and it is
+ * called from exactly FOUR places, all in core/kernel/fat.dart:
+ * `fatMetaBase()`, `fatChainBase()`, `fatSectorBase()` and `fatNameBase()`.
+ * That is ADR-0011's shape, for the same reason `proc_store_addr` has it: this
+ * block has four regions with four different jobs, and four named offsets
+ * behind four named functions is what keeps the eventual migration to DCDart
+ * mutable statics a four-line rewrite instead of an audit.
+ * `tests/conformance/m14-fat/run.sh` counts the call sites. */
+.align 16
+.global fat_store_addr
+.type fat_store_addr, @function
+fat_store_addr:
+    leaq fat_store(%rip), %rax
     ret
 
 /* Mark the stack non-executable. Nothing here needs an executable stack, and

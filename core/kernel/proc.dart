@@ -1335,6 +1335,13 @@ u64 procCreate(u64 lba) {
   elfSetMeta(u64(elfMetaStackFrame), u64(0));
   elfSetMeta(u64(elfMetaScratch), scratch);
 
+  // M14: `proc run` takes LBAs and only LBAs, so the loader's sector reads must
+  // go through the contiguous path. A `cat` or a `run <name>` earlier in the
+  // session leaves a cluster chain open in `fat.dart`, and `elfImageLba` would
+  // then read THAT file's sectors for these LBAs. One call closes it, in the
+  // one place that knows this load is a numeric one.
+  fatClose();
+
   // ---- the two-instruction trick ----
   paging_install(procGet(s, u64(procSlotPml4)));
   final u64 st = elfLoad(lba, hdr, scratch);

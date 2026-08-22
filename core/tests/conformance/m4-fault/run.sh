@@ -283,7 +283,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M4 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1871  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines; GAP-0060
+check_table shellStrHelp 2147  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table shellCmdCpu 3
 check_table shellCmdCrash 5
 check_table shellCmdCrashUd 8
@@ -359,7 +359,11 @@ SESSION_KEYS="$SESSION_KEYS,c,r,a,s,h,spc,u,d,ret"
 # later — so without this pause the following command's echo interleaves into the
 # middle of `help`'s output and the golden fails intermittently, at exactly the
 # `help` boundary. m6-disk already carried a wait here for the same reason.
-SESSION_KEYS="$SESSION_KEYS,h,e,l,p,ret,wait:600"
+# M14 took `help` 1871 -> 2147 bytes: ~24ms more serial and four more lines of VGA
+# scrolling. GAP-0105's settle is widened 600 -> 800ms with it, because the settle is a
+# guess about how long a command takes and this milestone made the command longer. A
+# pause emits no byte, so no golden changes.
+SESSION_KEYS="$SESSION_KEYS,h,e,l,p,ret,wait:800"
 SESSION_KEYS="$SESSION_KEYS,c,r,a,s,h,spc,d,i,v,ret"
 SESSION_KEYS="$SESSION_KEYS,m,e,m,ret"
 SESSION_KEYS="$SESSION_KEYS,t,i,c,k,s,ret,wait:350"

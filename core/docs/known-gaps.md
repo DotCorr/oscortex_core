@@ -575,7 +575,15 @@ the evidence that made it true, and so the one uncovered half is named.
 
 **Domain:** kernel (M2, M3, M4, M5, M6, M7, M8, M9), DCDart-side language gap
 **Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
-M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9.**
+M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, → 5496 at M10,
+→ 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14.**
+
+**M14's share is 1824** — `fat_store`, one symbol behind four seam functions: 32 metadata words,
+a 256-entry cluster chain, one 512-byte sector buffer and the 11 bytes of an 8.3 name. The
+`.align 8` costs nothing, because `proc_store` ends at a multiple of 16. **Nine harnesses
+subtract it** (m5 through m13) so that every older milestone's number still means what it meant when it was
+written — in particular m12's "a heap needed no new mutable state" and m13's "a C library is
+entirely userland" are both still statements about 9664 bytes, and are both still checked.
 
 **THE M9 MEASUREMENT: 5368 bytes**, asserted exactly by `tests/conformance/m9-ring3/run.sh`. M9's 144
 bytes are 128 for `user_store` — the ring-3 subsystem's entire state, one symbol behind one accessor
@@ -2509,9 +2517,29 @@ exit path and the fault path.
 ## GAP-0090 — There is no filesystem, and this is the list of what one has to add
 
 **Domain:** kernel (M10)
-**Status:** OPEN — deliberately scoped out. ADR-0014 §4 makes the argument; this is the accounting,
-written down rather than gestured at, because "we will add a filesystem later" hides how much of one
-is missing.
+**Status:** **NARROWED AT M14, ITEM BY ITEM.** ADR-0018 adds a read-only FAT16 driver. What that closes
+and what it leaves is set out immediately below, and GAP-0116 is the successor entry for what the
+filesystem that now exists does NOT do.
+
+| item | at M14 |
+|---|---|
+| 1. Names | **CLOSED.** `run PROGA.ELF` is a filename. 8.3 only, upper-cased on input, and anything else is a refusal (GAP-0117). |
+| 2. A directory | **CLOSED for the root directory.** `ls` enumerates it, skipping deleted entries, long-filename entries and the volume label, and reports how many of each it skipped. Subdirectories are refused by name (GAP-0116 item 2). |
+| 3. Allocation | **UNCHANGED.** Nothing tracks free space, because nothing allocates: the driver is read-only. `make-image.py` still places every cluster by hand. |
+| 4. A write path | **UNCHANGED, and now asserted.** `WRITE SECTORS` (0x30) is still not implemented; m14-fat greps for the opcode, for `port_outw` aimed anywhere but the framebuffer, and for a write function by name. |
+| 5. Metadata | **PARTLY.** A size and an attribute byte come from the directory entry and are used — the size bounds the chain walk and the attribute is what refuses a subdirectory. No timestamps, no ownership, no permissions, and nothing still says "this file is executable": `run` will try to load anything, and the ELF checks are still the only gate. |
+| 6. Partitions | **PARTLY.** The volume is still the whole disk and the MBR is still unread. What is new is that sector 0 is now *validated* as a boot sector — signature, BPB, geometry — rather than ignored. |
+| 7. More than one device | **UNCHANGED.** Primary master only (ADR-0010). |
+| 8. Buffering or caching | **PARTLY.** One 512-byte sector buffer, used for FAT and root-directory reads only. File data still goes straight from the drive into the caller's frame, and loading the same program twice still reads every data sector twice. `fatMetaReads` and `fatMetaHits` make the difference a number. |
+| 9. Concurrency | **UNCHANGED.** One caller, no locking, one open file at a time. |
+
+**The original entry follows unchanged**, because the argument for why the accounting was written down
+at all has not stopped applying to items 3, 4, 7 and 9.
+
+**Domain:** kernel (M10)
+**Status (as written at M10):** OPEN — deliberately scoped out. ADR-0014 §4 makes the argument; this is
+the accounting, written down rather than gestured at, because "we will add a filesystem later" hides
+how much of one is missing.
 
 **NOT NARROWED at M11 or M12, and this line exists so that is not mistaken for an oversight.** M11
 put three program slots on its test disk and M12 puts four (two of them the same binary with two
@@ -3090,6 +3118,19 @@ m6-disk already carried `wait:600` after `help` for exactly this reason, from th
 grew. m3-shell, m4-fault and m5-pci did not, and now do. **A pause does not emit a byte, so no golden
 changed.**
 
+**THE FIRST FIX WAS INCOMPLETE, AND THE WAY IT WAS INCOMPLETE IS THE INTERESTING PART.** m3-shell runs
+`help` **twice** — once near the end, and once at the very start as the backspace typo-correction test
+(`h,e,l,q,backspace,p,ret`). The M11 mitigation was applied by matching the *key sequence* `h,e,l,p,ret`,
+which does not match the typo-corrected spelling, so m3's first `help` kept no settle at all and the
+`m,e,m` that follows it kept being typed into the tail of the listing. Measured at **one failure in
+four runs**, always at char 2433 — `oscortex> mem` — with the capture reading `oscortex> em` and then
+`unknown command: em`, i.e. a dropped keystroke and a correct report of the truncated word.
+
+That is the second time this gap has been closed by pattern-matching a key list rather than by asking
+"which commands in this session produce long output". The general fix is still the one below; the
+specific lesson is that **a timing mitigation applied by grep will miss the instance that is spelled
+differently.**
+
 **What is actually wrong, underneath.** The driver has no flow control: it types on a wall clock and
 the kernel prints on another one. Every `wait:` in every key list in this repo is a guess about how
 long a command takes, tuned by observation, and every one of them gets worse as the thing it waits
@@ -3419,7 +3460,17 @@ nothing where the number should be — is the failure this library was arranged 
 ## GAP-0113 — There is no I/O in the library, because there is no filesystem under it
 
 **Domain:** userland, storage (M13)
-**Status:** OPEN — and it does NOT narrow GAP-0090, which is the entry for the filesystem itself.
+**Status:** OPEN — **and M14 does NOT narrow it.** There is a filesystem now (ADR-0018), and the
+library still cannot reach it: there is no `open`, no `read`, no `close`, no file-descriptor table and
+no syscall that names a file. The kernel reads files; a *program* cannot. `run <name>` is the shell
+loading a program, not a program doing I/O. What M14 removes is the reason this gap gave for its own
+existence — "because there is no filesystem under it" — and what remains is the syscall boundary,
+which is a different milestone's work. See GAP-0116 item 5.
+
+**The original entry, unchanged:**
+
+**Status (as written at M13):** OPEN — and it does NOT narrow GAP-0090, which is the entry for the
+filesystem itself.
 
 `core/user/libc` has `write` and nothing else that touches the outside world. Specifically absent:
 
@@ -3512,3 +3563,311 @@ good as the parser:
 * any allocation pattern long enough to make first-fit's O(n) scan visible.
 
 ---
+
+---
+
+## GAP-0115 — `help` grew again at M14, and m3–m6's goldens moved by substitution while m7–m13's moved by `--regen`
+
+**Domain:** conformance (M14)
+**Status:** OPEN — the same recurring cost GAP-0059, GAP-0065, GAP-0069, GAP-0072, GAP-0075, GAP-0078,
+GAP-0087, GAP-0093, GAP-0095 and GAP-0106 record, at the eleventh milestone that has paid it.
+Recorded again because the METHOD is what makes it safe, and the method differed between the two
+groups exactly as it has every time.
+
+**Two different causes, and only one of them was a fresh capture.**
+
+* **m3, m4, m5 and m6 moved because `help` grew by FOUR LINES.** `shellStrHelp` went 1871 → **2147**:
+  ```
+    run <name>    load an ELF program from the filesystem by name and run it
+    fs            FAT16: mount the primary master and report its geometry
+    ls            list the root directory: name, size, first cluster
+    cat <name>    print a file, following its FAT cluster chain
+  ```
+  because a command that is not in `help` is undiscoverable. Those four goldens were NOT regenerated
+  from a boot. The four lines were inserted mechanically after the `run <lba>` line in each file and
+  the kernel was then required to reproduce the result byte-for-byte — which it did, at **5511, 4012,
+  3796 and 8306** bytes. m3's 80×25 screen golden was rebuilt the same way: four lines inserted, four
+  dropped off the top, which is exactly what four more lines of `help` do to a buffer that is already
+  scrolling. A substitution that produced a file the kernel does not print fails immediately, which is
+  the whole reason this is substitution and not a fresh capture.
+* **m7, m8, m9, m10, m11, m12 and m13 moved because the image grew**, which is GAP-0078 exercised for
+  the seventh time. M14 adds `fat.dart`'s code, its 63 `@rodata` tables (plus one in `elf.dart`) and **1824 bytes of
+  donated `.bss`**, so `__kernel_end` moved and every address and count moved with it: m7's `PMM BASE`
+  0x1361B8 → 0x13C1B8 and its free count 0x7EA1 → 0x7E9B, m8's `CR3`/`PML4` and section boundaries,
+  m9's TSS/GDT/IDT bases, m10–m13's page-table and program frames. Those seven were regenerated with
+  `run.sh --regen`, and **each harness's derived checks recomputed every one of those numbers from
+  the boot's own `MB E` memory-map lines and from `kernel.elf`'s extents**. The mitigation held.
+
+**What did NOT move: `m1-interrupts/expected.txt`.** All 544 bytes are byte-for-byte identical, and so
+are m0-boot's, mb-info's and m2-console's goldens. `fatInit()` prints nothing and mounting is not done
+at boot — deliberately, and ADR-0018 §3 gives the reason. m14-fat asserts M1's golden again as a prefix
+of its own capture, and so does every other harness from M4 onwards.
+
+**A SECOND, SMALLER COST, recorded because it is the one that repeats.** Nine harnesses assert the
+`.bss` total or the extern count by SUBTRACTING every later milestone's block. All nine had to learn
+about `fat_store` (1824 bytes) and `fat_store_addr` (one extern). That is nine mechanical edits, and
+it is the price of each harness's number continuing to mean what it meant when it was written — m12's
+"a heap needed no new mutable state" and m13's "a C library is entirely userland" are both still true
+statements about 9664 bytes, and are still checked as such.
+
+**Cost:** whoever adds the next shell command pays the substitution again for four goldens, whoever
+grows the image pays the `--regen` again for seven, and whoever donates `.bss` pays nine subtractions.
+
+---
+
+## GAP-0116 — What the filesystem does NOT do, listed rather than discovered later
+
+**Domain:** kernel (M14)
+**Status:** OPEN — deliberately scoped out. GAP-0090's shape, restated for the thing that now exists,
+because "there is no filesystem" was easy to be precise about and "there is a filesystem" is where the
+vagueness starts.
+
+1. **There are NO WRITES, at any layer.** `WRITE SECTORS` (0x30) is not implemented in `ata.dart`;
+   there is no `fatWrite`, no free-cluster search, no directory-entry update, no FAT update, no
+   second-FAT mirroring and no crash consistency. This is not "not yet tested" — it is not there, and
+   `m14-fat/run.sh` asserts its absence three ways (no ATA write opcode declared, no `port_outw` call
+   site outside the framebuffer's VBE pair, no write function by name). Everything downstream — a free
+   list, a journal, `fsync` — is absent by construction.
+2. **No subdirectories.** Only the root directory is enumerable and only root-directory names are
+   findable. A name whose entry has the `0x10` attribute is `fatErrIsDir` and says so. The volume
+   carries a real `SUB` directory with real `.` and `..` entries so that the refusal is produced by a
+   boot rather than asserted.
+3. **No long filenames.** LFN entries (attribute exactly `0x0F`) are skipped and counted. A file whose
+   only human-readable name is its long one is reachable only by its 8.3 alias. macOS resolves
+   `program-b-with-a-long-name.elf` on this very volume; this kernel calls it `PROGB   .ELF`.
+   **The explicit `0x0F` check is redundant and cannot be tested** — `0x0F` includes the volume-label
+   bit, so an LFN entry is already skipped as a volume label. That is by FAT's design, not by
+   accident, and GAP-0120 records it as a mutation survivor that is not a gap.
+4. **No timestamps, no ownership, no permissions**, and nothing that says "this file is executable."
+   `run` will try to load any file, and the ELF checks are still the only gate (GAP-0090 item 5).
+5. **One open file at a time.** The chain array in `fat_store` holds one chain. There is no file
+   descriptor, no `open`/`read`/`close` syscall, and no way for a *program* to read a file at all —
+   GAP-0113 is unchanged, and a `read()` syscall is a different milestone.
+6. **A 256-cluster bound, and it has never been reached.** A file needing more is `fatErrTooBig` with
+   its own sentence rather than a truncation. **The largest file this has ever been tested on is 9632
+   bytes — ten clusters.** Nothing here should be read as a claim about a megabyte-sized file.
+7. **One partition, and it is the whole disk.** The MBR at sector 0 is overwritten by the boot sector
+   on this volume and is not parsed anywhere. A volume inside a partition would not be found.
+8. **One device.** Primary master only, ADR-0010 unchanged.
+9. **No caching of file data.** The one sector buffer serves the FAT and the root directory. Loading
+   the same program twice reads every data sector twice.
+10. **`FAT[1]`'s "clean shutdown" and "no hard error" bits are not consulted.** FAT[1] is required to
+    be an end mark and nothing more; a volume flagged dirty by a host is read anyway. There is nothing
+    to be lost by reading a dirty volume read-only, which is why this is a note and not a refusal.
+11. **The second FAT is never read.** `BPB_NumFATs` is validated and the first FAT is used.
+    `fsck_msdos` checks that the two agree on the image the harness builds; this kernel would not
+    notice if they did not.
+
+---
+
+## GAP-0117 — 8.3 names only, upper-cased, and the characters FAT forbids are not enforced
+
+**Domain:** kernel (M14)
+**Status:** OPEN — a deliberate narrowing, recorded because "supports filenames" is exactly the kind
+of claim that grows in the retelling.
+
+`fatParseName` turns the rest of the typed line into the 11 raw bytes a FAT directory stores: up to 8
+of stem, up to 3 of extension, space-padded, upper-cased. Everything else is `fatErrBadName` — an
+empty name, two dots, an empty stem, a stem over 8, an extension over 3, or any byte outside
+`0x21..0x7E`.
+
+**Two things it does NOT do:**
+
+* **It does not enforce FAT's forbidden-character set.** `"`, `*`, `+`, `,`, `/`, `:`, `;`, `<`, `=`,
+  `>`, `?`, `[`, `\`, `]` and `|` are illegal in an 8.3 name and this parser accepts all of them. It
+  is harmless *here* — the lookup simply fails, because no directory entry can contain them — and it
+  would stop being harmless the moment there were a write path. Recorded so the write path's author
+  finds it.
+* **It cannot express a lower-case name.** The shell has no shift handling on the letter keys
+  (GAP-0055), so a name is upper-cased on the way in. A directory entry whose stored name has a
+  lower-case byte in it — which some formatters write, using the reserved case bits at offset 12 —
+  is unreachable from this shell.
+
+The trailing-space padding is printed rather than trimmed in `ls` and in `FS OPEN`, so `HELLO   .TXT`
+is what appears. That is the literal directory content, and it makes a name with a space actually in
+it visible, which no other tool does.
+
+---
+
+## GAP-0118 — The FAT cache is one sector, and its hit counter is the only evidence it helps
+
+**Domain:** kernel (M14)
+**Status:** OPEN — a measurement, not a complaint.
+
+GAP-0090 item 8 said "every sector is read from the drive every time." That is now false for the FAT
+and the root directory and still true for file data. The mechanism is one 512-byte buffer and one
+"which LBA is in it" word, and the honest description of what it buys is:
+
+* A cluster chain confined to one FAT sector — every chain on this volume, and every chain on any
+  volume under 128 clusters of span — costs **one** disk read instead of one per link.
+* A root-directory walk costs one read per 16 entries rather than one per entry.
+* **File data is not cached at all**, deliberately: `elf.dart` reads it straight into the frame it
+  owns, and a cache in between would be a copy.
+
+**What is missing is a test that the cache is CORRECT under invalidation.** The buffer is invalidated
+before every read and repopulated after a successful one, so a failed `ataReadInto` cannot leave it
+claiming to hold a sector. That ordering is asserted by reading the source, not by a boot: producing a
+read failure in the middle of a chain walk needs a drive that fails on demand, and QEMU's IDE
+emulation offers no way to ask for one. `fatMetaHits` is incremented on every hit and nothing reads it
+back yet — the counter exists so that the day somebody wants to know, the answer is a number.
+
+---
+
+## GAP-0119 — `run 20` is a sector and `run CAFE` would be too, so a file with a hex-digit name is unreachable by `run`
+
+**Domain:** kernel (M14)
+**Status:** OPEN — a known, bounded ambiguity, taken on purpose.
+
+`shellElfRunCmd` distinguishes the two forms with `ataParseLba`, which returns a value above
+`ataLba28Max` for anything that is not one to seven hex digits. So:
+
+* `run 20` is sector 0x20 — which is what m10-elf, m11-proc, m12-heap and m13-libc's sessions type,
+  and why their goldens did not have to change shape.
+* `run PROGA.ELF` is a filename.
+* **`run CAFE` is sector 0xCAFE, even if a file called `CAFE` exists.** So is `run 20` on a volume with
+  a file called `20`. Such a file is reachable by `cat` and not by `run`.
+
+**Why it was not solved.** The alternatives were a distinct spelling for one of the two forms —
+`run @20`, or `runlba 20` — and every one of them changes the command four existing harnesses type,
+which moves four byte-exact serial goldens and a screen golden for a case no volume in this repo
+contains. The ambiguity is one comparison wide, it is documented at the call site as well as here, and
+the day a `path` type exists it disappears on its own.
+
+**What would make it a real bug:** a write path. A user who creates `20.TXT` can still `cat` it; a user
+who creates `20` cannot `run` it and gets a disk-sector read instead, with no diagnostic that mentions
+files at all.
+
+---
+
+## GAP-0120 — What m14-fat checks by RUNNING and what it checks by READING, and the mutations that survived
+
+**Domain:** conformance (M14)
+**Status:** OPEN — the entry GAP-0114 established the shape of, written for this milestone's own
+harness, because the useful output of a milestone is which of its checks are load-bearing.
+
+**Checked by RUNNING** (seven QEMU boots, one against a correct volume and six against volumes with
+one thing deliberately wrong): the BPB validated field by field; the four region offsets computed; the root
+directory enumerated with three kinds of entry skipped; a file read across a 98-cluster hole; two
+programs loaded **by filename** off interleaved chains, each hashing its own image to a value derived
+on the host; four name-level refusals; the numeric `run <lba>` path still refusing a non-program
+sector; the frame allocator's count identical before and after; and eight volume-level refusals — no
+boot signature, 1024-byte sectors, a FAT32-shaped BPB, a FAT12 cluster count, a chain cycle, a bad
+cluster, a short chain, and a chain link one past the last legal cluster.
+
+**Checked by READING the source rather than by running**, and therefore weaker: that
+`fatFileSector` indexes the chain array; that `fatBuildChain` calls `fatChainSeen`; that
+`elfImageLba` consults `fat.dart`; that `BS_FilSysType` is never named; that no ATA write opcode
+exists; that the seam has four call sites. Each of these is a grep, and a grep can be satisfied by
+dead code. They are cheap insurance against a refactor, not evidence about behaviour — with the
+exception of `fatFileSector` and `elfImageLba`, whose behaviour IS separately proved by the
+fragmented volume.
+
+**Checked by NEITHER, and named so nobody assumes otherwise:**
+
+* **Eleven of the twenty-eight refusal codes have never executed on a real boot** —
+  `fatErrDiskBoot`, `fatErrClusterSize`, `fatErrReserved`, `fatErrFatCount`, `fatErrRootEntries`,
+  `fatErrTotalZero`, `fatErrGeometry`, `fatErrFatSize`, `fatErrEmpty`, `fatErrTooBig`,
+  `fatErrChainFree`, plus the three disk-read failures (`fatErrDiskDir`, `fatErrDiskFat`,
+  `fatErrDiskData`), which need a drive that fails on demand and QEMU's IDE emulation offers no way to
+  ask for one. Each is returned from a reachable line and each has its own sentence, and the harness
+  asserts both — but no variant image produces them. **Thirteen of the twenty-eight are exercised by a
+  boot**; the rest are exercised only by the reachability grep. `fatErrRootEntries` in particular is a
+  named mutation survivor below.
+* **The cache's invalidate-before-read ordering** (GAP-0118).
+* **Any file larger than ten clusters.** The 256-cluster bound has never been approached.
+* **`sectorsPerCluster` other than 2.** The volume uses 2 on purpose — so that a driver which dropped
+  the cluster-to-sector multiply entirely would fail — but 1, 4, 8 … 128 are untested.
+* **A volume with one FAT.** `BPB_NumFATs` is validated as 1-or-2 and only 2 is ever built.
+
+### The mutation tests: eighteen runs, two rounds, three survivors
+
+Every mutation was run with **`--regen`**, so a byte-exact-serial mismatch could never count as a kill
+and only a *derived* or *structural* check could. Sources and goldens were restored between runs and
+the kernel rebuilt clean afterwards.
+
+**Round 1 — twelve mutations. Eight died, four survived.**
+
+| mutation | outcome |
+|---|---|
+| `fatFileSector` computes `first + ci` instead of reading the chain | KILLED — *structural*: "fatFileSector no longer reads the chain array" |
+| `fatChainSeen` returns 0 immediately | KILLED — **did not compile**: `dcc` rejects the unreachable tail. Not a valid mutant; re-run evasively in round 2 |
+| the short-chain guard deleted outright | KILLED — *structural*: `fatErrChainShort` became unreachable |
+| `fatValidCluster`'s upper bound loosened by 64 clusters | **SURVIVED** |
+| `fatFat12Max` 4085 → 0 | KILLED — *structural*: "fatFat12Max is not 4085" |
+| the `0xE5` deleted-entry check disabled | KILLED — *behavioural*, CHECK 7b: the listing counts changed |
+| the `0x0F` long-filename check disabled | **SURVIVED** |
+| the volume-label check disabled | KILLED — *behavioural*, CHECK 7b: the listing counts changed |
+| `elfImageLba` never takes the chain branch | KILLED — *structural*: "elfImageLba no longer consults fat.dart" |
+| `fatMetaHits` never incremented | **SURVIVED** |
+| the `rootEnt & 15` check disabled | **SURVIVED** |
+| `media` read AFTER the FAT sector replaces the boot sector | KILLED — *behavioural*, CHECK 7a: `fs` refuses with `fatErrMedia`. **This was not a hypothetical: it was the first build's real bug, found by a boot before any check for it existed.** |
+
+**The most important thing round 1 showed is that five of the eight kills were STRUCTURAL GREPS, which
+fire before any boot.** A grep can be satisfied by dead code, so those five kills say nothing about
+whether the fragmented volume actually catches a contiguous reader. So:
+
+**Round 2 — six EVASIVE mutations, each written to satisfy the grep that killed its round-1
+counterpart while still changing behaviour. All six died, and every one of them died to a BOOT.**
+
+| evasive mutation | what killed it |
+|---|---|
+| the chain is read and then ignored (`fatChain(ci)` still in the source) | CHECK 7d — "the bytes `cat` printed are not HELLO.TXT's bytes" |
+| `fatChainSeen` compares against `c + 0x10000`, so it never matches | CHECK 8b — the 2-cycle is not reported as a cycle |
+| the short-chain guard fires only above `0xFFFFFFFF` | CHECK 8b — the short chain is not refused |
+| `fatOpenActive()` masked to 0, so the loader takes the contiguous branch | CHECK 7e — PROGA does not print its own hash |
+| the bad-cluster check compares against `0x1FFF7` | CHECK 8b — the `FFF7` link is not refused |
+| `fatValidCluster`'s bound loosened by 64 (round 1's survivor, re-run) | CHECK 8b-bis — **the variant added because of it** |
+
+**The round-1 survivor that got fixed.** `cluster-bound-off-by-two` survived because no chain on any
+volume went anywhere near the end of the data region, so `fatErrChainRange` had never executed. A
+sixth variant image was added — `outofrange`, whose first link is exactly `clusterCount + 2`, the
+first illegal cluster number and precisely the value an off-by-two accepts — and the mutation was
+re-run against it and died. **That is the mutation round paying for itself**, and it is why
+`m14-fat` now performs seven boots rather than six.
+
+**THREE SURVIVE, and they are the honest finding of this milestone:**
+
+| survivor | why nothing catches it |
+|---|---|
+| **the `0x0F` long-filename check** | **Not a test gap — a redundancy that is baked into FAT.** The LFN attribute is `0x01\|0x02\|0x04\|0x08`, and that last bit is `ATTR_VOLUME_ID`. An entry skipped for being an LFN entry is *already* skipped for looking like a volume label, which is exactly why the LFN designers chose `0x0F`. Removing the explicit check changes nothing observable and cannot be made to. The check stays because it names the intent; ADR-0018 §5 says so. |
+| **`fatMetaHits`, the cache hit counter** | Nothing reads it back. The cache still works; only the evidence disappears. GAP-0118 says so, and the fix is a line of `fs` output nobody has needed. |
+| **the `rootEnt & 15` multiple-of-16 check** | No variant image has a root-entry count that is not a multiple of 16, so `fatErrRootEntries` is never produced. The guard is real and its absence is invisible: a volume with, say, 500 root entries would have its last 12 entries read out of the first data sector. A seventh variant would kill it, and was not written. |
+
+Two of the three are **absences of a test**, not of behaviour, and both are named above under "checked
+by NEITHER." The third is not a gap at all. That is the point of writing this down: the driver is not
+weaker than the table says, and it is not stronger either.
+
+---
+
+## GAP-0121 — The M14 sandbox verification, and the two GAP-0084/0110 steps that were needed unchanged
+
+**Domain:** tooling, conformance (M14)
+**Status:** OPEN — not a new gap, a confirmation that the existing procedure still works, recorded so
+the next unit knows the cost is stable.
+
+M14 verified all sixteen harnesses against an isolated clone of DCDart at `DCDART_PIN.txt`'s commit
+`e3cfe18`. **16/16, first attempt, no re-runs.** The procedure was GAP-0084's and GAP-0110's, applied
+verbatim and with nothing added:
+
+```bash
+SANDBOX=/private/tmp/m14-pinned          # NOT /tmp -- GAP-0110
+git clone <shared>/DCDart $SANDBOX/DCDart && (cd $SANDBOX/DCDart && git checkout e3cfe18)
+cp -Rc <shared>/DCDart/core/frontend $SANDBOX/DCDart/core/frontend      # GAP-0084 step 1
+(cd $SANDBOX/DCDart/core/dcc && dart pub get --offline)
+rsync -a --delete --exclude __pycache__ --exclude build/ <repo>/ $SANDBOX/oscortex_core/   # step 2
+cd $SANDBOX/oscortex_core && DCDART_HOME=$SANDBOX/DCDart bash core/tests/conformance/<h>/run.sh
+```
+
+**Two things worth recording for the next unit.**
+
+* **`dcc` is not on this machine's PATH**, so `build-kernel.sh` falls through to
+  `dart $DCDART_HOME/core/dcc/bin/dcc.dart`. That is what makes `DCDART_HOME` actually select the
+  compiler rather than merely the prelude. If a future toolchain puts a `dcc` binary on PATH, the
+  sandbox would silently use THAT compiler with the pinned prelude, and the isolation would be half
+  what it looks like. Worth checking before trusting a future sandbox run.
+* **`--exclude build/` in the rsync matters.** Without it the clone starts with the shared checkout's
+  `kernel.elf` and object files, and a harness that failed to rebuild would still find a kernel to
+  boot. With it, `$SANDBOX/oscortex_core/core/build/` is created from nothing by the sandbox's own
+  `dcc`, which is visible in every log line the run produced.
+
+The sandbox was **225MB** and was deleted afterwards.

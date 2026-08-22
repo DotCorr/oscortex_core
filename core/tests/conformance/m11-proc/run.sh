@@ -182,7 +182,16 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 3 program 
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 9664 (5496 through M10, plus 4160 for the process table and 8 for the alignment its .align 16 forces). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
+# M14 (ADR-0018) added a sixth block AFTER M11's: `fat_store`, 1824 bytes, with
+# no padding because proc_store ends at a multiple of 16. Subtracted here so
+# that M11's own number stays exactly what it was before M14 existed -- the same
+# accounting every earlier harness does for every later milestone's block.
+M14_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fat_store"{print $2; exit}')
+[[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
+M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
+[[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
+KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
+[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss outside M14's fat_store is $KDATA_BSS bytes, expected 9664 (5496 through M10, plus 4160 for the process table and 8 for the alignment its .align 16 forces). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 PROC_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="proc_store"{print $3; exit}')
 [[ "$PROC_STORE" == "4160" ]] || fail "kdata.o's proc_store is ${PROC_STORE:-missing} bytes, expected 4160"
 ELF_STORE_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
@@ -293,7 +302,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M11 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1871
+check_table shellStrHelp 2147
 check_table procStrSse 9
 check_table procStrCr4 5
 check_table procStrCr0 5
@@ -336,7 +345,7 @@ check_table procStrUsage 64
 check_table procCmdProc 4
 check_table procCmdRunSp 9
 check_table procCmdCrossSp 11
-echo "STRUCTURAL: pass  all 42 M11 message/command tables plus shellStrHelp (1658 -> 1871, three new command lines) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 42 M11 message/command tables plus shellStrHelp (1658 -> 1871 -> 2147; three new command lines at M11, four at M14) are exactly the sizes their call sites pass"
 
 # 3g. EVERY REFUSAL CODE IS REACHABLE, AND EVERY ONE HAS ITS OWN SENTENCE.
 #
@@ -481,6 +490,11 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+# M14 added exactly ONE: `fat_store_addr`, the filesystem's storage seam.
+M14_PRESENT=0
+grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && M14_PRESENT=1
+[[ "$M14_PRESENT" -eq 1 ]] || fail "M14's fat_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 58 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 58 (53 from M10 plus M11's five: sse_enabled, cr4_read, fx_save, fx_restore, proc_store_addr)"
 for sym in sse_enabled cr4_read fx_save fx_restore proc_store_addr; do
   grep -qE "\b$sym\b" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"

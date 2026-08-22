@@ -180,7 +180,7 @@ check_table shellStrPrompt 10
 # is the table's real size and both it and the literal in shellHelp() are
 # maintained by hand (GAP-0060) — the first M4 build printed 237 bytes of the
 # 395-byte table because only one of the two had been updated.
-check_table shellStrHelp 1871  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines; GAP-0060
+check_table shellStrHelp 2147  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` and three filesystem lines; GAP-0060
 check_table shellStrUnknown 27
 echo "STRUCTURAL: pass  all 8 shell @rodata tables are exactly the sizes the dispatcher compares"
 
@@ -263,7 +263,17 @@ echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o, every one named i
 #                             on an otherwise-cleared screen, which is also
 #                             what makes the screenshot worth looking at.
 # ---------------------------------------------------------------------------
-SESSION_KEYS="h,e,l,q,backspace,p,ret"
+# The `wait:600` is GAP-0105, and THIS is the instance the M11 mitigation missed.
+# m3-shell runs `help` TWICE -- here (as the backspace typo-correction test) and
+# again near the end. M11 grew `help` 1658 -> 1871 bytes, ~160ms of serial plus
+# three more lines of VGA scrolling, and added the settle only to the SECOND one.
+# So `m,e,m` was still being typed into the tail of the first listing, dropping a
+# keystroke about one run in four and failing at exactly the `help` boundary.
+# M14 took `help` 1871 -> 2147 bytes: ~24ms more serial and four more lines of VGA
+# scrolling. GAP-0105's settle is widened 600 -> 800ms with it, because the settle is a
+# guess about how long a command takes and this milestone made the command longer. A
+# pause emits no byte, so no golden changes.
+SESSION_KEYS="h,e,l,q,backspace,p,ret,wait:800"
 SESSION_KEYS="$SESSION_KEYS,m,e,m,ret"
 SESSION_KEYS="$SESSION_KEYS,f,r,o,b,n,i,c,a,t,e,ret"
 SESSION_KEYS="$SESSION_KEYS,e,c,h,o,spc,h,e,l,l,o,spc,w,o,r,l,d,ret"
@@ -275,7 +285,7 @@ SESSION_KEYS="$SESSION_KEYS,t,i,c,k,s,ret,wait:350"
 # later — so without this pause the following command's echo interleaves into the
 # middle of `help`'s output and the golden fails intermittently, at exactly the
 # `help` boundary. m6-disk already carried a wait here for the same reason.
-SESSION_KEYS="$SESSION_KEYS,h,e,l,p,ret,wait:600"
+SESSION_KEYS="$SESSION_KEYS,h,e,l,p,ret,wait:800"
 
 SHOT_PNG="$CORE_DIR/build/screenshot-shell.png"
 rm -f "$SHOT_PNG"

@@ -176,9 +176,19 @@ M10_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_sto
 # comes out exactly as it did before M11 existed.
 M11_ELF_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
 [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
-M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE ))
+# M14 (ADR-0018) added a SIXTH block after M11's: `fat_store` (1824 bytes -- 32
+# metadata words, a 256-entry cluster chain, one sector buffer and an 8.3 name
+# buffer). Its `.align 8` inserts NO padding, because `proc_store` ends at a
+# multiple of 16. Measured as everything from `fat_store`'s offset to the end of
+# `.bss` and subtracted out below, so that THIS harness's own number and M11's
+# both come out exactly as they did before M14 existed.
+M14_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fat_store"{print $2; exit}')
+[[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
+M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
+[[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
 [[ "$M11_BSS" -eq 4168 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4168 (M11's 4160-byte proc_store plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
-NON_VM_BSS=$(( KDATA_BSS - VM_STORE_SIZE - M9_BSS - M10_STORE - M11_BSS ))
+NON_VM_BSS=$(( KDATA_BSS - VM_STORE_SIZE - M9_BSS - M10_STORE - M11_BSS - M14_BSS ))
 if [[ "$NON_VM_BSS" -ne 5096 ]]; then
   fail "kdata.o donates $KDATA_BSS bytes of .bss, of which $VM_STORE_SIZE are M8's vm_store, leaving $NON_VM_BSS — expected 5096 (424 before M7, plus 4672 for the allocator)."
 fi
@@ -294,7 +304,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M7 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 1871  # M10 added `run <lba>`, M11 three `proc` lines; GAP-0060
+check_table shellStrHelp 2147  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table pmmStrBase 9
 check_table pmmStrStore 7
 check_table pmmStrBitmap 8
@@ -406,6 +416,16 @@ for sym in $M11_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
 done
 [[ "$M11_PRESENT" -eq 5 ]] || fail "only $M11_PRESENT of M11's 5 externs are in kmain.o's manifest ($M11_EXTERNS)"
+# M14 (ADR-0018) added exactly ONE: `fat_store_addr`, the filesystem's storage
+# seam. Subtracted for the same reason M8's, M9's, M10's and M11's are: this
+# harness's claim is about ITS OWN milestone's count.
+M14_EXTERNS="fat_store_addr"
+M14_PRESENT=0
+for sym in $M14_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M14_PRESENT=$(( M14_PRESENT + 1 ))
+done
+[[ "$M14_PRESENT" -eq 1 ]] || fail "M14's fat_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M11_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M9_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M8_PRESENT ))

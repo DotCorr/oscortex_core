@@ -152,9 +152,17 @@ PY
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11/M12. A C LIBRARY IS USERLAND. If the kernel needed new mutable state to host one, that is a different milestone and it needs its own ADR."
+# M14 (ADR-0018) added `fat_store`, 1824 bytes, AFTER M13. Subtracted here so
+# that M13's own claim -- "a C library is entirely userland" -- still means in
+# 2026 what it meant when it was written.
+M14_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fat_store"{print $2; exit}')
+[[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
+M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
+[[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
+KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
+[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss outside M14's fat_store is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11/M12. A C LIBRARY IS USERLAND. If the kernel needed new mutable state to host one, that is a different milestone and it needs its own ADR."
 grep -rq "oslibc" "$CORE_DIR/kernel/" && fail "a kernel source mentions oslibc — the C library must not be reachable from ring 0"
-echo "STRUCTURAL: pass  kdata.o still donates exactly 9664 bytes of .bss and no kernel source mentions the library — M13 is entirely userland"
+echo "STRUCTURAL: pass  kdata.o donates 9664 bytes of .bss outside M14's fat_store and no kernel source mentions the library — M13 is entirely userland"
 
 # 2b. EVERY SYSCALL NUMBER THE LIBRARY USES IS THE KERNEL'S OWN.
 #
@@ -278,10 +286,10 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1871
+check_table shellStrHelp 2147
 check_table heapStrLine 10
 check_table procStrPages 7
-echo "STRUCTURAL: pass  shellStrHelp is UNCHANGED at 1871 bytes — M13 adds no shell command, so m3-m6's goldens do not move (GAP-0105)"
+echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes — M13 added no shell command; M14 added four, and moved m3-m6's goldens by substitution (GAP-0115)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1). 58 externs, unchanged.
@@ -296,6 +304,11 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+# M14 added exactly ONE extern: `fat_store_addr`.
+M14_PRESENT=0
+grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && M14_PRESENT=1
+[[ "$M14_PRESENT" -eq 1 ]] || fail "M14's fat_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 58 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 58 — UNCHANGED from M11/M12"
 grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — unchanged from M12, and kdata.o still passes standalone"

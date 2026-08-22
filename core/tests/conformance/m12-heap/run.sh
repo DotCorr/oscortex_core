@@ -133,8 +133,16 @@ PY
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053."
-echo "STRUCTURAL: pass  kdata.o still donates exactly 9664 bytes of .bss — M12 added no mutable state of its own"
+# M14 (ADR-0018) added `fat_store`, 1824 bytes, AFTER M12. Subtracted here so
+# that M12's own claim -- "a heap needed no new mutable state" -- still means in
+# 2026 what it meant when it was written.
+M14_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fat_store"{print $2; exit}')
+[[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
+M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
+[[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
+KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
+[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss outside M14's fat_store is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053."
+echo "STRUCTURAL: pass  kdata.o donates 9664 bytes of .bss outside M14's fat_store — M12 added no mutable state of its own"
 
 # 2b. THE STORAGE SEAM IS STILL EXACTLY THREE CALL SITES, ALL IN proc.dart.
 #
@@ -338,8 +346,8 @@ check_table heapStrBase 6
 check_table heapStrTop 5
 check_table procStrPages 7
 check_table vmStrErr 5
-check_table shellStrHelp 1871
-echo "STRUCTURAL: pass  M12's six new message tables, the two it reuses, and shellStrHelp (UNCHANGED at 1871 — the heap is a syscall, not a shell command) are all exactly the sizes their call sites pass"
+check_table shellStrHelp 2147
+echo "STRUCTURAL: pass  M12's six new message tables, the two it reuses, and shellStrHelp (2147 — the heap is a syscall and added none; M14 added four) are all exactly the sizes their call sites pass"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).
@@ -358,6 +366,11 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+# M14 added exactly ONE extern: `fat_store_addr`.
+M14_PRESENT=0
+grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && M14_PRESENT=1
+[[ "$M14_PRESENT" -eq 1 ]] || fail "M14's fat_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 58 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 58 — UNCHANGED from M11. A heap needs no new assembly."
 grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — unchanged from M11, and kdata.o still passes standalone"

@@ -34,6 +34,7 @@ part 'user.dart';
 part 'elf.dart';
 part 'proc.dart';
 part 'heap.dart';
+part 'fat.dart';
 
 /// Kernel entry point.
 ///
@@ -183,6 +184,23 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   procInit();
+
+  // M14: the filesystem's donated state, and the same argument for the seventh
+  // time. `elfReadSectors` asks [fatOpenActive] on EVERY sector of EVERY `run`
+  // -- including `run <lba>`, which has nothing to do with a filesystem -- so a
+  // garbage word there would send the loader's reads through a cluster-chain
+  // array full of `.bss` litter and produce a program assembled out of whatever
+  // sectors those numbers happened to name.
+  //
+  // Mounting is NOT done here. It is one disk read, it can fail, and a kernel
+  // that mounted at boot would either print a diagnostic into the middle of
+  // `tests/conformance/m1-interrupts`' 544-byte golden or swallow one. Every
+  // filesystem command mounts for itself; [fatMount] is idempotent and cheap.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  fatInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

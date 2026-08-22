@@ -44,6 +44,10 @@ commands:
   user hold     run a ring-3 payload that never exits (last command)
   user pages    TSS, gate DPLs, and how many pages ring 3 can reach
   run <lba>     load an ELF program from that disk sector and run it
+  run <name>    load an ELF program from the filesystem by name and run it
+  fs            FAT16: mount the primary master and report its geometry
+  ls            list the root directory: name, size, first cluster
+  cat <name>    print a file, following its FAT cluster chain
   proc          the process table, the CR4 SSE bits, and each slot
   proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
   proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
@@ -99,6 +103,10 @@ commands:
   user hold     run a ring-3 payload that never exits (last command)
   user pages    TSS, gate DPLs, and how many pages ring 3 can reach
   run <lba>     load an ELF program from that disk sector and run it
+  run <name>    load an ELF program from the filesystem by name and run it
+  fs            FAT16: mount the primary master and report its geometry
+  ls            list the root directory: name, size, first cluster
+  cat <name>    print a file, following its FAT cluster chain
   proc          the process table, the CR4 SSE bits, and each slot
   proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
   proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF

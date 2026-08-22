@@ -358,6 +358,16 @@ final List<u8> elfStrRefused = const [
   u8(0x45), u8(0x4C), u8(0x46), u8(0x20), u8(0x52), u8(0x45), u8(0x46), u8(0x55), u8(0x53), u8(0x45), u8(0x44), u8(0x20),
 ];
 
+/// The label the M14 named form prints instead of `ELF DISK LBA`. The filename
+/// follows it, then the same ` IMAGE ` and ` BYTES ` columns the numeric form
+/// prints, so the two transcripts line up.
+///
+/// `'ELF FILE '` -- 9 bytes.
+@rodata
+final List<u8> elfStrFile = const [
+  u8(0x45), u8(0x4C), u8(0x46), u8(0x20), u8(0x46), u8(0x49), u8(0x4C), u8(0x45), u8(0x20),
+];
+
 /// Command name.
 ///
 /// `'run'` -- 3 bytes.
@@ -1126,14 +1136,39 @@ u64 elfReadHeader(u64 lba, u64 buf) {
   return u64(elfErrOk);
 }
 
+/// The absolute LBA of image-relative sector [i], or 0 if there is none.
+///
+/// **THIS IS WHERE M14 CHANGED THE LOADER, AND IT IS THE WHOLE OF THE CHANGE.**
+/// Before M14 the image was a run of consecutive sectors starting at the LBA a
+/// 32-byte header sector named, and `elfReadSectors` added. It still is, for
+/// `run <lba>`. For `run <name>` the image is a FAT16 file whose sectors are
+/// wherever the chain says, and `fatFileSector` is what says.
+///
+/// The decision is read out of `fat.dart`'s own "a file is open" word rather
+/// than duplicated into the loader's metadata, so there is exactly one place
+/// that knows which of the two a load is, and it is the place that set it.
+///
+/// Sector 0 of the disk is the boot sector on any volume and the MBR on any
+/// image this repo builds, so 0 is a safe "no": it is never a legal answer.
+@bare
+u64 elfImageLba(u64 i) {
+  if (fatOpenActive() > u64(0)) {
+    return fatFileSector(i);
+  }
+  return elfMeta(u64(elfMetaImageLba)) + i;
+}
+
 /// Reads [n] sectors of the image starting at image-relative sector [from] into
 /// [buf]. Counts every sector read.
 @bare
 u64 elfReadSectors(u64 from, u64 n, u64 buf) {
-  final u64 base = elfMeta(u64(elfMetaImageLba));
   u64 i = u64(0);
   while (i < n) {
-    if (ataReadInto(base + from + i, buf + (i << u64(elfSectorShift))) > u64(0)) {
+    final u64 lba = elfImageLba(from + i);
+    if (lba < u64(1)) {
+      return u64(elfErrDiskImage);
+    }
+    if (ataReadInto(lba, buf + (i << u64(elfSectorShift))) > u64(0)) {
       return u64(elfErrDiskImage);
     }
     elfSetMeta(u64(elfMetaSectors), elfMeta(u64(elfMetaSectors)) + u64(1));
@@ -1548,7 +1583,51 @@ u64 elfLoad(u64 headerLba, u64 hdr, u64 scratch) {
   uartWrite(Rodata.addressOf(elfStrBytes), u64(7));
   uartPutHex(elfMeta(u64(elfMetaImageBytes)), u64(8));
   uartNewline();
+  return elfLoadImage(hdr, scratch);
+}
 
+/// The M14 half of [elfLoad]: the image is the FAT16 file `fat.dart` has open,
+/// and its length is the directory entry's size rather than a header sector's.
+///
+/// **There is no `"OSCXPRG1"` header on this path and there does not need to
+/// be.** That 32-byte sector existed to carry a length and a starting LBA
+/// because nothing else on the disk could; a directory entry carries both, and
+/// carries a name as well. The two bounds the header sector's length was
+/// checked against are applied here to the directory's size, in the same order
+/// and with the same two refusal codes, because they are bounds on what this
+/// loader can hold and not on where the number came from.
+@bare
+u64 elfLoadFile(u64 hdr, u64 scratch) {
+  final u64 bytes = fatMeta(u64(fatMetaFileBytes));
+  if (bytes < u64(64)) {
+    return u64(elfErrImageSize); // shorter than one ELF64 header
+  }
+  if (bytes > u64(elfImageMax)) {
+    return u64(elfErrImageSize);
+  }
+  elfSetMeta(u64(elfMetaImageBytes), bytes);
+  // The FIRST sector of the file, for the report only. Nothing reads this word
+  // on the FAT path -- [elfImageLba] goes through the chain -- and printing it
+  // is what makes a capture comparable with the numeric path's `IMAGE` column.
+  elfSetMeta(u64(elfMetaImageLba), fatFileSector(u64(0)));
+  uartWrite(Rodata.addressOf(elfStrFile), u64(9));
+  fatPrintName(fatNameBase());
+  uartWrite(Rodata.addressOf(elfStrImage), u64(7));
+  uartPutHex(elfMeta(u64(elfMetaImageLba)), u64(8));
+  uartWrite(Rodata.addressOf(elfStrBytes), u64(7));
+  uartPutHex(bytes, u64(8));
+  uartNewline();
+  return elfLoadImage(hdr, scratch);
+}
+
+/// Everything after the image's length and location are known: the ELF header,
+/// the pre-flight, the page table, the segments, the stack and the entry-point
+/// check.
+///
+/// Split out of [elfLoad] at M14 so that the two ways of naming an image -- a
+/// header sector, or a filename -- share every byte of the actual loading.
+@bare
+u64 elfLoadImage(u64 hdr, u64 scratch) {
   // The first 4096 bytes of the image: the ELF header and, by [elfCheckHeader]'s
   // bound, the whole program-header table. Read into a frame of its own so the
   // sector reads [elfLoadSegment] performs into `scratch` cannot walk over the
@@ -1696,6 +1775,44 @@ u64 elfLoad(u64 headerLba, u64 hdr, u64 scratch) {
 /// table out, so a file rejected at its third segment costs nothing.
 @bare
 void shellElfRun(u64 headerLba) {
+  // M14: the numeric form must read CONTIGUOUS sectors. A `cat` or a
+  // `run <name>` earlier in the session leaves a cluster chain open, and
+  // [elfImageLba] would send these reads through it. Closed here, in the one
+  // place that knows this load is a numeric one.
+  fatClose();
+  shellElfLoadAndEnter(headerLba, u64(0));
+}
+
+/// `run <name>` -- load the FAT16 file [from] names and enter it in ring 3.
+///
+/// **This is M14's milestone, and the sector number is gone from it entirely.**
+/// The file is found by name in the root directory, its chain is walked and
+/// checked, and the loader then reads image-relative sectors through that
+/// chain. Nothing anywhere in this path knows an LBA that a human typed.
+///
+/// The refusal comes from the FILESYSTEM's vocabulary when the filesystem
+/// refuses and from the LOADER's when the loader does, and the two are printed
+/// by two different functions with two different prefixes, because "no such
+/// file" and "that file is not an ELF this kernel will run" are not the same
+/// answer and a user who confuses them looks in the wrong place.
+@bare
+void shellElfRunName(u64 from) {
+  final u64 fs = fatOpen(from);
+  if (fs > u64(fatErrOk)) {
+    fatReportError(fs);
+    return;
+  }
+  fatOpenLine();
+  fatChainReport();
+  shellElfLoadAndEnter(u64(0), u64(1));
+}
+
+/// The body both forms share. [named] chooses which of [elfLoad] and
+/// [elfLoadFile] provides the image; everything else -- the guards, the two
+/// scratch frames, the reporting, the entry into ring 3 and the reclamation on
+/// every refusing path -- is identical and always was.
+@bare
+void shellElfLoadAndEnter(u64 headerLba, u64 named) {
   if (vmMeta(u64(vmMetaReady)) < u64(1)) {
     elfReportError(u64(elfErrNotReady));
     return;
@@ -1732,7 +1849,12 @@ void shellElfRun(u64 headerLba) {
   elfSetMeta(u64(elfMetaExit), u64(0));
   elfSetMeta(u64(elfMetaScratch), scratch);
 
-  final u64 st = elfLoad(headerLba, hdr, scratch);
+  u64 st = u64(elfErrOk);
+  if (named > u64(0)) {
+    st = elfLoadFile(hdr, scratch);
+  } else {
+    st = elfLoad(headerLba, hdr, scratch);
+  }
 
   // The two scratch frames go back BEFORE ring 3 is entered, on every path.
   // They hold a copy of the file, which the program has no business reading.
@@ -1802,14 +1924,27 @@ void shellElfRun(u64 headerLba) {
 @bare
 void shellElfUsage() {
   uartWrite(Rodata.addressOf(elfStrUsage), u64(73));
+  uartWrite(Rodata.addressOf(fatStrRunUsage), u64(59));
 }
 
 /// `run <lba>` from the shell: parse, bound-check, then load.
+/// `run <lba>` or `run <name>` from the shell.
+///
+/// **The two forms are told apart by [ataParseLba], and by nothing else.** It
+/// returns a value above `ataLba28Max` for anything that is not one to seven
+/// hex digits, so `run 20` is still sector 0x20 and `run PROGA.ELF` is a name.
+/// That keeps every earlier harness's `run <lba>` working unchanged and costs
+/// one comparison.
+///
+/// **The ambiguity is real and is not hidden**: a file whose 8.3 name is one to
+/// seven hex digits and nothing else -- `CAFE`, `20` -- is reachable by `cat`
+/// and not by `run`. docs/known-gaps.md GAP-0119 records it, with the reason a
+/// separate spelling was not worth four goldens.
 @bare
 void shellElfRunCmd() {
   final u64 lba = ataParseLba(u64(4));
   if (lba > u64(ataLba28Max)) {
-    shellElfUsage();
+    shellElfRunName(u64(4));
     return;
   }
   shellElfRun(lba);

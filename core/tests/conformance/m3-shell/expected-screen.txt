@@ -1,7 +1,3 @@
-  disk id       ATA PIO IDENTIFY: model and sector count
-  disk read <n> read one 512-byte sector, hexdumped as it arrives
-  frames        physical frame allocator: totals and its own footprint
-  frames test   allocate 64 frames, prove them distinct, give them back
   frames drain  allocate every free frame, then prove the next one fails
   frames refill free every frame drain took, back to the baseline count
   alloc         allocate one 4KiB frame, print its physical address
@@ -16,6 +12,10 @@
   user hold     run a ring-3 payload that never exits (last command)
   user pages    TSS, gate DPLs, and how many pages ring 3 can reach
   run <lba>     load an ELF program from that disk sector and run it
+  run <name>    load an ELF program from the filesystem by name and run it
+  fs            FAT16: mount the primary master and report its geometry
+  ls            list the root directory: name, size, first cluster
+  cat <name>    print a file, following its FAT cluster chain
   proc          the process table, the CR4 SSE bits, and each slot
   proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
   proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
