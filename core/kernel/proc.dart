@@ -1269,6 +1269,14 @@ void procYield(u64 frame) {
 @bare
 void procCleanup(u64 s) {
   final u64 freed = procSpaceFree(s);
+  // M15: this slot's file descriptors go with everything else it owned, and for
+  // the same stated reason — two of this function's three callers are failures,
+  // and a descriptor row that survived a killed process would be inherited by
+  // whatever `proc run` put in the slot next.
+  final u64 orphans = fileReleaseOwner(s);
+  if (orphans > u64(0)) {
+    fileOrphanLine(orphans);
+  }
   procSet(s, u64(procSlotState), u64(procStateFree));
   uartWrite(Rodata.addressOf(procStrKill), u64(15));
   uartPutHex(s, u64(2));

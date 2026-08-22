@@ -182,6 +182,15 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 3 program 
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
+# M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
+# metadata words, five rows of four file descriptors, and a one-sector bounce
+# buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
+# number continues to mean in 2026 what it meant when it was written.
+M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
+[[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
+M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
+[[ "$M15_BSS" -eq 1280 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 1280. If M15's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added a sixth block AFTER M11's: `fat_store`, 1824 bytes, with
 # no padding because proc_store ends at a multiple of 16. Subtracted here so
 # that M11's own number stays exactly what it was before M14 existed -- the same
@@ -490,6 +499,12 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+# M15 (ADR-0019) added exactly ONE: `file_store_addr`, the file-descriptor
+# table's storage seam. Subtracted for the same reason every block above is.
+M15_PRESENT=0
+grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && M15_PRESENT=1
+[[ "$M15_PRESENT" -eq 1 ]] || fail "M15's file_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
 # M14 added exactly ONE: `fat_store_addr`, the filesystem's storage seam.
 M14_PRESENT=0
 grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && M14_PRESENT=1

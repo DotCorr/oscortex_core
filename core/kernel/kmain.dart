@@ -35,6 +35,7 @@ part 'elf.dart';
 part 'proc.dart';
 part 'heap.dart';
 part 'fat.dart';
+part 'file.dart';
 
 /// Kernel entry point.
 ///
@@ -201,6 +202,17 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   fatInit();
+
+  // M15: the file-descriptor tables, and the same argument for the eighth time.
+  // [fileExitReport] reads the "has anything ever opened a file" word on EVERY
+  // exit from ring 3 -- including the exits of m10's, m11's, m12's, m13's and
+  // m14's programs, none of which has ever called `open` -- so a garbage word
+  // there would print a line into the middle of five byte-exact goldens.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  fileInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

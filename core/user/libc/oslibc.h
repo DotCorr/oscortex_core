@@ -8,8 +8,10 @@
  * listed in this file; there is no second header and nothing is hidden behind a
  * feature macro.
  *
- *   syscalls   sys_exit, sys_write, sys_who, sys_yield, sys_sbrk  (raw)
- *              write(), exit(), yield(), sbrk()                   (checked)
+ *   syscalls   sys_call, sys_call3                               (raw)
+ *              write(), exit(), yield(), sbrk(), who()            (checked)
+ *   files      open(), read(), close(), seek()                    (§ M15, raw)
+ *              RFILE, rfopen/rfread/rfgets/rfseek/rfclose         (§ rfile.c)
  *   memory     malloc, free                                       (§ malloc.c)
  *   strings    memcpy, memset, strlen, strcmp, strcpy
  *   output     printf, with EXACTLY five conversions
@@ -29,10 +31,15 @@
  * longer than [PRINTF_MAX] is not a thing this OS can print, and printf reports
  * that rather than truncating quietly. See §4 below.
  *
- * NOTHING HERE MAY ASSUME ANYTHING ABOUT THE KERNEL except the five syscall
- * numbers and the refusal values below, which are core/kernel/user.dart's,
- * core/kernel/proc.dart's and core/kernel/heap.dart's. The m13-libc harness
- * reads every one of them back out of those files and compares.
+ * THERE IS STILL NO INPUT AND NO WRITING. `open` is read-only, there is no
+ * `stdin` and no console-input syscall, and nothing on this OS can create,
+ * extend or modify a file. What M15 adds is that a program can READ one.
+ *
+ * NOTHING HERE MAY ASSUME ANYTHING ABOUT THE KERNEL except the syscall numbers
+ * and the refusal values below, which are core/kernel/user.dart's,
+ * core/kernel/proc.dart's, core/kernel/heap.dart's and core/kernel/file.dart's.
+ * The m13-libc and m15-fileio harnesses read every one of them back out of
+ * those files and compare.
  */
 
 #ifndef OSLIBC_H
@@ -55,6 +62,12 @@ typedef unsigned long uintptr_t;
 #define SYS_YIELD 3
 #define SYS_SBRK 4
 
+/* M15. core/kernel/file.dart's `fileSys*No`. */
+#define SYS_OPEN 5
+#define SYS_READ 6
+#define SYS_CLOSE 7
+#define SYS_SEEK 8
+
 /* core/kernel/user.dart's `userRefused`: what a refused syscall returns. */
 #define SYS_REFUSED 0xFFFFFFFFFFFFFFFFUL
 
@@ -75,9 +88,55 @@ typedef unsigned long uintptr_t;
 #define PRINTF_MAX 120UL
 
 /* ---------------------------------------------------------------------------
+ * 1b. M15's file I/O: the four bounds and the eleven refusal values, all of
+ *     them core/kernel/file.dart's own. `m15-fileio/run.sh` reads every one of
+ *     them back out of that file and compares, exactly as m13-libc does for the
+ *     eleven numbers above -- a library that disagreed with the kernel about
+ *     what a refusal LOOKS LIKE would treat one as a byte count.
+ * ------------------------------------------------------------------------- */
+
+/* core/kernel/file.dart's `fileReadMax`: the largest single read() the kernel
+ * will perform. NOT a bound on a file -- a program reads a bigger file by
+ * calling read() again, because the offset lives in the descriptor. */
+#define READ_MAX 512UL
+
+/* `fileMaxFds`: descriptors per program. A fifth open() is FILE_ENOSLOT. */
+#define FILE_MAX_FDS 4UL
+
+/* `fileNameMax`: `12345678.123` is twelve characters and there is no thirteenth
+ * 8.3 name. */
+#define FILE_NAME_MAX 12UL
+
+/* `fileRetFloor`. ONE comparison separates a result from a refusal, exactly as
+ * SBRK_ERR_FLOOR does: a byte count, a descriptor number and a file offset are
+ * all far below this, and SYS_REFUSED -- what a kernel WITHOUT these syscalls
+ * hands back -- is above it, so a program built against an older kernel sees a
+ * refusal rather than a length. */
+#define FILE_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
+
+#define FILE_EBADFD 0xFFFFFFFFFFFFFFFEUL    /* no such open descriptor */
+#define FILE_EBADPTR 0xFFFFFFFFFFFFFFFDUL   /* buffer not yours, or not writable */
+#define FILE_EBADLEN 0xFFFFFFFFFFFFFFFCUL   /* zero, or above READ_MAX/NAME_MAX */
+#define FILE_ENOSLOT 0xFFFFFFFFFFFFFFFBUL   /* all FILE_MAX_FDS in use */
+#define FILE_EBADNAME 0xFFFFFFFFFFFFFFFAUL  /* not an 8.3 name */
+#define FILE_ENOTFOUND 0xFFFFFFFFFFFFFFF9UL /* no such entry in the root dir */
+#define FILE_EISDIR 0xFFFFFFFFFFFFFFF8UL    /* it is a subdirectory */
+#define FILE_EEMPTY 0xFFFFFFFFFFFFFFF7UL    /* the entry has no clusters */
+#define FILE_EIO 0xFFFFFFFFFFFFFFF6UL       /* the volume, chain or drive refused */
+#define FILE_EBADSEEK 0xFFFFFFFFFFFFFFF5UL  /* past the end of the file */
+#define FILE_ENOOWNER 0xFFFFFFFFFFFFFFF4UL  /* nothing that owns descriptors is running */
+
+/* ---------------------------------------------------------------------------
  * 2. Raw syscalls. `int $0x80`, number in RAX, arguments in RDI and RSI.
  * ------------------------------------------------------------------------- */
 unsigned long sys_call(unsigned long n, unsigned long a, unsigned long b);
+
+/* Three arguments, for `read`. THE ONLY `int $0x80` IN THE LIBRARY IS IN HERE
+ * and `sys_call` is a C call to it with a zero third argument -- m13-libc
+ * requires exactly one of that instruction in the whole library and M15 did not
+ * get to add a second. */
+unsigned long sys_call3(unsigned long n, unsigned long a, unsigned long b,
+                        unsigned long c);
 
 /* ---------------------------------------------------------------------------
  * 3. The checked wrappers.
@@ -102,6 +161,117 @@ unsigned long sbrk_last_error(void);
 
 /* Which process am I? Prints a line from the kernel; returns the slot. */
 unsigned long who(void);
+
+/* ---------------------------------------------------------------------------
+ * 3b. M15 — RAW FILE I/O. Four calls, no buffering, no struct. Every one of
+ *     them returns a value that is either a result or, at or above
+ *     FILE_ERR_FLOOR, one of the eleven refusals. There is no errno (GAP-0113
+ *     said why and that has not changed): the refusal IS the return value.
+ *
+ *     THERE IS NO WRITE PATH AT ANY LAYER. This kernel has no ATA write opcode,
+ *     no free-cluster search and no directory update, so there is no `creat`,
+ *     no `O_WRONLY` and no mode argument to open(). GAP-0122 is the accounting.
+ * ------------------------------------------------------------------------- */
+
+/* Opens [name] -- an 8.3 name in the volume's ROOT DIRECTORY, at most
+ * FILE_NAME_MAX characters, no path and no directory component. Returns a
+ * descriptor 0..FILE_MAX_FDS-1, or a refusal.
+ *
+ * The name is NOT case-folded here; the kernel upper-cases it, because a FAT
+ * directory stores upper case. `data.bin` and `DATA.BIN` open the same file. */
+unsigned long open(const char *name);
+
+/* Reads at most [len] bytes into [buf] from the descriptor's current offset,
+ * and ADVANCES that offset by however many it delivered.
+ *
+ * RETURNS FEWER THAN [len] AT THE END OF THE FILE, AND 0 WHEN THERE IS NOTHING
+ * LEFT. A caller that assumes it got [len] bytes back is wrong on the last
+ * read of every file whose size is not a multiple of [len] -- which is most of
+ * them -- and m15-fileio builds a program that makes exactly that mistake, on
+ * purpose, as its negative control.
+ *
+ * [len] above READ_MAX is FILE_EBADLEN and is NOT split into several reads:
+ * the library does not loop where the kernel refused, for `write`'s reason. */
+unsigned long read(unsigned long fd, void *buf, size_t len);
+
+/* Closes [fd]. Returns 0, or FILE_EBADFD -- including for a second close of the
+ * same descriptor, which is a bug in the caller and is reported as one. */
+unsigned long close(unsigned long fd);
+
+/* Sets the descriptor's offset to [off] ABSOLUTELY and returns it. There is no
+ * `whence`: SEEK_CUR is the offset the descriptor already keeps and SEEK_END
+ * needs a size this interface cannot ask for (GAP-0122 item 4). An [off] past
+ * the end of the file is FILE_EBADSEEK; exactly AT the end is legal and is
+ * where a program that has read everything already is. */
+unsigned long seek(unsigned long fd, unsigned long off);
+
+/* ---------------------------------------------------------------------------
+ * 3c. M15 — RFILE: a BUFFERED read-only file.
+ *
+ *     IT IS NOT CALLED `FILE` AND THAT IS DELIBERATE. C's `FILE` reads and
+ *     writes, has three of itself open before `main` runs, carries an error and
+ *     an EOF flag that `ferror`/`feof` report separately, flushes, and can be
+ *     re-pointed with `freopen`. This does exactly one of those things. Calling
+ *     it `FILE` and its opener `fopen` would make ordinary C compile against it
+ *     and then behave differently, which is the failure mode ADR-0017 §5 built
+ *     the loud `%!` marker to avoid. `RFILE` is a read-only file, `rfopen`
+ *     opens one, and nothing about the name suggests more than there is.
+ *
+ *     THE BUFFERING IS REAL AND IS THE POINT: one RFILE_BUFSZ-byte buffer per
+ *     open file, filled by one read() syscall, drained by rfgets() a line at a
+ *     time and by rfread() a request at a time. A 20 KiB file read by rfgets()
+ *     costs 40 syscalls rather than one per line.
+ *
+ *     THERE IS NO malloc HERE, on purpose: `sbrk` is refused unless a PROCESS is
+ *     live (core/kernel/user.dart) and `run <name>` -- the command that loads a
+ *     program off the filesystem -- does not create one. So the RFILEs are a
+ *     fixed array in .bss, RFILE_MAX of them, and rfopen() returns NULL when
+ *     they are all taken.
+ * ------------------------------------------------------------------------- */
+#define RFILE_BUFSZ 512
+#define RFILE_MAX 2
+
+typedef struct RFILE {
+  unsigned long fd;   /* the kernel descriptor */
+  unsigned long base; /* file offset of buf[0] */
+  unsigned long n;    /* valid bytes in buf */
+  unsigned long i;    /* next byte of buf to hand out */
+  unsigned long used; /* 1 while this slot is an open file */
+  unsigned long eof;  /* 1 once a read() has returned 0 */
+  unsigned char buf[RFILE_BUFSZ];
+} RFILE;
+
+/* Opens [name] buffered. NULL if open() refused or all RFILE_MAX slots are
+ * taken; rf_last_error() then carries the kernel's own refusal value, or 0 when
+ * the slots were the problem. */
+RFILE *rfopen(const char *name);
+
+/* Copies up to [n] bytes into [dst] out of the buffer, refilling as needed.
+ * Returns how many -- fewer than [n] only at end of file. */
+size_t rfread(void *dst, size_t n, RFILE *f);
+
+/* Reads up to [n]-1 bytes or one line, whichever is shorter, NUL-terminates,
+ * and KEEPS the newline exactly as C's fgets does. NULL at end of file with
+ * nothing read. */
+char *rfgets(char *dst, size_t n, RFILE *f);
+
+/* The absolute offset the next byte will come from. */
+unsigned long rftell(RFILE *f);
+
+/* Sets the absolute offset and DISCARDS the buffer. Returns the offset, or the
+ * kernel's refusal. */
+unsigned long rfseek(RFILE *f, unsigned long off);
+
+/* 1 once a read has come back empty. */
+int rfeof(RFILE *f);
+
+/* Closes and releases the slot. Returns 0, or the kernel's refusal. */
+unsigned long rfclose(RFILE *f);
+
+/* The raw refusal value of the last rfopen/rfseek/rfclose that failed. Same
+ * argument as sbrk_last_error(): eleven distinct refusals collapsed to NULL
+ * would be eleven diagnostics thrown away. */
+unsigned long rf_last_error(void);
 
 /* ---------------------------------------------------------------------------
  * 4. printf. Returns the number of bytes written, or -1 if the formatted string

@@ -1460,6 +1460,12 @@ void userTeardown() {
 @bare
 void userSysExit(u64 frame) {
   final u64 code = userFrame(frame, u64(userFrameRdi));
+  // M15: one line about the files this boot's programs read, and NOTHING AT ALL
+  // if none of them opened one. Printed here rather than in the teardown paths
+  // because this is the one place both things that can be in ring 3 pass
+  // through on the way out, and printed BEFORE the process branch below because
+  // that branch does not come back.
+  fileExitReport();
   // M11: a process's exit is a different event. It may not be the end of
   // anything -- another process can be READY -- so [procSysExit] RETURNS
   // NORMALLY when it switched to somebody else, and never returns when this was
@@ -1554,6 +1560,29 @@ void userSyscall(u64 frame) {
       return;
     }
     heapSysSbrk(frame);
+    return;
+  }
+  // M15: `open`, `read`, `close` and `seek` (syscalls 5..8). Unlike `yield` and
+  // `sbrk` these do NOT require a process: two different things can be in ring
+  // 3 on this machine, and the one `run <name>` produces has an image and a
+  // name and no process slot. [fileOwnerRow] is where that is decided, once,
+  // and each of the four refuses with [fileRetNoOwner] when the caller is an M9
+  // payload -- two pages in the identity window with no program image, which is
+  // reachable here because the gate is DPL 3.
+  if (no == u64(fileSysOpenNo)) {
+    fileSysOpen(frame);
+    return;
+  }
+  if (no == u64(fileSysReadNo)) {
+    fileSysRead(frame);
+    return;
+  }
+  if (no == u64(fileSysCloseNo)) {
+    fileSysClose(frame);
+    return;
+  }
+  if (no == u64(fileSysSeekNo)) {
+    fileSysSeek(frame);
     return;
   }
   if (no == u64(userSysWhoNo)) {

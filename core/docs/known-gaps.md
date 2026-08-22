@@ -576,7 +576,14 @@ the evidence that made it true, and so the one uncovered half is named.
 **Domain:** kernel (M2, M3, M4, M5, M6, M7, M8, M9), DCDart-side language gap
 **Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
 M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, → 5496 at M10,
-→ 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14.**
+→ 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14, → 12768 at M15.**
+
+**M15's share is 1280** — `file_store`, one symbol behind three seam functions: 16 metadata words,
+five rows of four file descriptors of four words each, and one 512-byte bounce buffer that no user
+pointer ever names. The `.align 8` costs nothing, because `fat_store` ends at a multiple of 16.
+**Ten harnesses subtract it** (m5 through m14) so that every older milestone's number still means what
+it meant when it was written — in particular m12's "a heap needed no new mutable state", m13's "a C
+library is entirely userland" and m14's 11488 are all still checked as such. ADR-0019 §8.
 
 **M14's share is 1824** — `fat_store`, one symbol behind four seam functions: 32 metadata words,
 a 256-entry cluster chain, one 512-byte sector buffer and the 11 bytes of an 8.3 name. The
@@ -3460,12 +3467,42 @@ nothing where the number should be — is the failure this library was arranged 
 ## GAP-0113 — There is no I/O in the library, because there is no filesystem under it
 
 **Domain:** userland, storage (M13)
-**Status:** OPEN — **and M14 does NOT narrow it.** There is a filesystem now (ADR-0018), and the
-library still cannot reach it: there is no `open`, no `read`, no `close`, no file-descriptor table and
-no syscall that names a file. The kernel reads files; a *program* cannot. `run <name>` is the shell
-loading a program, not a program doing I/O. What M14 removes is the reason this gap gave for its own
-existence — "because there is no filesystem under it" — and what remains is the syscall boundary,
-which is a different milestone's work. See GAP-0116 item 5.
+**Status:** **NARROWED at M15, and not closed.** ADR-0019 built `open`, `read`, `close` and `seek`,
+a per-program file-descriptor table, and a buffered read-only layer (`RFILE`, `rfopen`/`rfread`/
+`rfgets`/`rfseek`/`rfclose`) in `core/user/libc/rfile.c`. **A C program on this operating system can
+now name a file, read it in pieces at offsets it chooses, and compute something from what it read** —
+`m15-fileio` runs one that reads a 20000-byte file in 116 reads of 173 bytes and hashes it to a value
+the host computed independently.
+
+**WHAT IS STILL MISSING, ITEM BY ITEM AGAINST THE ORIGINAL LIST BELOW:**
+
+* `open`, `close`, `read`, `lseek`, a file descriptor — **all present**, with the caveats in
+  GAP-0122. `lseek` is `seek` and it is absolute-only: there is no `whence`, so no `SEEK_CUR` and no
+  `SEEK_END`.
+* `FILE`, `fopen`, `fprintf`, `fgets`, `stdin` — **`FILE` and `fopen` are deliberately still absent**
+  and are not coming under those names: what exists is `RFILE`/`rfopen`, which reads and does not
+  write, has no `stdout`/`stderr`/`stdin`, does not flush and does not `freopen`. ADR-0019 §7 makes
+  the argument. `fgets` has a counterpart in `rfgets`. **`fprintf` and `stdin` are absent entirely**,
+  and `stdin` is absent for the reason it always was: there is no console-input syscall at all, the
+  keyboard belongs to the shell in ring 0, and a process still has no way to read a character.
+* `errno` — **still absent, and still deliberately.** Every file call returns its own refusal, all
+  eleven of them at or above one floor, so a caller distinguishes an answer from a refusal with one
+  comparison and only then has to care which. `rf_last_error()` carries the last one for the buffered
+  layer, exactly as `sbrk_last_error()` does for `sbrk`.
+* `exit` runs no atexit handlers and flushes nothing — **unchanged, and now it means something**:
+  an `RFILE` that is never `rfclose`d is not flushed, because there is nothing to flush; the KERNEL
+  closes the descriptor on teardown and prints `FILE ORPHANS <n>` when it had to.
+* `argc`/`argv`/`envp` — **unchanged.** `_start` still calls `progMain()` with nothing, and a program
+  still cannot be told which file to open: `m15-fileio`'s program has `"DATA.BIN"` in its own
+  `.rodata`. This is now the most visible remaining hole, because a file API without a way to name a
+  file from outside the program is half an interface.
+
+**What it would take**, restated: `argv` needs the ELF loading path to have somewhere for a command
+line to come from (ADR-0015's process creation is the obvious place); `stdin` needs a console-input
+syscall and a decision about blocking, which needs a scheduler that can block (GAP-0097); writes need
+GAP-0116 item 1, which is a milestone of its own.
+
+**The rest of GAP-0122 is the honest boundary of M15.**
 
 **The original entry, unchanged:**
 
@@ -3640,12 +3677,18 @@ vagueness starts.
    accident, and GAP-0120 records it as a mutation survivor that is not a gap.
 4. **No timestamps, no ownership, no permissions**, and nothing that says "this file is executable."
    `run` will try to load any file, and the ELF checks are still the only gate (GAP-0090 item 5).
-5. **One open file at a time.** The chain array in `fat_store` holds one chain. There is no file
-   descriptor, no `open`/`read`/`close` syscall, and no way for a *program* to read a file at all —
-   GAP-0113 is unchanged, and a `read()` syscall is a different milestone.
+5. **One open file at a time — NARROWED AT M15, and the sentence that survives is smaller than it
+   was.** The chain array in `fat_store` still holds ONE chain and M15 did not make it hold more.
+   What M15 added is `fatSelect`/`fatSelected`, which rebuild that one chain from the two numbers a
+   descriptor stores (first cluster and size), so **four files can be open at once and be read in any
+   order** through `open`/`read`/`close`/`seek` (ADR-0019 §0). The cost is one FAT walk per switch
+   between two open files, counted in `fileMetaRebuilds` and printed: `m15-fileio`'s program
+   alternates twelve times between two files and the kernel reports exactly 24 rebuilds. So: one
+   CHAIN at a time, not one FILE at a time.
 6. **A 256-cluster bound, and it has never been reached.** A file needing more is `fatErrTooBig` with
-   its own sentence rather than a truncation. **The largest file this has ever been tested on is 9632
-   bytes — ten clusters.** Nothing here should be read as a claim about a megabyte-sized file.
+   its own sentence rather than a truncation. **The largest file this has ever been tested on is 20000
+   bytes — twenty clusters** (M15's `DATA.BIN`; it was 9632 bytes and ten clusters at M14). Nothing
+   here should be read as a claim about a megabyte-sized file.
 7. **One partition, and it is the whole disk.** The MBR at sector 0 is overwritten by the boot sector
    on this volume and is not parsed anywhere. A volume inside a partition would not be found.
 8. **One device.** Primary master only, ADR-0010 unchanged.
@@ -3871,3 +3914,283 @@ cd $SANDBOX/oscortex_core && DCDART_HOME=$SANDBOX/DCDart bash core/tests/conform
   `dcc`, which is visible in every log line the run produced.
 
 The sandbox was **225MB** and was deleted afterwards.
+
+---
+
+## GAP-0122 — What a program can and cannot do with a file, listed rather than discovered later
+
+**Domain:** userland, kernel, storage (M15)
+**Status:** OPEN — deliberately scoped out. GAP-0113's shape, restated for the thing that now exists,
+because "oscortex programs can read files now" is exactly the kind of sentence that grows in the
+retelling. ADR-0019 §10 makes the argument; this is the accounting.
+
+**What IS there:** `open(name)` by 8.3 name in the root directory, `read(fd, buf, len)` with the
+offset kept in the descriptor, `close(fd)`, `seek(fd, off)` absolute; four descriptors per program;
+eleven distinct refusals above one floor; and a buffered read-only layer (`RFILE`) in the C library.
+
+1. **THERE ARE NO WRITES, AT ANY LAYER.** `open` has no mode argument and there is nothing for one to
+   mean: GAP-0116 item 1 is unchanged — no ATA write opcode, no `fatWrite`, no free-cluster search, no
+   directory update, no FAT update, no `fsync`. `m15-fileio` re-greps for all of it. A program on this
+   OS can read every byte of the disk it is allowed to name and cannot change one.
+2. **NO PATHS AND NO DIRECTORIES.** `open("SUB")` is `fileRetIsDir` and `open("SUB/X.TXT")` is
+   `fileRetBadName`, because `/` is not a character an 8.3 name may contain here. There is no `chdir`,
+   no working directory, no `opendir`/`readdir`, and no way for a program to enumerate the volume at
+   all — the shell's `ls` is ring-0 code and is not reachable from ring 3.
+3. **NO `stat`, NO `fstat`, AND THEREFORE NO WAY TO ASK HOW BIG A FILE IS.** The kernel knows: the
+   size is in the descriptor. A program finds it by reading to the end and counting, which is what
+   `m15-fileio`'s program does. This is the single most obviously missing call and it was left out
+   because a `stat` worth having returns a structure, and copying a structure out to ring 3 is the
+   same pointer-validation problem `read` already solved — one call, not a struct ABI, was the smaller
+   thing to get right first.
+4. **`seek` IS ABSOLUTE-ONLY.** No `whence`, so no `SEEK_CUR` (the descriptor already keeps it) and no
+   `SEEK_END` (which needs item 3). Seeking past the end is `fileRetBadSeek`; seeking exactly to the
+   end is legal.
+5. **NO `dup`, NO `dup2`, NO `fcntl`, NO CLOSE-ON-EXEC.** There is no `fork` and no `exec`, so there
+   is nothing for a descriptor to be inherited by. `proc run` gives a new process an EMPTY row.
+6. **NO `errno`.** Every call returns its own refusal. This is a choice, not an omission — GAP-0113's
+   original entry made the argument and it is unchanged.
+7. **NO INPUT THAT IS NOT A FILE.** No `stdin`, no `getchar`, no console-input syscall of any kind.
+   The keyboard belongs to the shell, in ring 0. A program still cannot be asked a question.
+8. **NO `argv`, SO A PROGRAM CANNOT BE TOLD WHICH FILE TO OPEN.** `m15-fileio`'s program has
+   `"DATA.BIN"` in its own `.rodata`. This is half an interface and it is the most visible thing left:
+   a file API whose file name is a compile-time constant is a program with a file in it.
+9. **FOUR DESCRIPTORS, 512 BYTES PER `read`, 12 CHARACTERS PER NAME.** Each is a refusal a program can
+   test and each is asserted by a boot. A fifth `open` is `fileRetNoSlot`; a 513-byte `read` is
+   `fileRetBadLen`; a 13-character name is `fileRetBadLen`.
+10. **NOTHING BLOCKS AND NOTHING CAN.** GAP-0097 is unchanged: this scheduler is cooperative and
+    cannot suspend a process inside a syscall, so every `read` completes or refuses. That is fine for
+    a PIO disk and would not be for anything else.
+11. **ONE CHAIN, CACHED.** GAP-0116 item 5 as narrowed: four files open at once, one cluster chain in
+    `fat_store`, one FAT walk per switch between two of them. Alternating reads between two files
+    costs a chain rebuild every time and the count is printed. On this volume a rebuild is one cached
+    FAT-sector read; on a volume whose chains span many FAT sectors it would be many.
+12. **NO CACHING OF FILE DATA.** GAP-0118 item 3 unchanged. Every `read` reads every sector it touches
+    off the drive, so a program reading the same 173 bytes twice does two disk reads. `m15-fileio`'s
+    program reads 43336 bytes in 186 reads and the kernel performs 229 sector reads for it.
+13. **`fileRetNoOwner` HAS NEVER EXECUTED ON A BOOT.** It needs an M9 payload to execute
+    `int $0x80` with RAX = 5, and no payload in `user.dart` does; adding one is sixty bytes of
+    hand-written machine code in a `@rodata` table and was not worth a milestone's budget. It is
+    returned from four reachable lines and is named here rather than assumed exercised.
+    **`fileRetEmpty` IS exercised**: `m15-fileio`'s volume carries `EMPTY.TXT`, a real, legal,
+    zero-length FAT file with first cluster 0, which `fsck_msdos` accepts and this kernel refuses to
+    open.
+14. **A `read` THAT FAILS PART-WAY THROUGH HAS ALREADY WRITTEN INTO THE CALLER'S BUFFER.** The loop
+    copies sector by sector; if the third sector of a five-sector read cannot be read off the drive,
+    the syscall returns `fileRetIo` and the first two sectors' worth of bytes are in the caller's
+    buffer with no count to say so. POSIX would return the short count instead. **This has never
+    happened**, because the only way to make a mid-chain read fail is a drive that fails on demand and
+    QEMU's IDE emulation offers no way to ask for one (GAP-0118 records the same limitation for the
+    FAT cache). It is written down rather than discovered by whoever first runs this on real
+    hardware.
+
+---
+
+## GAP-0123 — `read` needed a third argument, and that moved two byte-exact goldens
+
+**Domain:** userland, conformance (M15)
+**Status:** OPEN — a cost, paid once, recorded because it is the kind of thing that looks like an
+accident in a diff.
+
+`read(fd, buf, len)` does not fit in the two argument registers `sys_call` had. m13-libc requires
+**exactly one `int $0x80` instruction in the whole library** — because before M13 each test program
+carried its own stub and its own spelling of the syscall numbers, and a disagreement showed up as a
+program that faulted rather than as a build error. So the three-argument form became the real stub and
+`sys_call` became a C call to it with a zero third argument (ADR-0019 §2).
+
+**`syscall.o` therefore grew, and m13-libc and m14-fat are the only two harnesses that link
+`core/user/libc`.** Their programs are a few bytes larger, so m13's heap base moved and m14's
+program's self-hash moved, and both harnesses' `expected.txt` and `expected-screen.txt` were
+**regenerated deliberately**.
+
+**Why that is safe rather than merely convenient.** Every expectation in both harnesses is *derived*
+— m13's six malloc addresses come from `derive.py` and the allocator's own exported constants, m14's
+two program hashes come from FNV-1a over the ELFs on the host — so `--regen` can only enshrine a
+capture in which all of those still pass. m14-fat's own header documents the flag with that sentence.
+The regenerated captures were checked to differ from the old ones **only** in the numbers that depend
+on program layout.
+
+**What did NOT move:** `m1-interrupts/expected.txt`, all 544 bytes, byte for byte — and m0-boot's,
+mb-info's and m2-console's. `fileInit()` prints nothing, and `fileExitReport()` prints nothing unless
+something opened a file, which is why m10's, m11's and m12's goldens did not move either.
+
+**Cost:** whoever adds a fourth syscall argument pays this again for m13 and m14. Whoever adds a
+`.c` file to `core/user/libc` pays it too, unless they also add it to those harnesses'
+`LIBC_SRCS` — `rfile.c` is deliberately NOT in m13's or m14's list, which is why adding it moved
+nothing on its own.
+
+---
+
+## GAP-0124 — What `m15-fileio` checks by RUNNING and what it checks by READING, and the mutations that survived
+
+**Domain:** conformance (M15)
+**Status:** OPEN — the entry GAP-0114 established the shape of and GAP-0120 refined, written for this
+milestone's own harness, because the useful output of a milestone is which of its checks are
+load-bearing.
+
+**Checked by RUNNING** (four QEMU boots — one against a correct volume, one of the negative-control
+build, two against volumes with one thing deliberately wrong): a 20000-byte file opened by name and
+read in 116 pieces of 173 bytes and hashed to a value the host computed over the same file; the byte
+count `read` returns at end of file; `seek` to 0, to `size-8`, to `size` and to `size+1`; two files
+open at once and read alternately with the chain rebuilt on every read; the same file open twice with
+independent offsets; four descriptors and a fifth refused; **fourteen refusals observed from ring 3 as
+return values**, including a `read` into the program's own R+X segment, one into kernel memory, one
+into a range straddling the last mapped page and the unmapped one after it, an `open` whose NAME
+pointer is a kernel address, and a real zero-length file; the buffered layer agreeing to the byte with
+the raw loop over a different syscall sequence; `cat small.txt` typed at the shell; the kernel's nine
+exit-line counters, every one derived; the frame allocator's count before and after; and the program's
+own R+X hash before and after the read aimed at it.
+
+**Checked by READING the source rather than by running**, and therefore weaker: the three storage-seam
+call sites; `fileOwnsWrite`'s body (that it consults `vmEffective`, tests bit 1 AND bit 2, walks page
+by page, and bounds `ptr` before doing arithmetic on it); that there is exactly ONE store through a
+`dst` pointer in `file.dart`; that `fileSysRead` calls `fileOwnsWrite` before it; that `elfTeardown`
+and `procCleanup` release descriptors; that no write opcode, write function or open mode exists. Each
+is a grep, and a grep can be satisfied by dead code — which is why round 2 below exists.
+
+**Checked by NEITHER, and named so nobody assumes otherwise:**
+
+* **`fileRetNoOwner` has never executed on a boot** (GAP-0122 item 13).
+* **A `read` that fails part-way through** (GAP-0122 item 14) — QEMU's IDE emulation cannot be asked
+  to fail on demand, which is GAP-0118's limitation restated for a second subsystem.
+* **A file above 20 clusters, and the 256-cluster bound.** GAP-0116 item 6.
+* **Descriptors owned by a PROCESS rather than by a `run <name>` program.** Rows 0..3 of the table are
+  written by `fileInit` and released by `procCleanup` and are otherwise **untouched by any boot in
+  this repo**: `m15-fileio`'s program runs through `run <name>`, so every descriptor it takes is in
+  row 4. The row arithmetic is exercised for exactly one value of `row`. A `proc run` program that
+  opened a file would exercise the rest, and none does.
+* **Two programs holding descriptors at the same time.** Needs the above.
+
+### The mutation tests: twenty runs, three rounds, one survivor
+
+Every mutation was run with **`--regen`**, so a byte-exact-serial mismatch could never count as a kill
+and only a *derived* or *structural* check could. Sources and goldens were restored between runs and
+the kernel rebuilt clean afterwards.
+
+**Round 1 — fourteen mutations. Eleven died, three survived.**
+
+| mutation | outcome |
+|---|---|
+| the WRITABLE-bit test deleted from `fileOwnsWrite` | KILLED — *structural*: "does not test bit 2 of vmEffective" |
+| `read` does not clamp its count to the bytes remaining | KILLED — *behavioural*: the DATA hash |
+| the descriptor's offset advances by the REQUESTED length, not the delivered count | **SURVIVED** |
+| `fatSelect` never rebuilds the chain | KILLED — *behavioural*: the two alternating-phase hashes |
+| `fileFreeFd` ignores the in-use state and always returns slot 0 | KILLED — *behavioural*: the alternating hashes (both descriptors became the same one) |
+| `seek`'s bound loosened by 4096 | KILLED — *behavioural*: `PAST` is an offset instead of a refusal |
+| the sector index computed from `done` instead of `pos + done` | KILLED — *behavioural*: the DATA hash |
+| `fileCopyOut` ignores the offset inside the sector | KILLED — *behavioural*: the DATA hash |
+| `fileOwnsWrite` walks only the FIRST page of the range | **SURVIVED** |
+| `open` skips the validation of its NAME pointer | KILLED — *behavioural*: `REFUSE OPEN2` |
+| the 12-character name bound loosened to 64 | KILLED — *behavioural*: the over-long name is refused as a BAD NAME instead of a BAD LENGTH |
+| `fileReleaseOwner` closes nothing | **SURVIVED** |
+| `close` counts the close but does not free the slot | KILLED — *behavioural*: the later opens run out of descriptors |
+| the bytes counter never incremented | KILLED — *derived*: the exit line's `BYTES` field |
+
+**TEN OF THE ELEVEN KILLS WERE BOOTS**, which is the number GAP-0120 wanted and did not get: m14's
+round 1 produced eight kills of which five were structural greps. The one structural kill here got an
+evasive counterpart in round 2.
+
+**Two of the three survivors were FIXED rather than merely recorded.**
+
+* **`fileOwnsWrite` walking only the first page.** Every buffer the program used was in `.bss`, so
+  every range it passed lay inside one writable region and a validator that checked the first page
+  only was indistinguishable from one that checked all of them. **Fixed by adding `__rw_end` to
+  `prog.ld` and a `read` aimed at `align_up(__rw_end) - 8` with a length of 64** — a range whose first
+  page is the last mapped page of the image and whose second page is not mapped at all (the stack is
+  at `0x101FF000`, far above). The mutation was re-run and died to a boot.
+* **`fileReleaseOwner` closing nothing.** The program tidied up perfectly, so a teardown that did
+  nothing was invisible. **Fixed by having the program deliberately leave one descriptor open**, so
+  the kernel must close it and print `FILE ORPHANS 01`. The mutation was re-run and died to a boot.
+  This also means the teardown path — which is shared with the FAULT path — is now exercised.
+
+**Round 2 — five runs: two evasive mutations and the three survivors re-run. Four died, one survived.**
+
+| mutation | what killed it |
+|---|---|
+| the WRITABLE-bit test kept in the source but compared against 0 so it never fires (evades round 1's grep) | *behavioural* — `REFUSE READ`: the read into `.rodata` was accepted |
+| `fileOwnsWrite`'s two bounds rewritten so every pointer passes | *structural* — **and that is a failure of the MUTANT, not a success of the check**: it rewrote the two lines 2c looks up by name, so the grep caught it before any boot. Round 3 below is the honest version |
+| `fileOwnsWrite` first-page-only (round 1's survivor, re-run) | *behavioural* — `REFUSE STRADDLE`, the check added because of it |
+| `fileReleaseOwner` closes nothing (round 1's survivor, re-run) | *behavioural* — `FILE ORPHANS 01` did not appear |
+| the offset advances by the requested length (round 1's survivor, re-run unchanged) | **SURVIVED** |
+
+**Round 3 — one mutation, written properly evasive. It died to a boot.**
+Both bit tests kept textually intact and compared against 0, so *every* line check 2c inspects —
+`vmEffective(a)`, `u64(2)`, `u64(4)`, the page advance, the bound before the arithmetic — is present
+and `fileOwnsWrite` nevertheless returns 1 for every pointer in the program window. Killed by
+`REFUSE READ`: the read into the program's own read-only segment came back as a byte count.
+
+**ONE SURVIVES, and it is the honest finding of this milestone.**
+
+| survivor | why nothing catches it |
+|---|---|
+| **the descriptor's offset advancing by the REQUESTED length instead of the delivered count** | **Not a test gap — unobservable through this interface.** A short read happens only at end of file, so after one the offset is at or past the size either way, and the very next `read` returns 0 in both. Nothing can tell `pos == size` from `pos > size`, because there is no `tell`, no `SEEK_CUR` and no way to ask a descriptor where it is (GAP-0122 items 3 and 4). The code is right; the mutation is latent. **The day `tell` or `SEEK_CUR` exists this becomes a real bug and a real test**, and this row is where whoever adds one should look. |
+
+Compare GAP-0120's three survivors: two of those were absences of a test and one was untestable in
+principle. This milestone has one, and it is the third kind.
+
+---
+
+## GAP-0125 — `m14-fat` compared an exit status in the wrong hex case, and passed for two milestones because both statuses happened to be decimal
+
+**Domain:** conformance (M14, found at M15)
+**Status:** **FIXED** — recorded because the way it was found is the point.
+
+`m14-fat/derive.py` emitted `PROGB.ELF`'s expected exit status as `%02x` and `run.sh` greps the
+transcript for `ELF DONE EXIT 00000000000000<that>`. **`uartPutHex` prints UPPER-case hex.** The check
+therefore only ever worked for a status whose two hex digits are both decimal — and at M14 both
+programs' statuses were: `0x48` and a value in the same range. The check was a literal `grep -F` for a
+string the kernel can only print when the byte contains no `A`–`F`.
+
+**How it surfaced.** M15 added `sys_call3` to `core/user/libc/syscall.c` (GAP-0123), which grew
+`syscall.o`, which grew both of m14's programs, which changed the FNV-1a hash each computes over its
+own R+X segment, which changed `PROGB.ELF`'s exit status from a decimal-digit value to `0x3E`. The
+harness then failed with `the transcript does not contain: ELF DONE EXIT 000000000000003e` while the
+capture plainly contained `...003E`.
+
+**The fix is one character** (`%02x` → `%02X`) and it is in `m14-fat/derive.py` with a note beside it.
+
+**What this says about the harness, honestly.** m14-fat is one of the most thorough harnesses in this
+repo and this check had a one-in-four chance of being wrong-but-green from the day it was written.
+Nothing about it was weak except the case of one letter, and no mutation round would have found it,
+because every mutant was run against the same two programs whose statuses were both decimal. **The
+thing that found it was an unrelated change to a shared file.** That is worth writing down: a check
+that greps for a formatted number is only as good as the format, and the format is not tested by
+anything unless the number moves.
+
+---
+
+## GAP-0126 — The M15 sandbox verification: the same three steps, still, and the reason a fourth was not needed
+
+**Domain:** tooling, conformance (M15)
+**Status:** OPEN — not a new gap, a second confirmation that GAP-0084's and GAP-0110's procedure is
+stable. Recorded so the next unit knows the cost has not moved.
+
+M15 verified all **seventeen** harnesses against an isolated clone of DCDart at `DCDART_PIN.txt`'s
+commit `e3cfe18`. **17/17, first attempt, no re-runs.** The procedure was GAP-0084's and GAP-0110's,
+applied verbatim and with nothing added:
+
+```bash
+SANDBOX=/private/tmp/m15-pinned          # NOT /tmp -- GAP-0110
+git clone <shared>/DCDart $SANDBOX/DCDart && (cd $SANDBOX/DCDart && git checkout e3cfe18)
+cp -Rc <shared>/DCDart/core/frontend $SANDBOX/DCDart/core/frontend      # GAP-0084 step 1
+(cd $SANDBOX/DCDart/core/dcc && dart pub get --offline)
+rsync -a --delete --exclude __pycache__ --exclude build/ <repo>/ $SANDBOX/oscortex_core/   # step 2
+cd $SANDBOX/oscortex_core && DCDART_HOME=$SANDBOX/DCDart bash core/tests/conformance/<h>/run.sh
+```
+
+**The two things GAP-0121 said to check were checked again.** `dcc` is still not on this machine's
+PATH, so `build-kernel.sh` still falls through to `dart $DCDART_HOME/core/dcc/bin/dcc.dart` and
+`DCDART_HOME` really does select the compiler; the sandbox script now says so out loud, printing a
+warning if a `dcc` binary ever appears on PATH, because a future toolchain that installed one would
+make the isolation half what it looks like without changing a single log line. And `--exclude build/`
+still matters: `$SANDBOX/oscortex_core/core/build/` was created from nothing by the sandbox's own
+compiler.
+
+**What M15 added to the sandbox's reach, and it is not nothing.** M15's harness compiles a C library
+of FIVE objects and links two programs, and neither the library nor the programs go through `dcc` at
+all — they are `clang` and `x86_64-elf-ld`, which are the same binaries in the sandbox and outside it.
+So the sandbox isolates the KERNEL's compiler and not userland's, which was already true at M13 and
+M14 and is worth stating once: **a pinned-DCDart run says nothing about the C library.** What makes
+the library's behaviour reproducible is that every expectation about it is derived from the binaries
+that were actually built, in the same run.
+
+The sandbox was **226MB** and was deleted afterwards.

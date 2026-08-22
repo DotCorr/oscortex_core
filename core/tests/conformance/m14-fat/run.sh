@@ -137,7 +137,14 @@ symsize() {
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
-[[ "$KDATA_BSS" -eq 11488 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 11488 — 9664 through M13 plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
+# M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes. Subtracted
+# here so that M14's own number keeps meaning what it meant when it was written.
+M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
+[[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
+M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
+[[ "$M15_BSS" -eq 1280 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 1280"
+KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
+[[ "$KDATA_BSS" -eq 11488 ]] || fail "kdata.o .bss outside M15's file_store is $KDATA_BSS bytes, expected 11488 — 9664 through M13 plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
 FAT_STORE_SIZE=$(symsize "$CORE_DIR/build/kdata.o" fat_store)
 [[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824"
 [[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 9664 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 — M14 moved storage it does not own"
@@ -377,7 +384,13 @@ VF_STATUS=$?
 echo "$VF_OUT"
 [[ $VF_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed on kmain.o"
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VF_OUT" | head -1 | grep -oE '[0-9]+')
-[[ "$EXTERN_COUNT" -eq 59 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 59 — M13's 58 plus fat_store_addr, and nothing else"
+# M15 (ADR-0019) added exactly ONE: `file_store_addr`. Subtracted so that M14's
+# own count keeps meaning what it meant when it was written.
+M15_PRESENT=0
+grep -q "\bfile_store_addr\b" <<<"$VF_OUT" && M15_PRESENT=1
+[[ "$M15_PRESENT" -eq 1 ]] || fail "M15's file_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
+[[ "$EXTERN_COUNT" -eq 59 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M15's, expected 59 — M13's 58 plus fat_store_addr, and nothing else"
 grep -qx "fat_store_addr" "$CORE_DIR/build/kmain.o.externs" \
   || fail "fat_store_addr is not among kmain.o's declared externs"
 # kdata.o and portio.o and nothing else: isr.o and boot.o are the assembly

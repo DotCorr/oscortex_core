@@ -697,6 +697,58 @@ fat_store:
     .size fat_store, 1824
     .type fat_store, @object
 
+/* ------------------------------------------------------------------
+ * M15 (docs/decisions/0019-file-descriptors-and-a-program-that-reads.md):
+ * THE FILE-DESCRIPTOR TABLES AND THE READ BOUNCE BUFFER.  1280 bytes, three
+ * regions, ONE symbol.
+ *
+ *   +0      128 bytes   metadata, 16 u64 words (fileMeta* in file.dart)
+ *   +128    640 bytes   5 owner rows x 4 descriptors x 4 u64 words
+ *   +768    512 bytes   the bounce buffer -- one sector, kernel-side only
+ *
+ * ONE SYMBOL AND NOT THREE, for ADR-0011's reason repeated a sixth time: the
+ * storage seam's whole value is that the number of places that know where this
+ * memory came from is a number a harness can count. One symbol is three
+ * OFFSETS behind three seam functions in `core/kernel/file.dart`, and
+ * `tests/conformance/m15-fileio/run.sh` counts exactly three
+ * `return file_store_addr()` in that file and zero anywhere else.
+ *
+ * WHY FIVE OWNER ROWS AND NOT FOUR. Two different things can be in ring 3 on
+ * this machine and only one of them is a process: `proc run` creates a process
+ * (slots 0..3) and `run <name>` does not. Rows 0..3 belong to the four process
+ * slots and row 4 belongs to the `run <name>` program, so "a descriptor table
+ * per program in ring 3" is true for both without either one being able to see
+ * the other's descriptors. `fileOwnerRow()` is the only function that decides
+ * which row is current.
+ *
+ * WHY A BOUNCE BUFFER, AND WHY NOT `fat_store`'s. A `read` syscall moves file
+ * DATA, and file data is the one thing `fat.dart`'s sector buffer deliberately
+ * never holds (its own note says so: `elf.dart` reads straight into the frame
+ * it owns). Reading data through that buffer would make a data sector look
+ * like a cached FAT sector to `fatReadCached`. This buffer is written by
+ * `fatReadSector` and read by the copy into the caller's pages, and NO USER
+ * POINTER EVER NAMES IT.
+ *
+ * NOT ZEROED HERE -- the same rule as every block above. `fileInit()` writes
+ * all 16 metadata words and all 80 descriptor words from `kmain()` before the
+ * first byte of output, and it must: `fileExitReport` reads the "did this
+ * program ever open a file" word on EVERY exit from ring 3, including the
+ * exits of programs that have nothing to do with a filesystem, and a garbage
+ * word there would print a line into the middle of six existing goldens.
+ *
+ * THIS TAKES DONATED `.bss` FROM 11488 BYTES TO 12768. docs/known-gaps.md
+ * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
+ * m9-ring3, m10-elf, m11-proc, m12-heap and m13-libc each still assert their
+ * own milestone's number by SUBTRACTING the blocks that came after theirs, so
+ * no older claim is weakened by this.
+ * ------------------------------------------------------------------ */
+.align 8
+.global file_store
+file_store:
+    .skip 1280
+    .size file_store, 1280
+    .type file_store, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -907,6 +959,19 @@ proc_store_addr:
 .type fat_store_addr, @function
 fat_store_addr:
     leaq fat_store(%rip), %rax
+    ret
+
+/* uint64_t file_store_addr(void) -- base of the 1280-byte file-descriptor
+ * block. See `file_store` above for the three region offsets.
+ *
+ * ONE accessor for THREE regions, and THREE call sites in
+ * `core/kernel/file.dart` and nowhere else. Same rule, same reason, sixth
+ * time. `tests/conformance/m15-fileio/run.sh` counts the call sites. */
+.align 16
+.global file_store_addr
+.type file_store_addr, @function
+file_store_addr:
+    leaq file_store(%rip), %rax
     ret
 
 /* Mark the stack non-executable. Nothing here needs an executable stack, and

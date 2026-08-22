@@ -224,7 +224,13 @@ def main():
             # position-sensitive.
             out.append("%s_fnv_contiguous=%08x" % (tag, fnv1a(cont[off:off + filesz])))
             pid = 0 if name == "PROGA.ELF" else 1
-            out.append("%s_exit=%02x" % (tag, (fnv1a(real[off:off + filesz]) ^ (pid * 0x5A)) & 0xFF))
+            # %02X, UPPER case: `uartPutHex` prints upper-case hex and this
+            # string is grepped for literally. With %02x this check passed only
+            # for an exit status whose two hex digits happen to be decimal --
+            # which was true of both programs at M14 and stopped being true of
+            # PROGB the first time the library underneath them changed size.
+            # Found by M15; GAP-0125.
+            out.append("%s_exit=%02X" % (tag, (fnv1a(real[off:off + filesz]) ^ (pid * 0x5A)) & 0xFF))
             out.append("%s_entry=%016x" % (tag, entry_point(progs[name])))
             # The hashed range must straddle cluster boundaries whose
             # neighbours belong to the OTHER program. This is the check that

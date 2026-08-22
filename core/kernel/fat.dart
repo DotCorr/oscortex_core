@@ -1343,23 +1343,34 @@ u8 fatUpper(u8 c) {
 /// would turn `PROGRAMME.ELF` into a lookup for `PROGRAMM.ELF`, which might
 /// succeed -- and would then run a different file from the one that was asked
 /// for.
+/// The same parser, over an arbitrary [len]-byte range at [addr].
+///
+/// **M15 made this the only copy.** The typed line and a ring-3 program's
+/// `open` argument are two sources for one grammar, and two copies of an 8.3
+/// parser is two chances for `run PROGA.ELF` and `open("PROGA.ELF")` to
+/// disagree about what a name is. [fatParseName] is now a two-line wrapper.
+///
+/// **[addr] is a KERNEL address by the time this is called.** Nothing here
+/// validates it, and nothing here may: the ring-3 caller's pointer is checked
+/// by `fileOwnsRead` in `core/kernel/file.dart` BEFORE the bytes are copied
+/// into the kernel, and this function never sees a user pointer at all. ADR-0019
+/// §5.
 @bare
-u64 fatParseName(u64 from) {
+u64 fatParseAt(u64 addr, u64 len) {
   final u64 nb = fatNameBase();
   u64 i = u64(0);
   while (i < u64(fatNameBytes)) {
     Pointer<u8>.fromAddress(nb + i).value = u8(0x20);
     i = i + u64(1);
   }
-  final u64 len = shellLen();
-  if (len <= from) {
+  if (len < u64(1)) {
     return u64(fatErrBadName);
   }
-  u64 p = from;
+  u64 p = u64(0);
   u64 ext = u64(0);
   u64 k = u64(0);
   while (p < len) {
-    final u8 c = shellLineByte(p);
+    final u8 c = Pointer<u8>.fromAddress(addr + p).value;
     if (c < u8(0x21)) {
       return u64(fatErrBadName);
     }
@@ -1395,20 +1406,34 @@ u64 fatParseName(u64 from) {
   return u64(fatErrOk);
 }
 
-/// Finds [from]'s name in the root directory, validates the entry, walks its
-/// chain, and leaves the file open. Returns a refusal code.
+/// Turns the line-buffer bytes from [from] to the end of the line into the 11
+/// raw bytes of an 8.3 name. Returns a refusal code.
+///
+/// Two lines, since M15: the grammar is [fatParseAt]'s and this only says where
+/// the shell's bytes are.
+@bare
+u64 fatParseName(u64 from) {
+  final u64 len = shellLen();
+  if (len <= from) {
+    return fatParseAt(shellLineBase(), u64(0)); // clears the buffer, refuses
+  }
+  return fatParseAt(shellLineBase() + from, len - from);
+}
+
+/// Finds the name already in the name buffer in the root directory, validates
+/// the entry, walks its chain, and leaves the file open. Returns a refusal code.
 ///
 /// **Volume labels and long-filename entries are invisible here**, and deleted
 /// entries are too. A `cat` of a name that only a deleted entry carries is
 /// [fatErrNotFound], which is the truth: the entry is a tombstone and the
 /// clusters it names belong to whatever was allocated after it.
+///
+/// Split out of [fatOpen] at M15 so that the two ways of SAYING a name — a
+/// typed line, and a byte range a ring-3 program handed to `open` — share every
+/// byte of the actual lookup. `file.dart` calls [fatParseAt] and then this.
 @bare
-u64 fatOpen(u64 from) {
+u64 fatLookup() {
   fatSetMeta(u64(fatMetaOpen), u64(0));
-  final u64 pn = fatParseName(from);
-  if (pn > u64(fatErrOk)) {
-    return pn;
-  }
   final u64 m = fatMount();
   if (m > u64(fatErrOk)) {
     return m;
@@ -1468,6 +1493,94 @@ u64 fatOpen(u64 from) {
   }
   return u64(fatErrNotFound);
 }
+
+/// Parses [from]'s name out of the typed line and looks it up. Returns a
+/// refusal code. The shell's whole entry point into the filesystem.
+@bare
+u64 fatOpen(u64 from) {
+  fatSetMeta(u64(fatMetaOpen), u64(0));
+  final u64 pn = fatParseName(from);
+  if (pn > u64(fatErrOk)) {
+    return pn;
+  }
+  return fatLookup();
+}
+
+/// The first cluster of the open file. 0 when nothing is open.
+@bare
+u64 fatFileFirst() {
+  if (fatMeta(u64(fatMetaOpen)) < u64(1)) {
+    return u64(0);
+  }
+  return fatMeta(u64(fatMetaFileFirst));
+}
+
+/// The size in bytes of the open file. 0 when nothing is open.
+@bare
+u64 fatFileBytes() {
+  if (fatMeta(u64(fatMetaOpen)) < u64(1)) {
+    return u64(0);
+  }
+  return fatMeta(u64(fatMetaFileBytes));
+}
+
+/// 1 if the chain array ALREADY describes the file `(first, bytes)` names.
+///
+/// Separate from [fatSelect] so that the caller can count the walks it caused
+/// without [fatSelect] having to report two things at once — `@bare` DCDart
+/// returns one value and has no out-parameters. `file.dart`'s
+/// [fileMetaRebuilds] is the counter this exists for.
+@bare
+u64 fatSelected(u64 first, u64 bytes) {
+  if (fatMeta(u64(fatMetaOpen)) < u64(1)) {
+    return u64(0);
+  }
+  if (fatMeta(u64(fatMetaFileFirst)) != first) {
+    return u64(0);
+  }
+  if (fatMeta(u64(fatMetaFileBytes)) != bytes) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// Makes the chain array describe the file `(first, bytes)` names, walking the
+/// FAT again if it does not already. Returns a refusal code.
+///
+/// **This is what turns "one open file" into "one chain, cached".** M14's chain
+/// array holds exactly one chain (GAP-0116 item 5) and M15 did not make it
+/// bigger; it made it re-derivable. A descriptor stores the two numbers a chain
+/// can be rebuilt from — the first cluster and the size, both straight out of
+/// the directory entry — so any descriptor can get its own chain back at the
+/// cost of one FAT walk, which on a volume whose chains fit in one FAT sector
+/// is one cached sector read.
+///
+/// **It does NOT re-read the directory**, which is the property that makes this
+/// safe rather than merely convenient: the name was resolved once, at `open`,
+/// and a later `read` cannot pick up a different file because a directory entry
+/// changed. Nothing on this volume can change — there are no writes anywhere in
+/// this kernel — but the ordering is the one a writable filesystem would need
+/// and it costs nothing to have it now.
+@bare
+u64 fatSelect(u64 first, u64 bytes) {
+  if (fatSelected(first, bytes) > u64(0)) {
+    return u64(fatErrOk);
+  }
+  fatSetMeta(u64(fatMetaOpen), u64(0));
+  final u64 m = fatMount();
+  if (m > u64(fatErrOk)) {
+    return m;
+  }
+  final u64 ch = fatBuildChain(first, bytes);
+  if (ch > u64(fatErrOk)) {
+    return ch;
+  }
+  fatSetMeta(u64(fatMetaFileFirst), first);
+  fatSetMeta(u64(fatMetaFileBytes), bytes);
+  fatSetMeta(u64(fatMetaOpen), u64(1));
+  return u64(fatErrOk);
+}
+
 // ---------------------------------------------------------------------------
 // `FS ERR <code> <sentence>`
 //

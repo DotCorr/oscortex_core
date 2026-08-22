@@ -216,6 +216,15 @@ M10_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_sto
 # comes out exactly as it did before M11 existed.
 M11_ELF_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
 [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+# M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
+# metadata words, five rows of four file descriptors, and a one-sector bounce
+# buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
+# number continues to mean in 2026 what it meant when it was written.
+M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
+[[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
+M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
+[[ "$M15_BSS" -eq 1280 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 1280. If M15's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added a SIXTH block after M11's: `fat_store` (1824 bytes -- 32
 # metadata words, a 256-entry cluster chain, one sector buffer and an 8.3 name
 # buffer). Its `.align 8` inserts NO padding, because `proc_store` ends at a
@@ -352,6 +361,12 @@ for sym in $M11_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
 done
 [[ "$M11_PRESENT" -eq 5 ]] || fail "only $M11_PRESENT of M11's 5 externs are in kmain.o's manifest ($M11_EXTERNS)"
+# M15 (ADR-0019) added exactly ONE: `file_store_addr`, the file-descriptor
+# table's storage seam. Subtracted for the same reason every block above is.
+M15_PRESENT=0
+grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && M15_PRESENT=1
+[[ "$M15_PRESENT" -eq 1 ]] || fail "M15's file_store_addr is not in kmain.o's manifest"
+EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
 # M14 (ADR-0018) added exactly ONE: `fat_store_addr`, the filesystem's storage
 # seam. Subtracted for the same reason M10's and M11's are: this harness's claim
 # is about ITS OWN milestone's count.

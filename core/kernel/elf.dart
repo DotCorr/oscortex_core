@@ -1517,6 +1517,15 @@ void elfReclaim() {
 @bare
 void elfTeardown() {
   elfReclaim();
+  // M15: and every file descriptor this program held. Here rather than in the
+  // `exit` syscall for this function's own reason, one layer down: three of the
+  // paths that reach it are faults, and a descriptor table that were only
+  // cleaned up when the program was polite would let a faulting program leave a
+  // row full of open files for the next `run` to inherit.
+  final u64 orphans = fileReleaseOwner(u64(fileRunRow));
+  if (orphans > u64(0)) {
+    fileOrphanLine(orphans);
+  }
   elfSetMeta(u64(elfMetaLive), u64(0));
 }
 

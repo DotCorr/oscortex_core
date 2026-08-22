@@ -16,10 +16,24 @@
 
 #include "oslibc.h"
 
-unsigned long sys_call(unsigned long n, unsigned long a, unsigned long b) {
+unsigned long sys_call3(unsigned long n, unsigned long a, unsigned long b,
+                        unsigned long c) {
   unsigned long r;
-  __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a), "S"(b) : "memory");
+  __asm__ volatile("int $0x80"
+                   : "=a"(r)
+                   : "a"(n), "D"(a), "S"(b), "d"(c)
+                   : "memory");
   return r;
+}
+
+/* M15 made the three-argument form the real one and this the wrapper, rather
+ * than adding a second stub: m13-libc requires EXACTLY ONE `int $0x80` in the
+ * whole library and it was right to. RDX is a caller-saved register in the
+ * System V AMD64 ABI and `isr_common` saves all fifteen general-purpose
+ * registers regardless, so a syscall that ignores its third argument is
+ * unaffected by one being passed. */
+unsigned long sys_call(unsigned long n, unsigned long a, unsigned long b) {
+  return sys_call3(n, a, b, 0);
 }
 
 unsigned long write(const void *buf, size_t len) {
@@ -57,3 +71,32 @@ void *sbrk(size_t inc) {
 }
 
 unsigned long sbrk_last_error(void) { return sbrkErr; }
+
+/* ---------------------------------------------------------------------------
+ * M15 — the four file syscalls.
+ *
+ * Each is one line, and each returns the kernel's value UNCHANGED, refusals
+ * included. That is the whole convention: FILE_ERR_FLOOR separates an answer
+ * from a refusal with one comparison, so a wrapper that turned eleven distinct
+ * refusals into -1 would be throwing away the only diagnostic there is.
+ *
+ * `open` computes the length with strlen rather than taking one, because a C
+ * caller has a NUL-terminated string and a length argument it had to compute
+ * itself is a length argument it can get wrong. The kernel takes a pointer AND
+ * a length -- it must, it cannot trust a terminator it would have to go looking
+ * for through a ring-3 pointer -- so this is where the two conventions meet.
+ * ------------------------------------------------------------------------- */
+
+unsigned long open(const char *name) {
+  return sys_call(SYS_OPEN, (unsigned long)name, strlen(name));
+}
+
+unsigned long read(unsigned long fd, void *buf, size_t len) {
+  return sys_call3(SYS_READ, fd, (unsigned long)buf, len);
+}
+
+unsigned long close(unsigned long fd) { return sys_call(SYS_CLOSE, fd, 0); }
+
+unsigned long seek(unsigned long fd, unsigned long off) {
+  return sys_call(SYS_SEEK, fd, off);
+}

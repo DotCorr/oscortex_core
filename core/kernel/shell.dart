@@ -696,6 +696,18 @@ u8 shellLineByte(u64 i) {
   return Pointer<u8>.fromAddress(shell_line_addr() + i).value;
 }
 
+/// The address of the line buffer's first byte.
+///
+/// M15: `fat.dart`'s 8.3-name parser now has TWO sources -- the typed line, and
+/// a byte range a ring-3 program handed to `open` -- and it would be a bad
+/// trade to keep two copies of a parser so that one of them could keep reading
+/// the line a byte at a time. One parser, two callers, and this is how the
+/// shell's caller names its bytes. See ADR-0019 §3.
+@bare
+u64 shellLineBase() {
+  return shell_line_addr();
+}
+
 /// Reads the saved 0xE0-prefix flag.
 @bare
 u64 kbdPrefix() {
