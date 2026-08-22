@@ -598,6 +598,56 @@ elf_store:
     .size elf_store, 128
     .type elf_store, @object
 
+/* ------------------------------------------------------------------
+ * M11 (docs/decisions/0015-processes-and-fpu-state.md): THE PROCESS TABLE AND
+ * THE FPU SAVE AREAS.  4160 bytes, three regions, ONE symbol.
+ *
+ *   +0      64 bytes    header, 8 u64 words
+ *   +64     2048 bytes  table: 4 slots x 512 bytes (64 u64 words each)
+ *   +2112   2048 bytes  FPU state: 4 x 512-byte FXSAVE areas
+ *
+ * ONE SYMBOL AND NOT THREE, for ADR-0011's reason repeated a fourth time: the
+ * storage seam's whole value is that the number of places that know where this
+ * memory came from is a number a harness can count. Three symbols would be
+ * three accessors and three call sites to audit on the day DCDart grows
+ * mutable statics; one symbol is three OFFSETS behind three seam functions in
+ * `core/kernel/proc.dart`, and `tests/conformance/m11-proc/run.sh` counts
+ * exactly three `return proc_store_addr()` in that file and zero anywhere else.
+ *
+ * `.align 16` IS A CORRECTNESS REQUIREMENT AND NOT HYGIENE. `fxsave` and
+ * `fxrstor` raise #GP -- not a slow path, a fault -- on an operand that is not
+ * 16-byte aligned. The FPU region starts at +2112 and 2112 = 16 * 132, so
+ * every one of the four 512-byte areas is 16-byte aligned if and only if
+ * `proc_store` itself is. `.align 8` here would be a general protection fault
+ * on the first context switch, on a machine where every other line worked.
+ * The harness reads the symbol's address out of the LINKED image and requires
+ * `addr % 16 == 0`, because a directive is not evidence.
+ *
+ * NOT ZEROED HERE -- the same rule as every block above. `procInit()` writes
+ * all 520 words from `kmain()` before the first byte of output, and it must:
+ * `procOnFault` reads the "a process is live" word on EVERY fault this kernel
+ * takes, and `procFxInit` has to put a legal MXCSR image in every save area
+ * before any `fxrstor` can touch one -- a reserved MXCSR bit is a #GP inside a
+ * context switch.
+ *
+ * THIS TAKES DONATED `.bss` FROM 5496 BYTES TO 9664 -- 4160 for the block and
+ * EIGHT MORE for the padding this `.align 16` inserts after `elf_store`, which
+ * ends at 5496 and is 8 short of a multiple of 16. The padding is charged to
+ * M11 rather than hidden, and every harness that subtracts this block measures
+ * it as everything past `elf_store`'s end for exactly that reason.
+ * docs/known-gaps.md
+ * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
+ * m9-ring3 and m10-elf each still assert their own milestone's number by
+ * SUBTRACTING the blocks that came after theirs, so no older claim is weakened
+ * by this.
+ * ------------------------------------------------------------------ */
+.align 16
+.global proc_store
+proc_store:
+    .skip 4160
+    .size proc_store, 4160
+    .type proc_store, @object
+
 /* ==================================================================
  * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
  *
@@ -772,6 +822,24 @@ user_resume_ok_addr:
 .type elf_store_addr, @function
 elf_store_addr:
     leaq elf_store(%rip), %rax
+    ret
+
+/* uint64_t proc_store_addr(void) -- base of the 4160-byte process-table block.
+ * See `proc_store` above for the three regions and their offsets.
+ *
+ * THE ENTIRE STORAGE SEAM FOR THE PROCESS TABLE IS THIS ONE FUNCTION, and it is
+ * called from exactly THREE places, all in core/kernel/proc.dart:
+ * `procHeadBase()`, `procTableBase()` and `procFxBase()`. That is ADR-0011's
+ * shape rather than `user_store_addr`'s, because this block has three regions
+ * with three different jobs -- and three named offsets behind three named
+ * functions is what keeps the eventual migration to DCDart mutable statics a
+ * three-line rewrite instead of an audit.
+ * `tests/conformance/m11-proc/run.sh` counts the call sites. */
+.align 16
+.global proc_store_addr
+.type proc_store_addr, @function
+proc_store_addr:
+    leaq proc_store(%rip), %rax
     ret
 
 /* Mark the stack non-executable. Nothing here needs an executable stack, and

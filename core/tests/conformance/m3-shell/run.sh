@@ -180,7 +180,7 @@ check_table shellStrPrompt 10
 # is the table's real size and both it and the literal in shellHelp() are
 # maintained by hand (GAP-0060) — the first M4 build printed 237 bytes of the
 # 395-byte table because only one of the two had been updated.
-check_table shellStrHelp 1658  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`; GAP-0060
+check_table shellStrHelp 1871  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines; GAP-0060
 check_table shellStrUnknown 27
 echo "STRUCTURAL: pass  all 8 shell @rodata tables are exactly the sizes the dispatcher compares"
 
@@ -270,7 +270,12 @@ SESSION_KEYS="$SESSION_KEYS,e,c,h,o,spc,h,e,l,l,o,spc,w,o,r,l,d,ret"
 SESSION_KEYS="$SESSION_KEYS,c,l,e,a,r,ret"
 SESSION_KEYS="$SESSION_KEYS,backspace,backspace,backspace,up,down,left,right"
 SESSION_KEYS="$SESSION_KEYS,t,i,c,k,s,ret,wait:350"
-SESSION_KEYS="$SESSION_KEYS,h,e,l,p,ret"
+# M11 took `help` from 1658 to 1871 bytes. At 115200 baud that is ~160ms of serial
+# plus three more lines of VGA scrolling, and the driver types the next key 50ms
+# later — so without this pause the following command's echo interleaves into the
+# middle of `help`'s output and the golden fails intermittently, at exactly the
+# `help` boundary. m6-disk already carried a wait here for the same reason.
+SESSION_KEYS="$SESSION_KEYS,h,e,l,p,ret,wait:600"
 
 SHOT_PNG="$CORE_DIR/build/screenshot-shell.png"
 rm -f "$SHOT_PNG"

@@ -218,7 +218,21 @@ M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
 # the same discipline every earlier harness applies to every later block.
 M10_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
 [[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
-M9_BSS=$(( M9_BSS + M10_STORE ))
+# M11 (ADR-0015) added a fifth block after M10's: `proc_store` (4160 bytes -- an
+# 8-word header, four 512-byte process slots, and four 512-byte FXSAVE areas).
+# Its `.align 16` is a CORRECTNESS requirement and not hygiene (`fxsave` on a
+# misaligned operand is a #GP, not a slow path), and it also inserts 8 bytes of
+# padding after `elf_store`, so M11 really costs 4168 bytes and not 4160.
+#
+# M11's share is therefore measured as EVERYTHING PAST THE END OF M10's BLOCK
+# rather than as `proc_store`'s own size: the padding is charged to the
+# milestone whose alignment made it necessary, and this harness's own number
+# comes out exactly as it did before M11 existed.
+M11_ELF_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
+[[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE ))
+[[ "$M11_BSS" -eq 4168 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4168 (M11's 4160-byte proc_store plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+M9_BSS=$(( M9_BSS + M10_STORE + M11_BSS ))
 [[ $(( KDATA_BSS - M9_BSS )) -eq 5224 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, of which $M9_BSS are M9's ring-3 blocks, leaving $(( KDATA_BSS - M9_BSS )) — expected 5224 (5096 through M7, plus 128 for the virtual-memory state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 echo "STRUCTURAL: pass  kdata.o donates exactly 5224 bytes of .bss outside M9's blocks — 5096 inherited, 128 for the address space"
 
@@ -367,6 +381,17 @@ M10_EXTERNS="elf_store_addr"
 for sym in $M10_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M9_PRESENT=$(( M9_PRESENT + 1 ))
 done
+# M11 (ADR-0015) added FIVE more -- `sse_enabled`, `cr4_read`, `fx_save`,
+# `fx_restore` and `proc_store_addr`. They are subtracted BY NAME for the reason
+# M8's twelve, M9's eight and M10's one are: this harness's claim is about ITS
+# OWN milestone's count, and it must keep meaning what it meant before M11.
+M11_EXTERNS="sse_enabled cr4_read fx_save fx_restore proc_store_addr"
+M11_PRESENT=0
+for sym in $M11_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
+done
+[[ "$M11_PRESENT" -eq 5 ]] || fail "only $M11_PRESENT of M11's 5 externs are in kmain.o's manifest ($M11_EXTERNS)"
+EXTERN_COUNT=$(( EXTERN_COUNT - M11_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M9_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M9's eight, expected 44 (32 from M7 plus M8's twelve)"
 for sym in cr0_read cr2_read cr3_read paging_install vm_exec_probe vm_exec_ok_addr \
@@ -392,7 +417,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M8 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1658  # M10 added `run <lba>`; GAP-0060
+check_table shellStrHelp 1871  # M10 added `run <lba>`, M11 three `proc` lines; GAP-0060
 check_table vmStrCr3 7
 check_table vmStrPml4 6
 check_table vmStrNx 4
@@ -441,7 +466,7 @@ check_table vmCmdTestRw 9
 check_table vmCmdTestX 8
 check_table vmCmdTest 6
 check_table vmStrWp 4
-echo "STRUCTURAL: pass  all 48 M8 @rodata tables plus shellStrHelp (1028 -> 1155 -> 1589) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 48 M8 @rodata tables plus shellStrHelp (1028 -> 1155 -> 1871) are exactly the sizes their call sites pass"
 
 # ---------------------------------------------------------------------------
 # Step 4 — the boots.

@@ -1828,9 +1828,37 @@ u64 vmClearUser(u64 va) {
 /// claim a page was NOT user-accessible for the wrong reason.
 ///
 /// Zero means "not mapped", unambiguously: a present page always has bit 0.
+
+/// The physical address of the PML4 the CPU is ACTUALLY WALKING, or 0.
+///
+/// **M11 changed what "the live tables" means, and this function is where.**
+/// Until M11 there was exactly one address space and `vmMeta(vmMetaPml4)` — the
+/// root this kernel built at boot — was the same number CR3 held, forever. A
+/// process has its own PML4 (ADR-0015 §3) and CR3 changes when one is entered,
+/// so a walk rooted at the kernel's remembered PML4 would report the KERNEL's
+/// view of an address while a process was on the CPU. Every doc comment in this
+/// file already said "the live tables"; this makes that true when there is more
+/// than one set of them.
+///
+/// [vmMetaReady] is checked first and it is not a formality: if `vmInit`
+/// refused, CR3 still holds `boot.S`'s bootstrap tables, which this kernel did
+/// not build and whose shape it does not know. Zero — "nothing is mapped" — is
+/// the safe answer, and it is what every caller already treats an unmapped
+/// address as.
+@bare
+u64 vmLivePml4() {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(0);
+  }
+  return vmEntryAddr(cr3_read());
+}
+
 @bare
 u64 vmEffective(u64 va) {
-  final u64 pml4 = vmMeta(u64(vmMetaPml4));
+  final u64 pml4 = vmLivePml4();
+  if (pml4 < u64(1)) {
+    return u64(0);
+  }
   final u64 e4 = vmGetEntry(pml4, (va >> u64(39)) & u64(511));
   if ((e4 & u64(vmPresent)) < u64(1)) {
     return u64(0);
@@ -2002,9 +2030,57 @@ const int vmProgWx = 6;
 /// clears at runtime, so the only trustworthy answer is the one in the table.
 /// A 2MiB leaf in that slot answers 0 as well — it would not be a page table
 /// and walking it as one is how a loader corrupts an address space.
+
+/// Physical address of the page directory covering `[0, 1GiB)` of the LIVE
+/// address space, or 0 if there is not one.
+///
+/// **M11: this is the one line that made the whole program-window API
+/// per-process.** It used to be `vmFrame(vmIxPdLow)` — the kernel's own page
+/// directory, spelled as a constant, because there was only ever one. Walking
+/// to it from CR3 instead means [vmProgTableInstall], [vmProgMap] and
+/// [vmProgUnmap] edit whichever address space is installed, and not one line of
+/// `core/kernel/elf.dart` had to learn that processes exist: the loader runs
+/// with the target process's CR3 already in the register (ADR-0015 §4).
+///
+/// Under the kernel's own CR3 this returns exactly `vmFrame(vmIxPdLow)`, which
+/// is what M10's `run` command still gets, byte for byte. That equality is not
+/// left to the reader — `vm` prints both and `m11-proc/run.sh` requires them
+/// equal with no process running, and DIFFERENT with one running.
+///
+/// Every level is checked for present-and-not-huge before it is followed. A
+/// 1GiB leaf in `PDPT[0]` would not be a page directory, and walking one as if
+/// it were is how a loader writes a page-table entry into the middle of
+/// somebody's data.
+@bare
+u64 vmProgPd() {
+  final u64 pml4 = vmLivePml4();
+  if (pml4 < u64(1)) {
+    return u64(0);
+  }
+  final u64 e4 = vmGetEntry(pml4, u64(0));
+  if ((e4 & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e4 & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  final u64 e3 = vmGetEntry(vmEntryAddr(e4), u64(0));
+  if ((e3 & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e3 & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  return vmEntryAddr(e3);
+}
+
 @bare
 u64 vmProgTable() {
-  final u64 e = vmGetEntry(vmFrame(u64(vmIxPdLow)), u64(vmProgPdIndex));
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(0);
+  }
+  final u64 e = vmGetEntry(pd, u64(vmProgPdIndex));
   if ((e & u64(vmPresent)) < u64(1)) {
     return u64(0);
   }
@@ -2054,8 +2130,16 @@ u64 vmProgTableInstall(u64 ptFrame) {
   if (vmProgTable() > u64(0)) {
     return u64(vmProgBusy);
   }
+  // M11: the LIVE page directory, which is the process's if one is installed.
+  // Refused rather than defaulted to the kernel's if the walk cannot reach one:
+  // installing a program's page table in the wrong address space is not a thing
+  // to guess at.
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(vmProgNotReady);
+  }
   vmZeroFrame(ptFrame);
-  vmSetEntry(vmFrame(u64(vmIxPdLow)), u64(vmProgPdIndex),
+  vmSetEntry(pd, u64(vmProgPdIndex),
       ptFrame | u64(vmPresent) | u64(vmWritable) | u64(vmUser));
   vmProgFlush();
   return u64(vmProgOk);
@@ -2072,7 +2156,11 @@ u64 vmProgTableRemove() {
   if (vmMeta(u64(vmMetaReady)) < u64(1)) {
     return u64(vmProgNotReady);
   }
-  vmSetEntry(vmFrame(u64(vmIxPdLow)), u64(vmProgPdIndex), u64(0));
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(vmProgNotReady);
+  }
+  vmSetEntry(pd, u64(vmProgPdIndex), u64(0));
   vmProgFlush();
   return u64(vmProgOk);
 }

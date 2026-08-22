@@ -347,6 +347,63 @@ program at a time, on the kernel's own PML4, in one 2MiB window that is handed b
 exits or dies. See `core/docs/decisions/0014-elf-loader.md` and `docs/known-gaps.md` GAP-0089,
 GAP-0090 and GAP-0091.
 
+**M11 — done. Two programs run at once, and neither can see the other.** M10's program had to be
+built with `-mgeneral-regs-only`, because the boot stub set exactly one bit of CR4 and had never set
+`OSFXSR` — so every SSE instruction was a `#UD`, and at `-O2` clang emits one for an ordinary struct
+copy. **This operating system could not run a program compiled the way anybody would compile one.**
+And there was one address space, and it was the kernel's.
+
+```
+oscortex> proc run 20 a0
+PROC SSE 1 CR4 0000000000000620 CR0 0000000080010013
+PROC NEW SLOT 00 ID 00000001 PML4 000000000013E000 PD 0000000000140000
+PROC NEW SLOT 01 ID 00000002 PML4 0000000000149000 PD 000000000014B000
+PROC START SLOT 00 ENTRY 0000000010000040 RSP 0000000010200000
+USER WRITE PROC A: SSE AND A YIELD
+PROC YIELD 00 -> 01 SWITCHES 00000001
+USER WRITE PROC B: A DIFFERENT PROGRAM ENTIRELY
+PROC YIELD 01 -> 00 SWITCHES 00000002
+USER WRITE A XMM 0 A1A2A3A4A1A2A3A4 OK
+PROC YIELD 00 -> 01 SWITCHES 00000003
+USER WRITE B XMM 0 B5B6B7B8B5B6B7B8 OK
+...
+PROC EXIT SLOT 00 ID 00000001 CODE 666666666710706E LEFT 00000001
+PROC KILL SLOT 00 FREED 00000009
+PROC EXIT SLOT 01 ID 00000002 CODE 2424242424DF2F2F LEFT 00000000
+PROC END SWITCHES 00000007 EXITS 00000002 CREATED 00000002 LIVE 00000000
+```
+
+`CR4 0620` is PAE plus `OSFXSR` plus `OSXMMEXCPT`, set **only after CPUID leaf 1 said the CPU has
+FXSR and SSE** — those bits are reserved on a CPU that does not, and writing a reserved CR4 bit in the
+32-bit boot stub, before any IDT exists, is a triple fault with no output at all. Each process gets
+its own PML4, its own page directory and a 16-byte-aligned 512-byte `FXSAVE` area; `CR3` and 512 bytes
+of FPU state are switched together. `A XMM 0 A1A2A3A4A1A2A3A4 OK` is process A reading back the value
+it put in `XMM0` *before* it yielded — with the write, the syscall and the read-back in one inline-asm
+block, so the only thing that can put it back is the kernel's `fxrstor`.
+
+**The isolation is read from hardware, not reported by the kernel.** With both processes alive and the
+CPU at CPL 3 inside the second one, the harness dumps 256KiB of guest RAM and walks **both** page
+tables from two different PML4 frames: A's private pages are absent from B's, every virtual address
+both map is backed by a **different physical frame**, and the kernel's pages are the same frame in
+both and supervisor-only in both. Then `proc cross` asks the *kernel* to compute an address A has and
+B has not, hands it to B, and B takes `PF CR2 0000000010002000 ERR 00000004 NOTPRES READ USER DATA`.
+
+**Twelve mutations, eight caught by a check that is not a golden, four not — and the four are the
+useful part.** The frame zeroing cannot be made to matter (QEMU hands out zeroed RAM); round-robin
+cannot be distinguished from lowest-first with only two processes and the shell cannot make a third;
+one page-directory clear is a second lock on a door the first lock already holds; and an unguarded CR4
+write is caught by the *wrong* assertion, because **QEMU does not fault on a reserved CR4 bit** — it
+accepted one, dropped the other, and booted. GAP-0099 through GAP-0102.
+
+**What this is, and is not: the switching is COOPERATIVE.** There is no scheduler and no preemption.
+A process runs until it calls `yield` or `exit`; the timer fires while it runs and returns to it. A
+process that calls neither cannot be stopped. No `fork`, no `exec`, no `wait`, no signals, no way for
+one process to affect another, and a fault kills every process rather than one. The harness asserts
+the absence directly — **switches == yields + exits that had a survivor** — so a timer that started
+switching would fail arithmetic rather than go unnoticed. See
+`core/docs/decisions/0015-processes-fpu-state-and-two-address-spaces.md` and `docs/known-gaps.md`
+GAP-0096 through GAP-0103.
+
 **What this is, and is not:** fault survival with *abandonment* of the faulting computation. The
 command that faulted is gone — not repaired, not retried, not resumed. Resuming a failed computation
 after fixing its cause is a condition system, and that needs language support neither this kernel nor

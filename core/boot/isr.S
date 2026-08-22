@@ -700,6 +700,61 @@ cr0_read:
     movq %cr0, %rax
     ret
 
+/* uint64_t cr4_read(void) -- M11.
+ *
+ * Read for three bits: PAE (5), OSFXSR (9) and OSXMMEXCPT (10). `sse_enabled()`
+ * reports what boot.S DECIDED; this reports what the CPU is actually holding,
+ * and `proc` prints both. They are not the same claim -- the first is a word in
+ * `.bss` that the stub wrote, the second is the control register -- and a
+ * milestone whose whole first third is "set two CR4 bits" has no business
+ * asserting the register's contents from a memory flag.
+ *
+ * Same discipline `cr0_read` gives WP and `cr3_read` gives the PML4. */
+.align 16
+.global cr4_read
+.type cr4_read, @function
+cr4_read:
+    movq %cr4, %rax
+    ret
+
+/* void fx_save(uint64_t area) -- M11. `fxsave (%rdi)`.
+ *
+ * Writes 512 bytes of x87 + SSE state -- the control/status/tag words, the
+ * eight x87 registers, MXCSR, and all sixteen XMM registers -- to [area].
+ *
+ * THE ADDRESS MUST BE 16-BYTE ALIGNED. `fxsave` on a misaligned operand is a
+ * #GP, not a slow path, and it is the caller's job: `core/kernel/proc.dart`
+ * hands an offset into a `.align 16` block in kdata.S and
+ * `tests/conformance/m11-proc/run.sh` reads the alignment out of the linked
+ * image rather than trusting the directive.
+ *
+ * IT IS ALSO A #UD ON A CPU WITHOUT FXSR, which is why every caller checks
+ * `sse_enabled()` first. That is not defensive decoration -- it is the same
+ * probe-before-you-use rule `nx_enabled()` exists for (M8), applied to the
+ * instruction rather than to the page-table bit. */
+.align 16
+.global fx_save
+.type fx_save, @function
+fx_save:
+    fxsave (%rdi)
+    ret
+
+/* void fx_restore(uint64_t area) -- M11. `fxrstor (%rdi)`.
+ *
+ * The inverse, and the more dangerous of the two: `fxrstor` raises #GP if the
+ * MXCSR image in the area has any RESERVED bit set (anything outside
+ * 0x0000FFFF & ~0x003F's mask, in practice bits above 15). A save area built
+ * from allocator litter would therefore be a #GP in the middle of a context
+ * switch. `procFxInit` writes MXCSR 0x1F80 into every area before any process
+ * can run, and never lets an area exist that was not either initialised or
+ * written by `fxsave` itself. */
+.align 16
+.global fx_restore
+.type fx_restore, @function
+fx_restore:
+    fxrstor (%rdi)
+    ret
+
 /* uint64_t cr2_read(void) -- the linear address that caused the last #PF.
  *
  * The CPU writes CR2 on every page fault and nothing else touches it, so it is

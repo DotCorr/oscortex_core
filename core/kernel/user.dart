@@ -1320,6 +1320,16 @@ void userSysWho(u64 frame) {
 /// "len is inside the page" vacuously true for a pointer that is not.
 @bare
 u64 userOwns(u64 ptr, u64 len) {
+  // M11: a THIRD thing can be in ring 3 -- a process. Its pages are in the same
+  // 2MiB window a loaded program's are, so the same per-page walk answers the
+  // question; what differs is WHOSE tables the walk reads, and that is settled
+  // by CR3 rather than here (`vmProgPd`, ADR-0015 §4). Asked first because a
+  // process and an M10 `run` program cannot both be live -- `shellProcRun`
+  // refuses -- but the order states which one wins rather than leaving it to the
+  // reader.
+  if (procLive() > u64(0)) {
+    return elfOwns(ptr, len);
+  }
   // M10: two different things can be in ring 3 on this machine now -- a payload
   // from this file's `@rodata`, whose two pages are inside the 4KiB identity
   // window, and a program loaded from a disk, whose pages are in the 2MiB
@@ -1450,6 +1460,15 @@ void userTeardown() {
 @bare
 void userSysExit(u64 frame) {
   final u64 code = userFrame(frame, u64(userFrameRdi));
+  // M11: a process's exit is a different event. It may not be the end of
+  // anything -- another process can be READY -- so [procSysExit] RETURNS
+  // NORMALLY when it switched to somebody else, and never returns when this was
+  // the last one. Neither shape fits the three lines below, which assume the
+  // machine is going back to a shell.
+  if (procLive() > u64(0)) {
+    procSysExit(frame, code);
+    return;
+  }
   userSetMeta(u64(userMetaExit), code);
   uartWrite(Rodata.addressOf(userStrExit), u64(15));
   uartPutHex(code, u64(16));
@@ -1507,9 +1526,24 @@ void userSyscall(u64 frame) {
     // ring 3. Nested rather than `||` because `@bare` DCDart has no boolean
     // operators at all (GAP-0023).
     if (elfLive() < u64(1)) {
+      // M11: or a process, which is the third.
+      if (procLive() < u64(1)) {
+        userRefuse(frame, no, cs, u64(0));
+        return;
+      }
+    }
+  }
+  // M11: `yield` (syscall 3). Refused unless a PROCESS is live, and that is not
+  // a formality: with no process table entry to save into there is nothing to
+  // suspend, and an M9 payload or an M10 `run` program calling it would
+  // otherwise reach [procCurrent] with a header word that means "nobody".
+  if (no == u64(procSysYieldNo)) {
+    if (procLive() < u64(1)) {
       userRefuse(frame, no, cs, u64(0));
       return;
     }
+    procYield(frame);
+    return;
   }
   if (no == u64(userSysWhoNo)) {
     userSysWho(frame);
@@ -1563,6 +1597,15 @@ void userFaultLine(u64 vector, u64 errorCode, u64 rip, u64 cs) {
 
 @bare
 void userOnFault(u64 vector, u64 errorCode, u64 rip, u64 frame) {
+  // M11: a process is the third thing that can die here, and it is torn down
+  // through a third path because it owns a whole address space -- four table
+  // frames and its pages -- rather than a window inside somebody else's.
+  // Asked FIRST because a process is the only one of the three that requires
+  // CR3 to be put back before anything can be freed.
+  if (procLive() > u64(0)) {
+    procOnFault(vector, errorCode, rip, frame);
+    return;
+  }
   // M10: a loaded ELF program is the other thing that can die here, and it is
   // torn down through a different path because it owns a different kind of
   // memory — a page table and a window, not two frames in the identity map.

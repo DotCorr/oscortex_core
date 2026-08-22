@@ -169,6 +169,31 @@ multiboot_info_ptr:
 .align 8
 nx_flag:
     .skip 8
+
+/* ------------------------------------------------------------------
+ * M11 (docs/decisions/0015-processes-and-fpu-state.md): DOES THIS CPU HAVE
+ * FXSAVE AND SSE?  1 if it does, 0 if it does not.
+ *
+ * EXACTLY `nx_flag`'s argument, for exactly `nx_flag`'s reason, and the M8
+ * incident it records is the one this bit could repeat. CR4 bits 9 (OSFXSR)
+ * and 10 (OSXMMEXCPT) are RESERVED on a CPU without SSE, and writing a
+ * reserved CR4 bit is a #GP -- which, here, before any IDT exists, is a triple
+ * fault and a silently rebooting VM with no output at all. That is precisely
+ * what `EFER.NXE` would have done at M8 if it had been set unconditionally.
+ * So the capability is ASKED FOR (CPUID leaf 1: EDX bit 24 = FXSR, EDX bit 25
+ * = SSE) and the answer is written here.
+ *
+ * It is written rather than merely acted on because `core/kernel/proc.dart`
+ * needs the same answer: `fxsave`/`fxrstor` are themselves SSE-era
+ * instructions and executing one on a CPU that lacks them is a #UD. A process
+ * on such a machine gets no FPU save area and `proc` prints `SSE 0` rather
+ * than pretending -- the same shape of answer `vm` gives for `NX 0`.
+ *
+ * In boot.S's `.bss` and not kdata.S's, for `nx_flag`'s reason: it is a fact
+ * the boot stub establishes about the machine, written exactly once. */
+.align 8
+sse_flag:
+    .skip 8
 /* .align 16 is load-bearing, not decoration: the System V AMD64 ABI (the
  * calling convention DCDart's x86_64-unknown-none-elf backend targets)
  * requires RSP to be 16-byte aligned at every `call` site. Before this
@@ -444,9 +469,62 @@ zero_tss:
                                     * on `ltr`, so it is written rather than
                                     * inherited from .rodata's file bytes */
 
-    /* --- Enable PAE (CR4 bit 5) -------------------------------------- */
+    /* --- M11: does this CPU have FXSAVE and SSE? ---------------------
+     * CPUID leaf 1, EDX bit 24 (FXSR) and EDX bit 25 (SSE). Leaf 1 exists on
+     * every CPU that can reach this code at all -- the Multiboot handoff
+     * already guarantees a 486-or-later in protected mode, and leaf 0 is
+     * asked first anyway so that "maximum leaf is 0" is handled rather than
+     * assumed.
+     *
+     * BOTH bits are required, and not because one implies the other on any
+     * real part. They are two different needs: SSE is what the PROGRAM uses
+     * (clang emits `movups`/`movaps` for a struct copy at -O2), and FXSR is
+     * what the KERNEL uses to save it (`fxsave`/`fxrstor`). Enabling
+     * CR4.OSFXSR is a promise to the CPU that the OS can do the second; a
+     * kernel that made that promise with no `fxsave` behind it would be
+     * telling the truth about the bit and lying about the state.
+     *
+     * `cpuid` clobbers EAX/EBX/ECX/EDX. EBX held the Multiboot info pointer
+     * at entry and has already been stashed to memory above -- exactly the
+     * class of accident that stash exists to prevent. */
+    movl $0, sse_flag              /* assume not, until proven otherwise */
+    movl $0, sse_flag + 4          /* the whole u64: nothing zeroes .bss */
+    xorl %eax, %eax
+    xorl %ecx, %ecx
+    cpuid
+    testl %eax, %eax
+    jz no_sse                      /* leaf 1 does not exist */
+    movl $1, %eax
+    xorl %ecx, %ecx
+    cpuid
+    testl $(1 << 24), %edx         /* EDX[24] = FXSR */
+    jz no_sse
+    testl $(1 << 25), %edx         /* EDX[25] = SSE */
+    jz no_sse
+    movl $1, sse_flag
+no_sse:
+
+    /* --- Enable PAE (CR4 bit 5), and OSFXSR|OSXMMEXCPT if we may -----
+     * ONE CR4 write, not two, for the reason the EFER write below is one
+     * rdmsr/wrmsr pair: a second read-modify-write of the same control
+     * register is a second chance to clobber a bit that is already in it.
+     *
+     * bit 9  OSFXSR      -- "this OS saves and restores SSE state with
+     *                        fxsave/fxrstor". Without it, every SSE
+     *                        instruction is a #UD, in ring 0 and ring 3
+     *                        alike (docs/known-gaps.md GAP-0092).
+     * bit 10 OSXMMEXCPT  -- unmasked SSE numeric exceptions are delivered as
+     *                        #XF (vector 19) rather than as #UD. This kernel
+     *                        masks everything in MXCSR, so it changes no
+     *                        behaviour today; it is set because the
+     *                        alternative is a #UD whose cause names the wrong
+     *                        thing entirely if a program ever unmasks one. */
     movl %cr4, %eax
     orl $0x20, %eax
+    cmpl $0, sse_flag
+    je skip_osfxsr
+    orl $0x600, %eax               /* bit 9 OSFXSR, bit 10 OSXMMEXCPT */
+skip_osfxsr:
     movl %eax, %cr4
 
     /* --- Load PML4 physical address into CR3 -------------------------- */
@@ -548,9 +626,29 @@ skip_nxe:
      * mark everything writable) are live, and CLAUDE.md rule 4 puts mode
      * setup in the boot stub. `cr0_read()` lets `vm` print it back, so the
      * report says WP 1 on the evidence of the register rather than on the
-     * strength of this comment. */
+     * strength of this comment.
+     *
+     * M11: CR0.MP (bit 1) SET and CR0.EM (bit 2) CLEAR, and only on a CPU
+     * that said yes above. EM ("emulate coprocessor") makes every x87 AND
+     * every SSE instruction raise #UD no matter what CR4 says, so CR4.OSFXSR
+     * without EM clear is a bit that changes nothing. MP pairs with TS for
+     * lazy FPU switching, which this kernel does NOT do -- it saves eagerly
+     * (ADR-0015 §2) -- and is set because MP=0 with EM=0 is the one
+     * combination Intel documents as reserved-for-nothing-good: `wait`/`fwait`
+     * would then ignore a pending unmasked x87 exception.
+     *
+     * The power-on value of EM is 0 and of MP is 0, so on QEMU this changes
+     * exactly one bit. It is written anyway rather than inherited, because
+     * "the reset state happens to be right" is not a property this kernel
+     * gets to depend on and `cr0_read()` prints the answer back.
+     */
     movl %cr0, %eax
     orl $0x80010000, %eax          /* bit 31 PG, bit 16 WP */
+    cmpl $0, sse_flag
+    je skip_sse_cr0
+    orl $0x00000002, %eax          /* bit 1 MP */
+    andl $0xFFFFFFFB, %eax         /* bit 2 EM clear */
+skip_sse_cr0:
     movl %eax, %cr0
 
     /* --- Load the 64-bit GDT and far-jump into the 64-bit code segment.
@@ -612,6 +710,28 @@ long_mode_start:
      * busy -- which is a state only `ltr` can produce. */
     movw $SEL_TSS, %ax
     ltr %ax
+
+    /* --- M11: bring the FPU to a known state -------------------------
+     * `fninit` sets the x87 control word to 0x037F (all exceptions masked,
+     * 64-bit extended precision), clears the status word, and marks all eight
+     * x87 registers empty. It is the first instruction in this kernel that
+     * could execute on the FPU at all, and it has to run before anything can
+     * `fxsave`: the save area a process is given is built from a KNOWN state
+     * (ADR-0015 §2), and "known" means this one.
+     *
+     * Guarded by the same flag CR4 and CR0 were, because with CR0.EM still set
+     * -- which is what the flag being 0 means -- `fninit` is a #UD, here,
+     * before any IDT exists.
+     *
+     * MXCSR is deliberately NOT touched here. `fninit` does not affect it, its
+     * reset value is 0x1F80 (every SSE exception masked), and each process's
+     * save area names 0x1F80 explicitly rather than inheriting whatever the
+     * last program left in the register -- which is the whole point of the
+     * save area existing. */
+    cmpq $0, sse_flag(%rip)
+    je skip_fninit
+    fninit
+skip_fninit:
 
     /* rsp already holds stack_top's (zero-extended) value from the
      * 32-bit setup above -- a valid 64-bit stack pointer, no extra
@@ -779,6 +899,22 @@ gdt_base:
 .type nx_enabled, @function
 nx_enabled:
     movq nx_flag(%rip), %rax
+    ret
+
+/* uint64_t sse_enabled(void) -- 1 if CR4.OSFXSR|OSXMMEXCPT were set at boot
+ * and CR0.EM was cleared, else 0.
+ *
+ * Reads the word `_start` wrote after probing CPUID leaf 1. See `sse_flag`'s
+ * declaration above for why the capability is probed rather than assumed. It
+ * is the SAME word the boot stub branched on for CR4, CR0 and `fninit`, so a
+ * kernel that reads 1 here is standing on a CPU where all four of those
+ * happened -- it is not an independent claim and does not pretend to be. The
+ * independent claim is `cr4_read()`, which `proc` prints beside it. */
+.align 16
+.global sse_enabled
+.type sse_enabled, @function
+sse_enabled:
+    movq sse_flag(%rip), %rax
     ret
 
 /* ------------------------------------------------------------------

@@ -171,9 +171,24 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 7 programs
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
 KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
-[[ "$KDATA_BSS" -eq 5496 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 5496 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 ELF_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
 [[ "$ELF_STORE" == "128" ]] || fail "kdata.o's elf_store is ${ELF_STORE:-missing} bytes, expected 128"
+M10_STORE="$ELF_STORE"
+# M11 (ADR-0015) added a fifth block after M10's: `proc_store` (4160 bytes -- an
+# 8-word header, four 512-byte process slots, and four 512-byte FXSAVE areas).
+# Its `.align 16` is a CORRECTNESS requirement and not hygiene (`fxsave` on a
+# misaligned operand is a #GP, not a slow path), and it also inserts 8 bytes of
+# padding after `elf_store`, so M11 really costs 4168 bytes and not 4160.
+#
+# M11's share is therefore measured as EVERYTHING PAST THE END OF M10's BLOCK
+# rather than as `proc_store`'s own size: the padding is charged to the
+# milestone whose alignment made it necessary, and this harness's own number
+# comes out exactly as it did before M11 existed.
+M11_ELF_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
+[[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE ))
+[[ "$M11_BSS" -eq 4168 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4168 (M11's 4160-byte proc_store plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+[[ $(( KDATA_BSS - M11_BSS )) -eq 5496 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, of which $M11_BSS are M11's process table, leaving $(( KDATA_BSS - M11_BSS )) — expected 5496 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 for sym in $(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8 ~ /buffer|sector|elf_scratch/ {print $8}'); do
   fail "kdata.o donates '$sym'. M10 was supposed to add NO sector buffer: ataReadInto reads into a frame from the allocator, which is the whole answer to ROADMAP.md's 'the kernel can now read a disk and has nowhere to put what it read'."
 done
@@ -395,7 +410,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M10 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 1658
+check_table shellStrHelp 1871
 check_table elfStrDisk 13
 check_table elfStrImage 7
 check_table elfStrBytes 7
@@ -455,7 +470,7 @@ check_table elfStrE22 32
 check_table elfStrE23 40
 check_table elfStrE24 24
 check_table elfStrE25 47
-echo "STRUCTURAL: pass  all 59 M10 message/command tables plus shellStrHelp (1589 -> 1658) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 59 M10 message/command tables plus shellStrHelp (1658 -> 1871, M11 added three command lines) are exactly the sizes their call sites pass"
 
 # 3g. EVERY REFUSAL CODE HAS ITS OWN SENTENCE, AND NO TWO SENTENCES ARE THE SAME.
 #
@@ -533,6 +548,17 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
+# M11 (ADR-0015) added FIVE more -- `sse_enabled`, `cr4_read`, `fx_save`,
+# `fx_restore` and `proc_store_addr`. They are subtracted BY NAME for the reason
+# M8's twelve, M9's eight and M10's one are: this harness's claim is about ITS
+# OWN milestone's count, and it must keep meaning what it meant before M11.
+M11_EXTERNS="sse_enabled cr4_read fx_save fx_restore proc_store_addr"
+M11_PRESENT=0
+for sym in $M11_EXTERNS; do
+  grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
+done
+[[ "$M11_PRESENT" -eq 5 ]] || fail "only $M11_PRESENT of M11's 5 externs are in kmain.o's manifest ($M11_EXTERNS)"
+EXTERN_COUNT=$(( EXTERN_COUNT - M11_PRESENT ))
 [[ "$EXTERN_COUNT" -eq 53 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 53 (52 from M9 plus M10's one, elf_store_addr)"
 grep -q "elf_store_addr" <<<"$VERIFY_OUT" || fail "elf_store_addr is not in kmain.o's extern manifest"
 grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
@@ -1357,5 +1383,5 @@ then
 fi
 echo "ASSERT: pass  negative control — with every frame drained, 'run' refuses with a diagnostic instead of loading, twice, and leaves the shell alive"
 
-echo "M10-elf: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build a freestanding static ELF64 -> make-image.py writes seven programs onto a disk -> 8 structural checks (donated .bss 5368 -> 5496 with elf_store one 128-byte symbol and still no sector buffer, the storage seam exactly 1 call site, every ELF64 field offset in elf.dart decoding the built program to the same value readelf reports, the program window multiplied out against itself and against prog.ld, W^X refused independently by elfCheckPhdr and vmProgMap, every allocFrame paired with a zeroing, 59 @rodata sizes plus shellStrHelp 1589 -> 1658, and 25 refusal codes with 25 distinct sentences) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 52 + 1, kdata.o still clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; a program THIS KERNEL DID NOT COMPILE loaded off a disk, mapped at the p_vaddrs its own program headers name, entered at the e_entry its own header names, printing the bytes its own \`msg\` symbol holds and exiting with the status its own two segments encode, with .bss zeroed; the LIVE page tables read out of TWO disjoint regions of guest physical memory with the program still on the CPU, every page carrying exactly the W and X its segment's p_flags asked for and no kernel page reachable; QEMU's own registers reporting CPL 3 with RIP exactly equal to e_entry; four malformed files refused by name, each leaving a live shell; a privileged instruction at the entry point faulting, being reported at e_entry, and being torn down; the allocator's free count identical before and after seven loads; a 32MiB machine where all of it still holds; and a drained allocator where 'run' refuses instead of pretending. Screenshot at $SHOT_PNG"
+echo "M10-elf: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build a freestanding static ELF64 -> make-image.py writes seven programs onto a disk -> 8 structural checks (donated .bss 5368 -> 5496 with elf_store one 128-byte symbol and still no sector buffer, the storage seam exactly 1 call site, every ELF64 field offset in elf.dart decoding the built program to the same value readelf reports, the program window multiplied out against itself and against prog.ld, W^X refused independently by elfCheckPhdr and vmProgMap, every allocFrame paired with a zeroing, 59 @rodata sizes plus shellStrHelp 1658 -> 1871, and 25 refusal codes with 25 distinct sentences) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 52 + 1, kdata.o still clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; a program THIS KERNEL DID NOT COMPILE loaded off a disk, mapped at the p_vaddrs its own program headers name, entered at the e_entry its own header names, printing the bytes its own \`msg\` symbol holds and exiting with the status its own two segments encode, with .bss zeroed; the LIVE page tables read out of TWO disjoint regions of guest physical memory with the program still on the CPU, every page carrying exactly the W and X its segment's p_flags asked for and no kernel page reachable; QEMU's own registers reporting CPL 3 with RIP exactly equal to e_entry; four malformed files refused by name, each leaving a live shell; a privileged instruction at the entry point faulting, being reported at e_entry, and being torn down; the allocator's free count identical before and after seven loads; a 32MiB machine where all of it still holds; and a drained allocator where 'run' refuses instead of pretending. Screenshot at $SHOT_PNG"
 exit 0

@@ -32,6 +32,7 @@ part 'pmm.dart';
 part 'vm.dart';
 part 'user.dart';
 part 'elf.dart';
+part 'proc.dart';
 
 /// Kernel entry point.
 ///
@@ -163,6 +164,24 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   elfInit();
+
+  // M11: the process table's donated state, and the same argument for the sixth
+  // time. `userOnFault` asks [procLive] on EVERY fault this kernel takes --
+  // including M1's own deliberate #UD a few dozen lines below -- so a garbage
+  // header word would make the first fault of the boot try to tear down four
+  // address spaces read out of `.bss` litter, freeing whatever frame numbers it
+  // found while diagnosing something else.
+  //
+  // It also has a reason of its own that no init above it has: it writes a legal
+  // MXCSR image into each of the four FXSAVE areas. `fxrstor` raises #GP if the
+  // MXCSR field has a reserved bit set, so an area left as `.bss` litter is a
+  // general protection fault INSIDE A CONTEXT SWITCH -- and the fault handler
+  // would then be running with the FPU half-restored.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  procInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

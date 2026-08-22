@@ -2458,7 +2458,18 @@ M1 assertion tests. The two are different claims and the assertion tests the nar
 ## GAP-0089 — There is still no process: one address space, one program, no scheduler
 
 **Domain:** kernel (M10)
-**Status:** OPEN — deliberately scoped out. GAP-0085 items 1 and 2, restated for the thing that now
+**Status:** **NARROWED at M11** (ADR-0015). **Items 1 and 2 are done**: every process now gets its own
+PML4, PDPT and page directory from the allocator, the kernel's mappings copied in and its program
+pages private, and `CR3` is switched on every transition. `proc run <lbaA> <lbaB>` loads two programs
+into two address spaces and a `yield` syscall switches between them. **Item 5 is partly done**: a
+process's frames are recorded in its slot and recovered from its own page table at teardown, and
+`PROC KILL SLOT n FREED n` says how many came back — but `frames` still cannot say who has what.
+**Items 3 and 4 are NOT done and are restated as GAP-0097 (cooperative, not preemptive; no fork, exec
+or wait) and GAP-0096 (everything else a process does not have).**
+
+The original entry follows, unedited.
+
+**Original status:** OPEN — deliberately scoped out. GAP-0085 items 1 and 2, restated for the thing that now
 runs in ring 3, because "the payload is not a process" was easy to accept about 136 bytes of
 `@rodata` and is easier to forget about a program that arrived on a disk.
 
@@ -2562,8 +2573,20 @@ program for this OS has to be. `run` on an ordinary Linux binary gets `ELF REFUS
 ## GAP-0092 — The kernel never enables SSE, so ordinary compiler output faults in ring 3
 
 **Domain:** boot, kernel (M10)
-**Status:** OPEN — a real limit on what this OS can run, found while building the first program for
-it.
+**Status:** **CLOSED at M11** (ADR-0015, `core/tests/conformance/m11-proc/run.sh`). `core/boot/boot.S`
+now probes CPUID leaf 1 for FXSR and SSE, sets `CR4.OSFXSR | CR4.OSXMMEXCPT` and `CR0.MP`, clears
+`CR0.EM` and runs `fninit` — all four guarded by the probe — and `core/kernel/proc.dart` gives every
+process a 16-byte-aligned 512-byte FXSAVE area that is saved and restored across every switch this
+kernel performs. **The M11 test programs are built WITHOUT `-mgeneral-regs-only`, at -O2, and the
+harness asserts the opposite of what M10's asserted: the disassembly of a function containing no
+inline assembly MUST contain an `%xmm` register.** On a CPU where the probe says no, `proc run` is
+refused by name (`procErrNoSse`) rather than run with nowhere to save an FPU. What is NOT covered —
+AVX, `xsave`, a #XF handler, and any test of the x87 half — is GAP-0103.
+
+The original entry follows, unedited, because its argument is the one M11 implemented.
+
+**Original status:** OPEN — a real limit on what this OS can run, found while building the first
+program for it.
 
 `core/boot/boot.S` sets exactly one bit of CR4: PAE (bit 5). It has never set **`CR4.OSFXSR`** (bit
 9) or `CR4.OSXMMEXCPT` (bit 10), and it has never executed `fxsave`/`fxrstor` or reserved anywhere to
@@ -2682,3 +2705,376 @@ that found the hole.
 
 **Cost of the workaround:** one class of loader bug — handing ring 3 a page of stale kernel data — is
 caught by reading the source rather than by running the kernel.
+
+## GAP-0095 — m3-shell's, m4-fault's, m5-pci's and m6-disk's goldens moved by substitution at M11, and m7/m8/m9/m10's by `--regen`
+
+**Domain:** conformance (M11)
+**Status:** OPEN — the same recurring cost GAP-0059, GAP-0065, GAP-0069, GAP-0072, GAP-0075, GAP-0078,
+GAP-0087 and GAP-0093 record, at the eighth milestone that has paid it. Recorded again because the
+METHOD is what makes it safe, and the method differed between the two groups exactly as it did at M9
+and M10.
+
+**Two different causes, and only one of them was a fresh capture.**
+
+* **m3, m4, m5 and m6 moved because `help` grew by THREE LINES.** `shellStrHelp` went 1658 → **1871**:
+  ```
+    proc          the process table, the CR4 SSE bits, and each slot
+    proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
+    proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
+  ```
+  because a command that is not in `help` is undiscoverable. Those four goldens were NOT regenerated
+  from a boot. The three lines were inserted mechanically after `run <lba>` in each file and the
+  kernel was then required to reproduce the result byte-for-byte — which it did, at 4959, 3736, 3520
+  and 8030 bytes. m3's 80×25 screen golden was rebuilt the same way: three lines inserted, three
+  dropped off the top, which is exactly what three more lines of `help` do to an 80×25 buffer. A
+  substitution that produced a file the kernel does not print fails immediately, which is the whole
+  reason this is substitution and not a fresh capture.
+* **m7, m8, m9 and m10 moved because the image grew**, which is GAP-0078 exercised for the fifth
+  time. M11 adds `proc.dart`'s code and its 46 `@rodata` tables and **4168 bytes of donated `.bss`**
+  — the largest single donation since M7's bitmap — so `__kernel_end` moved and every address, count
+  and fold in all four goldens moved with it: m7's `PMM BASE` 0x12F1B0 → 0x1351B8, its free count
+  0x7EA9 → 0x7EA2 and the drain's `SUM`/`XOR`/`LOW`; m8's `CR3`/`PML4` and its `VM SECT` boundaries;
+  m9's TSS, RSP0, GDT and IDT bases and every payload frame; m10's page-table and program frames.
+  Those four were regenerated with `run.sh --regen`, and **each harness's derived checks recomputed
+  every one of those numbers from the boot's own `MB E` memory-map lines and from `kernel.elf`'s
+  extents**. The mitigation held exactly as GAP-0078 says it does.
+
+**What did NOT move: `m1-interrupts/expected.txt`.** All 544 bytes are byte-for-byte identical, and
+that is the assertion that says the process table and the SSE probe cost the boot path nothing —
+`procInit()` prints nothing, `sse_flag` is written before any output exists, and `fninit` is silent.
+m0-boot, mb-info and m2-console are likewise untouched. m11-proc/run.sh asserts it again as a prefix
+of its own capture, and so does every other harness from M4 onwards.
+
+**A SECOND, SMALLER SUBSTITUTION, recorded because it changed output that a golden had never seen.**
+`procCreate` printed `PML4 000000000013E000PROC PD 0000000000140000` — it reused `procStrPd`, the
+LINE label `'PROC PD '`, as a mid-line field separator, welding a second line label into the middle of
+a field with no space in front of it. A new 4-byte table `procStrPdF` (`' PD '`) was added, the same
+distinction `procStrExitF` already makes against `procStrExit`. This was found by reading a boot, not
+by a check, and nothing in any harness would have failed on it: a golden regenerated from that kernel
+would have enshrined it.
+
+**Cost:** whoever adds the next shell command pays the substitution again for four goldens, and
+whoever grows the image pays the `--regen` again for five.
+
+---
+
+## GAP-0096 — What a process does NOT do, listed rather than discovered later
+
+**Domain:** kernel (M11)
+**Status:** OPEN — deliberately scoped out. GAP-0089's shape, restated for the thing that now exists,
+because "there is no process" was easy to be precise about and "there is a process" is where the
+vagueness starts.
+
+1. **Four is the capacity, and it is a capacity rather than a design limit.** A fifth `procCreate` is
+   refused with `procErrNoSlot` and says so. Raising it is `procStoreBytes` and one number in
+   `kdata.S` — and it is untestable from the shell, because `proc run` takes exactly two LBAs and
+   there is no way to ask for a third process (GAP-0101).
+2. **A process has no name, no parent, no children, no priority and no accounting.** A slot holds an
+   id, a state, four frame numbers, an entry, a stack pointer, a page count, an exit code and the LBA
+   it was loaded from. Nothing measures how long it ran; the tick counter is global and nothing
+   attributes a tick to anybody.
+3. **There is no way for one process to affect another.** No signals, no kill, no shared memory, no
+   pipe, no message. The only interaction two processes have is that yielding lets the other one run.
+4. **`exit` status goes nowhere.** It is printed and kept in the slot for `proc` to show. No process
+   can collect another's, because there is no `wait` and no parent.
+5. **The stack is one page and it does not grow.** A process gets exactly the page at
+   `[0x101FF000, 0x10200000)`; a #PF just below it is a fault, not a stack extension. This is M10's
+   arrangement unchanged.
+6. **No process can allocate memory.** There is no `brk`, no `mmap`, and no syscall that returns a
+   page. A process's address space is exactly what its ELF asked for plus one stack page, forever.
+7. **A process cannot create a process.** No `fork`, no `exec`, no `spawn`. Both processes are created
+   by the shell before either runs.
+8. **Nothing is shared between address spaces except the kernel.** Which is the point, and is also
+   the reason there is no way to build anything that needs sharing.
+
+**Why this is not a bug:** every item is absence, and each one is refused or simply absent rather than
+half-present. The one that would be a bug if left unsaid is item 4, because "the exit code is
+reported" reads like something a program could collect.
+
+---
+
+## GAP-0097 — The switching is COOPERATIVE, and this entry exists so nobody infers otherwise
+
+**Domain:** kernel (M11)
+**Status:** OPEN — a deliberate scope boundary, stated in the loudest available place because a
+milestone called "processes" invites the assumption it does not support.
+
+**There is no scheduler and no preemption.** A process runs until it calls `yield` (syscall 3) or
+`exit` (syscall 0). The timer interrupt fires while a process runs and returns to it, exactly as it
+did at M9 and M10 — `tickCount` advances and nothing consults it.
+
+**A process that calls neither cannot be stopped.** `proc run <a> <b>` where either program loops
+forever is the last command that session can run, exactly as `user hold` and M10's `spin` are. The
+M11 harness relies on this: its second boot deliberately loads a program with `jmp .` written over
+its entry point so that both address spaces stay alive while guest memory is dumped.
+
+**What preemption would need, and none of it exists:**
+
+1. **A timer handler that switches.** Mechanically small — `procYield`'s body without the syscall —
+   and it is the smallest part.
+2. **A second ring-0 stack, per process.** Today one RSP0 in the TSS is enough *because only one
+   process is ever inside the kernel at a time*, which is true only while the sole way in is a
+   syscall the process chose to make. A timer that switched processes while one was mid-syscall would
+   have two kernel contexts on one stack. ADR-0015 §9 says so by name.
+3. **Reentrancy.** Every subsystem in this kernel — the allocator, the loader, the UART, the shell —
+   assumes one caller. A preempting timer makes all of them concurrent.
+4. **A policy that is testable.** GAP-0101: with two processes, round-robin and lowest-first cannot be
+   told apart, and the shell cannot make a third.
+
+**What is asserted instead, and it is a real assertion rather than a promise:** `m11-proc/run.sh`
+requires, for every session in the capture, that **the number of switches equals the number of
+`PROC YIELD` lines plus the number of exits that had a survivor.** If a timer ever started switching
+processes, that arithmetic would stop working. Nothing else in the harness would notice.
+
+---
+
+## GAP-0098 — A fault kills EVERY process, not just the faulting one
+
+**Domain:** kernel (M11)
+**Status:** OPEN — a decision rather than an omission, and the honest version of what M4's recovery
+path can currently recover to.
+
+When a process faults, `procOnFault` tears down **all four slots**, not the one that faulted, and the
+session ends at the shell prompt.
+
+**Why.** M4's recovery path (`fault_resume`, ADR-0007) abandons every stack frame between the fault
+and the shell loop. `shellProcRun` is one of those frames. So after a fault it never runs again and
+never gets a chance to clean anything up. A survivor left READY would be a process nothing can ever
+schedule, holding four table frames and its program pages, for the rest of the boot — which is
+exactly the state GAP-0085 item 10 warned a kernel WITH processes must not reach.
+
+**What a per-process kill would need:**
+
+1. a way to return to `shellProcRun` rather than past it — i.e. a resume point per process rather than
+   per session, which is `enter_user`'s recorded RSP generalised;
+2. somewhere for the *survivors* to keep running from, which with cooperative switching means
+   switching to one of them from inside the fault handler rather than returning to the shell;
+3. an answer to "what does the shell print while three processes are still running", which is a
+   question this kernel's single-threaded prompt has never had to have.
+
+**What it costs today:** one program's bug ends the whole session. `PROC KILL SLOT n FREED n` prints
+once per slot that owned anything, so the teardown is at least visible and countable — and the M11
+harness checks the allocator's free count is identical before and after a session containing a fault.
+
+---
+
+## GAP-0099 — QEMU does not #GP on a reserved CR4 bit, so the no-SSE control catches an unguarded write by the WRONG assertion
+
+**Domain:** conformance (M11)
+**Status:** OPEN — a limit of the emulator, measured rather than assumed, and the reason one harness
+assertion is doubled.
+
+`core/boot/boot.S` probes CPUID leaf 1 before setting `CR4.OSFXSR | CR4.OSXMMEXCPT`, because the SDM
+says those bits are **reserved** when `CPUID.01H:EDX.FXSR` is 0 and that writing a reserved CR4 bit is
+a #GP — which, in the 32-bit boot stub before any IDT exists, is a triple fault and a silently
+rebooting VM with no output at all.
+
+**A kernel built with that guard DELETED was run on `-cpu qemu64,-sse,-fxsr`. It did not triple-fault.**
+All 544 bytes of M1's output appeared exactly as usual, and `proc` then reported
+`PROC SSE 0 CR4 0000000000000420`: **QEMU accepted bit 10 (OSXMMEXCPT) and silently dropped bit 9
+(OSFXSR)** rather than faulting on either.
+
+**What this means for the harness.** `m11-proc/run.sh`'s boot C asserts two things where one would
+have looked sufficient:
+
+* M1's golden is still a byte-exact prefix — which is what would catch the unguarded write **on real
+  hardware**, and which passes vacuously here;
+* CR4 reads back **exactly 0x20** — which is what actually caught it, at 0x420.
+
+Neither claim is left resting on the other, and the ADR and the harness both say which one fires here.
+
+**What would close it:** running the mutated kernel on a machine that implements the reserved-bit #GP.
+No such machine is available to this project, and a second emulator would be a second thing to trust.
+The doubled assertion is the honest answer.
+
+**Cost:** one of the two assertions in boot C is untestable on the only hardware this project has, and
+is kept anyway.
+
+---
+
+## GAP-0100 — The `PD[128]` clear in `procSpaceBuild` cannot be made to matter, and this was measured
+
+**Domain:** kernel, conformance (M11)
+**Status:** OPEN — a hole in the TEST, not in the kernel. The clear is correct; nothing can currently
+notice if it stopped.
+
+`procSpaceBuild` copies the kernel's page directory into the process's and then explicitly clears
+entry 128 — the program window — so that a process cannot inherit whatever an M10 `run` program left
+mapped there.
+
+**A kernel built in the sandbox mirror with that line DELETED passed the whole of `m11-proc/run.sh`.**
+
+**Why.** `shellProcRun` already refuses to start while an M10 `run` program is live
+(`procErrElfLive`), and nothing else ever writes the kernel's own `PD[128]`. So at the moment the copy
+happens, the entry being copied is always zero, and clearing it is a no-op in every state this kernel
+can reach. It is a second lock on a door the first lock already holds shut.
+
+**Why it is kept.** The day the `procErrElfLive` refusal is relaxed — which is the day somebody wants
+a `run` program and a process at once — is not the day to discover that the second lock was never
+there. The cost is one line and one store.
+
+**What would close it:** a way to reach `procSpaceBuild` with the kernel's `PD[128]` non-zero, which
+means either relaxing the refusal or adding a shell command that installs a window without running a
+program. Both are changes to M10's code, and they belong to whoever needs them.
+
+**Cost of the workaround:** one class of address-space bug — a process inheriting another program's
+window — is prevented by two mechanisms and tested by neither.
+
+---
+
+## GAP-0101 — The scheduling policy is untestable at two processes, and the shell cannot make a third
+
+**Domain:** kernel, conformance (M11)
+**Status:** OPEN — a hole in the TEST and in the COMMAND SURFACE, not in the kernel.
+
+`procPickNext` is round-robin from the caller, deliberately: lowest-first with two processes is not a
+policy, it is a coin that always lands the same way, and with three it would starve the third
+outright. ADR-0015 §6 makes the argument.
+
+**A kernel built with round-robin replaced by lowest-first passed the whole of `m11-proc/run.sh`.**
+
+**Why.** With exactly two READY processes the two policies produce identical schedules, always. And
+there is no way to get a third: `proc run <lbaA> <lbaB>` takes exactly two LBAs, `procMax` is 4 but
+nothing can fill it, and a process cannot create a process (GAP-0096 item 7).
+
+**What would close it:** a shell command that takes three or four LBAs, or a `proc add <lba>` that
+loads into a free slot without starting anything. Either is small. Neither was built, because a third
+process with nothing to prove would have been a feature added to satisfy a test — and this entry is
+the honest alternative to that.
+
+**A consequence worth stating separately:** `procMaxWrap` (5) and the wrap arithmetic inside
+`procPickNext` are exercised only in the two-process case, where `cur + 1` never needs the wrap at
+all except for slot 1 → slot 0. The loop that walks past `procMaxSlot` and subtracts `procMax` has
+never run with three live slots.
+
+**Cost of the workaround:** the scheduler's only policy decision is asserted by reading the source.
+
+---
+
+## GAP-0102 — The page-table zeroing in `procSpaceBuild` has no behavioural test that can fail
+
+**Domain:** conformance, kernel (M11)
+**Status:** OPEN — GAP-0094, for a second subsystem, with the same cause and the same measurement.
+
+`procSpaceBuild` zeroes all three of the PML4, PDPT and page-directory frames it takes, before writing
+a single entry into any of them. An unzeroed page table is 512 entries of allocator litter every one
+of which the CPU will read as a mapping, with the present bit set roughly half the time.
+
+**A kernel built in the sandbox mirror with all three `vmZeroFrame` calls DELETED passed the whole of
+`m11-proc/run.sh`, including the two page-table walks out of guest memory.**
+
+**Why.** Exactly GAP-0094's reason: a freshly-booted QEMU hands out RAM that is already zero, and
+nothing in this kernel dirties a frame before the allocator gives it out. The frames a process's
+tables come from have never been written by anything.
+
+**What is asserted instead.** The harness walks both address spaces out of guest RAM and requires the
+mapped set of the program window to be EXACTLY what the ELF's own program headers say plus one stack
+page — so a table full of litter WOULD be caught, if the litter existed. It does not.
+
+**What would close it:** the same thing GAP-0094 named — a shell command that fills every free frame
+with a pattern and returns them, the inverse of `frames drain`. That is a change to M7's code and M7's
+goldens, and it is now the *second* milestone that would have used it. Whoever builds it closes two
+gaps.
+
+**Cost of the workaround:** one class of address-space bug — handing a process a page directory full
+of stale mappings — is caught by reading the source rather than by running the kernel.
+
+---
+
+## GAP-0103 — What the FPU support does NOT cover: no AVX, no XSAVE, no #XF handler, no x87 test
+
+**Domain:** kernel (M11)
+**Status:** OPEN — deliberately scoped out, and listed because "SSE works now" is exactly the sentence
+that hides all four.
+
+1. **`fxsave`/`fxrstor`, not `xsave`/`xrstor`.** The save area is 512 bytes and covers x87, MXCSR and
+   **XMM0-15 only**. `CR4.OSXSAVE` is never set, `XCR0` is never written, and CPUID leaf 0x0D is never
+   asked. A program that used **AVX** would get a #UD — which is the right answer, because the state
+   is not being saved — but the kernel never tells it so: there is no `#UD` message that says "this OS
+   does not support AVX", only the generic fault report.
+2. **The extended save area's size is never queried.** With `xsave` it would have to be, because it is
+   CPU-dependent. With `fxsave` it is architecturally 512 and this kernel hardcodes 512.
+3. **`CR4.OSXMMEXCPT` is set and there is no #XF handler that says anything special.** Vector 19 goes
+   through the same generic fault path as everything else. It cannot fire today — `procFxInit` masks
+   every SSE exception in MXCSR and no program unmasks one — so the bit changes no behaviour; it is
+   set because the alternative is a #UD whose cause names the wrong thing entirely if a program ever
+   does unmask one.
+4. **Nothing tests x87.** Both test programs use SSE and neither pushes a value onto the x87 stack.
+   The x87 half of the save area is asserted only through its control word (0x037F, read out of guest
+   RAM) and the tag word being the zeroed image `procFxInit` wrote. A kernel that saved XMM correctly
+   and x87 incorrectly would pass everything.
+5. **MXCSR is per-process in the save area and no program can usefully change it.** A process that
+   wrote MXCSR would have it saved and restored correctly; nothing tests that, and the harness asserts
+   all four areas hold 0x1F80 exactly, which a program changing its own MXCSR would break.
+6. **There is no lazy-FPU path**, deliberately (ADR-0015 §2), so `CR0.TS` is never set and #NM
+   (vector 7) is a fault this kernel can still only report generically.
+
+**What it costs today:** a program built for this OS may use SSE and SSE2 and must not use AVX; and
+the x87 half of the per-process state is correct by construction rather than by test.
+
+---
+
+## GAP-0104 — Three DCDart features that would close standing gaps here landed AFTER the pin and were not adopted
+
+**Domain:** kernel, tooling (M11)
+**Status:** OPEN — deliberately not adopted at M11, listed so the next session does not have to
+rediscover them. All three landed in DCDart between `DCDART_PIN.txt`'s `e3cfe18` and the shared
+checkout's `70509df`, i.e. **they are not available at the pin** and taking any of them is a pin bump.
+
+1. **`ADR-0046` folds compile-time integer arithmetic inside sized-int literals**, which is exactly
+   **GAP-0077**. `core/kernel/proc.dart` spells `procMaxSlot = 3` and `procMaxWrap = 5` as separate
+   literals because `u64(procMax - 1)` was refused; `m11-proc/run.sh` multiplies every such pair
+   against every other to catch a drift the language now makes impossible. Adopting it deletes the
+   duplicate constants across `proc.dart`, `pmm.dart`, `vm.dart` and `elf.dart` and closes GAP-0077.
+2. **`ADR-0045` adds word and doubleword port I/O**, whose commit message says in so many words that
+   it **deletes the kernel's `core/boot/portio.S`** — which is **GAP-0066**. That is a whole assembly
+   file and four of the 58 declared externs.
+3. **`ADR-0047` adds `break` and `continue`.** Several loops here are written with a sentinel or a
+   flag because they could not exit early.
+
+**Why none of it was taken here.** M11's scope was FPU state and a second address space, and each of
+these is a pin bump plus a regeneration of four address-bearing goldens (GAP-0078) for a reason
+unrelated to the milestone. Each of the three is small, independently verifiable, and closes a gap by
+DELETION rather than by addition, which is the best kind of unit this repo has.
+
+**One thing that was measured and is worth writing down, because it is the question anybody bumping
+the pin will ask first.** This repo's sources — both at `439a126` and at M11 — build to a
+**byte-identical `.text` and `.rodata`** under `e3cfe18` and under `70509df`. The four intervening
+DCDart commits change what the language ACCEPTS, not what its code generator emits for what this
+kernel already writes. So the bump itself will not move a single golden; only adopting the features
+will.
+
+---
+
+## GAP-0105 — `help` growing made three harnesses intermittently fail at exactly the `help` boundary
+
+**Domain:** conformance (M11)
+**Status:** OPEN — mitigated by a pause, and the mitigation is a timing constant, which is the part
+that makes this a gap rather than a fix.
+
+M11 took `shellStrHelp` from 1658 to **1871 bytes**. At 115200 baud that is roughly **160ms** of
+serial output, plus three more lines of VGA scrolling. `qmp-drive.py` injects a keystroke every
+**50ms**. So after `help,ret`, the next command's keystrokes were being injected while `help` was
+still printing, its echo interleaved into the middle of the listing, and the byte-exact golden failed.
+
+**It failed INTERMITTENTLY, at exactly the same byte offset every time** — char 2650 of m4-fault's
+capture, the start of the line after `help`'s last — and it passed three times in a row immediately
+afterwards, which is the worst possible shape for a test failure: it looks like a kernel race and it
+is a harness one. Two of the four failures observed today happened while other QEMU instances were
+running on the same machine.
+
+m6-disk already carried `wait:600` after `help` for exactly this reason, from the last time `help`
+grew. m3-shell, m4-fault and m5-pci did not, and now do. **A pause does not emit a byte, so no golden
+changed.**
+
+**What is actually wrong, underneath.** The driver has no flow control: it types on a wall clock and
+the kernel prints on another one. Every `wait:` in every key list in this repo is a guess about how
+long a command takes, tuned by observation, and every one of them gets worse as the thing it waits
+for grows. The correct mechanism is the one `--wait-for` already implements for the boot marker —
+wait for a byte pattern in the capture, not for a duration — and applying it per command would delete
+every `wait:` constant in the suite.
+
+**Cost:** four harnesses carry a timing constant that has to be revisited whenever the output of the
+command before it grows, and the failure it prevents is intermittent and looks like something else.
+
+---
