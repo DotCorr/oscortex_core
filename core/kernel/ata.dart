@@ -1,6 +1,10 @@
 // core/kernel/ata.dart
 //
 // oscortex_core M6: ATA PIO -- reading actual bytes off an actual disk.
+// oscortex_core M16: and WRITING them. `ataWriteFrom` is the first code in this
+// kernel that can change a disk; it starts below `shellDiskRead`'s neighbours,
+// after [ataReadInto], and its own header says what is different about it. The
+// architecture is docs/decisions/0020-writing-to-a-disk.md.
 //
 // A `part of 'kmain.dart'` for the same forced reason every other kernel
 // source file here is: `dcc` lowers exactly ONE library per object file, so a
@@ -148,6 +152,23 @@ const int ataStBsy = 0x80;
 /// Commands.
 const int ataCmdIdentify = 0xEC;
 const int ataCmdReadSectors = 0x20;
+
+/// M16 (docs/decisions/0020-writing-to-a-disk.md): WRITE SECTORS, LBA28, PIO.
+///
+/// Two milestones' worth of harnesses asserted that this constant did not
+/// exist, and they were right to: a driver that can write is a driver that can
+/// destroy a volume, and nothing before M16 had a reason to. Those assertions
+/// are not deleted — m14-fat and m15-fileio now assert that THEIR OWN boots
+/// issue no write, which is a stronger claim than "the opcode is unspellable"
+/// because it is checked by running rather than by grepping.
+const int ataCmdWriteSectors = 0x30;
+
+/// FLUSH CACHE. ATA/ATAPI-6 §8.16 and §6.8: WRITE SECTORS is allowed to report
+/// completion when the data is in the drive's write cache, not on the medium.
+/// Every write path in this kernel ends with this command, and it is the reason
+/// a file written by a guest survives QEMU exiting rather than surviving only
+/// until the process does.
+const int ataCmdCacheFlush = 0xE7;
 
 /// Drive/head register: master drive, LBA addressing. Bits 7 and 5 are set
 /// because they are hardwired to 1 in the original definition of the register,
@@ -926,6 +947,154 @@ u64 ataReadInto(u64 lba, u64 dst) {
     return u64(ataReadTrailing);
   }
   return u64(ataReadOk);
+}
+
+// ---------------------------------------------------------------------------
+// M16 (docs/decisions/0020-writing-to-a-disk.md): WRITE ONE SECTOR.
+//
+// THIS IS THE FIRST CODE IN THIS KERNEL THAT CAN CHANGE A DISK. Everything
+// above it can only look. The status discipline is [ataReadInto]'s, in the same
+// order and with the same bounds, and the differences are exactly three:
+//
+//   1. THE TRANSFER GOES THE OTHER WAY, through `port_outw` rather than
+//      `port_inw`, and the two bytes of each word are assembled low-first out
+//      of the source buffer for the same reason the read path takes them apart
+//      low-first: sector data is bytes, and a `u16` store would be trusting the
+//      CPU's byte order to match the disk's.
+//
+//   2. THE DRIVE IS BUSY AFTER THE DATA, NOT BEFORE IT. A read ends when the
+//      last word leaves the data port; a write ends when the drive has taken
+//      the last word and finished with it, so this waits for BSY to clear and
+//      DRDY to return AFTER the loop, and treats a still-set DRQ as the drive
+//      wanting more than one sector -- which would mean the channel is in a
+//      state the next command cannot trust.
+//
+//   3. IT ENDS WITH FLUSH CACHE, ALWAYS. See [ataCmdCacheFlush]. A write that
+//      "succeeded" into a volatile cache and a write that reached the medium
+//      are indistinguishable from the host side until the power goes off, and
+//      the whole claim M16 makes is about what is on the image afterwards.
+//
+// NO RETRIES. A failed write returns a code and the caller decides; a driver
+// that retried would turn one bad sector into several attempts to write it and
+// would still not know whether the first attempt had landed.
+// ---------------------------------------------------------------------------
+
+/// [ataWriteFrom] succeeded: 512 bytes were transferred and FLUSH CACHE
+/// completed without an error.
+const int ataWriteOk = 0;
+
+/// Nothing answered on the channel -- status all-zeroes or all-ones.
+const int ataWriteNoDev = 1;
+
+/// The drive never became ready, or reported ERR/DF before the command.
+const int ataWriteNotReady = 2;
+
+/// The drive never raised DRQ, so it is not asking for the data.
+const int ataWriteNoDrq = 3;
+
+/// The drive reported ERR or DF after the transfer.
+const int ataWriteError = 4;
+
+/// DRQ was still set after 256 words -- the drive wants more than one sector's
+/// worth, so the channel is not in a state the next command can trust.
+const int ataWriteTrailing = 5;
+
+/// The transfer completed and FLUSH CACHE did not. The bytes may be in the
+/// drive's cache and may not be on the medium; this is reported as its own code
+/// rather than folded into [ataWriteError] because the two mean different
+/// things to anyone deciding whether to trust the volume.
+const int ataWriteNoFlush = 6;
+
+/// Issues FLUSH CACHE (0xE7) on the primary master and waits for it.
+///
+/// Selects the drive again first: this is called immediately after a transfer,
+/// but a caller that had touched the channel in between would otherwise be
+/// flushing whichever device was selected last. The LBA bits of the
+/// drive/head register are irrelevant to this command and are written as zero.
+@bare
+u64 ataFlushCache() {
+  final u64 st0 = ataSelect(u64(0));
+  if (ataAbsent(st0) > u64(0)) {
+    return u64(ataWriteNoDev);
+  }
+  Port.outb(u16(ataRegCommand), u8(ataCmdCacheFlush));
+  final u64 st1 = ataSettle();
+  if (ataAbsent(st1) > u64(0)) {
+    return u64(ataWriteNoDev);
+  }
+  final u64 st2 = ataWait(u64(ataStRdy));
+  if (ataFailed(st2) > u64(0)) {
+    return u64(ataWriteNoFlush);
+  }
+  return u64(ataWriteOk);
+}
+
+/// Writes the 512 bytes at [src] to LBA28 sector [lba] on the primary master,
+/// then flushes the drive's cache. Returns [ataWriteOk] or one of the codes
+/// above.
+///
+/// **Every failure returns a code and prints nothing**, for [ataReadInto]'s
+/// reason: the caller is a filesystem that knows which sector of which
+/// structure it was trying to change, and a driver that printed here would say
+/// less while interleaving itself into somebody else's transcript.
+@bare
+u64 ataWriteFrom(u64 lba, u64 src) {
+  final u64 st0 = ataSelect(lba);
+  if (ataAbsent(st0) > u64(0)) {
+    return u64(ataWriteNoDev);
+  }
+  final u64 idle = ataWait(u64(ataStRdy));
+  if (ataFailed(idle) > u64(0)) {
+    return u64(ataWriteNotReady);
+  }
+
+  Port.outb(u16(ataRegCount), u8(1));
+  Port.outb(u16(ataRegLbaLo), (lba & u64(0xFF)).toU8());
+  Port.outb(u16(ataRegLbaMid), ((lba >> u64(8)) & u64(0xFF)).toU8());
+  Port.outb(u16(ataRegLbaHi), ((lba >> u64(16)) & u64(0xFF)).toU8());
+  Port.outb(u16(ataRegCommand), u8(ataCmdWriteSectors));
+
+  final u64 st1 = ataSettle();
+  if (ataAbsent(st1) > u64(0)) {
+    return u64(ataWriteNoDev);
+  }
+  final u64 st2 = ataWait(u64(ataStDrq));
+  if (ataFailed(st2) > u64(0)) {
+    return u64(ataWriteNoDrq);
+  }
+  // BSY is clear and neither error bit is set, so DRQ is the only remaining
+  // reason ataWait could have returned. Checked anyway, and here the cost of
+  // not checking is worse than on the read path: pushing 512 bytes at a data
+  // port the drive is not expecting is not a wrong answer, it is a wrong
+  // SECTOR somewhere on the volume.
+  if ((st2 & u64(ataStDrq)) < u64(1)) {
+    return u64(ataWriteNoDrq);
+  }
+
+  u64 i = u64(0);
+  while (i < u64(ataWordsPerSector)) {
+    final u64 at = src + (i << u64(1));
+    final u64 lo = Pointer<u8>.fromAddress(at).value.toU64();
+    final u64 hi = Pointer<u8>.fromAddress(at + u64(1)).value.toU64();
+    port_outw(u64(ataRegData), lo | (hi << u64(8)));
+    i = i + u64(1);
+  }
+
+  // The drive raises BSY when it takes the last word. Four alt-status reads
+  // (400ns) before the first real poll, exactly as after issuing a command --
+  // ATA/ATAPI-6 §6.2 makes the same requirement of both edges.
+  final u64 st3 = ataSettle();
+  if (ataAbsent(st3) > u64(0)) {
+    return u64(ataWriteNoDev);
+  }
+  final u64 st4 = ataWait(u64(ataStRdy));
+  if (ataFailed(st4) > u64(0)) {
+    return u64(ataWriteError);
+  }
+  if ((st4 & u64(ataStDrq)) > u64(0)) {
+    return u64(ataWriteTrailing);
+  }
+  return ataFlushCache();
 }
 
 /// `disk read <lba>` -- one LBA28 sector from the primary master.

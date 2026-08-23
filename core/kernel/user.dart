@@ -1466,6 +1466,10 @@ void userSysExit(u64 frame) {
   // through on the way out, and printed BEFORE the process branch below because
   // that branch does not come back.
   fileExitReport();
+  // M16: a SECOND line, and only if this boot wrote something. Every harness
+  // before M16 boots a kernel that never writes, so on every one of them this
+  // prints nothing and no golden moves.
+  fileWriteReport();
   // M11: a process's exit is a different event. It may not be the end of
   // anything -- another process can be READY -- so [procSysExit] RETURNS
   // NORMALLY when it switched to somebody else, and never returns when this was
@@ -1583,6 +1587,14 @@ void userSyscall(u64 frame) {
   }
   if (no == u64(fileSysSeekNo)) {
     fileSysSeek(frame);
+    return;
+  }
+  // M16: `fdwrite` (syscall 9). The first syscall on this machine that can
+  // change a disk, and it sits here rather than anywhere special: the gate, the
+  // frame, the owner row and the refusal floor are all the same as the other
+  // five. What is different is entirely inside [fileSysWrite].
+  if (no == u64(fileSysWriteNo)) {
+    fileSysWrite(frame);
     return;
   }
   if (no == u64(userSysWhoNo)) {

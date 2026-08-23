@@ -217,12 +217,19 @@ def main():
             if elf != real:
                 raise SystemExit("derive: %s on the image is not the ELF that was built" % name)
             out.append("%s_ro_bytes=%d" % (tag, filesz))
-            out.append("%s_fnv=%08x" % (tag, fnv1a(real[off:off + filesz])))
+            # `%x` AND NOT `%08x`. The PROGRAM prints its hash with
+            # oslibc's printf, which has no width modifiers at all (ADR-0017
+            # §5), so a hash whose top nibble is zero comes out SEVEN digits
+            # long. Zero-padding here made this harness fail whenever the
+            # program's own bytes happened to hash that way -- a one-in-sixteen
+            # latent break that M16's change to core/user/libc/syscall.c
+            # happened to trip. See GAP-0131.
+            out.append("%s_fnv=%x" % (tag, fnv1a(real[off:off + filesz])))
             # What the SAME program would hash if the loader had assumed
             # contiguity. The R+X segment's file bytes come out of `cont`
             # instead, and the hash is different because FNV-1a is
             # position-sensitive.
-            out.append("%s_fnv_contiguous=%08x" % (tag, fnv1a(cont[off:off + filesz])))
+            out.append("%s_fnv_contiguous=%x" % (tag, fnv1a(cont[off:off + filesz])))
             pid = 0 if name == "PROGA.ELF" else 1
             # %02X, UPPER case: `uartPutHex` prints upper-case hex and this
             # string is grepped for literally. With %02x this check passed only

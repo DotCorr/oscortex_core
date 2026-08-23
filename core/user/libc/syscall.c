@@ -87,9 +87,7 @@ unsigned long sbrk_last_error(void) { return sbrkErr; }
  * for through a ring-3 pointer -- so this is where the two conventions meet.
  * ------------------------------------------------------------------------- */
 
-unsigned long open(const char *name) {
-  return sys_call(SYS_OPEN, (unsigned long)name, strlen(name));
-}
+unsigned long open(const char *name) { return openmode(name, O_READ); }
 
 unsigned long read(unsigned long fd, void *buf, size_t len) {
   return sys_call3(SYS_READ, fd, (unsigned long)buf, len);
@@ -99,4 +97,25 @@ unsigned long close(unsigned long fd) { return sys_call(SYS_CLOSE, fd, 0); }
 
 unsigned long seek(unsigned long fd, unsigned long off) {
   return sys_call(SYS_SEEK, fd, off);
+}
+
+/* ---------------------------------------------------------------------------
+ * M16 — the mode argument and the write.
+ *
+ * `open` is now `openmode(name, O_READ)` and is kept as a name because a
+ * read-only open is what most callers want and because every program written
+ * against M15 still compiles. The kernel takes the mode in RDX and a
+ * two-argument `sys_call` passes zero there, which is O_READ — so the
+ * compatibility is a property of the ABI rather than a special case in the
+ * kernel.
+ * ------------------------------------------------------------------------- */
+
+unsigned long openmode(const char *name, unsigned long mode) {
+  return sys_call3(SYS_OPEN, (unsigned long)name, strlen(name), mode);
+}
+
+unsigned long create(const char *name) { return openmode(name, O_WRITE); }
+
+unsigned long fdwrite(unsigned long fd, const void *buf, size_t len) {
+  return sys_call3(SYS_FDWRITE, fd, (unsigned long)buf, len);
 }

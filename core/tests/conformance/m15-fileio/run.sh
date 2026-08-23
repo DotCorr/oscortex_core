@@ -150,16 +150,18 @@ symsize() {
 
 # 2a. THE DONATED BLOCK, AND THE THREE REGIONS INSIDE IT.
 #
-# 11488 -> 12768, and the 1280 is `file_store`. The three region offsets in
+# 11488 -> 14048, and the 2560 is `file_store` (M16 grew it from 1280: sixteen
+# more metadata words, four more per descriptor, and a second sector buffer for
+# the read-modify-write a partial write needs). The region offsets in
 # file.dart are multiplied out against the block's own size here, because a
 # region that ran past the end would corrupt whatever `.bss` follows and would
 # do it silently -- `.bss` is not zeroed and nothing in this kernel guards it.
 KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 [[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 KDATA_BSS=$((16#$KDATA_BSS_HEX))
-[[ "$KDATA_BSS" -eq 12768 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 12768 — 11488 through M14 plus file_store's 1280. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
+[[ "$KDATA_BSS" -eq 14048 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 14048 — 11488 through M14 plus file_store's 2560. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
 FILE_STORE_SIZE=$(symsize "$CORE_DIR/build/kdata.o" file_store)
-[[ "$FILE_STORE_SIZE" == "1280" ]] || fail "kdata.o's file_store is ${FILE_STORE_SIZE:-missing} bytes, expected 1280"
+[[ "$FILE_STORE_SIZE" == "2560" ]] || fail "kdata.o's file_store is ${FILE_STORE_SIZE:-missing} bytes, expected 2560"
 [[ $(( KDATA_BSS - FILE_STORE_SIZE )) -eq 11488 ]] || fail "the .bss outside file_store is $(( KDATA_BSS - FILE_STORE_SIZE )), not M14's 11488 — M15 moved storage it does not own"
 
 META_OFF=$(dartconst fileMetaOffset file.dart)
@@ -181,19 +183,26 @@ PROC_MAX=$(dartconst procMax proc.dart)
   || fail "fileRowWords ($ROW_WORDS) is not fileMaxFds * fileFdWords ($MAX_FDS * $FD_WORDS)"
 [[ $(( TABLE_OFF + ROWS * ROW_WORDS * 8 )) -eq "$BUF_OFF" ]] \
   || fail "the descriptor table ($ROWS rows of $ROW_WORDS words at $TABLE_OFF) does not end where the bounce buffer begins ($BUF_OFF)"
-[[ $(( BUF_OFF + 512 )) -eq "$STORE_BYTES" ]] \
-  || fail "the bounce buffer (512 bytes at $BUF_OFF) does not end at the block's end ($STORE_BYTES)"
+SEC_OFF=$(dartconst fileSecOffset file.dart)
+[[ $(( BUF_OFF + 512 )) -eq "$SEC_OFF" ]] \
+  || fail "the bounce buffer (512 bytes at $BUF_OFF) does not end where M16's read-modify-write sector begins ($SEC_OFF)"
+[[ $(( SEC_OFF + 512 )) -eq "$STORE_BYTES" ]] \
+  || fail "the read-modify-write sector (512 bytes at $SEC_OFF) does not end at the block's end ($STORE_BYTES)"
 [[ "$RUN_ROW" -eq "$PROC_MAX" ]] \
   || fail "fileRunRow is $RUN_ROW and proc.dart's procMax is $PROC_MAX — rows 0..procMax-1 must be the process slots and the row above them the \`run <name>\` program, or two programs would share descriptors"
 [[ "$ROWS" -eq $(( PROC_MAX + 1 )) ]] || fail "fileRows is $ROWS, expected procMax + 1 = $(( PROC_MAX + 1 ))"
-echo "STRUCTURAL: pass  kdata.o donates 12768 bytes of .bss, 1280 of them file_store: $META_WORDS metadata words at $META_OFF, $ROWS x $MAX_FDS x $FD_WORDS descriptor words at $TABLE_OFF, a 512-byte bounce buffer at $BUF_OFF, ending exactly at $STORE_BYTES"
+echo "STRUCTURAL: pass  kdata.o donates 14048 bytes of .bss, 2560 of them file_store: $META_WORDS metadata words at $META_OFF, $ROWS x $MAX_FDS x $FD_WORDS descriptor words at $TABLE_OFF, a 512-byte bounce buffer at $BUF_OFF, and M16's read-modify-write sector after it, ending exactly at $STORE_BYTES"
 
-# 2b. THE STORAGE SEAM: ONE ACCESSOR, THREE CALL SITES, ONE FILE (ADR-0011 §0).
+# 2b. THE STORAGE SEAM: ONE ACCESSOR, FOUR CALL SITES, ONE FILE (ADR-0011 §0).
+#
+# THREE at M15 and FOUR since M16, which added `fileSecBase`. The number moved
+# by substitution and the property did not: one symbol, one file, a countable
+# set of places that know where the memory came from.
 CODE=$(grep -v '^[[:space:]]*//' "$CORE_DIR/kernel/file.dart")
 SEAM=$(printf '%s\n' "$CODE" | grep -c "return file_store_addr()")
 MENTIONS=$(printf '%s\n' "$CODE" | grep -c "file_store_addr")
-[[ "$SEAM" -eq 3 ]] || fail "core/kernel/file.dart has $SEAM call sites of file_store_addr(), expected exactly 3 (fileMetaBase, fileTableBase, fileBufBase). A fourth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
-[[ "$MENTIONS" -eq 4 ]] || fail "file.dart names file_store_addr $MENTIONS times, expected 4: one @extern declaration and the three seam functions"
+[[ "$SEAM" -eq 4 ]] || fail "core/kernel/file.dart has $SEAM call sites of file_store_addr(), expected exactly 4 (fileMetaBase, fileTableBase, fileBufBase, fileSecBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
+[[ "$MENTIONS" -eq 5 ]] || fail "file.dart names file_store_addr $MENTIONS times, expected 5: one @extern declaration and the four seam functions (three at M15, four since M16 added fileSecBase)"
 OUTSIDE=$(grep -rl "file_store_addr" "$CORE_DIR/kernel/" | grep -v "/file.dart$" | wc -l | tr -d ' ')
 [[ "$OUTSIDE" -eq 0 ]] || fail "file_store_addr is named outside core/kernel/file.dart"
 for f in fileMetaBase fileTableBase fileBufBase; do
@@ -237,13 +246,43 @@ for b in bad:
     print("    - " + b, file=sys.stderr)
 sys.exit(1 if bad else 0)
 PY
-# ...and there is exactly ONE store through a caller-supplied address in the
-# whole file, in fileCopyOut, whose only caller validates first.
-STORES=$(printf '%s\n' "$CODE" | grep -c "Pointer<u8>.fromAddress(dst")
-[[ "$STORES" -eq 1 ]] || fail "core/kernel/file.dart writes through a \`dst\` pointer at $STORES places, expected exactly 1 (fileCopyOut). Every one of them is a place a user pointer could be written without validation."
-grep -q "if (fileOwnsWrite(dst, len) < u64(1)) {" "$CORE_DIR/kernel/file.dart" \
-  || fail "fileSysRead does not validate dst with fileOwnsWrite before copying"
-echo "STRUCTURAL: pass  fileOwnsWrite bounds ptr before touching it, requires the USER bit AND the WRITABLE bit page by page, and is the gate on the one store to a caller-supplied address in the file"
+# ...and there is exactly ONE function that stores through a caller-supplied
+# address, `fileCopyOut`, with exactly one call site, in `fileSysRead`, AFTER
+# the validator has run.
+#
+# COUNTED BY FUNCTION AND NOT BY TEXT, since M16. Until M16 this counted the
+# literal `Pointer<u8>.fromAddress(dst` and required exactly one, which worked
+# because `dst` was a user pointer in the only place that spelling appeared.
+# M16 added `fileCopyIn` and `fileSplice`, both of which store through a local
+# `dst` that is a KERNEL buffer, so the text count is 3 and means nothing. What
+# it was protecting -- that the one store to a user address is behind the one
+# validator, in that order -- is checked directly here instead.
+python3 - "$CORE_DIR/kernel/file.dart" <<'PY2' || fail "the one store to a caller-supplied address is not behind fileOwnsWrite"
+import re, sys
+src = open(sys.argv[1]).read()
+bad = []
+if len(re.findall(r"^void fileCopyOut\(", src, re.M)) != 1:
+    bad.append("fileCopyOut is not defined exactly once")
+calls = [m for m in re.finditer(r"fileCopyOut\(", src)
+         if not src[:m.start()].rstrip().endswith("void")]
+if len(calls) != 1:
+    bad.append("fileCopyOut has %d call sites, expected 1" % len(calls))
+m = re.search(r"^void fileSysRead\(u64 frame\) \{\n(.*?)^\}", src, re.M | re.S)
+if not m:
+    bad.append("file.dart has no `void fileSysRead(u64 frame)`")
+else:
+    b = m.group(1)
+    if "fileCopyOut(" not in b:
+        bad.append("fileCopyOut's one call site is not in fileSysRead")
+    elif "fileOwnsWrite(dst, len)" not in b:
+        bad.append("fileSysRead does not validate dst with fileOwnsWrite")
+    elif b.index("fileOwnsWrite(dst, len)") > b.index("fileCopyOut("):
+        bad.append("fileSysRead copies BEFORE it validates")
+for x in bad:
+    print("    - " + x, file=sys.stderr)
+sys.exit(1 if bad else 0)
+PY2
+echo "STRUCTURAL: pass  fileOwnsWrite bounds ptr before touching it, requires the USER bit AND the WRITABLE bit page by page, and is the gate on the one store to a caller-supplied address in the file -- fileCopyOut, defined once, called once, from fileSysRead, after the validator"
 
 # 2d. EVERY NUMBER oslibc.h KNOWS ABOUT FILE I/O IS THE KERNEL'S OWN.
 for pair in "SYS_OPEN fileSysOpenNo file.dart" "SYS_READ fileSysReadNo file.dart" \
@@ -268,22 +307,23 @@ done
 FLOOR=$(dartconst fileRetFloor file.dart)
 for name in fileRetBadFd fileRetBadPtr fileRetBadLen fileRetNoSlot fileRetBadName \
             fileRetNotFound fileRetIsDir fileRetEmpty fileRetIo fileRetBadSeek \
-            fileRetNoOwner; do
+            fileRetNoOwner fileRetBadMode fileRetNoSpace; do
   v=$(dartconst "$name" file.dart)
   [[ "$v" -ge "$FLOOR" ]] 2>/dev/null || python3 -c "import sys; sys.exit(0 if $v >= $FLOOR else 1)" \
     || fail "$name is below fileRetFloor, so a caller's one comparison would take it for a result"
 done
-python3 - <<PY || fail "the eleven refusal values are not distinct"
+python3 - <<PY || fail "the thirteen refusal values are not distinct"
 vals = [$(for n in fileRetBadFd fileRetBadPtr fileRetBadLen fileRetNoSlot fileRetBadName \
-              fileRetNotFound fileRetIsDir fileRetEmpty fileRetIo fileRetBadSeek fileRetNoOwner; do
+              fileRetNotFound fileRetIsDir fileRetEmpty fileRetIo fileRetBadSeek fileRetNoOwner \
+              fileRetBadMode fileRetNoSpace; do
             printf '%s,' "$(dartconst "$n" file.dart)"; done)]
 import sys
-sys.exit(0 if len(set(vals)) == 11 else 1)
+sys.exit(0 if len(set(vals)) == 13 else 1)
 PY
 READ_MAX_K=$(dartconst fileReadMax file.dart)
 [[ "$READ_MAX_K" -eq $(cdefine RFILE_BUFSZ) ]] \
   || fail "RFILE_BUFSZ ($(cdefine RFILE_BUFSZ)) is not the kernel's fileReadMax ($READ_MAX_K) — the buffered layer would either waste a syscall or be refused"
-echo "STRUCTURAL: pass  all nineteen of oslibc.h's file numbers -- four syscall numbers, three bounds, the floor and eleven distinct refusals all above it -- read back out of core/kernel/file.dart"
+echo "STRUCTURAL: pass  M15's nineteen file numbers still read back out of core/kernel/file.dart, and the refusal set M16 grew to thirteen is still thirteen DISTINCT values all above one floor"
 
 # 2e. THE HELP TEXT AND THE EXTERN COUNT: M15 ADDS NO SHELL COMMAND AND ONE
 #     EXTERN.
@@ -295,16 +335,33 @@ HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
 [[ "$HELP_SIZE" -eq 2147 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M15 adds SYSCALLS, not commands; if it needed a command that is a different change and five goldens move with it."
 echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged from M14 — M15 added four syscalls and no shell command"
 
-# 2f. THE FILESYSTEM IS STILL READ-ONLY. GAP-0116 item 1, re-checked here
-#     because M15 is the milestone at which somebody would be tempted.
-grep -qE "ataWriteInto|ataWriteSector|fatWrite|fatSetDir|fatAlloc|fileWrite|fileSysWrite" \
-  "$CORE_DIR/kernel/"*.dart \
-  && fail "a write function appeared in core/kernel/ — M15 adds a READ path and GAP-0116 item 1 says there are no writes at any layer"
-grep -qE "0x30|0x34" <(grep -E "ataCmd\w+ = " "$CORE_DIR/kernel/ata.dart") \
-  && fail "ata.dart declares an ATA WRITE SECTORS opcode"
-grep -qE "^#define O_(WRONLY|RDWR|CREAT|APPEND|TRUNC)" "$LIBC_DIR/oslibc.h" \
-  && fail "oslibc.h defines an open mode — there is no write path to have one for"
-echo "STRUCTURAL: pass  no write opcode, no write function and no open mode anywhere: the filesystem M15 reads from is still read-only end to end"
+# 2f. M15's SESSION STILL WRITES NOTHING — AND THAT IS NOW CHECKED BY RUNNING.
+#
+# THIS ASSERTION WAS REPLACED AT M16, DELIBERATELY AND IN THE OPEN. Until M16
+# these lines grepped for an ATA write opcode, for a write function by name, and
+# for an open mode in oslibc.h, and required all three to be absent. That was
+# the strongest available statement while nothing in this kernel could write.
+# M16 (docs/decisions/0020-writing-to-a-disk.md) makes all three FALSE: `0x30`
+# is `ataCmdWriteSectors`, `fatWrite*` is a whole layer, and `O_WRITE` is a mode
+# `open` takes.
+#
+# What replaces them is stronger, not weaker. THE CLAIM M15 ACTUALLY NEEDS is
+# that M15's OWN BOOTS change nothing on the disk they are given — which is a
+# statement about what ran rather than about what is spellable, and which a
+# kernel that could write but did not still has to satisfy. It is made in two
+# places: `m15_readonly_before` records the image's SHA-256 here, and the check
+# at the end of this file requires it to be identical after all four boots.
+#
+# The one grep that survives is the one whose meaning did not change: `open`
+# with no mode is still a READ-ONLY open. m15's program never passes a mode, and
+# a kernel that made the mode-less form writable would be caught by the checksum
+# rather than by a grep.
+[[ $(dartconst fileOpenRead file.dart) -eq 0 ]] \
+  || fail "core/kernel/file.dart's fileOpenRead is not 0 — a two-argument open(), which is what every M15 program performs, would no longer be a read-only one"
+grep -q "sys_call(SYS_OPEN, (unsigned long)name, strlen(name))" "$LIBC_DIR/syscall.c" \
+  || grep -q "open(const char \*name) { return openmode(name, O_READ); }" "$LIBC_DIR/syscall.c" \
+  || fail "core/user/libc's open() no longer asks for a read-only descriptor"
+echo "STRUCTURAL: pass  open() with no mode is still O_READ (0) — the M16 mode argument did not silently make M15's opens writable. That M15's boots write nothing at all is asserted at the end of this file, by comparing the image's SHA-256 before and after, which is a stronger claim than the three greps this check replaced."
 
 # 2g. EVERY @rodata TABLE IN file.dart IS THE SIZE ITS CALL SITE PASSES.
 python3 - "$CORE_DIR/kernel/file.dart" "$CORE_DIR/build/kmain.o" <<'PY' || fail "a @rodata table in file.dart does not match the string its doc comment records, or the length its call site passes"
@@ -389,6 +446,11 @@ python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/prog.elf" "$PROGDIR/pr
   || fail "make-image.py could not write the volume"
 python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/prog.elf" "$PROGDIR/progn.elf" --json \
   > "$LAYOUT" || fail "make-image.py --json failed"
+
+# M16 replaced this harness's three "there is no write path" greps with a
+# measurement (see 2f). This is the first half of it: the SHA-256 of the volume
+# before any boot has seen it. The second half is at the end of this file.
+M15_SHA_BEFORE=$(shasum -a 256 "$DISK_IMG" | cut -d' ' -f1)
 
 command -v fsck_msdos >/dev/null 2>&1 || FSCK=/sbin/fsck_msdos
 FSCK="${FSCK:-fsck_msdos}"
@@ -670,6 +732,7 @@ for v in "${VNAMES[@]}"; do
   VIMG="$WORKDIR/m15-$v.img"
   python3 "$SCRIPT_DIR/make-image.py" "$VIMG" "$PROGDIR/prog.elf" "$PROGDIR/progn.elf" \
     "--variant=$v" >/dev/null || fail "make-image.py could not write the $v variant"
+  vsha_before=$(shasum -a 256 "$VIMG" | cut -d' ' -f1)
   drive_session "$WORKDIR/$v" "$VARIANT_KEYS" "$WORKDIR/$v.png" "$v" $(( 21 + vi )) "$VIMG"
   VSER="$WORKDIR/$v/serial.txt"
   want="M15 OPEN DATA REFUSED ${VWANT[$vi]}"
@@ -681,9 +744,29 @@ for v in "${VNAMES[@]}"; do
     || fail "the $v boot's program did not exit with its own 0xE1 open-failure code"
   grep -qF -- "$(d data_fnv_hex)" "$VSER" \
     && fail "the $v boot produced the correct hash off a volume on which the file is unreachable"
-  echo "CHECK 9.$vi: pass  the $v volume made open(\"DATA.BIN\") refuse with ${VWANT[$vi]}; the program said so and exited 0xE1 without printing a hash"
+  vsha_after=$(shasum -a 256 "$VIMG" | cut -d' ' -f1)
+  [[ "$vsha_before" == "$vsha_after" ]] \
+    || fail "the $v boot CHANGED its image (sha256 $vsha_before -> $vsha_after); M15 writes nothing"
+  echo "CHECK 9.$vi: pass  the $v volume made open(\"DATA.BIN\") refuse with ${VWANT[$vi]}; the program said so and exited 0xE1 without printing a hash, and left the image byte-for-byte identical"
   vi=$(( vi + 1 ))
 done
+
+# ---------------------------------------------------------------------------
+# Step 9b — M15'S BOOTS WROTE NOTHING, MEASURED RATHER THAN GREPPED FOR.
+#
+# The other half of check 2f. This image was carried through the main boot and
+# the negative-control boot, both of which loaded a program off it, read tens of
+# thousands of bytes out of it and exercised every file syscall M15 has. Since
+# M16 the kernel underneath is one that CAN write a sector; this says it did
+# not write one here.
+#
+# The two broken-volume boots in step 9 each got their own image and are checked
+# the same way, in the loop above.
+# ---------------------------------------------------------------------------
+M15_SHA_AFTER=$(shasum -a 256 "$DISK_IMG" | cut -d' ' -f1)
+[[ "$M15_SHA_BEFORE" == "$M15_SHA_AFTER" ]] \
+  || fail "M15's boots CHANGED the volume (sha256 $M15_SHA_BEFORE -> $M15_SHA_AFTER). This kernel can write to a disk since M16; nothing M15 does is supposed to."
+echo "CHECK 9b: pass  the volume is byte-for-byte identical after both boots — sha256 $M15_SHA_AFTER — so M15's read path still writes nothing, checked by RUNNING rather than by grepping for an opcode that now exists"
 
 # ---------------------------------------------------------------------------
 # Step 10 — the byte-exact goldens.
@@ -710,5 +793,5 @@ echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen
 head -c 8 "$SHOT_PNG" | cmp -s - <(printf '\x89PNG\r\n\x1a\n') || fail "$SHOT_PNG is not a PNG"
 echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -d ' ') bytes, PNG)"
 
-echo "M15-fileio: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's FIVE OBJECTS (syscall, string, malloc, printf and M15's buffered rfile) AND ONE PROGRAM SOURCE TWICE, the second ignoring the byte count read() returns as a negative control -> make-image.py writes a FAT16 volume whose 20000-byte DATA.BIN lives on 20 scattered clusters with $BACKLINKS BACKWARD links, accepted by fsck_msdos and read back byte-for-byte by macOS's own msdos driver -> 8 structural checks (donated .bss 11488 -> 12768 with file_store one 1280-byte symbol whose three regions multiply out exactly, the storage seam exactly 3 call sites in one file, fileOwnsWrite bounding its pointer before touching it and requiring the USER and WRITABLE bits page by page as the gate on the ONE store to a caller-supplied address, all nineteen of oslibc.h's file numbers read back out of file.dart with eleven distinct refusal VALUES above one floor, shellStrHelp UNCHANGED at 2147 so no golden moves, still no write opcode or write function or open mode anywhere, every @rodata table against its own doc comment and call site, and descriptors released by elfTeardown and procCleanup rather than by exit) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 59 + 1, kdata.o and portio.o clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; a C PROGRAM opening a file by name and reading all $(d data_bytes) bytes of it in $(d data_reads) reads of $(d chunk) -- a size that divides neither a sector nor a cluster nor the file -- and hashing them to $(d data_fnv_hex), which the host computes over the same file and which a contiguous reader could not produce; seek() to both ends of the file finding both markers, to the end returning the size, and one past it refused; TWO FILES open at once and read alternately, each hashing to its own derived value, with the kernel rebuilding a cluster chain exactly $(d k_chains) times and saying so; the SAME file open twice with two independent offsets; four descriptors and a fifth refused; fourteen refusals observed from ring 3 as return values, including a read aimed into the program's own R+X segment which left it hashing to the same $(d self_fnv_hex) as before; a buffered rfread() over a 512-byte window agreeing to the byte with the 173-byte raw loop, rfgets() finding $(d rf_lines) lines, and the first of them coming back through the kernel's own pointer validator; \`cat small.txt\` typed at the shell proving the one 8.3 parser still serves both callers; an exit status derived from the file's contents; the negative-control build printing the WRONG derived hash and the WRONG derived status; two broken volumes on which open() is refused and the program says which refusal it got; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
+echo "M15-fileio: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's FIVE OBJECTS (syscall, string, malloc, printf and M15's buffered rfile) AND ONE PROGRAM SOURCE TWICE, the second ignoring the byte count read() returns as a negative control -> make-image.py writes a FAT16 volume whose 20000-byte DATA.BIN lives on 20 scattered clusters with $BACKLINKS BACKWARD links, accepted by fsck_msdos and read back byte-for-byte by macOS's own msdos driver -> 8 structural checks (donated .bss 11488 -> 14048 with file_store one 2560-byte symbol whose four regions multiply out exactly, the storage seam exactly 4 call sites in one file, fileOwnsWrite bounding its pointer before touching it and requiring the USER and WRITABLE bits page by page as the gate on the ONE store to a caller-supplied address, M15's nineteen oslibc.h numbers read back out of file.dart with THIRTEEN distinct refusal VALUES above one floor, shellStrHelp UNCHANGED at 2147 so no golden moves, a mode-less open() still meaning O_READ, every @rodata table against its own doc comment and call site, and descriptors released by elfTeardown and procCleanup rather than by exit) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 59 + 1, kdata.o and portio.o clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; a C PROGRAM opening a file by name and reading all $(d data_bytes) bytes of it in $(d data_reads) reads of $(d chunk) -- a size that divides neither a sector nor a cluster nor the file -- and hashing them to $(d data_fnv_hex), which the host computes over the same file and which a contiguous reader could not produce; seek() to both ends of the file finding both markers, to the end returning the size, and one past it refused; TWO FILES open at once and read alternately, each hashing to its own derived value, with the kernel rebuilding a cluster chain exactly $(d k_chains) times and saying so; the SAME file open twice with two independent offsets; four descriptors and a fifth refused; fourteen refusals observed from ring 3 as return values, including a read aimed into the program's own R+X segment which left it hashing to the same $(d self_fnv_hex) as before; a buffered rfread() over a 512-byte window agreeing to the byte with the 173-byte raw loop, rfgets() finding $(d rf_lines) lines, and the first of them coming back through the kernel's own pointer validator; \`cat small.txt\` typed at the shell proving the one 8.3 parser still serves both callers; an exit status derived from the file's contents; the negative-control build printing the WRONG derived hash and the WRONG derived status; two broken volumes on which open() is refused and the program says which refusal it got; the frame allocator's free count identical, to the frame, before and after; and EVERY IMAGE BYTE-FOR-BYTE IDENTICAL AFTER EVERY BOOT, which is what M16 replaced this harness's three read-only greps with. Screenshot at $SHOT_PNG"
 exit 0

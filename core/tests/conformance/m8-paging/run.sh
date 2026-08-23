@@ -237,7 +237,7 @@ M11_ELF_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="e
 M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
 [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-[[ "$M15_BSS" -eq 1280 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 1280. If M15's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+[[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added a SIXTH block after M11's: `fat_store` (1824 bytes -- 32
 # metadata words, a 256-entry cluster chain, one sector buffer and an 8.3 name

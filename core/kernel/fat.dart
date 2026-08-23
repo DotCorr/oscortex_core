@@ -1,6 +1,13 @@
 // core/kernel/fat.dart
 //
 // oscortex_core M14: A READ-ONLY FAT16 FILESYSTEM.
+// oscortex_core M16: AND A WRITE PATH -- allocation, truncation, directory
+// entries, and both copies of the FAT.
+//
+// **THE WRITE HALF STARTS AT `fatPut16` AND IS DOCUMENTED THERE**, with the
+// five ordering rules it keeps and why each one matters. Everything above that
+// point reads and nothing above it can change a volume. The architecture is
+// docs/decisions/0020-writing-to-a-disk.md.
 //
 // A `part of 'kmain.dart'` for the same forced reason every other kernel source
 // file here is: `dcc` lowers exactly ONE library per object file, so a `@bare`
@@ -15,8 +22,11 @@
 // number it then told the harness, and `run 20` meant SECTOR 0x20. That is the
 // whole of docs/known-gaps.md GAP-0090: no names, no directory, no allocation.
 //
-// This file adds names, a directory and a chain. It does NOT add writes, and
-// says so everywhere rather than leaving it to be discovered -- see GAP-0116.
+// This file adds names, a directory and a chain. At M14 it did NOT add writes
+// and said so everywhere rather than leaving it to be discovered (GAP-0116); at
+// M16 it adds them, and GAP-0127 is the list of what a program still cannot do.
+// GAP-0090 items 3 and 4 are narrowed rather than closed: there is an allocator
+// and there is no journal.
 //
 // ---------------------------------------------------------------------------
 // FAT16 IS NOT A FLAG IN THE BOOT SECTOR, AND THIS DRIVER DOES NOT PRETEND IT IS
@@ -147,6 +157,13 @@ const int fatAttrSystem = 0x04;
 const int fatAttrVolumeId = 0x08;
 const int fatAttrDirectory = 0x10;
 
+/// The archive bit. M16 sets exactly this and nothing else on a file it
+/// creates: a plain file, not read-only, not hidden, not a system file, not a
+/// volume label and not a directory. `fsck_msdos` and macOS's `msdos` driver
+/// both have to accept it, which is the check that makes the choice load-bearing
+/// rather than cosmetic.
+const int fatAttrArchive = 0x20;
+
 /// The long-filename attribute is all four of the first bits at once, and it is
 /// tested as an exact value rather than as a mask because that is what makes it
 /// distinguishable from a read-only hidden system file.
@@ -241,6 +258,21 @@ const int fatMetaReads = 24;
 /// narrowing, and it is a number rather than a claim.
 const int fatMetaHits = 25;
 
+/// M16: sectors this driver has WRITTEN since boot, allocations made, clusters
+/// freed, and the cluster to start the next free-cluster search from.
+///
+/// [fatMetaWrites] is the number this milestone exists to make non-zero. It is
+/// printed by `fileWriteReport` and it is zero on every boot of every harness
+/// before M16 — which is how m14-fat and m15-fileio now prove they still write
+/// nothing, by RUNNING rather than by grepping for an opcode.
+///
+/// [fatMetaNextFree] is a HINT and nothing more: [fatFindFree] wraps, so a
+/// stale or wrong value costs a longer scan and cannot cost a wrong cluster.
+const int fatMetaWrites = 26;
+const int fatMetaAllocs = 27;
+const int fatMetaFrees = 28;
+const int fatMetaNextFree = 29;
+
 /// A cached LBA that cannot be a real one. Sector 0 IS real (it is the boot
 /// sector), so 0 would be wrong here.
 const int fatNoSector = 0xFFFFFFFFFFFFFFFF;
@@ -278,6 +310,14 @@ const int fatErrChainShort = 25;
 const int fatErrDiskFat = 26;
 const int fatErrDiskData = 27;
 const int fatErrBadName = 28;
+
+/// M16 (docs/decisions/0020-writing-to-a-disk.md): the three refusals a WRITE
+/// can produce that a read never could. Each one leaves the volume exactly as
+/// it was — that is the whole point of naming them rather than letting a
+/// partial update stand.
+const int fatErrFull = 29;
+const int fatErrNoDirSlot = 30;
+const int fatErrDiskWrite = 31;
 
 // ---------------------------------------------------------------------------
 // Fixed message text -- `@rodata` byte tables (DCDart ADR-0040).
@@ -792,6 +832,32 @@ final List<u8> fatStrE28 = const [
   u8(0x2C), u8(0x20), u8(0x6F), u8(0x76), u8(0x65), u8(0x72), u8(0x20), u8(0x38), u8(0x2E), u8(0x33), u8(0x2C), u8(0x20),
   u8(0x6F), u8(0x72), u8(0x20), u8(0x68), u8(0x61), u8(0x73), u8(0x20), u8(0x61), u8(0x20), u8(0x62), u8(0x61), u8(0x64),
   u8(0x20), u8(0x62), u8(0x79), u8(0x74), u8(0x65), u8(0x0A),
+];
+
+/// `'the volume has no free cluster left\n'` -- 36 bytes.
+@rodata
+final List<u8> fatStrE29 = const [
+  u8(0x74), u8(0x68), u8(0x65), u8(0x20), u8(0x76), u8(0x6F), u8(0x6C), u8(0x75), u8(0x6D), u8(0x65), u8(0x20), u8(0x68),
+  u8(0x61), u8(0x73), u8(0x20), u8(0x6E), u8(0x6F), u8(0x20), u8(0x66), u8(0x72), u8(0x65), u8(0x65), u8(0x20), u8(0x63),
+  u8(0x6C), u8(0x75), u8(0x73), u8(0x74), u8(0x65), u8(0x72), u8(0x20), u8(0x6C), u8(0x65), u8(0x66), u8(0x74), u8(0x0A),
+];
+
+/// `'the root directory has no free entry left\n'` -- 42 bytes.
+@rodata
+final List<u8> fatStrE30 = const [
+  u8(0x74), u8(0x68), u8(0x65), u8(0x20), u8(0x72), u8(0x6F), u8(0x6F), u8(0x74), u8(0x20), u8(0x64), u8(0x69), u8(0x72),
+  u8(0x65), u8(0x63), u8(0x74), u8(0x6F), u8(0x72), u8(0x79), u8(0x20), u8(0x68), u8(0x61), u8(0x73), u8(0x20), u8(0x6E),
+  u8(0x6F), u8(0x20), u8(0x66), u8(0x72), u8(0x65), u8(0x65), u8(0x20), u8(0x65), u8(0x6E), u8(0x74), u8(0x72), u8(0x79),
+  u8(0x20), u8(0x6C), u8(0x65), u8(0x66), u8(0x74), u8(0x0A),
+];
+
+/// `'a sector could not be written to the drive\n'` -- 43 bytes.
+@rodata
+final List<u8> fatStrE31 = const [
+  u8(0x61), u8(0x20), u8(0x73), u8(0x65), u8(0x63), u8(0x74), u8(0x6F), u8(0x72), u8(0x20), u8(0x63), u8(0x6F), u8(0x75),
+  u8(0x6C), u8(0x64), u8(0x20), u8(0x6E), u8(0x6F), u8(0x74), u8(0x20), u8(0x62), u8(0x65), u8(0x20), u8(0x77), u8(0x72),
+  u8(0x69), u8(0x74), u8(0x74), u8(0x65), u8(0x6E), u8(0x20), u8(0x74), u8(0x6F), u8(0x20), u8(0x74), u8(0x68), u8(0x65),
+  u8(0x20), u8(0x64), u8(0x72), u8(0x69), u8(0x76), u8(0x65), u8(0x0A),
 ];
 
 // ===========================  THE STORAGE SEAM  ============================
@@ -1581,6 +1647,564 @@ u64 fatSelect(u64 first, u64 bytes) {
   return u64(fatErrOk);
 }
 
+// ===========================================================================
+// M16 (docs/decisions/0020-writing-to-a-disk.md): THE WRITE PATH.
+//
+// Everything above this line reads. Everything below it can change a volume,
+// and the ordering rules are therefore the interesting part rather than the
+// arithmetic.
+//
+// THE FIVE RULES THIS LAYER KEEPS, AND WHY EACH ONE MATTERS
+// ---------------------------------------------------------------------------
+// 1. BOTH FATs, ALWAYS, IN ONE FUNCTION. `BPB_NumFATs` is 2 on every volume
+//    this driver will meet, and a driver that updated one copy produces a
+//    volume `fsck_msdos` reports as "FATs differ" and macOS's `msdos` driver
+//    may mount from EITHER copy — so the file would be there or not depending
+//    on which one the reader picked. [fatSetEntry] is the ONLY function in this
+//    kernel that changes a FAT entry and it writes every copy before returning.
+//
+// 2. THE NEW CLUSTER IS MARKED END-OF-CHAIN BEFORE IT IS LINKED. If the power
+//    goes off between the two writes, the volume has a cluster marked in use
+//    that no file points at — a leak, which `fsck` calls a lost chain and can
+//    reclaim. The other order leaves a chain whose last link points at a
+//    cluster marked FREE, which the next allocation will hand to a second file:
+//    two files sharing a cluster is the corruption that a read test cannot see.
+//
+// 3. THE DIRECTORY ENTRY IS WRITTEN LAST. Size and first-cluster go to the disk
+//    at `close`, after every FAT link and every data sector. Until then the
+//    file on the volume is the old one (or, for a new file, an empty one), so
+//    an interrupted write loses the new data instead of producing a directory
+//    entry that claims bytes the FAT does not have.
+//
+// 4. NOTHING PARTIAL IS LEFT ON A REFUSAL. Every function here returns a
+//    `fatErr*` code and returns it BEFORE the write that would have made the
+//    change, not after. `fatErrFull` in particular is reached by [fatFindFree]
+//    finding nothing, which happens before any FAT entry has been touched.
+//
+// 5. THE ONE-SECTOR CACHE IS TOLD. `fatSectorBase()` holds one sector under one
+//    LBA; a write through it keeps the two in agreement, and a write of any
+//    other buffer to the cached LBA — or a write that FAILED — invalidates it.
+//    A cache that served bytes the drive rejected would make a failed write
+//    look like a successful one to the very next read.
+// ===========================================================================
+
+/// Stores [v] as two little-endian bytes at [a]. The inverse of [fatU16], and
+/// byte at a time for its reason: FAT's byte order is the FORMAT's, not the
+/// host's, and DC-IR's `Store` carries no alignment attribute.
+@bare
+void fatPut16(u64 a, u64 v) {
+  Pointer<u8>.fromAddress(a).value = (v & u64(0xFF)).toU8();
+  Pointer<u8>.fromAddress(a + u64(1)).value = ((v >> u64(8)) & u64(0xFF)).toU8();
+}
+
+/// Stores [v] as four little-endian bytes at [a]. The inverse of [fatU32].
+@bare
+void fatPut32(u64 a, u64 v) {
+  fatPut16(a, v & u64(0xFFFF));
+  fatPut16(a + u64(2), (v >> u64(16)) & u64(0xFFFF));
+}
+
+/// Writes the 512 bytes at [src] to sector [lba], counting it, and keeps the
+/// one-sector cache honest. Returns [fatErrOk] or [fatErrDiskWrite].
+///
+/// **Rule 5 lives here.** Three cases:
+///   * the write failed — the drive's copy of [lba] is now unknown, so the
+///     cache must not claim to hold it;
+///   * the write succeeded and [src] IS the cache buffer — the two agree, and
+///     the cache entry stays, which is what makes "read the FAT sector, patch
+///     one entry, write it, patch another entry in the same sector" cost one
+///     read instead of one per entry;
+///   * the write succeeded from some other buffer — if that happened to be the
+///     cached LBA the cache is now stale, so it goes.
+///
+/// **Every write in this kernel goes through this function.** `ataWriteFrom` is
+/// called from exactly one place, which is what makes [fatMetaWrites] a
+/// complete count rather than a sample.
+@bare
+u64 fatWriteSector(u64 lba, u64 src) {
+  if (ataWriteFrom(lba, src) > u64(ataWriteOk)) {
+    fatSetMeta(u64(fatMetaCached), u64(fatNoSector));
+    return u64(fatErrDiskWrite);
+  }
+  fatSetMeta(u64(fatMetaWrites), fatMeta(u64(fatMetaWrites)) + u64(1));
+  if (fatMeta(u64(fatMetaCached)) == lba) {
+    if (src != fatSectorBase()) {
+      fatSetMeta(u64(fatMetaCached), u64(fatNoSector));
+    }
+  }
+  return u64(fatErrOk);
+}
+
+/// Sets FAT entry [c] to [v] in EVERY copy of the FAT. Returns a refusal code.
+///
+/// Rule 1. The sector is read once, patched once, and written `BPB_NumFATs`
+/// times at the same offset into each copy — which is correct because every
+/// copy of a FAT is byte-identical by definition and `BPB_FATSz16` is the
+/// distance between them.
+///
+/// [c] is NOT range-checked here. Every caller has already established that it
+/// is a data cluster: [fatAlloc] got it from [fatFindFree], which only ever
+/// returns one, and [fatTruncate] checks the bound on every link before
+/// following it. A check here would be a fourth place that knows what a legal
+/// cluster is.
+@bare
+u64 fatSetEntry(u64 c, u64 v) {
+  final u64 idx = c >> u64(8);
+  final u64 lba = fatMeta(u64(fatMetaFatStart)) + idx;
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(fatErrDiskFat);
+  }
+  fatPut16(fatSectorBase() + ((c & u64(255)) << u64(1)), v & u64(0xFFFF));
+  final u64 copies = fatMeta(u64(fatMetaNumFats));
+  final u64 span = fatMeta(u64(fatMetaFatSectors));
+  u64 f = u64(0);
+  while (f < copies) {
+    final u64 dst = fatMeta(u64(fatMetaFatStart)) + (f * span) + idx;
+    if (fatWriteSector(dst, fatSectorBase()) > u64(fatErrOk)) {
+      return u64(fatErrDiskWrite);
+    }
+    f = f + u64(1);
+  }
+  return u64(fatErrOk);
+}
+
+/// The number of the first free cluster at or after the hint, wrapping once.
+///
+/// Returns a cluster number (>= 2), **0 when the volume is full**, or **1 when
+/// a FAT sector could not be read**. Both sentinels are below
+/// [fatFirstCluster], so a caller tests `< 2` once and then asks which.
+///
+/// **One pass over every cluster, modular, rather than two loops**, because the
+/// pinned `dcc` cannot compile a `while` inside a `while` (GAP-0068) and
+/// "scan to the end, then scan from the start" is two. The index arithmetic is
+/// a subtraction rather than a `%` for the same reason [fatFileSector] uses a
+/// multiply: the shape that is obviously right is worth more here than the
+/// shape that is short.
+///
+/// **The hint cannot cause a wrong answer**, only a slower one: the loop runs
+/// `clusterCount` times regardless of where it starts, so a hint left over from
+/// a previous file — or a garbage one — finds exactly the same set of free
+/// clusters.
+@bare
+u64 fatFindFree() {
+  final u64 span = fatMeta(u64(fatMetaClusters));
+  if (span < u64(1)) {
+    return u64(0);
+  }
+  final u64 bound = span + u64(fatFirstCluster);
+  u64 hint = fatMeta(u64(fatMetaNextFree));
+  if (hint < u64(fatFirstCluster)) {
+    hint = u64(fatFirstCluster);
+  }
+  if (hint >= bound) {
+    hint = u64(fatFirstCluster);
+  }
+  u64 k = u64(0);
+  while (k < span) {
+    u64 c = hint + k;
+    if (c >= bound) {
+      c = c - span;
+    }
+    final u64 v = fatEntry(c);
+    if (v > u64(0xFFFF)) {
+      return u64(1);
+    }
+    if (v == u64(fatFreeCluster)) {
+      return c;
+    }
+    k = k + u64(1);
+  }
+  return u64(0);
+}
+
+/// The refusal [fatAlloc]'s return value [c] means, or [fatErrOk] if it is a
+/// real cluster.
+///
+/// **`@bare` DCDart returns one value**, so [fatAlloc] answers with a cluster
+/// number or one of two sentinels below [fatFirstCluster], and this is where
+/// those sentinels become the vocabulary the rest of the kernel speaks. Written
+/// here rather than at the call site so that the meaning of "0" and "1" lives
+/// in the file that produces them.
+@bare
+u64 fatAllocError(u64 c) {
+  if (c >= u64(fatFirstCluster)) {
+    return u64(fatErrOk);
+  }
+  if (c == u64(0)) {
+    return u64(fatErrFull);
+  }
+  return u64(fatErrDiskWrite);
+}
+
+/// Allocates one cluster and links it after [last], or after nothing if [last]
+/// is 0. Returns the new cluster number, **0 if the volume is full**, or **1 on
+/// any drive or FAT failure**.
+///
+/// Rule 2: the new cluster is marked end-of-chain BEFORE [last] is made to
+/// point at it. The two writes are not atomic and cannot be made so on this
+/// hardware; what they can be is ordered so that the failure between them is
+/// the recoverable one.
+@bare
+u64 fatAlloc(u64 last) {
+  final u64 c = fatFindFree();
+  if (c < u64(fatFirstCluster)) {
+    return c; // 0 = full, 1 = could not read the FAT
+  }
+  if (fatSetEntry(c, u64(0xFFFF)) > u64(fatErrOk)) {
+    return u64(1);
+  }
+  if (last >= u64(fatFirstCluster)) {
+    if (fatSetEntry(last, c) > u64(fatErrOk)) {
+      return u64(1);
+    }
+  }
+  fatSetMeta(u64(fatMetaNextFree), c + u64(1));
+  fatSetMeta(u64(fatMetaAllocs), fatMeta(u64(fatMetaAllocs)) + u64(1));
+  return c;
+}
+
+/// Frees the whole cluster chain starting at [first]. Returns a refusal code.
+/// [first] below 2 is [fatErrOk] — a zero-length file has no chain to free.
+///
+/// **Walks the FAT rather than the chain array**, deliberately: the array holds
+/// at most [fatChainMax] clusters and is keyed on a size the directory entry
+/// claims, and a file being truncated is exactly the case where that size may
+/// be wrong. Reading each link before freeing it is one extra cached read per
+/// cluster and makes the walk depend on nothing but the FAT itself.
+///
+/// **Bounded by the cluster count**, so a cyclic chain frees each of its
+/// clusters and then reports [fatErrChainCycle] instead of running forever.
+@bare
+u64 fatTruncate(u64 first) {
+  if (first < u64(fatFirstCluster)) {
+    return u64(fatErrOk);
+  }
+  final u64 bound = fatMeta(u64(fatMetaClusters)) + u64(fatFirstCluster);
+  u64 c = first;
+  u64 n = u64(0);
+  while (n < bound) {
+    if (c < u64(fatFirstCluster)) {
+      return u64(fatErrChainRange);
+    }
+    if (c >= bound) {
+      return u64(fatErrChainRange);
+    }
+    final u64 nxt = fatEntry(c);
+    if (nxt > u64(0xFFFF)) {
+      return u64(fatErrDiskFat);
+    }
+    if (fatSetEntry(c, u64(fatFreeCluster)) > u64(fatErrOk)) {
+      return u64(fatErrDiskWrite);
+    }
+    fatSetMeta(u64(fatMetaFrees), fatMeta(u64(fatMetaFrees)) + u64(1));
+    if (nxt >= u64(fatEocMin)) {
+      fatSetMeta(u64(fatMetaNextFree), first);
+      return u64(fatErrOk);
+    }
+    if (nxt == u64(fatBadCluster)) {
+      return u64(fatErrChainBad);
+    }
+    if (nxt == u64(fatFreeCluster)) {
+      return u64(fatErrChainFree);
+    }
+    c = nxt;
+    n = n + u64(1);
+  }
+  return u64(fatErrChainCycle);
+}
+
+/// Zeroes the 32 bytes of the directory entry at [e] in the sector buffer.
+///
+/// A separate function because its caller has a loop of its own and the pinned
+/// `dcc` cannot nest one (GAP-0068).
+@bare
+void fatDirBlank(u64 e) {
+  u64 i = u64(0);
+  while (i < u64(fatDirEntBytes)) {
+    Pointer<u8>.fromAddress(e + i).value = u8(0);
+    i = i + u64(1);
+  }
+}
+
+/// Copies the 11 raw name bytes from the name buffer into the entry at [e].
+///
+/// The name buffer and the sector buffer are two different regions of
+/// `fat_store` (the storage seam's whole point), so nothing here can be
+/// clobbered by the sector read that produced [e].
+@bare
+void fatDirName(u64 e) {
+  final u64 nb = fatNameBase();
+  u64 i = u64(0);
+  while (i < u64(fatNameBytes)) {
+    Pointer<u8>.fromAddress(e + u64(fatDirOffName) + i).value =
+        Pointer<u8>.fromAddress(nb + i).value;
+    i = i + u64(1);
+  }
+}
+
+/// Writes [first] and [bytes] into root-directory entry [i] and puts the sector
+/// back on the drive. Returns a refusal code.
+///
+/// Rule 3's mechanism. Touches exactly four bytes of size and two of first
+/// cluster and leaves every other byte of the entry — name, attribute,
+/// timestamps, the FAT32 high cluster word — exactly as it found them.
+@bare
+u64 fatDirWrite(u64 i, u64 first, u64 bytes) {
+  if (i >= fatMeta(u64(fatMetaRootEntries))) {
+    return u64(fatErrDiskDir);
+  }
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (i >> u64(4));
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(fatErrDiskDir);
+  }
+  final u64 e = fatSectorBase() + ((i & u64(15)) << u64(5));
+  fatPut16(e + u64(fatDirOffCluster), first);
+  fatPut32(e + u64(fatDirOffSize), bytes);
+  return fatWriteSector(lba, fatSectorBase());
+}
+
+/// The index of the first reusable root-directory entry — free (0x00) or
+/// deleted (0xE5). Returns `rootEntries` if the directory is full, or
+/// `rootEntries + 1` if a directory sector could not be read.
+@bare
+u64 fatDirFreeSlot() {
+  final u64 n = fatMeta(u64(fatMetaRootEntries));
+  u64 i = u64(0);
+  while (i < n) {
+    final u64 e = fatDirEntry(i);
+    if (e < u64(1)) {
+      return n + u64(1);
+    }
+    final u64 c0 = fatU8(e);
+    if (c0 == u64(fatDirFree)) {
+      return i;
+    }
+    if (c0 == u64(fatDirDeleted)) {
+      return i;
+    }
+    i = i + u64(1);
+  }
+  return n;
+}
+
+/// Makes sure entry [j] still reads as end-of-directory. Returns a refusal.
+///
+/// **This is the rule every FAT driver has to keep and most explanations skip.**
+/// The first 0x00 entry ends a directory: everything after it is undefined and
+/// no reader may look at it. When [fatDirCreate] consumes that entry, the entry
+/// after it becomes the new terminator — and it is only a terminator if its
+/// first byte is 0x00. On a freshly formatted volume it already is, so this
+/// costs one cached read and no write; on a volume where it is not, this is the
+/// difference between a directory that ends and one that runs into whatever the
+/// formatter left behind.
+@bare
+u64 fatDirTerminate(u64 j) {
+  if (j >= fatMeta(u64(fatMetaRootEntries))) {
+    return u64(fatErrOk);
+  }
+  final u64 e = fatDirEntry(j);
+  if (e < u64(1)) {
+    return u64(fatErrDiskDir);
+  }
+  if (fatU8(e) == u64(fatDirFree)) {
+    return u64(fatErrOk);
+  }
+  fatDirBlank(e);
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (j >> u64(4));
+  return fatWriteSector(lba, fatSectorBase());
+}
+
+/// 1 if every byte of the name buffer is one a FAT short name may contain.
+///
+/// **This is checked on the WRITE path and NOT on the read path, and that is
+/// deliberate rather than an oversight.** `fatParseAt` accepts any printable
+/// byte (GAP-0117), which is laxer than the specification: a name with a `*` or
+/// a `|` in it is not a legal FAT short name. Tightening the PARSER would make
+/// a file some other formatter had put on a volume unreachable from this
+/// kernel — refusing to name a file does not make it safer, it makes it
+/// invisible. Tightening the CREATOR is the opposite: a name this kernel writes
+/// into a directory is a name every other FAT implementation will have to live
+/// with, and putting one there that the specification forbids is how a volume
+/// becomes something only this kernel can use.
+///
+/// The forbidden set is FAT's own: `" * + , / : ; < = > ? [ \ ] |`, plus
+/// anything below 0x20 or above 0x7E, plus 0xE5 as the first byte (which means
+/// "deleted"). `.` and lower case cannot get here — `fatParseAt` consumes the
+/// dot and upper-cases the rest.
+@bare
+u64 fatNameLegal() {
+  final u64 nb = fatNameBase();
+  if (Pointer<u8>.fromAddress(nb).value == u8(fatDirDeleted)) {
+    return u64(0);
+  }
+  u64 i = u64(0);
+  while (i < u64(fatNameBytes)) {
+    final u8 c = Pointer<u8>.fromAddress(nb + i).value;
+    if (c < u8(0x20)) {
+      return u64(0);
+    }
+    if (c > u8(0x7E)) {
+      return u64(0);
+    }
+    if (fatNameByteBad(c) > u64(0)) {
+      return u64(0);
+    }
+    i = i + u64(1);
+  }
+  return u64(1);
+}
+
+/// 1 if [c] is one of the fifteen bytes a FAT short name may not contain.
+///
+/// A chain of comparisons each ending in `return`, for GAP-0088's reason: a
+/// dense chain becomes a jump table in a section this repo does not control.
+@bare
+u64 fatNameByteBad(u8 c) {
+  if (c == u8(0x22)) {
+    return u64(1); // "
+  }
+  if (c == u8(0x2A)) {
+    return u64(1); // *
+  }
+  if (c == u8(0x2B)) {
+    return u64(1); // +
+  }
+  if (c == u8(0x2C)) {
+    return u64(1); // ,
+  }
+  if (c == u8(0x2E)) {
+    return u64(1); // .
+  }
+  if (c == u8(0x2F)) {
+    return u64(1); // /
+  }
+  if (c == u8(0x3A)) {
+    return u64(1); // :
+  }
+  if (c == u8(0x3B)) {
+    return u64(1); // ;
+  }
+  if (c == u8(0x3C)) {
+    return u64(1); // <
+  }
+  if (c == u8(0x3D)) {
+    return u64(1); // =
+  }
+  if (c == u8(0x3E)) {
+    return u64(1); // >
+  }
+  if (c == u8(0x3F)) {
+    return u64(1); // ?
+  }
+  if (c == u8(0x5B)) {
+    return u64(1); // [
+  }
+  if (c == u8(0x5C)) {
+    return u64(1); // backslash
+  }
+  if (c == u8(0x5D)) {
+    return u64(1); // ]
+  }
+  if (c == u8(0x7C)) {
+    return u64(1); // |
+  }
+  return u64(0);
+}
+
+/// Creates a root-directory entry for the name already in the name buffer: 11
+/// name bytes, [fatAttrArchive], first cluster 0, size 0, every other byte
+/// zero. Leaves the index in [fatMetaFileEntry]. Returns a refusal code.
+///
+/// **A zero-length file with first cluster 0 is a real, legal FAT file** — the
+/// one `m15-fileio`'s volume already carried as `EMPTY.TXT` and which this
+/// kernel refuses to `open` for reading (GAP-0122 item 13). Creating one and
+/// then growing it is what makes "create" and "allocate" two separate steps
+/// that can each fail on their own.
+///
+/// **No timestamps.** `DIR_CrtTime`, `DIR_WrtTime` and `DIR_LstAccDate` are
+/// left as zero because this kernel has no wall clock (GAP-0058: the PIT is
+/// masked at rest so `ticks` is reproducible, and there is no RTC driver). Zero
+/// is what a FAT date field is allowed to be and what `fsck_msdos` and macOS's
+/// `msdos` driver both accept; a made-up date would be worse than no date.
+@bare
+u64 fatDirCreate() {
+  if (fatNameLegal() < u64(1)) {
+    return u64(fatErrBadName);
+  }
+  final u64 n = fatMeta(u64(fatMetaRootEntries));
+  final u64 i = fatDirFreeSlot();
+  if (i > n) {
+    return u64(fatErrDiskDir);
+  }
+  if (i == n) {
+    return u64(fatErrNoDirSlot);
+  }
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (i >> u64(4));
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(fatErrDiskDir);
+  }
+  final u64 e = fatSectorBase() + ((i & u64(15)) << u64(5));
+  final u64 wasEnd = fatU8(e);
+  fatDirBlank(e);
+  fatDirName(e);
+  Pointer<u8>.fromAddress(e + u64(fatDirOffAttr)).value = u8(fatAttrArchive);
+  final u64 w = fatWriteSector(lba, fatSectorBase());
+  if (w > u64(fatErrOk)) {
+    return w;
+  }
+  fatSetMeta(u64(fatMetaFileEntry), i);
+  fatSetMeta(u64(fatMetaFileAttr), u64(fatAttrArchive));
+  fatSetMeta(u64(fatMetaFileFirst), u64(0));
+  fatSetMeta(u64(fatMetaFileBytes), u64(0));
+  if (wasEnd == u64(fatDirFree)) {
+    return fatDirTerminate(i + u64(1));
+  }
+  return u64(fatErrOk);
+}
+
+/// The absolute LBA of sector [k] of a cluster [c]. 0 if [c] is not a data
+/// cluster or [k] is past the end of it.
+///
+/// `file.dart`'s append path needs this and cannot use [fatFileSector], which
+/// answers through the cluster ARRAY — a structure a growing file does not
+/// have, because its chain is being built one link at a time as the bytes
+/// arrive.
+@bare
+u64 fatClusterSector(u64 c, u64 k) {
+  if (fatValidCluster(c) > u64(fatErrOk)) {
+    return u64(0);
+  }
+  final u64 spc = fatMeta(u64(fatMetaSecPerClus));
+  if (k >= spc) {
+    return u64(0);
+  }
+  return fatMeta(u64(fatMetaDataStart)) + ((c - u64(fatFirstCluster)) * spc) + k;
+}
+
+/// Bytes per cluster on the mounted volume.
+@bare
+u64 fatClusterBytes() {
+  return fatMeta(u64(fatMetaSecPerClus)) << u64(fatSectorShift);
+}
+
+/// How many sectors this driver has written since boot. Read by
+/// `file.dart`'s report and by nothing else.
+@bare
+u64 fatWrites() {
+  return fatMeta(u64(fatMetaWrites));
+}
+
+/// Clusters allocated and clusters freed since boot.
+@bare
+u64 fatAllocs() {
+  return fatMeta(u64(fatMetaAllocs));
+}
+
+@bare
+u64 fatFrees() {
+  return fatMeta(u64(fatMetaFrees));
+}
+
 // ---------------------------------------------------------------------------
 // `FS ERR <code> <sentence>`
 //
@@ -1710,6 +2334,28 @@ void fatReportError(u64 code) {
     uartWrite(Rodata.addressOf(fatStrE27), u64(32));
     return;
   }
+  if (code == u64(fatErrFull)) {
+    uartWrite(Rodata.addressOf(fatStrE29), u64(36));
+    return;
+  }
+  if (code == u64(fatErrNoDirSlot)) {
+    uartWrite(Rodata.addressOf(fatStrE30), u64(42));
+    return;
+  }
+  if (code == u64(fatErrDiskWrite)) {
+    uartWrite(Rodata.addressOf(fatStrE31), u64(43));
+    return;
+  }
+  if (code == u64(fatErrBadName)) {
+    uartWrite(Rodata.addressOf(fatStrE28), u64(66));
+    return;
+  }
+  // THE FALL-THROUGH IS UNREACHABLE AND IS HERE ANYWAY. Every code 1..31 has
+  // its own branch above; a value outside that range is not a `fatErr*` and
+  // nothing in this kernel produces one. Until M16, [fatErrBadName] was the
+  // last code and this line was its branch — M16 added three codes above it and
+  // gave it one of its own, so that "the highest-numbered code is the one
+  // without a branch" stopped being a rule the reporting depended on.
   uartWrite(Rodata.addressOf(fatStrE28), u64(66));
 }
 

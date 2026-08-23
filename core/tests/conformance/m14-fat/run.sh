@@ -142,7 +142,7 @@ KDATA_BSS=$((16#$KDATA_BSS_HEX))
 M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
 [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-[[ "$M15_BSS" -eq 1280 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 1280"
+[[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7)"
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 [[ "$KDATA_BSS" -eq 11488 ]] || fail "kdata.o .bss outside M15's file_store is $KDATA_BSS bytes, expected 11488 — 9664 through M13 plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
 FAT_STORE_SIZE=$(symsize "$CORE_DIR/build/kdata.o" fat_store)
@@ -315,7 +315,7 @@ print("    (%d refusal codes, numbered 1..%d, each returned from somewhere in fa
       % (len(nonzero), len(nonzero)))
 sys.exit(1 if bad else 0)
 PY
-echo "STRUCTURAL: pass  all 28 filesystem refusal codes are reachable, dispatched and distinctly worded"
+echo "STRUCTURAL: pass  all 31 filesystem refusal codes are reachable, dispatched and distinctly worded"
 
 # 2f. THE FAT16 BAND IS THE SPECIFICATION'S, AND THE TYPE IS COMPUTED.
 #
@@ -331,34 +331,65 @@ grep -qE "const int fatBpb\w+ = 54;" "$CORE_DIR/kernel/fat.dart" \
   && fail "fat.dart names offset 54 (BS_FilSysType). That string is documentation, not a determinant; reading it would make a FAT12 volume look like FAT16."
 echo "STRUCTURAL: pass  the FAT12/FAT16/FAT32 boundaries are 4085 and 65525, the type is COMPUTED from the cluster count, and BS_FilSysType at offset 54 is never read"
 
-# 2g. THERE IS NO WRITE PATH, AND THAT IS MEASURED RATHER THAN PROMISED.
+# 2g. M14'S OWN SESSION WRITES NOTHING, AND THAT IS MEASURED BY RUNNING.
 #
-# "Read-only" is the loudest claim this milestone makes. ATA `WRITE SECTORS` is
-# 0x30 and `WRITE SECTORS EXT` is 0x34; neither is implemented and neither may
-# appear. `outw` to the data port would be the other way to write a sector, so
-# the ONLY port_outw call sites are checked too.
-grep -qE "0x30|0x34" <(grep -E "ataCmd\w+ = " "$CORE_DIR/kernel/ata.dart") \
-  && fail "core/kernel/ata.dart declares an ATA WRITE command opcode — this milestone is read-only and GAP-0116 says so"
-# `port_outw` DOES exist and is used -- by the framebuffer, for the VBE index
-# and data ports (fb.dart). What must not exist is one aimed at the ATA data
-# port, because a 16-bit write to 0x1F0 is exactly how a sector gets written.
-python3 - "$CORE_DIR/kernel" <<'PY' || fail "a port_outw call site in core/kernel/ targets a port that is not the framebuffer's VBE pair"
+# THIS ASSERTION WAS REPLACED AT M16, DELIBERATELY AND IN THE OPEN. Until M16
+# this block grepped `core/kernel/ata.dart` for the opcodes 0x30 and 0x34, every
+# `port_outw` call site for a port that was not the framebuffer's VBE pair, and
+# every kernel file for a write function by name -- and required all three to be
+# absent. That was the strongest available statement while nothing in this
+# kernel could write a sector.
+#
+# M16 (docs/decisions/0020-writing-to-a-disk.md) makes all three false. What
+# replaces them is not weaker:
+#
+#   * THE ONE CALL SITE. `ataWriteFrom` is defined once and called from exactly
+#     one place, `fatWriteSector`, and the only `port_outw` aimed at the ATA
+#     data register is inside it. So "can this code path write a sector?" is
+#     still a question with one place to look -- which is the property the old
+#     grep was really protecting.
+#   * THE MEASUREMENT. Check 7i requires the image this harness hands to QEMU
+#     to be BYTE-FOR-BYTE IDENTICAL afterwards, and the variant loop requires
+#     the same of all five broken volumes. A kernel that can write and does not
+#     still passes; a kernel that quietly wrote one sector does not.
+python3 - "$CORE_DIR/kernel" <<'WRITEPATH' || fail "the ATA write path is reachable from somewhere other than fatWriteSector, or a port_outw is aimed somewhere it should not be"
 import glob, os, re, sys
+kdir = sys.argv[1]
+code = {}
+for path in sorted(glob.glob(os.path.join(kdir, "*.dart"))):
+    src = open(path).read()
+    code[os.path.basename(path)] = "\n".join(
+        l for l in src.splitlines() if not l.strip().startswith("//"))
 bad = []
-sites = 0
-for path in sorted(glob.glob(os.path.join(sys.argv[1], "*.dart"))):
-    for m in re.finditer(r"port_outw\(u64\((\w+)\)", open(path).read()):
-        sites += 1
-        if m.group(1) not in ("vbeIndexPort", "vbeDataPort"):
-            bad.append("%s calls port_outw with %s" % (os.path.basename(path), m.group(1)))
+defs = sum(len(re.findall(r"^u64 ataWriteFrom\(", s, re.M)) for s in code.values())
+if defs != 1:
+    bad.append("ataWriteFrom is defined %d times, expected 1" % defs)
+calls = []
+for name, s in code.items():
+    for line in s.splitlines():
+        if "ataWriteFrom(" in line and not line.startswith("u64 ataWriteFrom("):
+            calls.append((name, line.strip()))
+if len(calls) != 1 or calls[0][0] != "fat.dart":
+    bad.append("ataWriteFrom has %d call sites and they are %s; expected exactly "
+               "one, in fat.dart" % (len(calls), calls))
+sites = []
+for name, s in code.items():
+    for m in re.finditer(r"port_outw\(u64\((\w+)\)", s):
+        sites.append((name, m.group(1)))
+allowed = {("fb.dart", "vbeIndexPort"), ("fb.dart", "vbeDataPort"),
+           ("ata.dart", "ataRegData")}
+for site in sites:
+    if site not in allowed:
+        bad.append("%s calls port_outw with %s" % site)
+if len([x for x in sites if x == ("ata.dart", "ataRegData")]) != 1:
+    bad.append("there is not exactly one port_outw aimed at the ATA data register")
+print("    (%d port_outw call sites: the framebuffer's VBE index/data pair, and "
+      "ONE at the ATA data register inside ataWriteFrom)" % len(sites))
 for b in bad:
     print("    - " + b, file=sys.stderr)
-print("    (%d port_outw call sites, all of them the framebuffer's VBE index/data pair)" % sites)
 sys.exit(1 if bad else 0)
-PY
-grep -qE "ataWriteInto|ataWriteSector|fatWrite|fatSetDir|fatAlloc" "$CORE_DIR/kernel/"*.dart \
-  && fail "a write function exists in core/kernel/ — the read-only claim is false"
-echo "STRUCTURAL: pass  no ATA write opcode, no port_outw aimed anywhere but the framebuffer, and no write function anywhere in core/kernel/ — the volume is read-only by construction, not by intent"
+WRITEPATH
+echo "STRUCTURAL: pass  the ATA write path M16 added is reachable from exactly one place (fatWriteSector) and the only port_outw aimed at 0x1F0 is inside it. That M14's own boots write nothing at all is asserted at check 7i, by comparing the image's SHA-256 before and after — which is what this check used to assert by grepping for an opcode that now exists."
 
 # 2h. THE CHAIN IS FOLLOWED, IN THE SOURCE.
 #
@@ -425,6 +456,11 @@ python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/progA.elf" "$PROGDIR/p
   || fail "make-image.py could not write the volume"
 python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" --json \
   > "$LAYOUT" || fail "make-image.py --json failed"
+
+# M16 replaced this harness's "no write opcode anywhere" grep with a
+# measurement (see 2g). This is the first half of it: the SHA-256 of the volume
+# before any boot has seen it. The second half is at the end of step 7.
+M14_SHA_BEFORE=$(shasum -a 256 "$DISK_IMG" | cut -d' ' -f1)
 
 command -v fsck_msdos >/dev/null 2>&1 || FSCK=/sbin/fsck_msdos
 FSCK="${FSCK:-fsck_msdos}"
@@ -568,7 +604,7 @@ SERIAL="$WORKDIR/main/serial.txt"
 SCREEN="$WORKDIR/main/screen.txt"
 [[ -s "$SERIAL" ]] || fail "the main boot captured no serial output at all"
 
-have() { grep -qF -- "$1" "$SERIAL" || fail "the transcript does not contain: $1"; }
+have() { grep -qF -- "$1" "$SERIAL" || { sed -n '/M1 END/,$p' "$SERIAL" >&2; fail "the transcript does not contain: $1"; }; }
 havent() { grep -qF -- "$1" "$SERIAL" && fail "the transcript contains what it must not: $1"; }
 
 # ---------------------------------------------------------------------------
@@ -700,6 +736,18 @@ havent "USER FAULT"
 havent "FAULT RECOVERED"
 echo "CHECK 7h: pass  0x$FREE_BEFORE frames free before the session and 0x$FREE_AFTER after, across two loads and two teardowns, with no fault anywhere in the capture"
 
+# 7i. M14'S SESSION WROTE NOTHING, MEASURED RATHER THAN GREPPED FOR.
+#
+# The other half of check 2g. This image was carried through a boot that
+# mounted the volume, listed the root directory, printed a file across a
+# 98-cluster hole and loaded two programs off it by name. Since M16 the kernel
+# underneath is one that CAN write a sector; this says it did not write one
+# here, which is a claim about what ran rather than about what is spellable.
+M14_SHA_AFTER=$(shasum -a 256 "$DISK_IMG" | cut -d' ' -f1)
+[[ "$M14_SHA_BEFORE" == "$M14_SHA_AFTER" ]] \
+  || fail "M14's boot CHANGED the volume (sha256 $M14_SHA_BEFORE -> $M14_SHA_AFTER). This kernel can write to a disk since M16; nothing M14 does is supposed to."
+echo "CHECK 7i: pass  the volume is byte-for-byte identical after the whole session — sha256 $M14_SHA_AFTER"
+
 # ---------------------------------------------------------------------------
 # Step 8 — the five broken volumes.
 # ---------------------------------------------------------------------------
@@ -709,8 +757,15 @@ variant_boot() {
   python3 "$SCRIPT_DIR/make-image.py" "$img" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
     --variant="$name" >"$WORKDIR/v-$name.txt" || fail "make-image.py could not write the $name variant"
   cat "$WORKDIR/v-$name.txt"
+  local vsha_before
+  vsha_before=$(shasum -a 256 "$img" | cut -d' ' -f1)
   drive_session "$WORKDIR/v-$name" "$keys" "$WORKDIR/v-$name.png" "$name" "$portoff" "$img"
   VSER="$WORKDIR/v-$name/serial.txt"
+  # M16: every one of these boots must leave its volume alone, including the
+  # ones whose volume is already broken. A kernel that "repaired" something it
+  # was only asked to read would be caught here.
+  [[ "$vsha_before" == "$(shasum -a 256 "$img" | cut -d' ' -f1)" ]] \
+    || fail "the $name boot CHANGED its image; nothing M14 does writes to a disk"
 }
 vhave() { grep -qF -- "$1" "$VSER" || { echo "--- $VSER ---" >&2; sed -n '/M1 END/,$p' "$VSER" >&2; fail "the $2 boot's transcript does not contain: $1"; }; }
 
@@ -808,4 +863,4 @@ fi
 echo "GOLDEN: pass  ${SERIAL_BYTES}-byte serial match, 80x25 screen match, and m1-interrupts' ${M1_BYTES}-byte golden intact as a byte-exact prefix"
 [[ -f "$SHOT_PNG" ]] || fail "no screenshot at $SHOT_PNG"
 
-echo "M14-fat: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs that HASH THEIR OWN R+X SEGMENT -> make-image.py writes a real FAT16 volume (${IMG_BYTES} bytes = $(( IMG_BYTES / 512 )) sectors, $(d clusters) clusters of $(( $(d spc) * $(d bps) ))B) on which NOTHING IS CONTIGUOUS -> fsck_msdos accepts it and macOS's own msdos driver mounts it and reads both programs back byte-for-byte -> 8 structural checks (donated .bss 9664 -> 11488 with fat_store's four regions tiling 1824 bytes without overlap, the storage seam exactly 4 call sites in one file, 64 @rodata tables (63 in fat.dart, one in elf.dart) each equal to the string its doc comment records and to every length literal passed to it, shellStrHelp 1871 -> 2147 with all four new commands and no line over 78 columns, 28 refusal codes each reachable and each distinctly worded, the FAT12/FAT16 boundary computed from the cluster count and BS_FilSysType never read, no ATA write opcode and no port_outw outside the framebuffer, and fatFileSector indexing the chain array) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 58 + fat_store_addr) -> SEVEN real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's ${M1_BYTES}-byte golden intact as a prefix; \`fs\` reproducing the BPB and four derived region offsets; \`ls\` printing 4 entries and skipping 5 (a volume label, a deleted entry and three real long-filename entries the host driver resolves); \`cat\` printing a file across a 98-cluster hole with not one byte of the pattern filling the gap; TWO PROGRAMS LOADED BY NAME whose clusters interleave with each other's, each hashing its own image to the value derive.py computes from the ELF and NEITHER printing the hash a contiguous read would have produced; four refusals for four kinds of bad name; \`run <lba>\` still taking the contiguous path; the allocator's free count identical before and after; four boots against four one-thing-wrong volumes producing four different refusals; one boot against a volume whose three files have three different broken chains producing a named cycle, a bad cluster and a short chain; one against a volume whose chain leaves the data region by exactly one cluster; and every load-bearing expectation REQUIRED to fail against the broken-chain transcript. Screenshot at $SHOT_PNG"
+echo "M14-fat: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs that HASH THEIR OWN R+X SEGMENT -> make-image.py writes a real FAT16 volume (${IMG_BYTES} bytes = $(( IMG_BYTES / 512 )) sectors, $(d clusters) clusters of $(( $(d spc) * $(d bps) ))B) on which NOTHING IS CONTIGUOUS -> fsck_msdos accepts it and macOS's own msdos driver mounts it and reads both programs back byte-for-byte -> 8 structural checks (donated .bss 9664 -> 11488 with fat_store's four regions tiling 1824 bytes without overlap, the storage seam exactly 4 call sites in one file, 67 @rodata tables (66 in fat.dart, one in elf.dart) each equal to the string its doc comment records and to every length literal passed to it, shellStrHelp 1871 -> 2147 with all four new commands and no line over 78 columns, 31 refusal codes each reachable and each distinctly worded, the FAT12/FAT16 boundary computed from the cluster count and BS_FilSysType never read, the ATA write path M16 added reachable from exactly one place with the only port_outw at 0x1F0 inside it, and fatFileSector indexing the chain array) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 58 + fat_store_addr) -> SEVEN real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's ${M1_BYTES}-byte golden intact as a prefix; \`fs\` reproducing the BPB and four derived region offsets; \`ls\` printing 4 entries and skipping 5 (a volume label, a deleted entry and three real long-filename entries the host driver resolves); \`cat\` printing a file across a 98-cluster hole with not one byte of the pattern filling the gap; TWO PROGRAMS LOADED BY NAME whose clusters interleave with each other's, each hashing its own image to the value derive.py computes from the ELF and NEITHER printing the hash a contiguous read would have produced; four refusals for four kinds of bad name; \`run <lba>\` still taking the contiguous path; the allocator's free count identical before and after; THE VOLUME BYTE-FOR-BYTE IDENTICAL AFTER EVERY BOOT, which is what M16 replaced this harness's read-only greps with; four boots against four one-thing-wrong volumes producing four different refusals; one boot against a volume whose three files have three different broken chains producing a named cycle, a bad cluster and a short chain; one against a volume whose chain leaves the data region by exactly one cluster; and every load-bearing expectation REQUIRED to fail against the broken-chain transcript. Screenshot at $SHOT_PNG"

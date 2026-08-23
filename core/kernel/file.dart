@@ -5,6 +5,17 @@
 // FAT16 filesystem to M13's C library, and the per-program descriptor table
 // that holds the offset between one `read` and the next.
 //
+// oscortex_core M16: AND A PROGRAM THAT CAN WRITE. `open` grew a MODE, syscall
+// 9 is `fdwrite`, and `close` became the thing that puts a file in a directory.
+// The architecture is docs/decisions/0020-writing-to-a-disk.md; the binary exit
+// criterion is ROADMAP.md's M16 and tests/conformance/m16-filewrite/run.sh.
+//
+// **A WRITE DESCRIPTOR IS APPEND-ONLY AND STARTS EMPTY.** `open(name, O_WRITE)`
+// creates the file or empties it; `seek` on the descriptor it returns is
+// refused, and so is `read`. That is a smaller thing than POSIX `O_WRONLY` and
+// ADR-0020 §0 gives the reason. GAP-0127 lists, in sixteen items, everything a
+// program therefore still cannot do to a file.
+//
 // The architecture is
 // docs/decisions/0019-file-descriptors-and-a-program-that-reads.md; the binary
 // exit criterion is ROADMAP.md's M15 and tests/conformance/m15-fileio/run.sh.
@@ -22,12 +33,13 @@
 // loading a program, not a program doing I/O. After this file a C program can
 // name a file, read it in pieces, and compute something from what it read.
 //
-// **What is still absent is written down in docs/known-gaps.md GAP-0122 rather
-// than implied by silence**: there are no writes anywhere (GAP-0116 item 1 is
-// unchanged), no directories, no `stat`, no `dup`, no `stdin`, no console
-// input, no `errno`, no VFS and no second filesystem. `open` takes an 8.3 name
-// in the root directory and nothing else; there is no path, because there is
-// nowhere for a path to lead.
+// **What is still absent is written down in docs/known-gaps.md GAP-0122 and
+// GAP-0127 rather than implied by silence**: at M15 there were no writes
+// anywhere, and M16 changed that and nothing else on the list -- no
+// directories, no `stat`, no `dup`, no `stdin`, no console input, no `errno`,
+// no VFS and no second filesystem. `open` takes an 8.3 name in the root
+// directory and nothing else; there is no path, because there is nowhere for a
+// path to lead.
 //
 // ---------------------------------------------------------------------------
 // ONE CHAIN, FOUR DESCRIPTORS, AND THE WORD THAT MAKES THAT SOUND
@@ -186,11 +198,54 @@ final List<u8> fileStrOrphans = const [
   u8(0x20),
 ];
 
+/// `'FILEW WRITES '` -- 13 bytes.
+@rodata
+final List<u8> fileStrWrites = const [
+  u8(0x46), u8(0x49), u8(0x4C), u8(0x45), u8(0x57), u8(0x20), u8(0x57), u8(0x52), u8(0x49), u8(0x54), u8(0x45), u8(0x53),
+  u8(0x20),
+];
+
+/// `' CREATED '` -- 9 bytes.
+@rodata
+final List<u8> fileStrCreated = const [
+  u8(0x20), u8(0x43), u8(0x52), u8(0x45), u8(0x41), u8(0x54), u8(0x45), u8(0x44), u8(0x20),
+];
+
+/// `' TRUNC '` -- 7 bytes.
+@rodata
+final List<u8> fileStrTrunc = const [
+  u8(0x20), u8(0x54), u8(0x52), u8(0x55), u8(0x4E), u8(0x43), u8(0x20),
+];
+
+/// `' FLUSH '` -- 7 bytes.
+@rodata
+final List<u8> fileStrFlush = const [
+  u8(0x20), u8(0x46), u8(0x4C), u8(0x55), u8(0x53), u8(0x48), u8(0x20),
+];
+
+/// `' DISKW '` -- 7 bytes.
+@rodata
+final List<u8> fileStrDiskW = const [
+  u8(0x20), u8(0x44), u8(0x49), u8(0x53), u8(0x4B), u8(0x57), u8(0x20),
+];
+
+/// `' ALLOC '` -- 7 bytes.
+@rodata
+final List<u8> fileStrAlloc = const [
+  u8(0x20), u8(0x41), u8(0x4C), u8(0x4C), u8(0x4F), u8(0x43), u8(0x20),
+];
+
+/// `' FREED '` -- 7 bytes.
+@rodata
+final List<u8> fileStrFreed = const [
+  u8(0x20), u8(0x46), u8(0x52), u8(0x45), u8(0x45), u8(0x44), u8(0x20),
+];
+
 // ---------------------------------------------------------------------------
-// Constants. Every one of the four syscall numbers and every one of the eleven
+// Constants. Every one of the FIVE syscall numbers and every one of the THIRTEEN
 // refusal values below is read back OUT OF THIS FILE by
-// `tests/conformance/m15-fileio/run.sh` and compared against userland's copy, so
-// the two cannot disagree about what a refusal LOOKS LIKE.
+// `tests/conformance/m16-filewrite/run.sh` and compared against userland's copy,
+// so the two cannot disagree about what a refusal LOOKS LIKE.
 //
 // **Nothing in core/kernel/ names the C library**, and m13-libc greps for that:
 // a kernel that knew the name of its userland's header would be a kernel with a
@@ -208,6 +263,17 @@ const int fileSysCloseNo = 7;
 
 /// Syscall 8 — `seek(fd, offset)`. Absolute, and the only form there is.
 const int fileSysSeekNo = 8;
+
+/// M16 — syscall 9, `fdwrite(fd, buf, len)`.
+///
+/// **It is not called `write` and the name is the interface.** Syscall 1 is
+/// `write(buf, len)` and it prints on the console; six byte-exact goldens
+/// contain its output and it takes no descriptor. Calling this one `write` too
+/// would mean two syscalls with one name distinguished by arity, in a C library
+/// where the console one has been `write` since M13. `fdwrite` writes to a file
+/// descriptor and says so. GAP-0128 records what a real `write(1, ...)` would
+/// cost and why it was not this milestone's business.
+const int fileSysWriteNo = 9;
 
 /// Descriptors per program. FOUR, and the number is a bound rather than a
 /// budget: a fifth `open` is [fileRetNoSlot] with nothing allocated and nothing
@@ -237,18 +303,30 @@ const int fileReadMax = 512;
 /// A longer one is [fileRetBadName] and is refused before it is copied.
 const int fileNameMax = 12;
 
-/// Donated storage: 1280 bytes in three regions. See `core/boot/kdata.S`.
-const int fileStoreBytes = 1280;
+/// The largest single `fdwrite`. One sector, for [fileReadMax]'s reason and one
+/// more: the bytes are copied out of the caller's pages into the kernel BEFORE
+/// any of them reaches the drive, and the buffer they are copied into is one
+/// sector. A program writes more by calling again.
+const int fileWriteMax = 512;
+
+/// Donated storage: 2560 bytes in FOUR regions. See `core/boot/kdata.S`.
+///
+/// M16 took this from 1280: the metadata doubled to 32 words (M16 has six
+/// counters of its own), a descriptor doubled from four words to eight (an
+/// entry index, a last cluster, a mode and a spare), and a SECOND 512-byte
+/// sector buffer appeared — see [fileSecBase] for why one is not enough.
+const int fileStoreBytes = 2560;
 const int fileMetaOffset = 0;
-const int fileTableOffset = 128;
-const int fileBufOffset = 768;
+const int fileTableOffset = 256;
+const int fileBufOffset = 1536;
+const int fileSecOffset = 2048;
 
-/// Sixteen metadata words.
-const int fileMetaWords = 16;
+/// Thirty-two metadata words.
+const int fileMetaWords = 32;
 
-/// Four words per descriptor, four descriptors per row.
-const int fileFdWords = 4;
-const int fileRowWords = 16;
+/// Eight words per descriptor, four descriptors per row.
+const int fileFdWords = 8;
+const int fileRowWords = 32;
 
 // Metadata word indices. The layout is documented once, in kdata.S.
 const int fileMetaOpens = 0;
@@ -262,17 +340,36 @@ const int fileMetaRebuilds = 7;
 const int fileMetaStatus = 8;
 const int fileMetaLive = 9;
 const int fileMetaPeak = 10;
-const int fileMetaSpare11 = 11;
-const int fileMetaSpare12 = 12;
-const int fileMetaSpare13 = 13;
-const int fileMetaSpare14 = 14;
-const int fileMetaSpare15 = 15;
+// M16's six. Every one of them is printed by [fileWriteReport].
+const int fileMetaWrites = 11;
+const int fileMetaWBytes = 12;
+const int fileMetaWSectors = 13;
+const int fileMetaCreates = 14;
+const int fileMetaTruncs = 15;
+const int fileMetaFlushes = 16;
 
-// **THERE IS NO WORD HERE THAT NOTHING READS.** Every one of 0..10 is either
-// printed by [fileExitReport] or load-bearing ([fileMetaLive] is what
-// [fileMetaPeak] is computed from), and the five spares are declared as spares.
-// m14's mutation round found that an unread counter is a mutation survivor by
-// construction (GAP-0120, `fatMetaHits`), so M15 does not have one.
+const int fileMetaSpare17 = 17;
+const int fileMetaSpare18 = 18;
+const int fileMetaSpare19 = 19;
+const int fileMetaSpare20 = 20;
+const int fileMetaSpare21 = 21;
+const int fileMetaSpare22 = 22;
+const int fileMetaSpare23 = 23;
+const int fileMetaSpare24 = 24;
+const int fileMetaSpare25 = 25;
+const int fileMetaSpare26 = 26;
+const int fileMetaSpare27 = 27;
+const int fileMetaSpare28 = 28;
+const int fileMetaSpare29 = 29;
+const int fileMetaSpare30 = 30;
+const int fileMetaSpare31 = 31;
+
+// **THERE IS NO WORD HERE THAT NOTHING READS.** Every one of 0..16 is either
+// printed by [fileExitReport] or [fileWriteReport] or load-bearing
+// ([fileMetaLive] is what [fileMetaPeak] is computed from), and the spares are
+// declared as spares. m14's mutation round found that an unread counter is a
+// mutation survivor by construction (GAP-0120, `fatMetaHits`), so neither M15
+// nor M16 has one.
 
 // Descriptor word indices, within a row.
 const int fileFdState = 0;
@@ -280,11 +377,41 @@ const int fileFdFirst = 1;
 const int fileFdSize = 2;
 const int fileFdPos = 3;
 
+/// M16. The root-directory entry index this descriptor came from, the LAST
+/// cluster of its chain, and a spare.
+///
+/// **[fileFdLast] is what makes appending cost no FAT walk.** A write-mode
+/// descriptor is append-only (see [fileSysWrite]), so the only cluster it ever
+/// needs is the one at the end, and it is the one [fatAlloc] just returned.
+/// `fat.dart`'s chain array is never consulted on the write path at all.
+const int fileFdEntry = 4;
+const int fileFdLast = 5;
+
+/// How many BYTES of cluster this descriptor has allocated. Always a multiple
+/// of the cluster size, and always at least the file's size.
+///
+/// **This word is what makes a failed write retryable without leaking a
+/// cluster.** [fileWriteChunk] says why the obvious test — "is the offset on a
+/// cluster boundary" — is not the same question.
+const int fileFdAlloc = 6;
+const int fileFdSpare7 = 7;
+
 /// A descriptor slot nobody has opened.
 const int fileFdFree = 0;
 
-/// A descriptor slot holding an open file.
+/// A descriptor slot holding a file open FOR READING.
 const int fileFdOpen = 1;
+
+/// M16 — a descriptor slot holding a file open FOR WRITING. A different value
+/// rather than a flag word, so that every `state >= fileFdOpen` test in this
+/// file keeps meaning "there is a file here" and every operation that cares
+/// which kind compares for equality.
+const int fileFdWrite = 2;
+
+/// The two values `open`'s third argument may take. Anything else is
+/// [fileRetBadMode], refused before the name is even parsed.
+const int fileOpenRead = 0;
+const int fileOpenWrite = 1;
 
 // ---------------------------------------------------------------------------
 // Refusal values.
@@ -343,10 +470,27 @@ const int fileRetBadSeek = 0xFFFFFFFFFFFFFFF5;
 /// and gets this.
 const int fileRetNoOwner = 0xFFFFFFFFFFFFFFF4;
 
+/// M16 — the descriptor is open for the OTHER thing. `fdwrite` to a read
+/// descriptor, `read` or `seek` on a write descriptor, or an `open` mode that
+/// is neither [fileOpenRead] nor [fileOpenWrite].
+///
+/// A read-only descriptor and a write-only descriptor are two different objects
+/// here and this is the refusal that says so. There is no read-write mode: see
+/// GAP-0127 item 2.
+const int fileRetBadMode = 0xFFFFFFFFFFFFFFF3;
+
+/// M16 — the volume is full: [fatFindFree] scanned every cluster and found none
+/// free, or the root directory has no reusable entry.
+///
+/// **Nothing was changed when this is returned.** It is produced before the FAT
+/// entry that would have consumed the cluster is written, which is what makes
+/// "the disk filled up" a refusal rather than a corruption.
+const int fileRetNoSpace = 0xFFFFFFFFFFFFFFF2;
+
 // ======================  THE STORAGE SEAM  ======================
 //
-// `file_store` in core/boot/kdata.S is 1280 bytes of assembly-donated `.bss`.
-// It is the ONLY place this subsystem's mutable state lives, and the THREE
+// `file_store` in core/boot/kdata.S is 2560 bytes of assembly-donated `.bss`.
+// It is the ONLY place this subsystem's mutable state lives, and the FOUR
 // functions below are the ONLY call sites of `file_store_addr`.
 //
 // Do NOT call `file_store_addr()` anywhere else, and do NOT add a second
@@ -357,36 +501,62 @@ const int fileRetNoOwner = 0xFFFFFFFFFFFFFFF4;
 //
 // The migration plan, when DCDart grows mutable statics (GAP-0053):
 //
-//   1. declare the metadata, the descriptor table and the bounce buffer as
+//   1. declare the metadata, the descriptor table and the two sector buffers as
 //      DCDart mutable statics in this file;
-//   2. rewrite the three seam functions to take their addresses;
+//   2. rewrite the four seam functions to take their addresses;
 //   3. delete `file_store` and `file_store_addr` from core/boot/kdata.S, and
 //      the `@extern` declaration below.
 //
-// `tests/conformance/m15-fileio/run.sh` COUNTS exactly three
+// `tests/conformance/m16-filewrite/run.sh` COUNTS exactly four
 // `return file_store_addr()` in this file and zero anywhere else in
-// core/kernel/.
+// core/kernel/, and m15-fileio counts the same four.
 
 /// Base of the donated block. See `core/boot/kdata.S`.
 @extern
 external u64 file_store_addr();
 
-/// The 16 metadata words.
+/// The 32 metadata words.
 @bare
 u64 fileMetaBase() {
   return file_store_addr();
 }
 
-/// The 5 x 4 x 4 descriptor words.
+/// The 5 x 4 x 8 descriptor words.
 @bare
 u64 fileTableBase() {
   return file_store_addr() + u64(fileTableOffset);
 }
 
 /// The one-sector bounce buffer. **No user pointer ever names this address.**
+///
+/// Both directions land here: `read` fills it off the drive and copies out of
+/// it, and `fdwrite` copies the caller's bytes INTO it before one of them
+/// reaches the FAT layer. That ordering is the whole of M16's pointer-safety
+/// argument — see [fileSysWrite].
 @bare
 u64 fileBufBase() {
   return file_store_addr() + u64(fileBufOffset);
+}
+
+/// M16 — the read-modify-write sector. **No user pointer ever names this one
+/// either.**
+///
+/// **Why a fourth region and not a fourth use of [fileBufBase].** A `fdwrite`
+/// that does not start and end on a sector boundary has to read the sector that
+/// is already there, splice the caller's bytes into it, and write the whole
+/// sector back. That needs the caller's bytes and the drive's bytes in memory
+/// at the same time, in two different buffers. Using one buffer for both would
+/// mean the read off the drive destroyed the data being written — which is a
+/// bug that only shows up on a write whose length is not a multiple of 512,
+/// which is most of them.
+///
+/// `fat.dart`'s own sector buffer is not available for this either, and for the
+/// reason its note already gives: that buffer is a CACHE keyed by LBA, and
+/// putting a data sector through it would make the next FAT read believe a data
+/// sector was a FAT sector.
+@bare
+u64 fileSecBase() {
+  return file_store_addr() + u64(fileSecOffset);
 }
 
 // ========================  END OF THE STORAGE SEAM  ========================
@@ -423,6 +593,25 @@ void fileSetFd(u64 row, u64 fd, u64 w, u64 v) {
   Pointer<u64>.fromAddress(fileTableBase() + (off << u64(3))).value = v;
 }
 
+/// Puts descriptor [fd] of [row] back to "nobody has opened this".
+///
+/// **Every one of the eight words, every time.** M16 doubled a descriptor from
+/// four words to eight, and the three places that release one — [fileInit],
+/// [fileReleaseOwner] and [fileSysClose] — each cleared four of them by hand.
+/// One function, called from all three, is why adding a ninth word later cannot
+/// leave a stale value behind in two of them.
+@bare
+void fileClearFd(u64 row, u64 fd) {
+  fileSetFd(row, fd, u64(fileFdState), u64(fileFdFree));
+  fileSetFd(row, fd, u64(fileFdFirst), u64(0));
+  fileSetFd(row, fd, u64(fileFdSize), u64(0));
+  fileSetFd(row, fd, u64(fileFdPos), u64(0));
+  fileSetFd(row, fd, u64(fileFdEntry), u64(0));
+  fileSetFd(row, fd, u64(fileFdLast), u64(0));
+  fileSetFd(row, fd, u64(fileFdAlloc), u64(0));
+  fileSetFd(row, fd, u64(fileFdSpare7), u64(0));
+}
+
 /// Zeroes every metadata word and every descriptor word.
 ///
 /// Called from [kmain] before the first byte of output, and it MUST be: this
@@ -445,10 +634,7 @@ void fileInit() {
   while (r < u64(fileRows)) {
     u64 f = u64(0);
     while (f < u64(fileMaxFds)) {
-      fileSetFd(r, f, u64(fileFdState), u64(fileFdFree));
-      fileSetFd(r, f, u64(fileFdFirst), u64(0));
-      fileSetFd(r, f, u64(fileFdSize), u64(0));
-      fileSetFd(r, f, u64(fileFdPos), u64(0));
+      fileClearFd(r, f);
       f = f + u64(1);
     }
     r = r + u64(1);
@@ -493,10 +679,24 @@ u64 fileReleaseOwner(u64 row) {
   while (f < u64(fileMaxFds)) {
     if (fileFd(row, f, u64(fileFdState)) > u64(fileFdFree)) {
       n = n + u64(1);
-      fileSetFd(row, f, u64(fileFdState), u64(fileFdFree));
-      fileSetFd(row, f, u64(fileFdFirst), u64(0));
-      fileSetFd(row, f, u64(fileFdSize), u64(0));
-      fileSetFd(row, f, u64(fileFdPos), u64(0));
+      // M16: A WRITE DESCRIPTOR IS FLUSHED BEFORE IT IS DROPPED, EVEN HERE.
+      // This path runs on the FAULT path as well as the normal one, and the
+      // alternative is worse than losing the data: the FAT links and the data
+      // sectors are already on the drive, and only the directory entry's size
+      // and first cluster are not. Dropping the descriptor without writing them
+      // leaves a chain of clusters marked in use that no directory entry points
+      // at — which is precisely what `fsck_msdos` calls a lost chain. Flushing
+      // turns "the program crashed" into "the file has the bytes it had written
+      // when it crashed", which is both truthful and a clean volume.
+      // There is nobody left to hand a refusal to on this path, so a failed
+      // flush is COUNTED instead: [fileMetaRefusals] is printed by the exit
+      // report and [fileMetaStatus] carries the FAT-level code. A teardown that
+      // could not write a directory entry is a thing the transcript has to say.
+      final u64 fl = fileFlushFd(row, f);
+      if (fl > u64(fatErrOk)) {
+        fileBump(u64(fileMetaRefusals));
+      }
+      fileClearFd(row, f);
     }
     f = f + u64(1);
   }
@@ -655,8 +855,471 @@ u64 fileChainFor(u64 row, u64 fd) {
   return fatSelect(first, size);
 }
 
-/// Syscall 5 — `open(namePtr, nameLen)`. Returns a descriptor number, 0..3, or
-/// a refusal.
+// ===========================================================================
+// M16 (docs/decisions/0020-writing-to-a-disk.md): THE WRITE SYSCALL.
+//
+// WHAT A WRITE DESCRIPTOR IS, STATED ONCE
+// ---------------------------------------------------------------------------
+// `open(name, O_WRITE)` gives back a descriptor that is APPEND-ONLY AND STARTS
+// EMPTY. If the name is not in the root directory it is created; if it is, the
+// file is truncated to zero length and its clusters are returned to the FAT
+// before one byte of the new contents is written. Its offset begins at 0, every
+// `fdwrite` puts its bytes at the offset and advances it, and `seek` on it is
+// [fileRetBadMode].
+//
+// **That is a smaller thing than POSIX `O_WRONLY` and the difference is the
+// point.** A general write — at an arbitrary offset, into the middle of an
+// existing chain, changing a size that may shrink — needs the cluster chain of
+// a file that is being modified while it is being walked, which is the case
+// where a wrong FAT update silently joins two files together. Append-only means
+// the only cluster the code ever needs is the one at the end, the only FAT
+// entry it ever changes is that one's, and "which cluster holds offset X" is
+// never a question that has to be answered by walking anything. GAP-0127 item 1
+// records exactly what is missing and what it would cost.
+//
+// THE POINTER-SAFETY PROPERTY, AND HOW IT DIFFERS FROM M15's
+// ---------------------------------------------------------------------------
+// `read` WRITES through a ring-3 pointer, so [fileOwnsWrite] requires the page
+// to carry the USER bit *and* the WRITABLE bit — refusing a read aimed into the
+// program's own R+X segment, which is the check M15 exists to get right.
+//
+// `fdwrite` READS through a ring-3 pointer, so [fileOwnsRead] requires the USER
+// bit and DOES NOT require WRITABLE. That is not a relaxation, it is the
+// correct question: a program writing out a string literal is writing out
+// `.rodata`, and a validator that demanded WRITABLE would refuse the most
+// ordinary call there is. The two validators are the same twelve lines with one
+// test different, written out twice rather than sharing a flag argument, for
+// [fileOwnsWrite]'s own stated reason.
+//
+// **The bytes stop being the caller's before any of them reaches the drive.**
+// [fileCopyIn] copies the whole request into the kernel's bounce buffer
+// immediately after validation, and from there on nothing in the FAT layer, the
+// ATA driver or this file ever dereferences an address ring 3 chose. That is
+// `open`'s ordering (ADR-0019 §5) applied to a longer path.
+// ===========================================================================
+
+/// 1 if `[ptr, ptr+len)` lies wholly inside pages the current program owns
+/// **and can read**.
+///
+/// The read-side twin of [fileOwnsWrite]. Same bound-before-arithmetic ordering
+/// — `ptr` is a value ring 3 chose and DCDart's arithmetic traps on overflow
+/// with a real `ud2`, so `fdwrite(fd, 0xFFFFFFFFFFFFFFFF, 512)` must be refused
+/// by a comparison and never by an addition. Same page-by-page walk, because a
+/// range can start on a page ring 3 owns and end on one it does not.
+///
+/// **Does NOT require the WRITABLE bit**, and the paragraph above says why.
+/// `m16-filewrite`'s program writes bytes straight out of its own `.rodata` —
+/// a page that is present, user-accessible and read-only — and the harness
+/// requires that call to SUCCEED, which is what makes this a different
+/// validator rather than a copy of one.
+///
+/// **Bounded by [fileWriteMax] and not by [userWriteMax].** `elfOwns` exists and
+/// would have been the obvious thing to call; it refuses any length above 128,
+/// because it was written for the console `write` syscall whose kernel-side
+/// limit that is. Reusing it here would have silently capped every file write at
+/// 128 bytes.
+@bare
+u64 fileOwnsRead(u64 ptr, u64 len) {
+  if (ptr < u64(vmProgBase)) {
+    return u64(0);
+  }
+  if (ptr >= u64(vmProgEnd)) {
+    return u64(0);
+  }
+  if (len < u64(1)) {
+    return u64(0);
+  }
+  if (len > u64(fileWriteMax)) {
+    return u64(0);
+  }
+  if ((ptr + len) > u64(vmProgEnd)) {
+    return u64(0);
+  }
+  u64 a = ptr & u64(0xFFFFFFFFFFFFF000);
+  final u64 last = (ptr + len - u64(1)) & u64(0xFFFFFFFFFFFFF000);
+  while (a <= last) {
+    final u64 e = vmEffective(a);
+    if ((e & u64(2)) < u64(1)) {
+      return u64(0); // not reachable from ring 3 at all
+    }
+    a = a + u64(vmPageBytes);
+  }
+  return u64(1);
+}
+
+/// Copies [n] bytes from the caller's `[src, src+n)` into the bounce buffer.
+///
+/// **This is the only load from a caller-supplied address in this file**, and
+/// its only caller has already run [fileOwnsRead] over exactly that range.
+/// Nothing between the check and the copy can change the tables: the gate is an
+/// interrupt gate so interrupts are off, and this kernel is single-CPU and does
+/// not preempt inside a syscall — [fileCopyOut]'s argument, in the other
+/// direction.
+@bare
+void fileCopyIn(u64 src, u64 n) {
+  final u64 dst = fileBufBase();
+  u64 i = u64(0);
+  while (i < n) {
+    Pointer<u8>.fromAddress(dst + i).value =
+        Pointer<u8>.fromAddress(src + i).value;
+    i = i + u64(1);
+  }
+}
+
+/// Fills the read-modify-write sector with zeroes.
+///
+/// Called for a sector the file has not occupied before, so that the bytes past
+/// the end of what is being written are DEFINED. Nothing reads them — a FAT
+/// file is its directory entry's size, and everything after it in the last
+/// cluster is slack — but an image whose slack is whatever the drive had there
+/// before is an image whose hash is not reproducible, and a harness that
+/// compares images byte-for-byte is exactly what M16 is verified with.
+@bare
+void fileZeroSector() {
+  final u64 b = fileSecBase();
+  u64 i = u64(0);
+  while (i < u64(fileReadMax)) {
+    Pointer<u8>.fromAddress(b + i).value = u8(0);
+    i = i + u64(1);
+  }
+}
+
+/// Splices [n] bytes at offset [from] of the bounce buffer into the
+/// read-modify-write sector at byte [at].
+@bare
+void fileSplice(u64 at, u64 from, u64 n) {
+  final u64 dst = fileSecBase() + at;
+  final u64 src = fileBufBase() + from;
+  u64 i = u64(0);
+  while (i < n) {
+    Pointer<u8>.fromAddress(dst + i).value =
+        Pointer<u8>.fromAddress(src + i).value;
+    i = i + u64(1);
+  }
+}
+
+/// Writes descriptor [fd] of [row]'s size and first cluster into its directory
+/// entry. Returns a `fatErr*` code. Does nothing at all for a read descriptor.
+///
+/// **Rule 3 of the FAT write layer, at the syscall boundary.** Until this runs,
+/// the volume's idea of the file is the empty one `open` left behind: the FAT
+/// links and the data sectors are already on the drive, and the directory entry
+/// is what makes them a file. So `close` is not a courtesy here — a write-mode
+/// descriptor that is never closed and never torn down is bytes on a disk that
+/// nothing points at.
+///
+/// Called from [fileSysClose] and from [fileReleaseOwner], which is the fault
+/// path as well as the normal one.
+@bare
+u64 fileFlushFd(u64 row, u64 fd) {
+  if (fileFd(row, fd, u64(fileFdState)) != u64(fileFdWrite)) {
+    return u64(fatErrOk);
+  }
+  final u64 m = fatMount();
+  if (m > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), m);
+    return m;
+  }
+  final u64 w = fatDirWrite(fileFd(row, fd, u64(fileFdEntry)),
+      fileFd(row, fd, u64(fileFdFirst)), fileFd(row, fd, u64(fileFdSize)));
+  if (w > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), w);
+    return w;
+  }
+  fileBump(u64(fileMetaFlushes));
+  return u64(fatErrOk);
+}
+
+/// Makes the name already in the name buffer exist as an EMPTY file, creating
+/// its directory entry or truncating what is there. Leaves the entry index in
+/// `fatMetaFileEntry`. Returns 0, or a `fileRet*` refusal.
+///
+/// **A file being opened for writing is looked up exactly once**, here, and the
+/// descriptor keeps the entry index from then on. A later flush does not go
+/// looking for the name again, so nothing that happens to the directory in
+/// between can make `close` write a different file's entry.
+///
+/// **A file whose chain is broken is REFUSED, not repaired.** `fatLookup`
+/// returning a cycle, a bad cluster or a short chain means the volume disagrees
+/// with itself about this file, and truncating it would be this kernel deciding
+/// which of the two accounts to believe. It is [fileRetIo] and the FAT-level
+/// code is in [fileMetaStatus]. GAP-0127 item 5.
+@bare
+u64 fileMakeEmpty() {
+  final u64 fs = fatLookup();
+  if (fs == u64(fatErrNotFound)) {
+    final u64 cr = fatDirCreate();
+    if (cr > u64(fatErrOk)) {
+      fileSetMeta(u64(fileMetaStatus), cr);
+      if (cr == u64(fatErrNoDirSlot)) {
+        return u64(fileRetNoSpace);
+      }
+      if (cr == u64(fatErrBadName)) {
+        // The name PARSED as 8.3 and is still not one a FAT directory may hold
+        // — see [fatNameLegal]. Reported as a bad name rather than as an I/O
+        // failure, because that is what it is and because the program can fix
+        // it by choosing a different one.
+        return u64(fileRetBadName);
+      }
+      return u64(fileRetIo);
+    }
+    fileBump(u64(fileMetaCreates));
+    return u64(0);
+  }
+  if (fs == u64(fatErrIsDir)) {
+    fileSetMeta(u64(fileMetaStatus), fs);
+    return u64(fileRetIsDir);
+  }
+  // [fatErrOk] is a file with a chain and [fatErrEmpty] is an entry without a
+  // usable one; both mean THE ENTRY IS THERE, which is all this needs. Every
+  // other code means the lookup itself failed and is handed back.
+  if (fs > u64(fatErrOk)) {
+    if (fs != u64(fatErrEmpty)) {
+      fileSetMeta(u64(fileMetaStatus), fs);
+      return fileFromFat(fs);
+    }
+  }
+  final u64 entry = fatMeta(u64(fatMetaFileEntry));
+  final u64 first = fatMeta(u64(fatMetaFileFirst));
+  fatClose();
+  final u64 tr = fatTruncate(first);
+  if (tr > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), tr);
+    return u64(fileRetIo);
+  }
+  final u64 dw = fatDirWrite(entry, u64(0), u64(0));
+  if (dw > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), dw);
+    return u64(fileRetIo);
+  }
+  fatSetMeta(u64(fatMetaFileEntry), entry);
+  fileBump(u64(fileMetaTruncs));
+  return u64(0);
+}
+
+/// Writes as much of the pending request as fits in ONE sector, allocating a
+/// cluster first if the offset needs one. Returns the byte count, or 0 with the
+/// reason in [fileMetaStatus].
+///
+/// [from] is the offset into the bounce buffer; [remaining] is how much of the
+/// request is left. The descriptor's offset and size are advanced by exactly
+/// what reached the drive, so a failure half way through a multi-sector request
+/// leaves a descriptor that describes what is actually there — which is the
+/// property GAP-0122 item 14 records the READ path as not having.
+///
+/// **The allocation test is `pos >= allocated`, not `pos % clusterBytes == 0`.**
+/// The two agree on every successful call and disagree after a failed one: if
+/// the cluster was allocated and the data sector write then failed, `pos` has
+/// not moved, and the modular test would allocate a SECOND cluster on the retry
+/// and leak the first. A descriptor that records how many bytes of cluster it
+/// owns cannot get that wrong.
+@bare
+u64 fileWriteChunk(u64 row, u64 fd, u64 from, u64 remaining) {
+  final u64 cbytes = fatClusterBytes();
+  if (cbytes < u64(1)) {
+    fileSetMeta(u64(fileMetaStatus), u64(fatErrClusterSize));
+    return u64(0);
+  }
+  final u64 pos = fileFd(row, fd, u64(fileFdPos));
+  if (pos >= fileFd(row, fd, u64(fileFdAlloc))) {
+    final u64 c = fatAlloc(fileFd(row, fd, u64(fileFdLast)));
+    final u64 ae = fatAllocError(c);
+    if (ae > u64(fatErrOk)) {
+      fileSetMeta(u64(fileMetaStatus), ae);
+      return u64(0);
+    }
+    if (fileFd(row, fd, u64(fileFdLast)) < u64(fatFirstCluster)) {
+      fileSetFd(row, fd, u64(fileFdFirst), c);
+    }
+    fileSetFd(row, fd, u64(fileFdLast), c);
+    fileSetFd(row, fd, u64(fileFdAlloc),
+        fileFd(row, fd, u64(fileFdAlloc)) + cbytes);
+  }
+  // The cluster in [fileFdLast] covers `[alloc - cbytes, alloc)` of the file,
+  // which contains `pos` because the branch above ran if it did not.
+  final u64 base = fileFd(row, fd, u64(fileFdAlloc)) - cbytes;
+  final u64 k = (pos - base) >> u64(fatSectorShift);
+  final u64 lba = fatClusterSector(fileFd(row, fd, u64(fileFdLast)), k);
+  if (lba < u64(1)) {
+    fileSetMeta(u64(fileMetaStatus), u64(fatErrChainRange));
+    return u64(0);
+  }
+  final u64 inSec = pos & u64(511);
+  u64 n = u64(fatSectorBytes) - inSec;
+  if (n > remaining) {
+    n = remaining;
+  }
+  if (inSec > u64(0)) {
+    // This sector already holds bytes of this file, so it is read back and
+    // spliced rather than overwritten. A `fdwrite` whose length is not a
+    // multiple of 512 — which is most of them — leaves the offset mid-sector,
+    // and a driver that skipped this would zero everything the previous call
+    // had put in the same sector.
+    if (fatReadSector(lba, fileSecBase()) > u64(0)) {
+      fileSetMeta(u64(fileMetaStatus), u64(fatErrDiskData));
+      return u64(0);
+    }
+  } else {
+    fileZeroSector();
+  }
+  fileSplice(inSec, from, n);
+  if (fatWriteSector(lba, fileSecBase()) > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), u64(fatErrDiskWrite));
+    return u64(0);
+  }
+  fileBump(u64(fileMetaWSectors));
+  fileSetFd(row, fd, u64(fileFdPos), pos + n);
+  fileSetFd(row, fd, u64(fileFdSize), pos + n);
+  return n;
+}
+
+/// Syscall 9 — `fdwrite(fd, buf, len)`. Returns how many bytes reached the
+/// drive — which may be fewer than [len] — or a refusal.
+///
+/// **A SHORT WRITE IS NOT AN ERROR AND THE PROGRAM IS REQUIRED TO NOTICE.** If
+/// the volume fills up half way through a request, the bytes that got there are
+/// on the drive, the descriptor's size counts them, and the return value is
+/// that count. Calling again returns [fileRetNoSpace] with nothing written.
+/// That is POSIX's shape and it is deliberately BETTER than what `read` does
+/// (GAP-0122 item 14, where a failure part way through leaves bytes in the
+/// caller's buffer with no count to say so) — the write path was written after
+/// that entry and did not have to repeat it.
+///
+/// **Nothing here can produce a partly-written SECTOR.** The unit of failure is
+/// a sector: [fileWriteChunk] either got 512 bytes onto the drive and flushed
+/// them, or reports zero and has changed nothing about the descriptor.
+@bare
+void fileSysWrite(u64 frame) {
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    fileRefuse(frame, u64(fileRetNoOwner));
+    return;
+  }
+  final u64 fd = userFrame(frame, u64(userFrameRdi));
+  final u64 src = userFrame(frame, u64(userFrameRsi));
+  final u64 len = userFrame(frame, u64(userFrameRdx));
+  if (fd >= u64(fileMaxFds)) {
+    fileRefuse(frame, u64(fileRetBadFd));
+    return;
+  }
+  final u64 state = fileFd(row, fd, u64(fileFdState));
+  if (state < u64(fileFdOpen)) {
+    fileRefuse(frame, u64(fileRetBadFd));
+    return;
+  }
+  if (state != u64(fileFdWrite)) {
+    fileRefuse(frame, u64(fileRetBadMode));
+    return;
+  }
+  if (len < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (len > u64(fileWriteMax)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (fileOwnsRead(src, len) < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadPtr));
+    return;
+  }
+  fileCopyIn(src, len);
+  final u64 m = fatMount();
+  if (m > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), m);
+    fileRefuse(frame, u64(fileRetIo));
+    return;
+  }
+  u64 done = u64(0);
+  u64 stop = u64(0);
+  // `stop` is 0 while there is work, 1 when a chunk refused, 2 when the whole
+  // request is on the drive. A flag rather than a `break`, because `@bare`
+  // DCDart has no `break` and the loop's exit condition is not a comparison on
+  // `done` alone.
+  while (stop < u64(1)) {
+    if (done >= len) {
+      stop = u64(2);
+    } else {
+      final u64 n = fileWriteChunk(row, fd, done, len - done);
+      if (n < u64(1)) {
+        stop = u64(1);
+      } else {
+        done = done + n;
+      }
+    }
+  }
+  if (stop == u64(1)) {
+    if (done < u64(1)) {
+      if (fileMeta(u64(fileMetaStatus)) == u64(fatErrFull)) {
+        fileRefuse(frame, u64(fileRetNoSpace));
+        return;
+      }
+      fileRefuse(frame, u64(fileRetIo));
+      return;
+    }
+  }
+  fileBump(u64(fileMetaWrites));
+  fileSetMeta(u64(fileMetaWBytes), fileMeta(u64(fileMetaWBytes)) + done);
+  userSetFrame(frame, u64(userFrameRax), done);
+}
+
+/// `FILEW WRITES <n> BYTES <n> SECTORS <n> CREATED <n> TRUNC <n> FLUSH <n>
+/// DISKW <n> ALLOC <n> FREED <n>`
+///
+/// **A SECOND LINE, PRINTED ONLY IF SOMETHING EVER WROTE**, rather than nine
+/// more fields on `FILE OPENS ...`. Seventeen harnesses assert byte-exact
+/// serial captures and `m15-fileio`'s contains that line in full; widening it
+/// would have moved a golden in a milestone whose entire claim is about not
+/// silently changing what is already on a disk. The guard is the same one
+/// [fileExitReport] uses and it is checked the same way.
+///
+/// The last three numbers come from `fat.dart` rather than from this file, and
+/// that is the check they are here for: [fileMetaWSectors] counts the data
+/// sectors THIS file wrote, `fatWrites()` counts every sector the whole kernel
+/// wrote — data, FAT copies and directory — so the difference is the metadata
+/// cost of the write, and the harness derives both.
+@bare
+void fileWriteReport() {
+  if (fileMeta(u64(fileMetaWrites)) < u64(1)) {
+    if (fileMeta(u64(fileMetaCreates)) < u64(1)) {
+      if (fileMeta(u64(fileMetaTruncs)) < u64(1)) {
+        return;
+      }
+    }
+  }
+  uartWrite(Rodata.addressOf(fileStrWrites), u64(13));
+  uartPutHex(fileMeta(u64(fileMetaWrites)), u64(8));
+  uartWrite(Rodata.addressOf(fileStrBytes), u64(7));
+  uartPutHex(fileMeta(u64(fileMetaWBytes)), u64(8));
+  uartWrite(Rodata.addressOf(fileStrSectors), u64(9));
+  uartPutHex(fileMeta(u64(fileMetaWSectors)), u64(8));
+  uartWrite(Rodata.addressOf(fileStrCreated), u64(9));
+  uartPutHex(fileMeta(u64(fileMetaCreates)), u64(8));
+  uartWrite(Rodata.addressOf(fileStrTrunc), u64(7));
+  uartPutHex(fileMeta(u64(fileMetaTruncs)), u64(8));
+  uartWrite(Rodata.addressOf(fileStrFlush), u64(7));
+  uartPutHex(fileMeta(u64(fileMetaFlushes)), u64(8));
+  uartWrite(Rodata.addressOf(fileStrDiskW), u64(7));
+  uartPutHex(fatWrites(), u64(8));
+  uartWrite(Rodata.addressOf(fileStrAlloc), u64(7));
+  uartPutHex(fatAllocs(), u64(8));
+  uartWrite(Rodata.addressOf(fileStrFreed), u64(7));
+  uartPutHex(fatFrees(), u64(8));
+  uartNewline();
+}
+
+/// Syscall 5 — `open(namePtr, nameLen, mode)`. Returns a descriptor number,
+/// 0..3, or a refusal.
+///
+/// **M16 added the third argument and it is backwards-compatible by
+/// construction.** `mode` arrives in RDX, and the C library's two-argument
+/// `sys_call` has passed a zero RDX since M15 (ADR-0019 §3) — so a program
+/// built before this syscall grew a mode asks for [fileOpenRead], which is
+/// exactly what it used to get. Anything other than [fileOpenRead] or
+/// [fileOpenWrite] is [fileRetBadMode], refused before the name is parsed:
+/// there is no "unknown modes are read" fallback, because a program asking for
+/// a mode this kernel does not have and silently getting a read-only descriptor
+/// would discover it on the first write.
 ///
 /// **The name is copied into the kernel before it is parsed, and that ordering
 /// is the point.** `fatParseAt` walks the bytes several times and compares them
@@ -676,6 +1339,11 @@ void fileSysOpen(u64 frame) {
   }
   final u64 ptr = userFrame(frame, u64(userFrameRdi));
   final u64 len = userFrame(frame, u64(userFrameRsi));
+  final u64 mode = userFrame(frame, u64(userFrameRdx));
+  if (mode > u64(fileOpenWrite)) {
+    fileRefuse(frame, u64(fileRetBadMode));
+    return;
+  }
   if (len < u64(1)) {
     fileRefuse(frame, u64(fileRetBadLen));
     return;
@@ -706,15 +1374,38 @@ void fileSysOpen(u64 frame) {
     fileRefuse(frame, u64(fileRetNoSlot));
     return;
   }
+  if (mode == u64(fileOpenWrite)) {
+    // M16. The volume is changed HERE, at `open`, and not lazily at the first
+    // write: an `open` for writing that succeeds has already created or emptied
+    // the file, so a program that opens and then writes nothing leaves a
+    // zero-length file behind — which is what `open(..., O_WRONLY|O_TRUNC)`
+    // means everywhere else and is a real, legal FAT file.
+    final u64 mk = fileMakeEmpty();
+    if (mk > u64(0)) {
+      fileRefuse(frame, mk);
+      return;
+    }
+    fileClearFd(row, fd);
+    fileSetFd(row, fd, u64(fileFdEntry), fatMeta(u64(fatMetaFileEntry)));
+    fileSetFd(row, fd, u64(fileFdState), u64(fileFdWrite));
+    fileBump(u64(fileMetaOpens));
+    fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) + u64(1));
+    if (fileMeta(u64(fileMetaPeak)) < fileMeta(u64(fileMetaLive))) {
+      fileSetMeta(u64(fileMetaPeak), fileMeta(u64(fileMetaLive)));
+    }
+    userSetFrame(frame, u64(userFrameRax), fd);
+    return;
+  }
   final u64 fs = fatLookup();
   if (fs > u64(fatErrOk)) {
     fileSetMeta(u64(fileMetaStatus), fs);
     fileRefuse(frame, fileFromFat(fs));
     return;
   }
+  fileClearFd(row, fd);
   fileSetFd(row, fd, u64(fileFdFirst), fatFileFirst());
   fileSetFd(row, fd, u64(fileFdSize), fatFileBytes());
-  fileSetFd(row, fd, u64(fileFdPos), u64(0));
+  fileSetFd(row, fd, u64(fileFdEntry), fatMeta(u64(fatMetaFileEntry)));
   fileSetFd(row, fd, u64(fileFdState), u64(fileFdOpen));
   fileBump(u64(fileMetaOpens));
   fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) + u64(1));
@@ -756,6 +1447,13 @@ void fileSysRead(u64 frame) {
   }
   if (fileFd(row, fd, u64(fileFdState)) < u64(fileFdOpen)) {
     fileRefuse(frame, u64(fileRetBadFd));
+    return;
+  }
+  // M16: a write descriptor is not a read descriptor. There is no read-write
+  // mode on this OS (GAP-0127 item 2), so this is a refusal and not a seek to
+  // the start followed by a read.
+  if (fileFd(row, fd, u64(fileFdState)) != u64(fileFdOpen)) {
+    fileRefuse(frame, u64(fileRetBadMode));
     return;
   }
   if (len < u64(1)) {
@@ -836,11 +1534,20 @@ void fileSysClose(u64 frame) {
     fileRefuse(frame, u64(fileRetBadFd));
     return;
   }
-  fileSetFd(row, fd, u64(fileFdState), u64(fileFdFree));
-  fileSetFd(row, fd, u64(fileFdFirst), u64(0));
-  fileSetFd(row, fd, u64(fileFdSize), u64(0));
-  fileSetFd(row, fd, u64(fileFdPos), u64(0));
+  // M16: CLOSING A WRITE DESCRIPTOR IS WHAT PUTS THE FILE IN THE DIRECTORY.
+  // Every data sector and every FAT link is already on the drive by now — the
+  // size and the first cluster are not, and a `close` that failed to write them
+  // has to say so rather than report success and leave a chain nothing points
+  // at. The descriptor is released either way: there is no second `close` that
+  // could retry, and a descriptor left open would be leaked instead.
+  final u64 fl = fileFlushFd(row, fd);
+  fileClearFd(row, fd);
   fileBump(u64(fileMetaCloses));
+  if (fl > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) - u64(1));
+    fileRefuse(frame, u64(fileRetIo));
+    return;
+  }
   fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) - u64(1));
   userSetFrame(frame, u64(userFrameRax), u64(0));
 }
@@ -868,6 +1575,13 @@ void fileSysSeek(u64 frame) {
   }
   if (fileFd(row, fd, u64(fileFdState)) < u64(fileFdOpen)) {
     fileRefuse(frame, u64(fileRetBadFd));
+    return;
+  }
+  // M16: a write descriptor is append-only and cannot be seeked. Moving the
+  // offset of one would mean a write at an arbitrary place in a chain, which is
+  // the thing this milestone deliberately did not build (GAP-0127 item 1).
+  if (fileFd(row, fd, u64(fileFdState)) != u64(fileFdOpen)) {
+    fileRefuse(frame, u64(fileRetBadMode));
     return;
   }
   if (to > fileFd(row, fd, u64(fileFdSize))) {

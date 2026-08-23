@@ -576,14 +576,25 @@ the evidence that made it true, and so the one uncovered half is named.
 **Domain:** kernel (M2, M3, M4, M5, M6, M7, M8, M9), DCDart-side language gap
 **Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
 M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, → 5496 at M10,
-→ 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14, → 12768 at M15.**
+→ 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14, → 12768 at M15,
+→ 14048 at M16.**
 
-**M15's share is 1280** — `file_store`, one symbol behind three seam functions: 16 metadata words,
-five rows of four file descriptors of four words each, and one 512-byte bounce buffer that no user
-pointer ever names. The `.align 8` costs nothing, because `fat_store` ends at a multiple of 16.
-**Ten harnesses subtract it** (m5 through m14) so that every older milestone's number still means what
-it meant when it was written — in particular m12's "a heap needed no new mutable state", m13's "a C
-library is entirely userland" and m14's 11488 are all still checked as such. ADR-0019 §8.
+**M15's share was 1280 and M16 DOUBLED IT to 2560** — `file_store` is still one symbol, now behind
+FOUR seam functions rather than three. M15 put 16 metadata words, five rows of four file descriptors
+of four words each, and one 512-byte bounce buffer in it. M16 (ADR-0020 §7) made the metadata 32
+words (six of them its own counters), a descriptor EIGHT words (a directory-entry index, a last
+cluster, and how many bytes of cluster the descriptor owns), and added a SECOND 512-byte sector
+buffer — because a write that does not start and end on a sector boundary needs the caller's bytes and
+the sector already on the drive in memory at the same time, and one buffer for both would mean the
+read destroyed the data being written.
+
+`fat_store` did NOT move: M16's whole write path reuses the four regions M14 donated, and both
+m14-fat and m16-filewrite assert 1824 as well as the total.
+
+The `.align 8` costs nothing, because `fat_store` ends at a multiple of 16. **Ten harnesses subtract
+the file_store block** (m5 through m14) so that every older milestone's number still means what it
+meant when it was written — in particular m12's "a heap needed no new mutable state", m13's "a C
+library is entirely userland" and m14's 11488 are all still checked as such. ADR-0019 §8, ADR-0020 §7.
 
 **M14's share is 1824** — `fat_store`, one symbol behind four seam functions: 32 metadata words,
 a 256-entry cluster chain, one 512-byte sector buffer and the 11 bytes of an 8.3 name. The
@@ -2532,8 +2543,8 @@ filesystem that now exists does NOT do.
 |---|---|
 | 1. Names | **CLOSED.** `run PROGA.ELF` is a filename. 8.3 only, upper-cased on input, and anything else is a refusal (GAP-0117). |
 | 2. A directory | **CLOSED for the root directory.** `ls` enumerates it, skipping deleted entries, long-filename entries and the volume label, and reports how many of each it skipped. Subdirectories are refused by name (GAP-0116 item 2). |
-| 3. Allocation | **UNCHANGED.** Nothing tracks free space, because nothing allocates: the driver is read-only. `make-image.py` still places every cluster by hand. |
-| 4. A write path | **UNCHANGED, and now asserted.** `WRITE SECTORS` (0x30) is still not implemented; m14-fat greps for the opcode, for `port_outw` aimed anywhere but the framebuffer, and for a write function by name. |
+| 3. Allocation | **NARROWED AT M16.** `fatFindFree` scans the FAT for a free cluster from a hint, wrapping once; `fatAlloc` marks it end-of-chain and links it; `fatTruncate` frees a whole chain. There is still no free-space FIGURE — no count kept, no `statfs`, and a program discovers the volume is full by being refused (GAP-0127 item 11). `make-image.py` still places every cluster of the files it plants by hand; the ones the GUEST writes are placed by the kernel, and `m16-filewrite/derive.py` predicts every one of them. |
+| 4. A write path | **NARROWED AT M16** (`docs/decisions/0020-writing-to-a-disk.md`). `WRITE SECTORS` (0x30) and `FLUSH CACHE` (0xE7) are implemented, `fatSetEntry` updates every copy of the FAT, `fatDirCreate`/`fatDirWrite` change the root directory, and a ring-3 program creates a file and writes to it. Verified by `fsck_msdos` and by macOS's own `msdos` driver, not by this kernel reading back what it wrote. **What is still absent by choice, not by construction:** a journal, crash consistency beyond an ordering discipline, an atomic replace, and any way to delete or rename — GAP-0127 items 3, 7 and 8. m14-fat's three greps for the absence of all this are gone and GAP-0130 says what replaced them. |
 | 5. Metadata | **PARTLY.** A size and an attribute byte come from the directory entry and are used — the size bounds the chain walk and the attribute is what refuses a subdirectory. No timestamps, no ownership, no permissions, and nothing still says "this file is executable": `run` will try to load anything, and the ELF checks are still the only gate. |
 | 6. Partitions | **PARTLY.** The volume is still the whole disk and the MBR is still unread. What is new is that sector 0 is now *validated* as a boot sector — signature, BPB, geometry — rather than ignored. |
 | 7. More than one device | **UNCHANGED.** Primary master only (ADR-0010). |
@@ -3928,10 +3939,17 @@ retelling. ADR-0019 §10 makes the argument; this is the accounting.
 offset kept in the descriptor, `close(fd)`, `seek(fd, off)` absolute; four descriptors per program;
 eleven distinct refusals above one floor; and a buffered read-only layer (`RFILE`) in the C library.
 
-1. **THERE ARE NO WRITES, AT ANY LAYER.** `open` has no mode argument and there is nothing for one to
-   mean: GAP-0116 item 1 is unchanged — no ATA write opcode, no `fatWrite`, no free-cluster search, no
-   directory update, no FAT update, no `fsync`. `m15-fileio` re-greps for all of it. A program on this
-   OS can read every byte of the disk it is allowed to name and cannot change one.
+1. ~~**THERE ARE NO WRITES, AT ANY LAYER.** `open` has no mode argument and there is nothing for one
+   to mean: GAP-0116 item 1 is unchanged — no ATA write opcode, no `fatWrite`, no free-cluster search,
+   no directory update, no FAT update, no `fsync`. `m15-fileio` re-greps for all of it. A program on
+   this OS can read every byte of the disk it is allowed to name and cannot change one.~~
+   **RESOLVED AT M16** (`docs/decisions/0020-writing-to-a-disk.md`), every clause of it: `open` has a
+   mode, `fdwrite` is syscall 9, `close` flushes, and all six named absences are now present.
+   **GAP-0127 is the successor entry** and lists what a program still cannot do — the largest being
+   that a write descriptor is APPEND-ONLY and starts EMPTY, so there is no writing at an offset and no
+   keeping what a file already had. `m15-fileio` no longer greps for any of this: it asserts instead
+   that its own four boots leave the image byte-for-byte identical (GAP-0130), which is a claim about
+   what ran rather than about what is spellable.
 2. **NO PATHS AND NO DIRECTORIES.** `open("SUB")` is `fileRetIsDir` and `open("SUB/X.TXT")` is
    `fileRetBadName`, because `/` is not a character an 8.3 name may contain here. There is no `chdir`,
    no working directory, no `opendir`/`readdir`, and no way for a program to enumerate the volume at
@@ -4194,3 +4212,462 @@ the library's behaviour reproducible is that every expectation about it is deriv
 that were actually built, in the same run.
 
 The sandbox was **226MB** and was deleted afterwards.
+
+---
+
+## GAP-0127 — What a program can and cannot do to a file now that it can write one
+
+**Domain:** userland, kernel, storage (M16)
+**Status:** OPEN — deliberately scoped out. GAP-0122's shape, restated for the thing that now exists,
+because "oscortex programs can write files now" is exactly the kind of sentence that grows in the
+retelling. ADR-0020 §10 makes the argument; this is the accounting.
+
+**GAP-0122 ITEM 1 IS RESOLVED AND IS REPRODUCED HERE STRUCK THROUGH**, because the sentence it made
+in capitals — "THERE ARE NO WRITES, AT ANY LAYER" — was true for two milestones and is the thing this
+one changed:
+
+> ~~1. **THERE ARE NO WRITES, AT ANY LAYER.** `open` has no mode argument and there is nothing for one
+> to mean: no ATA write opcode, no `fatWrite`, no free-cluster search, no directory update, no FAT
+> update, no `fsync`. A program on this OS can read every byte of the disk it is allowed to name and
+> cannot change one.~~
+>
+> **RESOLVED at M16** (`docs/decisions/0020-writing-to-a-disk.md`), item by item: `ataWriteFrom`
+> (0x30) with `FLUSH CACHE` (0xE7) after every sector; `fatFindFree`/`fatAlloc`/`fatTruncate`;
+> `fatDirCreate`/`fatDirWrite`; `fatSetEntry` writing every copy of the FAT; a `mode` argument on
+> `open`; `fdwrite` as syscall 9; and `close` as the flush. Verified by `fsck_msdos` accepting the
+> written volume and by macOS's own `msdos` driver reading every file the guest wrote back
+> byte-for-byte — not by this kernel reading back what this kernel wrote.
+
+**What IS there:** `open(name, O_WRITE)` creating or emptying a file in the root directory,
+`fdwrite(fd, buf, len)` appending up to 512 bytes at a time, `close(fd)` flushing the directory entry,
+thirteen distinct refusals above one floor, and a volume the host tools accept.
+
+**And here is what is not.**
+
+1. **A WRITE DESCRIPTOR IS APPEND-ONLY AND STARTS EMPTY, AND THERE IS NO WAY TO ASK FOR ANYTHING
+   ELSE.** `open(name, O_WRITE)` is create + truncate + append, all three, indivisibly. There is no
+   `O_APPEND` that keeps what a file already had, no `O_EXCL`, no `O_CREAT` separate from the
+   truncation, and no way to write at an offset. `seek` on a write descriptor is `FILE_EBADMODE`.
+   **This is the single largest thing M16 did not build** and ADR-0020 §0 gives the reason: a general
+   write needs the cluster chain of a file that is being modified while it is being walked, which is
+   the case where a wrong FAT update joins two files together. What it would take: a `fileFdChain`
+   that survives a seek, a `fatSelect` on the write path, and a read-modify-write that can land in the
+   middle of an existing chain rather than only at its end.
+2. **NO READ-WRITE MODE.** A descriptor is a read descriptor or a write descriptor and the other
+   operation on it is `FILE_EBADMODE`. A program that wants both opens the file twice — and since
+   `open(..., O_WRITE)` truncates, it must write first and read after.
+3. **NO `unlink`, NO `rename`, NO `mkdir`, NO `rmdir`.** A file can be created and its contents
+   replaced; it cannot be removed or moved. Marking a directory entry 0xE5 and freeing its chain is
+   twenty lines and was left out because "delete" is the operation whose failure modes are worst and
+   because nothing in this OS yet needs one — `m16-filewrite`'s volume carries a deleted entry that
+   `make-image.py` planted, and the kernel REUSES it, which is the half of the mechanism that is
+   built.
+4. **NO TIMESTAMPS.** `DIR_CrtTime`, `DIR_WrtTime` and `DIR_LstAccDate` are written as zero on a file
+   this kernel creates, and are LEFT ALONE on a file it truncates — so a file that has been rewritten
+   still carries the date the formatter gave it. This kernel has no wall clock (GAP-0058: the PIT is
+   masked at rest so `ticks` stays reproducible, and there is no RTC driver). Zero is what a FAT date
+   field is allowed to be and what `fsck_msdos` and macOS's `msdos` driver both accept; a made-up date
+   would be worse than no date.
+5. **A FILE WHOSE CHAIN IS BROKEN CANNOT BE OVERWRITTEN.** `open(..., O_WRITE)` on a file whose FAT
+   chain is a cycle, runs into a bad cluster, or disagrees with the directory entry's size is
+   `FILE_EIO` — it is not truncated and not repaired. The volume disagrees with itself about that
+   file, and choosing which of the two accounts to believe is a repair tool's job. `m16-filewrite`
+   boots that case and requires the image to come back byte-for-byte identical.
+6. **NO `fsync`, AND `close` IS NOT OPTIONAL.** The FAT links and the data sectors reach the drive as
+   they are produced; the directory entry that makes them a file reaches it at `close` — or at
+   teardown, because `fileReleaseOwner` flushes a write descriptor before dropping it, so a program
+   that faults with a file open leaves the bytes it had written rather than a chain nothing points at.
+   There is no third path and no way to ask for a flush without giving up the descriptor.
+7. **NOTHING IS CRASH-CONSISTENT IN THE SENSE A JOURNAL WOULD BE, AND THIS IS EXACTLY WHAT AN
+   INTERRUPTION COSTS.** ADR-0020 §3 gives the ordering rules; this is what they buy and what they do
+   not:
+   * between allocating a cluster and linking it → **one leaked cluster**, which `fsck` calls a lost
+     chain and can reclaim;
+   * between the last data sector and `close` → **the new data is lost and the old file is intact**
+     (or, for a new file, a zero-length file is left behind);
+   * between the two copies of one FAT sector → **the copies differ**, which `fsck` reports and
+     repairs from copy 0;
+   * **during a single sector write** → that sector is undefined, and nothing here can detect it.
+     There is no checksum anywhere in this filesystem, because FAT has none.
+   The one thing that is NOT possible is two files sharing a cluster, which is the ordering rule
+   ADR-0020 §3 item 2 exists for.
+8. **ONE FILE'S WRITES ARE NOT ORDERED AGAINST ANOTHER'S.** Two write descriptors open at once each
+   flush at their own `close`, and nothing sequences them. There is no `rename`-based atomic replace
+   either (item 3), so "write a new version and swap it in" is not expressible.
+9. **THE ROOT DIRECTORY ONLY.** `open("SUB/X.TXT", O_WRITE)` is `FILE_EBADNAME` for GAP-0122 item 2's
+   reason — `/` is not a character an 8.3 name may contain — and `open("SUB", O_WRITE)` is
+   `FILE_EISDIR`. Nothing can create, extend or shorten a subdirectory.
+10. **512 BYTES PER `fdwrite`, AND THE COUNT IS LOAD-BEARING.** A longer call is `FILE_EBADLEN` and is
+    not split. A SHORT return is not an error: when the volume fills up, the bytes reported really are
+    on the drive and the next call is `FILE_ENOSPACE`. This is deliberately better than what `read`
+    does (GAP-0122 item 14, unchanged), and `m16-filewrite`'s negative control is a build of the same
+    source that ignores the count.
+11. **NO FREE-SPACE FIGURE A PROGRAM CAN ASK FOR.** There is no `statfs` and no `df`; a program
+    discovers the volume is full by being refused. The kernel does not keep a free-cluster count
+    either — `fatFindFree` scans, which on this volume is up to 4200 FAT entries against a
+    one-sector cache, and the cost is real: the last two clusters of `m16-filewrite`'s NEW.BIN each
+    cost a full scan of the volume.
+12. **THE FREE-CLUSTER HINT IS NOT PERSISTED AND IS NOT `FSINFO`.** FAT32's `FSInfo` sector holds a
+    next-free hint across mounts; FAT16 has no such sector and this kernel keeps its hint in RAM, so
+    every boot starts searching from cluster 2. That is correct and slow, and it is why
+    `m16-filewrite` can predict every allocation from a cold boot.
+13. **A NAME THIS KERNEL CREATES IS CHECKED AGAINST FAT'S RULES AND A NAME IT READS IS NOT.**
+    `fatNameLegal` refuses the fifteen bytes a FAT short name may not contain, on the write path only.
+    ADR-0020 §5 gives the argument. The read path's laxity (GAP-0117) is unchanged and deliberate.
+14. **NOTHING BLOCKS AND NOTHING CAN.** GAP-0097 and GAP-0122 item 10 are unchanged. Every `fdwrite`
+    completes or refuses, with interrupts off, on a cooperative scheduler. A 512-byte write is two
+    sector writes and two FLUSH CACHE commands with the CPU spinning on BSY for all of it.
+15. **THE WRITE PATH HAS NEVER FAILED ON A REAL DRIVE, BECAUSE NOTHING HAS RUN IT ON ONE.**
+    `ataWriteFrom` has six distinct failure codes and QEMU's IDE emulation has produced none of them.
+    The same limitation GAP-0118 records for the read path applies here and matters more: a write that
+    fails half way through a multi-sector request leaves the descriptor describing what actually
+    reached the drive (which is better than the read path manages), but the sector that was in flight
+    is undefined and nothing can say so.
+16. **`ataWriteNoFlush` AND `ataWriteTrailing` HAVE NEVER EXECUTED.** They are returned from
+    `ataFlushCache` and from the post-transfer status check, and QEMU never produces the conditions.
+    Named here rather than assumed exercised, exactly as GAP-0122 item 13 names `fileRetNoOwner`.
+17. **A FILE OPEN FOR READING WHILE THE SAME FILE IS OPENED FOR WRITING WILL READ RUBBISH, AND
+    NOTHING STOPS IT.** This is the sharpest one on the list and it is written first among the three
+    below for that reason. A read descriptor holds the first cluster and the size the directory entry
+    had at `open`; `open(..., O_WRITE)` on the same name frees that chain and hands the clusters to
+    whatever asks next. The read descriptor then walks a chain that no longer describes anything —
+    most likely getting `fileRetIo` from `fatSelect`'s validation, and at worst reading a cluster that
+    now belongs to a different file. **There is no sharing mode, no open-file table keyed by name and
+    no reference count**, because GAP-0122 item 5 is unchanged: descriptors are per-program rows in a
+    fixed table and nothing indexes them by what they point at. The fix is an open-file layer, which
+    is a milestone rather than a patch.
+18. **A NAME THIS KERNEL CREATES IS NOT CHECKED FOR COLLISION WITH ANYTHING `fatLookup` SKIPS.**
+    `fileMakeEmpty` looks the name up first, so an existing FILE is truncated rather than duplicated —
+    but `fatLookup` deliberately ignores volume labels and long-filename entries (ADR-0018), so
+    `create("OSCORTEX")` on a volume whose label is `OSCORTEX` makes a FILE with the same eleven name
+    bytes as the label. `fsck_msdos` accepts it. It is not data loss and it is not right either.
+19. **A DELETED DIRECTORY ENTRY IS REUSED WITHOUT LOOKING AT WHAT PRECEDES IT.** `fatDirFreeSlot`
+    takes the first 0x00 or 0xE5 slot. On a volume where some other driver deleted a long-named file
+    and left its LFN entries live — which Windows and macOS do not do, so this is a malformed-volume
+    case — the new short entry would acquire a stale long name. Refusing a 0xE5 slot whose predecessor
+    is a live 0x0F entry is about ten lines; it was left out because every volume this kernel has met
+    marks the whole run deleted, and because the failure is a wrong NAME rather than wrong BYTES.
+
+---
+
+## GAP-0128 — `fdwrite` is not called `write`, and syscall 1 is still the console
+
+**Domain:** userland (M16)
+**Status:** OPEN — a naming decision with a cost, recorded so it is a decision rather than an
+accident.
+
+Syscall 1 has been `write(buf, len)` since M9 and it prints on the console. Six byte-exact goldens
+contain its output, `core/user/libc/printf.c` is built on it, and it takes no descriptor. M16's file
+write takes one. **Two C functions called `write` distinguished only by arity is the kind of thing
+that compiles and then does the wrong one**, so the new call is `fdwrite(fd, buf, len)` and the old
+one is untouched.
+
+**What that costs:** ordinary C that says `write(1, buf, n)` does not compile here and would not mean
+what its author intended if it did. There is no `stdout`, no file descriptor 1, and no `FILE`.
+
+**What a real `write(fd, ...)` would take**, so the size is visible: syscall 1 would have to grow a
+descriptor argument, descriptors 0/1/2 would have to be pre-opened in every owner row and mean
+something (`fileOwnerRow` currently hands out an EMPTY row), `userSysWrite`'s `USER WRITE ` prefix
+would have to go or become a property of a console descriptor rather than of the syscall — and that
+prefix is in six goldens. It is a milestone's worth of change to the shape of the syscall table and it
+buys source compatibility with C that this OS cannot run anyway (no `stdin`, no `argv` — GAP-0122
+items 7 and 8, both unchanged).
+
+---
+
+## GAP-0129 — What `m16-filewrite` checks by RUNNING and what it checks by READING, and the mutations that survived
+
+**Domain:** conformance (M16)
+**Status:** OPEN — the entry GAP-0114 established the shape of and GAP-0120 and GAP-0124 refined,
+written for this milestone's harness. **A test suite's own coverage is a thing to measure, not to
+assume**, and the measurement is here rather than in a commit message.
+
+### What is checked by RUNNING (seven boots)
+
+* **A file that was not on the volume is created and filled.** NEW.BIN, 21801 bytes, written in
+  173-byte pieces — a size that divides neither a sector (512) nor a cluster (1024) nor the file.
+* **The clusters it lands on were PREDICTED.** `derive.py` implements `fat.dart`'s allocation policy
+  independently and computes the chain before the boot; `run.sh` reads the chain back out of the image
+  afterwards. One of its links goes **backwards by 2923 clusters**, because the allocator ran off the
+  end of the free band and wrapped — which is a property of the kernel rather than of the image.
+* **A file that WAS there is replaced**, and its five scattered clusters are freed and partly reused.
+* **Both directions of the zero-length case**: a file created and closed without a byte (first cluster
+  0, size 0 — which the host accepts and this kernel refuses to open for reading), and a zero-length
+  file that was already on the volume being given contents.
+* **Thirteen refusals, observed from ring 3 as return values** — including a source page INSIDE the
+  program's own window that is not mapped, and a range whose FIRST page is mapped and whose second is
+  not. Those two are the ones that separate "the validator checked the bounds" from "the validator
+  walked every page", and they are in the program because m15-fileio's first mutation round found the
+  read-side equivalent surviving without them.
+* **A write OUT OF `.rodata` succeeding**, which the write-side pointer validator would have refused.
+* **`fsck_msdos` accepting the written volume**, with no lost chain, no FAT difference and no bad
+  directory.
+* **macOS's own `msdos` driver mounting it** and reading every file the guest wrote back byte-for-byte
+  against payloads the harness generated independently.
+* **KEEP.BIN unchanged**, 307200 bytes on the clusters INTERLEAVED with NEW.BIN's.
+* **Both copies of the FAT byte-for-byte identical.**
+* **A SECOND BOOT of the machine** finding all of it, running a build of the same source with no
+  `fdwrite` and no `create` in it, and leaving the image byte-for-byte identical.
+* **A volume with five free clusters** — ten once `SEED.TXT` is truncated, eight left after its
+  rewrite — producing a short write of exactly 8192 bytes and then `FILE_ENOSPACE`, still clean
+  afterwards.
+* **A DIRECTORY WITH A LIVE-LOOKING ENTRY ONE SLOT PAST ITS END MARKER**, which `fsck_msdos` refuses
+  as built and calls CLEAN after the guest has consumed the marker slot and re-established the marker.
+  That boot exists because mutant 9 survived without it.
+* **The negative control** reporting 8304 where the kernel reported 8192, with the two boots leaving
+  identical volumes.
+* **A full root directory** refusing `create` with nothing written.
+* **A cyclic chain** refusing an open-for-write BEFORE freeing anything, leaving the image
+  byte-for-byte identical.
+
+### What is checked by READING the source
+
+Eight structural checks, listed in `run.sh`'s own PASS line. The ones that carry weight:
+
+* `ataWriteFrom` **defined once and called from exactly one place**, ending in `ataFlushCache()`, with
+  the only `port_outw` aimed at 0x1F0 inside it.
+* `fatSetEntry` looping over `BPB_NumFATs`.
+* `fileOwnsWrite` and `fileOwnsRead` bounding their pointer before any arithmetic, walking the range
+  page by page, and **differing in exactly the WRITABLE test**.
+* `fileCopyOut` and `fileCopyIn` each having one call site, each after its own validator.
+
+**These are read rather than run because there is no boot that could distinguish them.** A kernel
+whose `ataWriteFrom` did not flush passes every one of the six boots, because QEMU's IDE emulation
+persists a write with or without the flush — see the survivor table below.
+
+### The mutation round
+
+**Twenty mutants across three rounds, EVERY ONE RUN WITH `--regen`** so that a byte-exact serial
+mismatch could never count as a kill and only a DERIVED or STRUCTURAL check could. That is GAP-0124's
+standard and it is what makes the round mean anything: without it, every mutant that changed one byte
+of output would "die" to the golden and the number would measure nothing.
+
+**SIXTEEN KILLED, FOUR SURVIVED. THIRTEEN OF THE SIXTEEN KILLS WERE BOOTS**, three were structural
+checks, and two of the survivors were FIXED rather than recorded — the harness grew a check and a
+seventh boot, and both mutants were re-run and both died.
+
+| # | what was broken | verdict | what killed it |
+|---|---|---|---|
+| 1 | `ataWriteFrom` does not issue FLUSH CACHE | KILLED | structural 2d. **A boot cannot** — see below |
+| 2 | the two bytes of each 16-bit word go out swapped | KILLED | boot: `SEED BACK` hashed wrong |
+| 3 | no wait for BSY to clear after the data | **SURVIVED** | untestable on QEMU |
+| 4 | only ONE copy of the FAT is updated | KILLED | structural 2d — **and a boot too**, see below |
+| 5 | `fatFindFree` hands out clusters that are in use | KILLED | boot: `ls` showed NEW.BIN on the wrong cluster |
+| 6 | a cluster is LINKED before it is marked end-of-chain | **SURVIVED → FIXED → KILLED** | structural 2d, added because it survived |
+| 7 | truncate does not aim the hint at the freed chain | KILLED | boot: the predicted chain was wrong |
+| 8 | the directory entry's FIRST CLUSTER is never written | KILLED | boot |
+| 9 | the end-of-directory marker is not re-established | **SURVIVED → FIXED → KILLED** | boot, on a `dirjunk` volume added because it survived |
+| 10 | the allocation test is "on a cluster boundary" | **SURVIVED** | untestable on QEMU |
+| 11 | a partial sector is zeroed instead of read back | KILLED | boot |
+| 12 | `fileOwnsRead` also demands the WRITABLE bit | KILLED | boot: the `.rodata` write was refused |
+| 13 | `fileOwnsRead` walks the range and asks nothing | KILLED | boot: HOLE and STRADDLE were accepted |
+| 14 | `close()` does not flush the directory entry | KILLED | boot |
+| 15 | EVASIVE: FLUSH CACHE's opcode to the wrong register | **SURVIVED** | untestable on QEMU |
+| 16 | "EVASIVE": a failed write leaves the cache stale | **SURVIVED** | untestable on QEMU — and see the disclosure below |
+| 17 | a mid-sector write runs past the end of the sector | KILLED | boot |
+| 18 | `fdwrite` reports what it was ASKED for | KILLED | boot: the `full` volume's short write |
+| 19 | EVASIVE: the data region is off by one cluster | KILLED | boot |
+| 20 | the descriptor's SIZE never advances | KILLED | boot |
+
+### The three killed by a GREP, and how far a boot actually reaches
+
+M1, M4 and M6 die to structural check 2d, which runs before QEMU starts. **"It would also have died
+to a boot" is exactly the kind of claim this project does not get to make without measuring**, so each
+was run again with check 2d REMOVED. The answers are not the same:
+
+* **M1 (no FLUSH CACHE) SURVIVES A BOOT.** Every one of the seven boots passes, `fsck_msdos` accepts
+  the volume and macOS's driver reads every file back. **QEMU persists a write to a raw image whether
+  or not the drive's cache is flushed**, so no test in this harness — and no test that could be
+  written for this emulator — distinguishes a driver that flushes from one that does not.
+  **THE FLUSH IS VERIFIED STRUCTURALLY AND ONLY STRUCTURALLY**, and that is stated here rather than
+  left to be assumed from the fact that check 2d exists. On real hardware with a write-back cache and
+  a power cut it is the difference between a file and nothing.
+* **M4 (one copy of the FAT) IS KILLED BY A BOOT.** With 2d removed it dies to the DERIVED sector
+  count: `FILEW ... DISKW 0000012E` is 302, and a one-copy driver writes 249. That is the check that
+  made deriving `disk_writes` from the FAT-entry count worth the arithmetic, and it means the
+  structural check is belt-and-braces rather than the only thing holding.
+* **M6 (link before end-of-chain) SURVIVES A BOOT.** Nothing inside an emulator loses power between
+  two `out` instructions, so the two orders are indistinguishable by running. Structural only, and the
+  check exists precisely because the mutant survived round 1.
+
+### The four survivors, and the single reason all four survive
+
+**Every one of them needs something QEMU's IDE emulation cannot be asked for: a write that FAILS, or
+a machine that loses power between two instructions.** GAP-0118 records the same limitation for the
+read path and GAP-0124 for the read syscall; this is its third appearance and it is now the dominant
+reason a mutation survives here.
+
+* **M3 — no wait for BSY after the data.** QEMU clears BSY before the `out` that ends the transfer
+  returns, so the wait never has anything to wait for. On hardware it is the difference between the
+  next command finding a busy drive and finding a ready one. Not a test gap; a property of the
+  emulator.
+* **M10 — the allocation test.** `offset on a cluster boundary` and `offset past what is allocated`
+  agree on every path where no write fails, and they differ only after a `fileWriteChunk` that
+  allocated a cluster and then could not write its data sector. **This has never happened**, for M3's
+  reason. The code is right and the mutation is latent; the day a drive can be made to fail on demand,
+  this becomes a real test.
+* **M15 — FLUSH CACHE's opcode written to the sector-count register.** Genuinely evasive: every line
+  check 2d reads is textually intact — `ataCmdCacheFlush` appears, `ataWait` appears, `ataWriteFrom`
+  still ends with `return ataFlushCache();` — and no cache is flushed. It survives for M1's reason,
+  which the bypass experiment above measured rather than assumed. **A structural check that reads for
+  the presence of a name cannot tell which PORT the name is written to**, and tightening it to demand
+  `ataRegCommand` would be one more grep against one more spelling. It is recorded instead.
+* **M16 — a failed write leaves the sector cache claiming to hold what the drive rejected.**
+
+**AND HERE IS THE DISCLOSURE THIS ENTRY OWES.** M16 was labelled EVASIVE when it was written and it is
+not. An evasive mutant is one that defeats a check while leaving what the check reads intact; there is
+no check for this one at all, structural or otherwise, so it evaded nothing. It survives because the
+condition it breaks — a failed sector write — cannot be produced on this emulator, which is the same
+reason M3 and M10 survive. Calling it evasive would have flattered the round by one. **M15 and M19 are
+properly evasive and M19 died**; M16 is a third untestable, filed under the wrong heading by its
+author.
+
+---
+
+## GAP-0130 — `m14-fat` and `m15-fileio` ran six greps making four claims that this kernel could not write, and M16 made all of them false
+
+**Domain:** conformance (M14, M15, M16)
+**Status:** RESOLVED BY SUBSTITUTION — recorded because deleting an assertion is the kind of change
+that should never be silent.
+
+Between them, two harnesses ran **six greps making four claims** — the opcode grep and the
+write-function grep appear in both, over different file lists:
+
+1. `core/kernel/ata.dart` declares no ATA command constant equal to `0x30` or `0x34`;
+2. no `port_outw` call site in `core/kernel/` targets anything but the framebuffer's VBE pair;
+3. no function named `ataWrite*`, `fatWrite*`, `fatSetDir`, `fatAlloc`, `fileWrite` or `fileSysWrite`
+   exists anywhere in `core/kernel/`;
+4. `core/user/libc/oslibc.h` defines no `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_APPEND` or `O_TRUNC`.
+
+Every one of those was correct while nothing in this kernel could write a sector, and every one of
+them is now false by construction. **They were not deleted. They were replaced**, and the replacements
+are stronger in the way that matters:
+
+| the claim the old assertion was really protecting | what checks it now |
+|---|---|
+| "there is one place to look to answer *does this write?*" | `ataWriteFrom` is defined once and called from exactly one place (`fatWriteSector`); the only `port_outw` aimed at 0x1F0 is inside it. Checked by m14-fat and m16-filewrite, over the same code. m16-filewrite's copy also requires the flush, the status discipline, `fatAlloc`'s ordering and `fatSetEntry`'s loop over every FAT copy. |
+| "M14's read path does not write" | **the image m14-fat boots is byte-for-byte identical afterwards**, SHA-256, across the main boot and all five broken-volume boots |
+| "M15's read path does not write" | the same, across all four m15-fileio boots |
+| "a mode-less `open()` is read-only" | `fileOpenRead` is asserted to be 0, so the two-argument form every M15 program performs still asks for a read descriptor |
+
+**Why the measurement is strictly better than the greps.** A grep for an opcode says what is
+*spellable*. The checksum says what *ran*. A kernel that can write and does not still passes; a kernel
+that quietly wrote one sector does not, and no amount of renaming gets round it.
+
+**What was lost.** One thing, and it is worth naming: the old greps would have caught a write path
+added to `elf.dart` or `shell.dart` *even if no test ever executed it*. The replacement catches an
+unused one only through the "defined once, called once" structural check, which a determinedly evasive
+author could satisfy by routing a second caller through `fatWriteSector`. That is a real reduction in
+reach and it is recorded rather than absorbed.
+
+---
+
+## GAP-0131 — `m14-fat` compared a hash with a leading zero, and would have failed one time in sixteen since M14
+
+**Domain:** conformance (M14)
+**Status:** RESOLVED at M16.
+
+`core/tests/conformance/m14-fat/prog.c` prints its self-hash with `printf("... FNV %x\n", ...)`, and
+oslibc's `printf` has **no width modifiers at all** (ADR-0017 §5 made that a deliberate, loud
+limitation). `derive.py` computed the same hash and emitted it as `%08x`. The two agree for fifteen
+values of the top nibble and disagree for one.
+
+**How it surfaced.** M16 added three functions to `core/user/libc/syscall.c`, so every program that
+links the library grew by a couple of hundred bytes, so `progB.elf`'s self-hash changed — to
+`0x02ab07fc`. The program printed `2ab07fc` and the harness looked for `02ab07fc`.
+
+**What it says about the harness.** Nothing about the kernel was wrong. This is a latent break that
+had been in `m14-fat` since M14 and that no change before M16 happened to trip: it needed a program
+whose own bytes hashed to a value with a zero top nibble, which is a one-in-sixteen event per
+milestone that touches the C library. It is the kind of failure that looks like a real regression for
+as long as it takes to read the transcript.
+
+**Fixed by making `derive.py` emit `%x`**, which is what the program prints, in both `m14-fat` and
+`m16-filewrite` (whose `derive.py` had the same latent bug from the day it was written — six hashes,
+all of them zero-padded, all of them currently lucky). `m15-fileio` already used `%x` and was never
+affected.
+
+**The general rule this earns:** a harness that renders a number for comparison must render it the way
+the thing under test renders it. Deriving the VALUE independently is the point; deriving the
+FORMATTING independently is a bug waiting for a leading zero.
+
+---
+
+## GAP-0132 — The M16 sandbox verification, and the one thing about it that a write path changes
+
+**Domain:** tooling, conformance (M16)
+**Status:** OPEN — not a new gap. A third confirmation that GAP-0084's and GAP-0110's procedure is
+stable, plus one observation that is new because M16 is the first milestone whose harness CHANGES its
+inputs.
+
+The procedure is GAP-0126's, applied verbatim:
+
+```bash
+SANDBOX=/private/tmp/m16-pinned          # NOT /tmp -- GAP-0110
+git clone <shared>/DCDart $SANDBOX/DCDart && (cd $SANDBOX/DCDart && git checkout e3cfe18)
+cp -Rc <shared>/DCDart/core/frontend $SANDBOX/DCDart/core/frontend      # GAP-0084 step 1
+(cd $SANDBOX/DCDart/core/dcc && dart pub get --offline)
+rsync -a --delete --exclude __pycache__ --exclude build/ <repo>/ $SANDBOX/oscortex_core/   # step 2
+cd $SANDBOX/oscortex_core && DCDART_HOME=$SANDBOX/DCDart bash core/tests/conformance/<h>/run.sh
+```
+
+**RESULT: 18/18, FIRST ATTEMPT, NO RE-RUNS.**
+
+**The two things GAP-0121 established were checked again.** `dcc` is still not on this machine's PATH,
+so `build-kernel.sh` still falls through to `dart $DCDART_HOME/core/dcc/bin/dcc.dart` and `DCDART_HOME`
+really does select the compiler; the script prints a warning if a `dcc` binary ever appears, because a
+toolchain that installed one would make the isolation half what it looks like without changing a log
+line. And `--exclude build/` still matters: `$SANDBOX/oscortex_core/core/build/` is created from
+nothing by the sandbox's own compiler.
+
+**WHAT IS NEW AT M16, AND IT IS WORTH ONE PARAGRAPH.** Every harness before this one was read-only
+with respect to its own inputs: it built an image, booted it, and the image came back unchanged. M16's
+harness WRITES to the images it builds — and every one of them lives inside the harness's own
+`mktemp -d` workdir, which its `trap cleanup EXIT` removes. **Nothing under `$SANDBOX/oscortex_core`
+is modified by running the suite**, which is what makes an rsync'd copy still a faithful copy after a
+run rather than only before one. The only files the suite writes into the repo at all are
+`core/build/` (a build artefact, gitignored) and, with `--regen`, the goldens — and `--regen` is never
+passed by the sandbox script.
+
+The sandbox was **228MB** and was deleted afterwards.
+
+---
+
+## GAP-0133 — `m10-elf` is intermittently red because QEMU sometimes pushes RFLAGS.RF, and it has nothing to do with M16
+
+**Domain:** conformance (M10), QEMU
+**Status:** OPEN — a real, newly-measured flake in an existing harness. Recorded rather than
+absorbed, because "all eighteen harnesses pass" is a claim that a one-in-six intermittent failure
+makes false.
+
+**What happens.** `m10-elf`'s golden contains, three times, a line the kernel prints from the
+interrupt frame the CPU pushed when a ring-3 program executed `int $0x80`:
+
+```
+USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000246 CPL 3
+```
+
+Once in roughly six runs the third of those lines comes back as `RFLAGS 0000000000010246` instead —
+**bit 16, RF, the Resume Flag** — and the byte-exact serial comparison fails. Nothing else in the
+9-kilobyte capture differs.
+
+**It is not M16's.** The golden at `7ffd8ab` carries `0x246` and so does the regenerated one; the
+value the kernel prints is whatever the CPU pushed, and this kernel does not touch RF. The same
+harness passed twice in a row immediately after the failure, passed in the pinned-toolchain sandbox
+run, and passed in the full sweep before it. M16's changes do not touch `elf.dart`, `user.dart`'s
+frame decoding or the payload; the only thing they change about this path is that the kernel image is
+two pages bigger.
+
+**Observed rate during M16's work:** one failure in six runs of `m10-elf`. It was seen once in a full
+sweep, and `m10-elf` was then re-run twice on the same binaries and passed both times.
+
+**Why it is left alone.** RF is set by the CPU on an instruction restart and QEMU's TCG frontend sets
+it in paths a guest cannot control. Masking bit 16 out of the printed value would make the golden
+stable and would also make the harness stop reporting a flag the CPU really pushed — which is the
+opposite of what `m9-ring3` and `m10-elf` exist to do (they read CS, SS and RFLAGS out of the frame
+precisely because a kernel that reported its own idea of them would prove nothing). **The right fix is
+for the harness to normalise RF explicitly, in one place, with a comment saying that it is emulator
+noise** — which is a change to `m10-elf`, owned by M10, and was not made inside M16's unit.
+
+**What to do meanwhile:** if `m10-elf` fails with exactly this one-line difference, re-run it. If it
+fails twice, it is not this.

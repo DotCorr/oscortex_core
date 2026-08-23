@@ -11,6 +11,7 @@
  *   syscalls   sys_call, sys_call3                               (raw)
  *              write(), exit(), yield(), sbrk(), who()            (checked)
  *   files      open(), read(), close(), seek()                    (§ M15, raw)
+ *              openmode(), create(), fdwrite()                     (§ M16, raw)
  *              RFILE, rfopen/rfread/rfgets/rfseek/rfclose         (§ rfile.c)
  *   memory     malloc, free                                       (§ malloc.c)
  *   strings    memcpy, memset, strlen, strcmp, strcpy
@@ -31,15 +32,18 @@
  * longer than [PRINTF_MAX] is not a thing this OS can print, and printf reports
  * that rather than truncating quietly. See §4 below.
  *
- * THERE IS STILL NO INPUT AND NO WRITING. `open` is read-only, there is no
- * `stdin` and no console-input syscall, and nothing on this OS can create,
- * extend or modify a file. What M15 adds is that a program can READ one.
+ * THERE IS STILL NO INPUT. There is no `stdin` and no console-input syscall.
+ * M16 ADDED WRITING: a program can create a file, put bytes in it and close it,
+ * and the bytes are on the volume after the machine has been switched off and
+ * on again. What it cannot do is write at an arbitrary offset, keep what was
+ * already in a file it opens, delete one, or rename one — the kernel's
+ * GAP-0127 is the accounting.
  *
  * NOTHING HERE MAY ASSUME ANYTHING ABOUT THE KERNEL except the syscall numbers
  * and the refusal values below, which are core/kernel/user.dart's,
  * core/kernel/proc.dart's, core/kernel/heap.dart's and core/kernel/file.dart's.
- * The m13-libc and m15-fileio harnesses read every one of them back out of
- * those files and compare.
+ * The m13-libc, m15-fileio and m16-filewrite harnesses read every one of them
+ * back out of those files and compare.
  */
 
 #ifndef OSLIBC_H
@@ -68,6 +72,10 @@ typedef unsigned long uintptr_t;
 #define SYS_CLOSE 7
 #define SYS_SEEK 8
 
+/* M16. `fileSysWriteNo`. It is NOT called SYS_WRITE: syscall 1 has been that
+ * since M9 and it prints on the console. See fdwrite() below. */
+#define SYS_FDWRITE 9
+
 /* core/kernel/user.dart's `userRefused`: what a refused syscall returns. */
 #define SYS_REFUSED 0xFFFFFFFFFFFFFFFFUL
 
@@ -88,8 +96,8 @@ typedef unsigned long uintptr_t;
 #define PRINTF_MAX 120UL
 
 /* ---------------------------------------------------------------------------
- * 1b. M15's file I/O: the four bounds and the eleven refusal values, all of
- *     them core/kernel/file.dart's own. `m15-fileio/run.sh` reads every one of
+ * 1b. M15's and M16's file I/O: the five bounds and the thirteen refusal
+ *     values, all of them core/kernel/file.dart's own. `m15-fileio/run.sh` reads every one of
  *     them back out of that file and compares, exactly as m13-libc does for the
  *     eleven numbers above -- a library that disagreed with the kernel about
  *     what a refusal LOOKS LIKE would treat one as a byte count.
@@ -125,6 +133,24 @@ typedef unsigned long uintptr_t;
 #define FILE_EIO 0xFFFFFFFFFFFFFFF6UL       /* the volume, chain or drive refused */
 #define FILE_EBADSEEK 0xFFFFFFFFFFFFFFF5UL  /* past the end of the file */
 #define FILE_ENOOWNER 0xFFFFFFFFFFFFFFF4UL  /* nothing that owns descriptors is running */
+
+/* M16. `fileRetBadMode` and `fileRetNoSpace`. */
+#define FILE_EBADMODE 0xFFFFFFFFFFFFFFF3UL  /* wrong mode for this descriptor */
+#define FILE_ENOSPACE 0xFFFFFFFFFFFFFFF2UL  /* the volume, or the root dir, is full */
+
+/* M16. The two values open()'s mode may take. Anything else is FILE_EBADMODE.
+ * `core/kernel/file.dart`'s `fileOpenRead` and `fileOpenWrite`.
+ *
+ * O_WRITE IS CREATE + TRUNCATE + APPEND-ONLY, all three, and there is no way to
+ * ask for fewer: the file is made to exist and made empty by open() itself, and
+ * the descriptor's offset only ever moves forward. There is no O_APPEND that
+ * keeps what a file already had, no O_EXCL, no O_RDWR and no mode bits — see
+ * the kernel's GAP-0127 for the whole list. */
+#define O_READ 0UL
+#define O_WRITE 1UL
+
+/* `fileWriteMax`: the largest single fdwrite() the kernel will perform. */
+#define WRITE_FILE_MAX 512UL
 
 /* ---------------------------------------------------------------------------
  * 2. Raw syscalls. `int $0x80`, number in RAX, arguments in RDI and RSI.
@@ -168,9 +194,10 @@ unsigned long who(void);
  *     FILE_ERR_FLOOR, one of the eleven refusals. There is no errno (GAP-0113
  *     said why and that has not changed): the refusal IS the return value.
  *
- *     THERE IS NO WRITE PATH AT ANY LAYER. This kernel has no ATA write opcode,
- *     no free-cluster search and no directory update, so there is no `creat`,
- *     no `O_WRONLY` and no mode argument to open(). GAP-0122 is the accounting.
+ *     M16 ADDED A WRITE PATH AND IT IS NARROW ON PURPOSE. open() grew a mode,
+ *     fdwrite() appends, close() flushes the directory entry, and that is all:
+ *     no writing at an offset, no unlink, no rename, no mkdir. GAP-0127 is the
+ *     accounting and GAP-0122 is what M15 left, narrowed item by item.
  * ------------------------------------------------------------------------- */
 
 /* Opens [name] -- an 8.3 name in the volume's ROOT DIRECTORY, at most
@@ -204,6 +231,42 @@ unsigned long close(unsigned long fd);
  * the end of the file is FILE_EBADSEEK; exactly AT the end is legal and is
  * where a program that has read everything already is. */
 unsigned long seek(unsigned long fd, unsigned long off);
+
+/* ---------------------------------------------------------------------------
+ * 3b-M16 — WRITING. Three calls, and the third one is the milestone.
+ * ------------------------------------------------------------------------- */
+
+/* Opens [name] with an explicit mode. open() and create() are the two ways to
+ * spell it and this is the one that shows the argument. */
+unsigned long openmode(const char *name, unsigned long mode);
+
+/* Creates [name] in the root directory, or empties it if it is already there,
+ * and returns a descriptor open for writing. Equivalent to
+ * openmode(name, O_WRITE).
+ *
+ * WHEN THIS RETURNS, THE VOLUME HAS ALREADY CHANGED: the directory entry
+ * exists and the file is zero bytes long. A program that creates a file and
+ * writes nothing to it leaves a real, legal, zero-length file behind. */
+unsigned long create(const char *name);
+
+/* Writes at most [len] bytes from [buf] at the descriptor's current offset and
+ * advances it. [fd] must have been opened with O_WRITE.
+ *
+ * IT IS NOT CALLED write() AND THE NAME IS THE INTERFACE. write() has printed
+ * on the console since M13 and takes no descriptor; this takes one and puts
+ * bytes on a disk. Two functions called `write` distinguished only by how many
+ * arguments they have would be the kind of thing that compiles and then does
+ * the wrong one.
+ *
+ * RETURNS FEWER THAN [len] WHEN THE VOLUME FILLS UP, and the bytes it reports
+ * are really on the drive. Calling again then returns FILE_ENOSPACE. A caller
+ * that assumes it got [len] back is wrong exactly when the disk is full, and
+ * m16-filewrite builds a program that makes that mistake on purpose as its
+ * negative control.
+ *
+ * [len] above WRITE_FILE_MAX is FILE_EBADLEN and is NOT split into several
+ * writes: the library does not loop where the kernel refused. */
+unsigned long fdwrite(unsigned long fd, const void *buf, size_t len);
 
 /* ---------------------------------------------------------------------------
  * 3c. M15 — RFILE: a BUFFERED read-only file.

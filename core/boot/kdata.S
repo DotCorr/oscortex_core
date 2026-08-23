@@ -702,9 +702,35 @@ fat_store:
  * THE FILE-DESCRIPTOR TABLES AND THE READ BOUNCE BUFFER.  1280 bytes, three
  * regions, ONE symbol.
  *
- *   +0      128 bytes   metadata, 16 u64 words (fileMeta* in file.dart)
- *   +128    640 bytes   5 owner rows x 4 descriptors x 4 u64 words
- *   +768    512 bytes   the bounce buffer -- one sector, kernel-side only
+ *   +0      256 bytes   metadata, 32 u64 words (fileMeta* in file.dart)
+ *   +256   1280 bytes   5 owner rows x 4 descriptors x 8 u64 words
+ *   +1536   512 bytes   the bounce buffer -- one sector, kernel-side only
+ *   +2048   512 bytes   M16's read-modify-write sector -- also kernel-side only
+ *
+ * M16 (docs/decisions/0020-writing-to-a-disk.md) TOOK THIS FROM 1280 TO 2560,
+ * in three separate pieces, because a write path needs all three:
+ *
+ *   * SIXTEEN MORE METADATA WORDS. Six of them are M16's counters (writes,
+ *     bytes, data sectors, files created, files truncated, directory flushes)
+ *     and the rest are declared spares. The block was 16 words and 11 were in
+ *     use, so M16 could have had five for free and would then have had none.
+ *
+ *   * FOUR MORE WORDS PER DESCRIPTOR. A write descriptor has to remember which
+ *     root-directory entry it came from (so `close` writes the right one
+ *     without looking the name up again), which cluster is currently last (so
+ *     appending never walks a chain), and how many bytes of cluster it has
+ *     allocated (so a retry after a failed sector write does not allocate a
+ *     second one). The fourth is a declared spare.
+ *
+ *   * A SECOND SECTOR BUFFER. A write that does not start and end on a sector
+ *     boundary has to have the caller's bytes and the sector already on the
+ *     drive in memory AT THE SAME TIME. One buffer for both would mean the read
+ *     destroyed the data being written, on every write whose length is not a
+ *     multiple of 512 -- which is most of them.
+ *
+ * STILL ONE SYMBOL, now behind FOUR seam functions, and
+ * `tests/conformance/m16-filewrite/run.sh` counts exactly four
+ * `return file_store_addr()` in `core/kernel/file.dart` and zero anywhere else.
  *
  * ONE SYMBOL AND NOT THREE, for ADR-0011's reason repeated a sixth time: the
  * storage seam's whole value is that the number of places that know where this
@@ -736,7 +762,7 @@ fat_store:
  * exits of programs that have nothing to do with a filesystem, and a garbage
  * word there would print a line into the middle of six existing goldens.
  *
- * THIS TAKES DONATED `.bss` FROM 11488 BYTES TO 12768. docs/known-gaps.md
+ * M15 TOOK DONATED `.bss` FROM 11488 BYTES TO 12768; M16 TAKES IT TO 14048. docs/known-gaps.md
  * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
  * m9-ring3, m10-elf, m11-proc, m12-heap and m13-libc each still assert their
  * own milestone's number by SUBTRACTING the blocks that came after theirs, so
@@ -745,8 +771,8 @@ fat_store:
 .align 8
 .global file_store
 file_store:
-    .skip 1280
-    .size file_store, 1280
+    .skip 2560
+    .size file_store, 2560
     .type file_store, @object
 
 /* ==================================================================
