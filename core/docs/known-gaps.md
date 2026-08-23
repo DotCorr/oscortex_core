@@ -2330,7 +2330,29 @@ did that with a three-line script.
 ## GAP-0085 — What ring 3 does NOT do, listed rather than discovered later
 
 **Domain:** kernel (M9)
-**Status:** OPEN, **NARROWED at M10 (ADR-0014)**. Item 5's ELF-loader half is CLOSED and item 4 is
+**Status:** OPEN, **NARROWED at M10 (ADR-0014) and again at M18 (ADR-0022)**.
+
+**What M18 changed:** **item 3** — "`user hold` cannot be stopped ... this kernel has no way to kill a
+payload, because that needs either a keyboard interrupt that can reach the kernel or a scheduler" — is
+**no longer true of a PROCESS on the default path.** M18 built the scheduler that sentence names. `proc run`, `proc cross` and `proc spin` are
+preemptive sessions: a program that never calls `yield` is taken off the CPU by the timer after
+`procQuantumTicks` (8) ticks of ring-3 time and the other runnable process resumes, and a session
+started by `proc spin` with a quantum budget is torn down by the scheduler when the budget is spent,
+with the shell surviving. `m18-preempt/run.sh` proves it with two programs neither of which contains
+the instruction that produces a `yield`, one of which contains no system call at all.
+
+**What remains, and it is item 3's remainder rather than its whole:** `user hold` itself — M9's ring-3
+payload, which is not a PROCESS and has no process-table slot — still holds the machine, because
+`procTick` returns at its first line when `procLive()` is 0. So does `proc coop` with a non-yielding
+program (GAP-0139), and so does an M10 `run <lba>` program that loops. Preemption in this kernel is a
+property of PROCESSES, not of ring 3.
+
+**The other successors M18 opens:** GAP-0138 (only ring 3 is preempted), GAP-0140 (the runaway
+backstop and the absence of a kill), GAP-0141 (fork/exec, priorities, blocking, sleep, SMP).
+
+---
+
+ Item 5's ELF-loader half is CLOSED and item 4 is
 narrowed; the successors are GAP-0089 (processes), GAP-0090 (a filesystem) and GAP-0091 (dynamic
 linking). Every remaining item is absence, not wrongness: nothing below is mis-reported, and `user`
 and `run` print what is actually mapped and what actually happened rather than what was intended.
@@ -2890,6 +2912,34 @@ reported" reads like something a program could collect.
 ## GAP-0097 — The switching is COOPERATIVE, and this entry exists so nobody infers otherwise
 
 **Domain:** kernel (M11)
+**Status:** **NARROWED at M18 (ADR-0022) — the first paragraph below is now FALSE for a preemptive
+session and remains true for a cooperative one.** Kept in full, unamended, because it is the record of
+what M11 shipped and because its four-item list of "what preemption would need" is the list M18 was
+measured against. What changed:
+
+* **Item 1 is DONE.** `procTick` is the timer handler that switches, and it is `procYield`'s body
+  minus the RAX patch (ADR-0022 §1).
+* **Item 2 is NOT NEEDED YET and its premise is intact.** M18 preempts only when the tick interrupted
+  RING 3, so a preemption puts the CPU back in ring 3 and there is still never a second kernel
+  context on the one RSP0. GAP-0138 is what it costs and what preempting ring 0 would need.
+* **Item 3 is UNCHANGED.** Nothing in this kernel became re-entrant. It did not have to, for item 2's
+  reason.
+* **Item 4 is UNCHANGED.** `procPickNext` is still M11's round-robin and GAP-0101's argument that two
+  processes cannot distinguish it from lowest-first still stands. GAP-0141.
+
+**The last paragraph's assertion also changed, and gained a term rather than being deleted:**
+`m11-proc/run.sh` now requires `switches == yields + surviving exits + preemptions`, with the third
+term counted out of the log one `PROC PREEMPT` line at a time — and requires it to be zero in its own
+sessions. GAP-0143 records why the un-amended version would have been silently satisfiable by a
+kernel that preempts.
+
+**A process that never yields can now be stopped**, by `proc spin`'s quantum budget (GAP-0140) — and
+under `proc coop` it still cannot (GAP-0139).
+
+---
+
+**The M11 text, unamended:**
+
 **Status:** OPEN — a deliberate scope boundary, stated in the loudest available place because a
 milestone called "processes" invites the assumption it does not support.
 
@@ -4801,8 +4851,25 @@ volatile access is a `Pointer<T>` property, which the seam functions do compose 
 ordering against the compiler but not against another core).
 
 **When it starts mattering:** a second core, or a preemptive scheduler that can switch inside a
-sequence that reads-modifies-writes a shared word. This kernel has neither. `procYield` is called
-from a known point, not from the timer.
+sequence that reads-modifies-writes a shared word.
+
+**UPDATED AT M18 (ADR-0022 §13): the second of those now exists.** `procTick` runs from the timer
+interrupt and read-modify-writes six scheduler words (`procHeadSlice`, `procHeadQuanta`,
+`procHeadPreempts`, `procHeadKernTicks`, and two per-slot counters). Every one of them is still
+correct, and for *exactly this entry's reason and no other*: they are touched only from inside an
+interrupt handler, and every gate in this IDT is an INTERRUPT gate, so IF is clear and the handler
+cannot be re-entered. **Nothing was made worse; more of the kernel now depends on the same single-core
+invariant.**
+
+Three places in M18 would need a lock on two cores and have none:
+`procSwitchTo`'s window between writing `procHeadCurrent` and the last word of `procLoadFrame`, during
+which the table describes neither process consistently and a second CPU could schedule the same READY
+slot twice; `procHeadPolicy`/`procHeadBudget`, written from shell context with IF set (safe because
+IRQ0 is still masked at that point AND because `procLive()` is 0 — two reasons, both load-bearing);
+and `procSessionReset`, for the second of those reasons. ADR-0022 §13 is the full accounting.
+
+`procYield` is still called from a known point. `procTick` is not, and that is the difference M18
+made.
 
 **What would close it:** a DCDart atomics story, or a stated single-core invariant in
 `OSCORTEX_SPEC.md` that this kernel is entitled to rely on. The second is cheaper and is probably the
@@ -4866,3 +4933,265 @@ at which this kernel builds, and the **unmigrated** sources at `cf2737f` were al
 and produced a byte-identical `.text` and `__kernel_end`, which is what makes ADR-0021 §5a's claim
 that the image growth is all migration and none of it toolchain a measurement rather than an
 assumption.
+
+---
+
+## GAP-0138 — M18 preempts from RING 3 ONLY: a syscall cannot be preempted, and this is what that costs
+
+**Domain:** kernel (M18)
+**Status:** OPEN — a stated design boundary, not an omission. ADR-0022 §3 is the argument; this entry
+is the accounting.
+
+`procTick` reads the CS the CPU pushed and returns unless its low two bits are 3. A tick that
+interrupted kernel code is counted (`procHeadKernTicks`) and does nothing else.
+
+**What that costs, concretely.** Scheduling latency is bounded by the longest system call, not by the
+quantum. `read()` on a 20000-byte file, `open()` on a fragmented chain, `sbrk()` that maps pages —
+each holds the CPU for its whole duration and no other process runs. On a kernel that will eventually
+host arbitrary C programs, that is a real ceiling.
+
+**Why the CS check is nevertheless not what does the work, and the number that says so.** Every gate
+in this IDT is an INTERRUPT gate, so IF is clear for the whole of every kernel entry from ring 3. A
+timer tick inside a syscall is not merely un-preempted — **it is not delivered**, and if two ticks
+elapse inside one syscall the PIC delivers one and the other is *lost*. So the kernel would not be
+preemptible even without the CS check; the check is what makes the intent explicit and what stops the
+scheduler from switching stacks out from under itself in the one window where a tick *can* arrive at
+CPL 0.
+
+`procHeadKernTicks` measures the size of that window directly. On the M18 harness's boot it reads
+**1**: the single tick that can arrive with CPL 0 and a process live is the one landing in
+`enter_user`'s three-instruction gap between recording the resume RSP and its `cli`. `proc sched`
+prints it. **If it is ever large, this entry is wrong and should be treated as the bug.**
+
+**What preempting ring 0 would need**, unchanged from GAP-0097's list except that item 2's premise is
+still intact:
+
+1. **A second ring-0 stack per process.** One RSP0 in the TSS is enough *because only one process is
+   ever inside the kernel at a time*. M18 did **not** break that: a preemption from ring 3 puts the
+   CPU back in ring 3, so there is still never a second kernel context on that stack. Preempting ring
+   0 would break it immediately.
+2. **Re-entrancy** in the frame allocator, the FAT cluster cache, the descriptor table and the UART.
+   None is re-entrant; none is guarded.
+3. **Lost ticks accounted for.** The PIC cannot queue more than one IRQ0, so a long syscall does not
+   defer time — it destroys it. Nothing in this kernel notices, and `tick_count` is therefore a lower
+   bound on elapsed time rather than a measure of it.
+
+---
+
+## GAP-0139 — Preemption is a per-SESSION policy bit, and `proc coop` exists because `m11-proc` asserts a hung machine
+
+**Domain:** kernel + conformance (M18)
+**Status:** OPEN — the honest cost of not rewriting M11's most intricate boot.
+
+`procHeadPolicy` is a header word. `proc run`, `proc cross` and `proc spin` set it to
+`procPolicyPreempt`; `procInit` writes the same default. **`proc coop` sets `procPolicyCoop`**, and
+one boot in one harness is the entire reason it exists.
+
+**Why.** `m11-proc`'s "hold" boot loads a variant of progB with `jmp .` written over its entry point,
+so BOTH address spaces stay alive while the harness dumps guest memory and walks two page-table trees
+from two PML4 frames, reads a *suspended* process's FXSAVE area, and shows A's private pages absent
+from B's. Every one of those assertions needs a process parked at its entry point with the other one
+suspended — the exact state a preemptive scheduler abolishes. Under `proc run` at M18 the held
+process is taken off the CPU after one quantum and the other runs to completion; there is no moment
+at which both are live and suspended.
+
+**What is wrong with this, stated plainly.** A finished kernel has one scheduler and one policy. A
+policy bit is a place where the two behaviours can drift, and it means `proc coop <a> <b>` with a
+non-yielding program **still hangs the machine** exactly as it did at M11.
+
+**What keeps it from being a dodge:**
+
+* the DEFAULT is preemptive, and `procInit` states it rather than leaving it as whatever zero means;
+* the opt-out is named for what it does and takes a different command;
+* `m18-preempt/run.sh` uses `proc coop` as its **negative control** and REQUIRES it to hang — so the
+  bit is asserted from both sides rather than being somewhere a bug can hide;
+* `m11-proc/run.sh` additionally requires **zero** `PROC PREEMPT` lines in its own sessions.
+
+**What closing it needs:** `m11-proc`'s hold boot re-derived so that it inspects two live address
+spaces without depending on the machine being stuck — most likely by having the kernel take the
+snapshot itself, or by a `proc freeze` that suspends the scheduler for the duration of a dump. That
+is a change to M11's evidence, not to M18's code, and it should be done deliberately rather than
+folded into a scheduler milestone.
+
+---
+
+## GAP-0140 — A runaway is stopped by a QUANTUM BUDGET typed at the shell, because nothing else in this kernel can stop one
+
+**Domain:** kernel (M18)
+**Status:** OPEN — a real mechanism with a real limit, not a placeholder.
+
+Preemption makes a runaway **share** the CPU. It does not give anybody a way to get the CPU **back**.
+`proc spin`'s progC never yields, never exits and makes no system call at all, so with preemption
+alone the session would run until the machine was switched off.
+
+So `proc spin <a> <b> <quanta>` states a budget, and `procTick` enforces it: at the stated number of
+quantum expiries `procBudgetEnd` prints, restores the kernel's CR3, tears down every live slot and
+returns to the shell through `user_return`.
+
+**What is missing, and it is the general version of this:**
+
+* **No way to kill a process from outside it.** There is no signal, no `kill`, and no keyboard-driven
+  interrupt. The keyboard IRQ *is* delivered while a process runs (IRQ1 is unmasked and the process
+  runs with IF set), and the handler echoes the character — but the shell's line processing runs from
+  the idle loop, which is not running, so a typed `^C` reaches the line buffer and nothing acts on
+  it. A `^C` that killed the session is the obvious next step and needs a flag the timer handler
+  checks.
+* **The budget is per session, not per process.** A runaway and a well-behaved program share one
+  budget, and the well-behaved one is torn down with the runaway. `procBudgetEnd` kills all four
+  slots for `procOnFault`'s reason (GAP-0098) and inherits its limitation.
+* **`proc run` passes budget 0, meaning no limit.** So the ordinary command is still capable of an
+  unbounded session — it just no longer starves the *other* process while it runs.
+
+---
+
+## GAP-0141 — What M18's scheduler still does not have: fork, exec, priorities, blocking, sleep, SMP
+
+**Domain:** kernel (M18)
+**Status:** OPEN — the successor list to GAP-0097, which M18 narrows rather than closes.
+
+* **`fork` / `exec`.** A process still comes from exactly one place: `proc run`/`proc spin` and a disk
+  LBA. There is no way for a program to create one. Successor to GAP-0085 item 5's remaining half.
+* **Priorities.** `procPickNext` is M11's round-robin, unchanged and unweighted. Every process gets
+  the same 80 ms whatever it is doing. With four slots and no way to create a third from a program,
+  a priority scheme could not be told apart from round-robin by any test this suite can write —
+  GAP-0101's argument, unchanged.
+* **Blocking, and this is the biggest one.** There are four states — FREE, READY, RUNNING, EXITED,
+  KILLED — and no fifth. **Nothing ever waits.** A process that calls `read()` on a file spins the
+  whole machine through a PIO disk transfer with IF clear; a process waiting for a keystroke would
+  have to poll. Every I/O syscall in this kernel is synchronous, and a scheduler with no blocked state
+  cannot overlap I/O with computation, which is most of what a scheduler is for.
+* **Sleep.** No `nanosleep`, no timer queue, no way for a program to ask for time to pass. `tick_count`
+  advances and nothing but `procTick` reads it.
+* **SMP.** One core. See GAP-0136 and ADR-0022 §13 for which of M18's new state is safe for that
+  reason alone.
+
+---
+
+## GAP-0142 — `help` does not mention M18's three commands, and that is GAP-0105 being obeyed
+
+**Domain:** kernel + conformance (M18)
+**Status:** OPEN — a documentation gap accepted deliberately to avoid moving five byte-exact goldens.
+
+`proc sched`, `proc spin <a> <b> <quanta>` and `proc coop <a> <b>` are not in `shellStrHelp`. They are
+on a second usage table (`procStrUsage2`), printed by `proc` with an argument it cannot parse.
+
+**Why.** GAP-0105: `shellStrHelp`'s bytes are inside the byte-exact goldens of m3, m4, m5, m6 and
+m14, and its size is asserted by m4, m10, m11, m12, m13, m15 and now m18. Adding three lines to it
+moves five goldens for a milestone that has nothing to do with the shell.
+
+**The cost is real:** somebody typing `help` at this kernel's prompt is not told that a preemptive
+session exists. `m18-preempt/run.sh` asserts `shellStrHelp` is **unchanged at 2147** so that the
+decision is visible rather than forgotten, and the usage line is at least reachable by typo.
+
+**What closes it:** one commit that adds the three lines and regenerates the five goldens, with each
+regenerated golden required to differ from its predecessor **in the help text alone**. It is
+mechanical; it is separate; doing it inside M18 would have mixed it with a change that already had to
+regenerate nine goldens for address drift.
+
+---
+
+## GAP-0143 — M18's mutation results: what two survivors mean, and one check that no boot can make
+
+**Domain:** conformance (M18)
+**Status:** OPEN as a record. Fifteen mutations, each applied to a clean tree, built, run against
+`m18-preempt/run.sh`, and reverted. **Thirteen killed, two survivors.** The full table is in
+`ROADMAP.md`'s M18 entry; this entry is the four results that are about the *checks* rather than about
+the code.
+
+---
+
+### 1. A slot-word collision produces a plausible number and no failure
+
+`procSlotPreempts` was originally word 16, which is M12's `heapSlotBase` (`core/kernel/heap.dart`).
+The kernel built, booted, preempted **correctly**, and printed `N 10003001` for a preemption count —
+a process's heap break, read back as a scheduler statistic.
+
+**No harness that existed at the time noticed.** Not `m11-proc`; not `m12-heap`, whose word it was;
+not the first draft of `m18-preempt`, because that draft asserted `preempts > 0` and `0x10003001` is
+greater than zero. `proc.dart`'s own comment says "slot words 0..31 are metadata" and does not say
+which of them are spoken for, and two files were assigning them independently.
+
+The check that catches it now (`m18-preempt/run.sh` §3b) parses every `*Slot*` constant out of every
+kernel source file and requires the indices to be distinct. **An assertion about a VALUE could not
+have caught it, because the wrong value was in range.**
+
+---
+
+### 2. The saved-RAX check was satisfied by the bug it was written for
+
+`procYield` overwrites the saved frame's RAX with 1 before switching, deliberately: its frame came
+from an `int $0x80` whose RAX held a syscall number. `procTick` must not, because its frame came from
+a timer at an arbitrary instruction boundary and that word is the program's live register.
+
+The mutation that copies `procYield`'s line into `procTick` **SURVIVED**. The assertion written for
+it required progD's saved RAX to be *below* the count its loop spins on — and the mutant writes 1,
+which is below 3. The deeper problem was that **neither program kept anything live in RAX**: progD's
+RAX is dead except immediately after a syscall, so overwriting it changed nothing observable at all.
+
+Fixed by giving the *other* program something to lose: progC now loads `0x00C0FFEEC0FFEE00` into RAX
+once and never writes it again, `build-progs.sh` disassembles `_start` and requires exactly one RAX
+write in it, and the harness compares the saved frame against the constant **read out of `progC.c`**
+rather than typed twice. The mutant dies on the second attempt.
+
+---
+
+### 3. Removing the ring-3 privilege test changed nothing a boot can see
+
+Deleting `procTick`'s CS check — letting a tick that interrupted **ring 0** switch processes, which
+would switch stacks out from under the kernel — **SURVIVED every behavioural assertion in the
+harness.**
+
+That is a finding about the machine, not about the check. Every gate in this IDT is an INTERRUPT
+gate, so IF is clear for the whole of every kernel entry from ring 3, and a tick essentially never
+arrives at CPL 0 with a process live: `procHeadKernTicks` reads **1** for an entire session — the one
+tick that can land in `enter_user`'s three-instruction window before its `cli`. **There is no
+behavioural evidence available to be had**, and a harness that claimed otherwise would be claiming
+more than it can see.
+
+`m18-preempt/run.sh` now asserts the test's **presence in the source** and says in its own comment
+that this is the only kind of check available here. That is weaker than a boot and is labelled as
+weaker. ADR-0022 §3 is the argument the check protects.
+
+---
+
+### 4. SURVIVOR — the slice is not reset on a switch, and nothing notices
+
+`procSwitchTo` resets `procHeadSlice` to 0 so the incoming process gets a full quantum. **Deleting
+that line kills no assertion in this suite.** Each incoming process inherits whatever was left of the
+outgoing one's slice, so a process scheduled late in a quantum is preempted almost immediately — the
+classic round-robin starvation bug.
+
+Every count still adds up: the *number* of quantum expiries is unchanged (the slice still reaches the
+quantum at the same rate overall), only their **distribution between processes** moves. The harness
+asserts `slot 1 preempts == 3` and `slot 0 preempts >= 3`, and both survive a lopsided split.
+
+**What would catch it is a fairness assertion, and this suite has none.** The honest version would be
+something like "over N quanta with two runnable processes, neither may receive fewer than N/3
+slices". That is a real check and it is not written; writing it needs a session long enough for the
+ratio to be meaningful, which is wall-clock the rest of this suite avoids.
+
+---
+
+### 5. SURVIVOR — the per-slot `YIELDS` counter never counts, and nothing notices
+
+Making `procSlotYields` increment by zero kills nothing. Both of M18's programs have **zero** yields,
+so the only thing ever asserted about that word is that it *is* zero — which a counter that never
+counts satisfies perfectly.
+
+Killing it needs a session that yields AND a `proc sched` afterwards to read the counter back. The
+only sessions in this suite that yield are `m11-proc`'s, and typing a command after them changes a
+byte-exact 4096-byte golden. **So the per-slot yield counter is, today, an unverified number that the
+kernel prints.** It is used in exactly one assertion — "these programs yielded zero times" — and that
+assertion would pass on a kernel that could not count yields at all.
+
+---
+
+### 6. `m11-proc`'s cooperative-switch identity would have been silently disarmed
+
+Not a mutation, but the same class of finding. `m11-proc` asserted `switches == yields + surviving
+exits`, and its own comment said a timer that switched processes would break the arithmetic. It would
+have — but **only because M18's `procSwitchTo` still bumps `procHeadSwitches`.** Had M18 counted
+preemptions in a separate counter and left `SWITCHES` meaning "voluntary switches", the identity would
+have held unchanged on a kernel that preempts, and M11's stated tripwire would have been disarmed
+without anybody editing it. The identity now carries the third term explicitly (ADR-0022 §6) rather
+than relying on a counter's meaning that nobody had written down.

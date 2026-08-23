@@ -294,7 +294,7 @@ M14_OFF_HEX=$(bssoff fatStore)
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
-[[ "$M11_BSS" -eq 4168 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4168 (M11's 4160-byte proc_store plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+[[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 NON_PMM_BSS=$(( KDATA_BSS + ASM_BSS - PMM_STORE_SIZE - VM_STORE_SIZE - M9_BSS - M10_STORE - M11_BSS - M14_BSS ))
 if [[ "$NON_PMM_BSS" -ne 424 ]]; then
   fail "the kernel holds $(( KDATA_BSS + ASM_BSS )) bytes of mutable static storage, of which $PMM_STORE_SIZE are M7's pmmStore and $VM_STORE_SIZE are M8's vmStore, leaving $NON_PMM_BSS — expected 424 (392 through M4, plus 32 for the framebuffer console's state; PCI enumeration adds NONE). That number is the measured cost of DCDart having no mutable statics (known-gaps GAP-0053) — if you meant to change it, change it in kdata.S's header and in GAP-0053 too."

@@ -187,7 +187,7 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 7 programs
 # So the total is a SUM OF TWO OBJECTS, and every historical number below is
 # reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
 # 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
-# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# M14, 14048 at M16, and 9728/11552/14112 at M18 -- M18 (ADR-0022) grew procStore by 64 bytes -- six scheduler header words and two per-slot counters, in the block the process table already owns rather than in a second one -- so every total below moves by exactly 64. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
 # half; offset arithmetic ("bytes from this block to the end") is done inside
 # DART_BSS, because every block a later milestone added is in that half.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
@@ -257,7 +257,7 @@ M14_OFF_HEX=$(bssoff fatStore)
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
-[[ "$M11_BSS" -eq 4168 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4168 (M11's 4160-byte proc_store plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+[[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header, plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 [[ $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) -eq 5496 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M11_BSS are M11's process table and $M14_BSS are M14's filesystem block, leaving $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) — expected 5496 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in GAP-0053."
 # M17: scan BOTH objects. The storage moved to kmain.o, so a scan of kdata.o
 # alone would now find nothing and pass for the wrong reason.

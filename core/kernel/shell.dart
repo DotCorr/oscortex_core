@@ -1472,11 +1472,32 @@ void shellExecute() {
   // shell to take two arguments, and it finds them by scanning for the space
   // between them.
   if (shellStartsWith(Rodata.addressOf(procCmdCrossSp), u64(11)) > u64(0)) {
-    shellProcArgs(u64(11), u64(1));
+    shellProcArgs(u64(11), u64(1), u64(procPolicyPreempt));
     return;
   }
   if (shellStartsWith(Rodata.addressOf(procCmdRunSp), u64(9)) > u64(0)) {
-    shellProcArgs(u64(9), u64(0));
+    shellProcArgs(u64(9), u64(0), u64(procPolicyPreempt));
+    return;
+  }
+  // M18's three. `proc sched` is matched as a WHOLE LINE and before the two
+  // prefixes, for the same reason the bare `proc` is matched before the
+  // unknown-command path: it takes no arguments and a trailing space would
+  // otherwise make it a malformed `proc <something>`.
+  if (shellIsCmd(Rodata.addressOf(procCmdSched), u64(10)) > u64(0)) {
+    shellProcSched();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(procCmdSpinSp), u64(10)) > u64(0)) {
+    shellProcSpinArgs(u64(10));
+    return;
+  }
+  // `proc coop` — THE ONLY COOPERATIVE SESSION LEFT, and it exists so that
+  // `m11-proc`'s hold boot can still park a non-yielding process at its entry
+  // point while the harness walks two live address spaces out of guest RAM.
+  // Under `proc run` that process is now preempted after one quantum, which is
+  // the milestone working; that boot needs it not to be.
+  if (shellStartsWith(Rodata.addressOf(procCmdCoopSp), u64(10)) > u64(0)) {
+    shellProcArgs(u64(10), u64(0), u64(procPolicyCoop));
     return;
   }
   if (shellIsCmd(Rodata.addressOf(procCmdProc), u64(4)) > u64(0)) {

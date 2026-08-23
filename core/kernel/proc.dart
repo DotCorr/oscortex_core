@@ -91,10 +91,21 @@ const int procMaxWrap = 5;
 
 /// The whole donated block, and the three regions inside it. See `proc_store`
 /// in `core/boot/kdata.S`.
-const int procStoreBytes = 4160;
-const int procHeadWords = 8;
-const int procTableOffset = 64;
-const int procFxOffset = 2112;
+///
+/// **M18 GREW THE HEADER FROM EIGHT WORDS TO SIXTEEN, AND ONLY THE HEADER.**
+/// The preemptive scheduler needs six words of its own (`procHeadPreempts`
+/// through `procHeadBudget`) and the eight the header had were all in use. The
+/// alternative was a SECOND `@bss` block with a SECOND storage seam, which is
+/// exactly what `m11-proc/run.sh`'s "one symbol behind three offsets" check
+/// exists to prevent: scheduler state is process-table state, so it lives in
+/// the process table's block, reached through the process table's three seam
+/// functions, and the seam is still three call sites. The cost is that every
+/// harness that subtracts this block out of the kernel's `.bss` total moves by
+/// 64 bytes, and each of those numbers is spelled out in ADR-0022 §4.
+const int procStoreBytes = 4224;
+const int procHeadWords = 16;
+const int procTableOffset = 128;
+const int procFxOffset = 2176;
 
 /// One slot: 512 bytes, 64 `u64` words.
 const int procSlotBytes = 512;
@@ -141,6 +152,66 @@ const int procHeadLive = 5;
 const int procHeadExits = 6;
 const int procHeadErrors = 7;
 
+// ---------------------------------------------------------------------------
+// M18's six words. THE SCHEDULER'S OWN STATE, and every one of them is written
+// from inside an interrupt handler.
+// ---------------------------------------------------------------------------
+
+/// INVOLUNTARY switches: the number of times [procTick] took a process off the
+/// CPU that had not asked to leave.
+///
+/// **Deliberately NOT [procHeadSwitches].** The two counters are orthogonal
+/// because the two events are: `SWITCHES` counts switches a process asked for
+/// (`yield`, `exit`), `PREEMPTS` counts switches done to it. Keeping them apart
+/// is what lets `m11-proc/run.sh` go on asserting `switches == yields + exits`
+/// arithmetically — an identity a shared counter would have destroyed — while
+/// M18 asserts `preempts > 0` with `yields == 0` in the same breath. A kernel
+/// that counted both in one word could not say either sentence.
+const int procHeadPreempts = 8;
+
+/// Quantum expiries: the number of times the current process had been in ring 3
+/// for [procQuantumTicks] ticks and the scheduler acted on it. Always >=
+/// [procHeadPreempts], because an expiry with nobody else READY is still an
+/// expiry — it just has nowhere to switch to. The DIFFERENCE between the two is
+/// how much of the session had only one runnable process.
+const int procHeadQuanta = 9;
+
+/// Ticks the CURRENT process has taken in ring 3 since it was last scheduled.
+/// Reset by [procSwitchTo], [procStart] and every quantum expiry, so it is a
+/// per-slice count and not a running total.
+const int procHeadSlice = 10;
+
+/// [procPolicyCoop] or [procPolicyPreempt], for THIS session. See
+/// [procQuantumTicks] for why this is a session property and not a constant.
+const int procHeadPolicy = 11;
+
+/// Ticks that arrived while a process was live and the interrupted CS was RING
+/// 0 — i.e. ticks this scheduler DECLINED to preempt on.
+///
+/// **This is the price of "the kernel is not preemptible", counted rather than
+/// asserted.** ADR-0022 §3 argues the number should be near zero on this kernel
+/// because every kernel entry from ring 3 is through an INTERRUPT gate and
+/// therefore runs with IF clear; a tick cannot even be delivered inside a
+/// syscall, let alone preempt one. If this word is ever large, that argument
+/// has stopped being true and the ADR is wrong rather than the machine.
+const int procHeadKernTicks = 12;
+
+/// Quantum expiries this session is allowed before the scheduler tears it down,
+/// or 0 for "no limit".
+///
+/// **A runaway backstop, and the only thing in this kernel that can stop a
+/// program which neither yields nor exits.** Preemption alone means a runaway
+/// shares the CPU; it does not mean anybody can ever get the CPU BACK. There is
+/// no keyboard-driven kill and no signal (GAP-0140), so `proc spin` states a
+/// budget in quanta up front and the scheduler enforces it from the timer
+/// interrupt. It is tick-driven and therefore assertable, which is the other
+/// half of why it exists.
+const int procHeadBudget = 13;
+
+// Header words 14 and 15 are unused and asserted zero by `m18-preempt/run.sh`,
+// so that a future field lands in a place somebody chose. Same discipline as
+// slot words 54..63.
+
 // Slot words 0..31 are metadata; 32..53 are the saved interrupt frame; 54..63
 // are unused and asserted zero by the harness, so a future field lands in a
 // place somebody chose.
@@ -160,6 +231,28 @@ const int procSlotLo = 12;
 const int procSlotHi = 13;
 const int procSlotSegments = 14;
 const int procSlotProbe = 15;
+
+/// M18: how many times THIS slot has been preempted. **Word 20, not 16.**
+/// Words 16..19 are M12's per-process heap (`heapSlotBase` .. `heapSlotCalls`
+/// in `core/kernel/heap.dart`) — this file's own "slot words 0..31 are
+/// metadata" comment does not say WHICH of them are taken, and the first
+/// version of M18 took 16 and 17. It booted, preempted, and printed
+/// `N 10003001` for a preemption count: the process's heap break, read back as
+/// a scheduler statistic. Nothing crashed. `m18-preempt/run.sh` now asserts
+/// every slot-word constant in the kernel is distinct, so the next milestone
+/// cannot repeat it. Per-process rather than
+/// only global, because "both programs made progress" is a claim about each of
+/// them and a global counter cannot distinguish two preemptions of one process
+/// from one preemption of each. It is also what syscall
+/// [procSysPreemptsNo] returns, which is how a program can be written to run
+/// for a stated number of quanta and then stop — the difference between an
+/// assertion about tick counts and an assertion about wall-clock.
+const int procSlotPreempts = 20;
+
+/// M18: how many times THIS slot has called `yield`. Zero for every program in
+/// `m18-preempt`, and that zero is the point: it is the kernel's own record
+/// that the switches it performed were not asked for.
+const int procSlotYields = 21;
 
 /// First word of the saved 22-word interrupt frame.
 const int procSlotSaved = 32;
@@ -199,6 +292,62 @@ const int procErrSameLba = 9;
 /// nothing to switch to it is refused, and `user.dart`'s own payloads never
 /// call it.
 const int procSysYieldNo = 3;
+
+/// Syscall 10 — `preempts`. Returns the number of times the CALLING process has
+/// been taken off the CPU without asking. Refused, like `yield`, unless a
+/// process is live.
+///
+/// **This is the syscall that makes a preemptive milestone assertable.** A test
+/// program cannot time itself — it has no clock — so "run for a while and check
+/// you were interrupted" is a wall-clock criterion and unassertable. "Run until
+/// the kernel says it has taken you off the CPU three times" is a TICK-COUNT
+/// criterion: it terminates after exactly three quantum expiries, the number is
+/// the kernel's own, and the program's own `yield` count is still zero.
+///
+/// It does not switch, does not sleep and does not block. A process that calls
+/// it in a loop is still a process that never yields.
+const int procSysPreemptsNo = 10;
+
+// ---------------------------------------------------------------------------
+// M18: THE QUANTUM, AND THE POLICY.
+// ---------------------------------------------------------------------------
+
+/// **THE QUANTUM: EIGHT PIT TICKS.**
+///
+/// `core/kernel/interrupts.dart` programs channel 0 to 100.0 Hz, so a tick is
+/// 10 ms and a quantum is 80 ms of RING-3 time. Not of wall-clock time: only a
+/// tick that interrupted CPL 3 with a process live counts toward it
+/// ([procHeadSlice]), so time the kernel spends in a syscall on the process's
+/// behalf is not charged to the process's slice. That is a decision with a cost
+/// and ADR-0022 §3 states it.
+///
+/// **WHY EIGHT AND NOT ONE.** Two reasons, and the second is the load-bearing
+/// one:
+///
+///   1. A switch is ~700 bytes of copying plus an `fxsave`/`fxrstor` pair. At
+///      one tick that overhead is paid 100 times a second for two processes
+///      that are doing nothing but spinning.
+///   2. **`m11-proc`'s byte-exact 4096-byte golden is an interleaving that only
+///      a scheduler which does not preempt produces**, and its slices are
+///      MICROSECONDS long — every one of M11's programs reaches a `yield`
+///      within a few thousand instructions. For a quantum of eight to fire
+///      inside one of those slices, eight 10 ms ticks would have to be
+///      delivered inside a slice that lasts ten microseconds. One tick landing
+///      there is merely unlikely; eight is not a race, it is arithmetic.
+///      A quantum of ONE would have made M11's golden a coin flip.
+const int procQuantumTicks = 8;
+
+/// Scheduling policy for a session. **A session property rather than a kernel
+/// constant**, and ADR-0022 §2 is the argument: `proc coop` exists so that
+/// `m11-proc`'s hold boot can still park a process at its entry point and have
+/// the harness walk two live address spaces out of guest RAM while it is
+/// parked. That boot asserts things about a machine held by a non-yielding
+/// program, which is precisely what a preemptive scheduler abolishes.
+///
+/// `proc run`, `proc cross` and `proc spin` are all PREEMPTIVE. `proc coop` is
+/// the single opt-out and it is named for what it does.
+const int procPolicyCoop = 0;
+const int procPolicyPreempt = 1;
 
 // ---------------------------------------------------------------------------
 // Fixed message text -- `@rodata` byte tables (DCDart ADR-0040).
@@ -654,6 +803,132 @@ final List<u8> procCmdCrossSp = const [
   u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x63), u8(0x72), u8(0x6F), u8(0x73), u8(0x73), u8(0x20),
 ];
 
+// ---------------------------------------------------------------------------
+// M18's tables. Same GAP-0060 discipline as every table above: the length is a
+// hand-written literal at the call site, and `m18-preempt/run.sh` checks every
+// one of them against the size the linker emitted.
+// ---------------------------------------------------------------------------
+
+/// `PROC PREEMPT ` -- 13 bytes.
+@rodata
+final List<u8> procStrPreempt = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x45),
+  u8(0x4D), u8(0x50), u8(0x54), u8(0x20),
+];
+
+/// ` N ` -- 3 bytes.
+@rodata
+final List<u8> procStrN = const [
+  u8(0x20), u8(0x4E), u8(0x20),
+];
+
+/// `PROC BUDGET QUANTA ` -- 19 bytes.
+@rodata
+final List<u8> procStrBudget = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x42), u8(0x55), u8(0x44), u8(0x47),
+  u8(0x45), u8(0x54), u8(0x20), u8(0x51), u8(0x55), u8(0x41), u8(0x4E), u8(0x54), u8(0x41),
+  u8(0x20),
+];
+
+/// ` PREEMPTS ` -- 10 bytes.
+@rodata
+final List<u8> procStrPreempts = const [
+  u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x45), u8(0x4D), u8(0x50), u8(0x54), u8(0x53),
+  u8(0x20),
+];
+
+/// `PROC SCHED POLICY ` -- 18 bytes.
+@rodata
+final List<u8> procStrSched = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x53), u8(0x43), u8(0x48), u8(0x45),
+  u8(0x44), u8(0x20), u8(0x50), u8(0x4F), u8(0x4C), u8(0x49), u8(0x43), u8(0x59), u8(0x20),
+];
+
+/// ` QUANTUM ` -- 9 bytes.
+@rodata
+final List<u8> procStrQuantum = const [
+  u8(0x20), u8(0x51), u8(0x55), u8(0x41), u8(0x4E), u8(0x54), u8(0x55), u8(0x4D), u8(0x20),
+];
+
+/// ` QUANTA ` -- 8 bytes.
+@rodata
+final List<u8> procStrQuanta = const [
+  u8(0x20), u8(0x51), u8(0x55), u8(0x41), u8(0x4E), u8(0x54), u8(0x41), u8(0x20),
+];
+
+/// ` KTICKS ` -- 8 bytes.
+@rodata
+final List<u8> procStrKticks = const [
+  u8(0x20), u8(0x4B), u8(0x54), u8(0x49), u8(0x43), u8(0x4B), u8(0x53), u8(0x20),
+];
+
+/// ` SLICE ` -- 7 bytes.
+@rodata
+final List<u8> procStrSlice = const [
+  u8(0x20), u8(0x53), u8(0x4C), u8(0x49), u8(0x43), u8(0x45), u8(0x20),
+];
+
+/// ` BUDGET ` -- 8 bytes.
+@rodata
+final List<u8> procStrBudgetW = const [
+  u8(0x20), u8(0x42), u8(0x55), u8(0x44), u8(0x47), u8(0x45), u8(0x54), u8(0x20),
+];
+
+/// ` HEAD ` -- 6 bytes.
+///
+/// **The kernel saying where its own scheduler state lives.** `m18-preempt`
+/// dumps guest physical memory from this address and reads the process table
+/// out of it — the header words, and slot 0's saved 22-word interrupt frame —
+/// so every number the harness checks about a preempted process comes from the
+/// machine rather than from the serial log the same kernel wrote. The kernel
+/// image is identity-mapped, so the virtual address printed here IS the
+/// physical address the monitor's `xp` needs.
+@rodata
+final List<u8> procStrHead = const [
+  u8(0x20), u8(0x48), u8(0x45), u8(0x41), u8(0x44), u8(0x20),
+];
+
+/// ` YIELDS ` -- 8 bytes.
+@rodata
+final List<u8> procStrYields = const [
+  u8(0x20), u8(0x59), u8(0x49), u8(0x45), u8(0x4C), u8(0x44), u8(0x53), u8(0x20),
+];
+
+/// `proc spin ` -- 10 bytes.
+@rodata
+final List<u8> procCmdSpinSp = const [
+  u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x73), u8(0x70), u8(0x69), u8(0x6E),
+  u8(0x20),
+];
+
+/// `proc coop ` -- 10 bytes.
+@rodata
+final List<u8> procCmdCoopSp = const [
+  u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x63), u8(0x6F), u8(0x6F), u8(0x70),
+  u8(0x20),
+];
+
+/// `proc sched` -- 10 bytes.
+@rodata
+final List<u8> procCmdSched = const [
+  u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x73), u8(0x63), u8(0x68), u8(0x65),
+  u8(0x64),
+];
+
+/// `       proc sched | proc coop <lbaA> <lbaB> | proc spin <lbaA> <lbaB> <quanta>\n` -- 79 bytes.
+@rodata
+final List<u8> procStrUsage2 = const [
+  u8(0x20), u8(0x20), u8(0x20), u8(0x20), u8(0x20), u8(0x20), u8(0x20), u8(0x70), u8(0x72),
+  u8(0x6F), u8(0x63), u8(0x20), u8(0x73), u8(0x63), u8(0x68), u8(0x65), u8(0x64), u8(0x20),
+  u8(0x7C), u8(0x20), u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x63), u8(0x6F),
+  u8(0x6F), u8(0x70), u8(0x20), u8(0x3C), u8(0x6C), u8(0x62), u8(0x61), u8(0x41), u8(0x3E),
+  u8(0x20), u8(0x3C), u8(0x6C), u8(0x62), u8(0x61), u8(0x42), u8(0x3E), u8(0x20), u8(0x7C),
+  u8(0x20), u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x73), u8(0x70), u8(0x69),
+  u8(0x6E), u8(0x20), u8(0x3C), u8(0x6C), u8(0x62), u8(0x61), u8(0x41), u8(0x3E), u8(0x20),
+  u8(0x3C), u8(0x6C), u8(0x62), u8(0x61), u8(0x42), u8(0x3E), u8(0x20), u8(0x3C), u8(0x71),
+  u8(0x75), u8(0x61), u8(0x6E), u8(0x74), u8(0x61), u8(0x3E), u8(0x0A),
+];
+
 /// Command name, matched as a whole line: `proc`.
 ///
 /// `'proc'` -- 4 bytes.
@@ -846,6 +1121,10 @@ void procInit() {
     s = s + u64(1);
   }
   procSetHead(u64(procHeadSse), sse_enabled());
+  // M18: the policy a session gets if nobody says otherwise. Written here, not
+  // left as the zero the loop above wrote, so that "preemptive" is a thing this
+  // kernel STATES rather than a thing that happens to be the non-zero value.
+  procSetHead(u64(procHeadPolicy), u64(procPolicyPreempt));
   procSetHead(u64(procHeadReady), u64(1));
 }
 
@@ -1213,6 +1492,184 @@ void procSwitchTo(u64 next, u64 frame) {
   }
   procLoadFrame(next, frame);
   procBumpHead(u64(procHeadSwitches));
+  // M18: the incoming process starts a FRESH slice. Without this line a process
+  // that was switched to just as the previous one's slice was nearly spent
+  // would inherit the remainder and be preempted almost immediately — the
+  // classic way a round-robin scheduler starves whichever process happens to be
+  // scheduled late in a tick.
+  procSetHead(u64(procHeadSlice), u64(0));
+}
+
+// ---------------------------------------------------------------------------
+// ==========================  M18: PREEMPTION  ==============================
+//
+// Called from `isrDispatch`'s timer arm on EVERY PIT tick, after the EOI.
+//
+// ---------------------------------------------------------------------------
+// ONLY RING 3 IS PREEMPTED, AND THAT IS A DECISION WITH A STATED COST
+// ---------------------------------------------------------------------------
+// The third line of the body reads the CS the CPU pushed and returns unless its
+// low two bits are 3. So a tick that interrupted KERNEL code never preempts:
+// **a syscall cannot be preempted**, and neither can the shell, the ELF loader,
+// or a disk read.
+//
+// What that costs is bounded latency: a program that calls `read()` on a
+// twenty-thousand-byte file holds the CPU for the whole of it, and no other
+// process runs until it returns. On this kernel that is a smaller loss than it
+// sounds, and the reason is not the CS check at all: EVERY gate in this IDT is
+// an INTERRUPT gate, so IF is clear for the whole of every kernel entry from
+// ring 3, and a timer tick inside a syscall is not merely un-preempted — it is
+// not delivered. [procHeadKernTicks] counts the ticks that do arrive with a
+// process live and CPL 0, and it is near zero for exactly that reason.
+//
+// What it BUYS is the reason to do it this way. Preempting ring 0 means:
+//
+//   * a second kernel stack per process, because the whole cooperative design
+//     rests on "only one process is ever inside the kernel at a time" -- the
+//     sentence `proc.dart`'s header already says stops being true the day the
+//     switching is not cooperative. It is still true, because a preemption from
+//     ring 3 puts the CPU back in ring 3;
+//   * re-entrancy in every kernel data structure a syscall touches: the frame
+//     allocator, the FAT cluster cache, the descriptor table. None of them is
+//     re-entrant and none of them is guarded.
+//
+// Doing the ring-3-only version first is not a shortcut around those two; it is
+// a scheduler that does not need them yet, and `docs/known-gaps.md` GAP-0138
+// is what it would take.
+// ---------------------------------------------------------------------------
+/// One PIT tick, from the timer interrupt handler.
+///
+/// Returns normally in every case but one: when the session's quantum budget is
+/// spent, [procBudgetEnd] abandons this interrupt frame and never comes back.
+@bare
+void procTick(u64 frame) {
+  if (procLive() < u64(1)) {
+    return;
+  }
+  if (procHead(u64(procHeadPolicy)) < u64(procPolicyPreempt)) {
+    return;
+  }
+  // THE PRIVILEGE CHECK. `userFrameCs` is the CS the CPU pushed; its low two
+  // bits are the privilege the interrupted code was running at.
+  if ((userFrame(frame, u64(userFrameCs)) & u64(3)) < u64(3)) {
+    procBumpHead(u64(procHeadKernTicks));
+    return;
+  }
+  final u64 slice = procHead(u64(procHeadSlice)) + u64(1);
+  if (slice < u64(procQuantumTicks)) {
+    procSetHead(u64(procHeadSlice), slice);
+    return;
+  }
+  // The quantum is spent. It is spent whether or not there is anywhere to go.
+  procSetHead(u64(procHeadSlice), u64(0));
+  procBumpHead(u64(procHeadQuanta));
+
+  // THE BUDGET. `budget < quanta + 1` is `quanta >= budget`, spelled the way
+  // `@bare` DCDart can spell it (GAP-0023: no `>=`). NOT `quanta == budget`,
+  // even though the counter is incremented by one immediately above and could
+  // not skip the value: an equality test on a counter is a test that stops
+  // being true if anything ever sets the counter or the budget from anywhere
+  // else, and it would fail OPEN -- the session would run forever.
+  final u64 budget = procHead(u64(procHeadBudget));
+  if (budget > u64(0)) {
+    if (budget < procHead(u64(procHeadQuanta)) + u64(1)) {
+      procBudgetEnd(); // never returns
+      return;
+    }
+  }
+
+  final u64 cur = procCurrent();
+  final u64 next = procPickNext(cur);
+  if (next == u64(procMax)) {
+    // A quantum expired with exactly one runnable process. Nothing to switch
+    // to, so nothing is switched -- but the expiry was counted, which is what
+    // makes a LONE runaway visible and, with a budget, stoppable.
+    return;
+  }
+
+  // From here it is [procYield]'s body with two differences, and both of them
+  // are the whole milestone:
+  //
+  //   * THE SAVED RAX IS NOT PATCHED. `procYield` overwrites it with 1 because
+  //     the frame it saves was built by an `int $0x80` whose RAX held a syscall
+  //     number. This frame was built by a TIMER INTERRUPT at an arbitrary
+  //     instruction boundary; its RAX is the process's own live register and
+  //     writing anything into it would corrupt the program. The one line that
+  //     is right in the cooperative path is a bug in this one.
+  //
+  //   * IT PRINTS A DIFFERENT LINE. `PROC PREEMPT`, not `PROC YIELD`, so the
+  //     two kinds of switch are distinguishable in a serial capture by a
+  //     harness that has no other way to tell them apart. See
+  //     [procPreemptLine].
+  procSaveFrame(cur, frame);
+  if (procHead(u64(procHeadSse)) > u64(0)) {
+    fx_save(procFxArea(cur));
+  }
+  procSet(cur, u64(procSlotState), u64(procStateReady));
+  procSet(cur, u64(procSlotPreempts),
+      procGet(cur, u64(procSlotPreempts)) + u64(1));
+  procBumpHead(u64(procHeadPreempts));
+  procPreemptLine(cur, next);
+  procSwitchTo(next, frame);
+}
+
+/// The session's quantum budget is spent: kill every process and return to the
+/// shell. **NEVER RETURNS.**
+///
+/// This is [procOnFault]'s teardown with a different reason printed, and it is
+/// deliberately the same shape: CR3 goes back to the kernel's FIRST, because
+/// [procSpaceFree] may not run on the tables the CPU is standing on; then every
+/// live slot is torn down; then `user_return` restores the RSP `enter_user`
+/// recorded and reappears inside [shellProcRun].
+///
+/// **THE EOI HAS ALREADY BEEN SENT.** `isrDispatch` acknowledges the PIT and
+/// THEN calls [procTick], precisely so that this path can abandon the interrupt
+/// frame without leaving IRQ0 in the PIC's in-service register for the rest of
+/// the boot — which would block IRQ1 with it, since the keyboard is a lower
+/// priority line on the same PIC, and the shell we are returning to would
+/// answer nothing at all. ADR-0022 §8 is the record.
+@bare
+void procBudgetEnd() {
+  uartWrite(Rodata.addressOf(procStrBudget), u64(19));
+  uartPutHex(procHead(u64(procHeadQuanta)), u64(8));
+  uartWrite(Rodata.addressOf(procStrPreempts), u64(10));
+  uartPutHex(procHead(u64(procHeadPreempts)), u64(8));
+  uartNewline();
+  procToKernel();
+  procSetHead(u64(procHeadCurrent), u64(0));
+  procSetHead(u64(procHeadLive), u64(0));
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (procGet(s, u64(procSlotState)) > u64(procStateFree)) {
+      procSet(s, u64(procSlotState), u64(procStateKilled));
+      procCleanup(s);
+    }
+    s = s + u64(1);
+  }
+  user_return(); // never returns; control reappears in shellProcRun
+}
+
+/// `PROC PREEMPT <cur> -> <next> N <n>` — one line per involuntary switch.
+///
+/// **This prints from inside the timer interrupt**, which is safe here for the
+/// same reason every other handler in this kernel prints: `uartWrite` polls the
+/// Transmit-Holding-Register-Empty bit and every gate in this IDT is an
+/// interrupt gate, so the handler cannot be re-entered by the next tick while
+/// it is half way through a line. It would stop being safe the day a second CPU
+/// existed (`docs/known-gaps.md` GAP-0136).
+///
+/// It is the observable difference between the two kinds of switch: `PROC
+/// YIELD` is printed by a process that asked, `PROC PREEMPT` by a process that
+/// did not. `m18-preempt/run.sh` requires the second and forbids the first.
+@bare
+void procPreemptLine(u64 cur, u64 next) {
+  uartWrite(Rodata.addressOf(procStrPreempt), u64(13));
+  uartPutHex(cur, u64(2));
+  uartWrite(Rodata.addressOf(procStrArrow), u64(4));
+  uartPutHex(next, u64(2));
+  uartWrite(Rodata.addressOf(procStrN), u64(3));
+  uartPutHex(procGet(cur, u64(procSlotPreempts)), u64(8));
+  uartNewline();
 }
 
 /// Puts the kernel's own address space back on the CPU.
@@ -1252,6 +1709,11 @@ void procYield(u64 frame) {
     fx_save(procFxArea(cur));
   }
   procSet(cur, u64(procSlotState), u64(procStateReady));
+  // M18: the per-process yield count, kept so that "this process was switched
+  // away and never asked to be" is a statement the kernel makes about a
+  // PARTICULAR process rather than about a session. `m18-preempt` asserts it is
+  // zero for both of its programs while their preempt counts are not.
+  procSet(cur, u64(procSlotYields), procGet(cur, u64(procSlotYields)) + u64(1));
   uartWrite(Rodata.addressOf(procStrYield), u64(11));
   uartPutHex(cur, u64(2));
   uartWrite(Rodata.addressOf(procStrArrow), u64(4));
@@ -1498,6 +1960,11 @@ void procOnFault(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     }
     s = s + u64(1);
   }
+  // M18: the fault path abandons `shellProcRun`'s stack through `fault_resume`,
+  // so the mask restore at the end of that function never runs for a session
+  // that died. It runs here instead, before the diagnostic, so a faulting
+  // session leaves the PIC exactly as tidy as one that finished.
+  procSessionTimerOff();
   procEndLine();
   // The process is dead and `user_return` will never run for it, so the resume
   // point `enter_user` recorded describes a stack frame `fault_resume` is about
@@ -1522,6 +1989,75 @@ void procEndLine() {
   uartWrite(Rodata.addressOf(procStrLiveW), u64(6));
   uartPutHex(procHead(u64(procHeadLive)), u64(8));
   uartNewline();
+}
+
+/// Puts the PIC mask back the way the shell keeps it: IRQ1 unmasked, IRQ0
+/// masked. Called at EVERY exit from a session — the ordinary end, the fault
+/// path, and the refusals that happen after the timer was already turned on.
+///
+/// **Idempotent on purpose.** It writes the same two bytes
+/// `picUnmaskKeyboardOnly` writes, so calling it on a path where the timer was
+/// never unmasked (a cooperative session, or a refusal before the unmask) costs
+/// two port writes and cannot be wrong. A version that tracked whether it
+/// needed to run would be a second piece of state to get out of step with the
+/// first.
+@bare
+void procSessionTimerOff() {
+  picUnmaskKeyboardOnly();
+}
+
+/// `PROC SCHED POLICY <n> QUANTUM <n> QUANTA <n> PREEMPTS <n> KTICKS <n> SLICE <n> BUDGET <n>`
+/// followed by one `PROC SLOT <n> PREEMPTS <n> YIELDS <n> STATE <n>` line per
+/// slot, all four of them, whatever state they are in.
+///
+/// **A NEW COMMAND RATHER THAN A NEW FIELD ON AN EXISTING LINE, and that is
+/// GAP-0105's rule being obeyed rather than a preference.** `PROC END`, `PROC
+/// SSE` and `PROC PD` appear inside byte-exact goldens owned by five other
+/// harnesses; appending one word to any of them moves five files that have
+/// nothing to do with scheduling. M18 adds output and moves no golden.
+///
+/// All four slots are printed unconditionally, including FREE ones, because the
+/// interesting moment is AFTER a session — when [procCleanup] has emptied the
+/// slots but not the counters — and a report that only printed live slots would
+/// have nothing to say exactly then.
+@bare
+void procSchedLine() {
+  uartWrite(Rodata.addressOf(procStrSched), u64(18));
+  uartPutHex(procHead(u64(procHeadPolicy)), u64(2));
+  uartWrite(Rodata.addressOf(procStrQuantum), u64(9));
+  uartPutHex(u64(procQuantumTicks), u64(2));
+  uartWrite(Rodata.addressOf(procStrQuanta), u64(8));
+  uartPutHex(procHead(u64(procHeadQuanta)), u64(8));
+  uartWrite(Rodata.addressOf(procStrPreempts), u64(10));
+  uartPutHex(procHead(u64(procHeadPreempts)), u64(8));
+  uartWrite(Rodata.addressOf(procStrKticks), u64(8));
+  uartPutHex(procHead(u64(procHeadKernTicks)), u64(8));
+  uartWrite(Rodata.addressOf(procStrSlice), u64(7));
+  uartPutHex(procHead(u64(procHeadSlice)), u64(2));
+  uartWrite(Rodata.addressOf(procStrBudgetW), u64(8));
+  uartPutHex(procHead(u64(procHeadBudget)), u64(8));
+  uartWrite(Rodata.addressOf(procStrHead), u64(6));
+  uartPutHex(procHeadBase(), u64(16));
+  uartNewline();
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    uartWrite(Rodata.addressOf(procStrSlot), u64(10));
+    uartPutHex(s, u64(2));
+    uartWrite(Rodata.addressOf(procStrPreempts), u64(10));
+    uartPutHex(procGet(s, u64(procSlotPreempts)), u64(8));
+    uartWrite(Rodata.addressOf(procStrYields), u64(8));
+    uartPutHex(procGet(s, u64(procSlotYields)), u64(8));
+    uartWrite(Rodata.addressOf(procStrState), u64(7));
+    uartPutHex(procGet(s, u64(procSlotState)), u64(2));
+    uartNewline();
+    s = s + u64(1);
+  }
+}
+
+/// `proc sched` — the whole scheduler report, and nothing else.
+@bare
+void shellProcSched() {
+  procSchedLine();
 }
 
 /// `PROC SSE <n> CR4 <cr4> CR0 <cr0>`
@@ -1739,6 +2275,16 @@ void procSessionReset() {
   procSetHead(u64(procHeadLive), u64(0));
   procSetHead(u64(procHeadSwitches), u64(0));
   procSetHead(u64(procHeadExits), u64(0));
+  // M18. The policy is NOT reset here: it is written by the command that starts
+  // the session, immediately after this call, and a reset that clobbered it
+  // would make `proc coop` and `proc run` differ only by the order two lines
+  // happen to be in. The budget IS reset, because a budget is a property of one
+  // session and a leftover one would silently end the next.
+  procSetHead(u64(procHeadPreempts), u64(0));
+  procSetHead(u64(procHeadQuanta), u64(0));
+  procSetHead(u64(procHeadSlice), u64(0));
+  procSetHead(u64(procHeadKernTicks), u64(0));
+  procSetHead(u64(procHeadBudget), u64(0));
 }
 
 /// Enters the first READY process. **Returns only through `user_return`**, i.e.
@@ -1756,6 +2302,12 @@ void procSessionReset() {
 void procStart(u64 s) {
   procSet(s, u64(procSlotState), u64(procStateRunning));
   procSetHead(u64(procHeadCurrent), s + u64(1));
+  // M18: the first process gets a full quantum, like every process after it.
+  // [procSessionReset] has already zeroed this word; it is written again here
+  // so that the invariant "a process begins its slice at zero" is stated at
+  // BOTH places a process can begin one, and not left as a consequence of the
+  // order two functions happen to be called in.
+  procSetHead(u64(procHeadSlice), u64(0));
   uartWrite(Rodata.addressOf(procStrStart), u64(16));
   uartPutHex(s, u64(2));
   uartWrite(Rodata.addressOf(procStrEntry), u64(7));
@@ -1783,8 +2335,20 @@ void procStart(u64 s) {
 ///
 /// Everything is refused before anything is allocated, and each refusal has a
 /// sentence.
+/// M18 added [policy] and [budget]:
+///
+///   * [policy] is [procPolicyPreempt] for `proc run`, `proc cross` and
+///     `proc spin`, and [procPolicyCoop] for `proc coop`.
+///   * [budget] is the number of quantum expiries the session may take before
+///     the scheduler tears it down, or 0 for no limit. Only `proc spin` passes
+///     a non-zero one.
+///
+/// **NEITHER IS PRINTED ON THE SESSION LINE, and that is GAP-0105 again.** The
+/// `PROC RUN` line is inside `m11-proc`'s byte-exact 4096-byte golden; a policy
+/// field there would move a golden that has nothing to do with M18. `proc
+/// sched` says both, and `m18-preempt/run.sh` reads them from there.
 @bare
-void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
+void shellProcRun(u64 lbaA, u64 lbaB, u64 cross, u64 policy, u64 budget) {
   if (vmMeta(u64(vmMetaReady)) < u64(1)) {
     procRefuse(u64(procErrNotReady));
     return;
@@ -1843,6 +2407,32 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
   }
 
   procSessionReset();
+  procSetHead(u64(procHeadPolicy), policy);
+  procSetHead(u64(procHeadBudget), budget);
+  // ---------------------------------------------------------------------
+  // M18: THE TIMER IS UNMASKED FOR THE DURATION OF A PREEMPTIVE SESSION, AND
+  // ONLY FOR THAT.
+  //
+  // The PIT has been MASKED at the PIC since M2. That was deliberate and it is
+  // written down twice: `picUnmaskKeyboardOnly`'s own comment ("100 interrupts
+  // a second would only add jitter between keystrokes"), and GAP-0058 -- with
+  // IRQ0 masked at rest the tick counter HOLDS STILL, which is the only reason
+  // `ticks` can print a number `m3-shell/run.sh`'s byte-exact golden asserts.
+  //
+  // A preemptive scheduler needs the tick. Turning it on for the whole boot
+  // would move m3's golden and would make every later `ticks` reading depend on
+  // how long the machine had been sitting at a prompt. So it is turned on HERE,
+  // when a session that can use it begins, and off again at every exit from
+  // that session ([procSessionTimerOff]): the shell's steady state is exactly
+  // what it was before M18 existed.
+  //
+  // A COOPERATIVE session does not turn it on at all -- `proc coop` has nothing
+  // to do with a tick, and `m11-proc`'s hold boot must be able to park a
+  // process at its entry point with nothing at all interrupting it.
+  // ---------------------------------------------------------------------
+  if (policy > u64(procPolicyCoop)) {
+    picUnmaskTimerAndKeyboard();
+  }
 
   uartWrite(Rodata.addressOf(procStrRun), u64(13));
   uartPutHex(lbaA, u64(8));
@@ -1856,6 +2446,7 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
   final u64 sa = procCreate(lbaA);
   if (sa > u64(0)) {
     procRefuse(sa);
+    procSessionTimerOff();
     procEndLine();
     return;
   }
@@ -1863,6 +2454,7 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
   if (sb > u64(0)) {
     procRefuse(sb);
     procSessionReset();
+    procSessionTimerOff();
     procEndLine();
     return;
   }
@@ -1875,6 +2467,7 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
     if (va < u64(1)) {
       procRefuse(u64(procErrLoad));
       procSessionReset();
+      procSessionTimerOff();
       procEndLine();
       return;
     }
@@ -1885,6 +2478,7 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
   procStart(u64(0)); // returns only through `user_return`
 
   procToKernel();
+  procSessionTimerOff();
   procEndLine();
   procPdLine();
 }
@@ -1893,12 +2487,17 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross) {
 @bare
 void shellProcUsage() {
   uartWrite(Rodata.addressOf(procStrUsage), u64(64));
+  // M18's three commands, on a SECOND table rather than appended to the first.
+  // `procStrUsage`'s size is asserted at 64 by `m11-proc/run.sh`; growing it
+  // would move that assertion for no reason but formatting, and the check is
+  // worth more than the single line.
+  uartWrite(Rodata.addressOf(procStrUsage2), u64(79));
 }
 
 /// `proc run ...` / `proc cross ...` from the shell: find the two fields, parse
 /// them, then run.
 @bare
-void shellProcArgs(u64 from, u64 cross) {
+void shellProcArgs(u64 from, u64 cross, u64 policy) {
   final u64 e1 = procFieldEnd(from);
   final u64 a = procHexField(from, e1);
   if (a > u64(ataLba28Max)) {
@@ -1911,5 +2510,45 @@ void shellProcArgs(u64 from, u64 cross) {
     shellProcUsage();
     return;
   }
-  shellProcRun(a, b, cross);
+  shellProcRun(a, b, cross, policy, u64(0));
+}
+
+/// `proc spin <lbaA> <lbaB> <quanta>` — M18.
+///
+/// The only command in this shell that takes THREE arguments, and the third is
+/// the reason the command exists: the two programs it is for do not yield and
+/// one of them does not exit, so without a stated budget the session would run
+/// until the machine was switched off. **`<quanta>` is a count of quantum
+/// expiries, not milliseconds and not ticks**, which is what makes a boot of it
+/// reproducible: `proc spin A B 0C` performs exactly twelve of them and then
+/// tears the session down, on a fast host and a slow one alike.
+///
+/// A budget of zero is refused rather than treated as "no limit". `proc run`
+/// already means "no limit"; a `proc spin` with no budget would be a command
+/// whose entire purpose is defeated by a typo.
+@bare
+void shellProcSpinArgs(u64 from) {
+  final u64 e1 = procFieldEnd(from);
+  final u64 a = procHexField(from, e1);
+  if (a > u64(ataLba28Max)) {
+    shellProcUsage();
+    return;
+  }
+  final u64 e2 = procFieldEnd(e1 + u64(1));
+  final u64 b = procHexField(e1 + u64(1), e2);
+  if (b > u64(ataLba28Max)) {
+    shellProcUsage();
+    return;
+  }
+  final u64 e3 = procFieldEnd(e2 + u64(1));
+  final u64 q = procHexField(e2 + u64(1), e3);
+  if (q > u64(ataLba28Max)) {
+    shellProcUsage();
+    return;
+  }
+  if (q < u64(1)) {
+    shellProcUsage();
+    return;
+  }
+  shellProcRun(a, b, u64(0), u64(procPolicyPreempt), q);
 }

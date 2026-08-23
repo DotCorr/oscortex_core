@@ -168,7 +168,7 @@ PY
 # So the total is a SUM OF TWO OBJECTS, and every historical number below is
 # reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
 # 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
-# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# M14, 14048 at M16, and 9728/11552/14112 at M18 -- M18 (ADR-0022) grew procStore by 64 bytes -- six scheduler header words and two per-slot counters, in the block the process table already owns rather than in a second one -- so every total below moves by exactly 64. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
 # half; offset arithmetic ("bytes from this block to the end") is done inside
 # DART_BSS, because every block a later milestone added is in that half.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
@@ -221,9 +221,9 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11/M12. A C LIBRARY IS USERLAND. If the kernel needed new mutable state to host one, that is a different milestone and it needs its own ADR."
+[[ "$KDATA_BSS" -eq 9728 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9728 — M11/M12's 9664 plus M18's 64-byte scheduler header (ADR-0022), and not one byte of M13's. A C LIBRARY IS USERLAND. If the kernel needed new mutable state to host one, that is a different milestone and it needs its own ADR."
 grep -rq "oslibc" "$CORE_DIR/kernel/" && fail "a kernel source mentions oslibc — the C library must not be reachable from ring 0"
-echo "STRUCTURAL: pass  kdata.o donates 9664 bytes of .bss outside M14's fat_store and no kernel source mentions the library — M13 is entirely userland"
+echo "STRUCTURAL: pass  kdata.o donates 9728 bytes of .bss outside M14's fat_store and no kernel source mentions the library — M13 is entirely userland"
 
 # 2b. EVERY SYSCALL NUMBER THE LIBRARY USES IS THE KERNEL'S OWN.
 #

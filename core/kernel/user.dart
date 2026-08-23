@@ -1561,6 +1561,24 @@ void userSyscall(u64 frame) {
     procYield(frame);
     return;
   }
+  // M18: `preempts` (syscall 10). Refused unless a PROCESS is live, for
+  // `yield`'s reason exactly: the number it returns lives in a process table
+  // slot and there is no slot without one.
+  //
+  // **IT IS A PURE READ AND IT DOES NOT SWITCH.** That matters more than it
+  // looks: `m18-preempt`'s reporter program calls this in a loop, and the whole
+  // claim of the milestone is that the program never asks to be taken off the
+  // CPU. If this syscall yielded, or slept, or blocked, the program would be
+  // cooperating and the preemption it observes would be its own doing.
+  if (no == u64(procSysPreemptsNo)) {
+    if (procLive() < u64(1)) {
+      userRefuse(frame, no, cs, u64(0));
+      return;
+    }
+    userSetFrame(frame, u64(userFrameRax),
+        procGet(procCurrent(), u64(procSlotPreempts)));
+    return;
+  }
   // M12: `sbrk` (syscall 4). Refused unless a PROCESS is live, for `yield`'s
   // reason and one more: the heap it grows lives in the CALLING process's slot,
   // and there is no slot to grow without one.

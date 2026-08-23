@@ -149,7 +149,7 @@ PY
 # So the total is a SUM OF TWO OBJECTS, and every historical number below is
 # reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
 # 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
-# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# M14, 14048 at M16, and 9728/11552/14112 at M18 -- M18 (ADR-0022) grew procStore by 64 bytes -- six scheduler header words and two per-slot counters, in the block the process table already owns rather than in a second one -- so every total below moves by exactly 64. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
 # half; offset arithmetic ("bytes from this block to the end") is done inside
 # DART_BSS, because every block a later milestone added is in that half.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
@@ -202,7 +202,7 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9664 — UNCHANGED from M11. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053."
+[[ "$KDATA_BSS" -eq 9728 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9728 — M11's 9664 plus the 64 bytes M18 added to procStore's header (ADR-0022), and nothing of M12's. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053."
 echo "STRUCTURAL: pass  kdata.o donates 9664 bytes of .bss outside M14's fat_store — M12 added no mutable state of its own"
 
 # 2b. THE STORAGE SEAM IS STILL EXACTLY THREE CALL SITES, ALL IN proc.dart.
@@ -572,7 +572,16 @@ fi
 PROC_STORE=$(bssaddr procStore)
 [[ -n "$PROC_STORE" ]] || fail "procStore's linked address is not derivable from core/build/kernel.map"
 PROC_STORE="0x$PROC_STORE"
-HOLD_KEYS="$(typekeys "proc run $LBA_HLATE $LBA_P"),ret,wait:40000"
+# `proc coop`, NOT `proc run`, AND M18 IS WHY (ADR-0022 §2).
+#
+# This boot needs progH parked at a `jmp .` with progP suspended in a `yield`,
+# so that BOTH address spaces are live while the harness walks them out of guest
+# physical memory. `proc run` became a PREEMPTIVE session at M18: the parked
+# process is taken off the CPU after one quantum, progP resumes and runs to
+# completion, and there is no moment at which two heaps are simultaneously live
+# and suspended. `proc coop` is the one command that keeps M11's semantics; it
+# prints exactly the same lines, so every regex below is unchanged.
+HOLD_KEYS="$(typekeys "proc coop $LBA_HLATE $LBA_P"),ret,wait:40000"
 drive_session "$WORKDIR/late" "$HOLD_KEYS" "$WORKDIR/late/shot.png" "hold-late" 120 128M qemu64 \
   --monitor-command 'info registers' \
   --monitor-command "xp/131072gx $PROC_STORE" \
@@ -580,7 +589,8 @@ drive_session "$WORKDIR/late" "$HOLD_KEYS" "$WORKDIR/late/shot.png" "hold-late" 
 
 # BOOT C — THE BEFORE PICTURE. The SAME BINARY with two different bytes changed,
 # stopped after `sbrk(0)` and before the first allocation.
-EARLY_KEYS="$(typekeys "proc run $LBA_HEARLY $LBA_P"),ret,wait:6000"
+# Cooperative for the same reason as the hold-late boot immediately above.
+EARLY_KEYS="$(typekeys "proc coop $LBA_HEARLY $LBA_P"),ret,wait:6000"
 drive_session "$WORKDIR/early" "$EARLY_KEYS" "$WORKDIR/early/shot.png" "hold-early" 130 128M qemu64 \
   --monitor-command 'info registers' \
   --monitor-command "xp/32768gx $PROC_STORE" \

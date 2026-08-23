@@ -198,7 +198,7 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 3 program 
 # So the total is a SUM OF TWO OBJECTS, and every historical number below is
 # reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
 # 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
-# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# M14, 14048 at M16, and 9728/11552/14112 at M18 -- M18 (ADR-0022) grew procStore by 64 bytes -- six scheduler header words and two per-slot counters, in the block the process table already owns rather than in a second one -- so every total below moves by exactly 64. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
 # half; offset arithmetic ("bytes from this block to the end") is done inside
 # DART_BSS, because every block a later milestone added is in that half.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
@@ -252,15 +252,15 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9664 (5496 through M10, plus 4160 for the process table and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053."
+[[ "$KDATA_BSS" -eq 9728 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9728 (5496 through M10, plus 4224 for the process table -- 4160 at M11 and 64 more for M18's scheduler header, ADR-0022 -- and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053."
 PROC_STORE=$(bsssize procStore)
-[[ "$PROC_STORE" == "4160" ]] || fail "procStore is ${PROC_STORE:-missing} bytes, expected 4160"
+[[ "$PROC_STORE" == "4224" ]] || fail "procStore is ${PROC_STORE:-missing} bytes, expected 4224 (4160 at M11, plus M18's eight extra header words)"
 ELF_STORE_OFF_HEX=$(bssoff elfStore)
 ELF_STORE_SZ=$(bsssize elfStore)
 # The offset arithmetic runs inside the DCDart half (ASM_BSS is 96 bytes of
 # assembly-owned words that are NOT at the end of it), so subtract it back out.
-[[ $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )) -eq 4168 ]] \
-  || fail "the mutable static bytes past the end of elfStore are $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )), expected 4168"
+[[ $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )) -eq 4232 ]] \
+  || fail "the mutable static bytes past the end of elfStore are $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )), expected 4232"
 # M17: scan BOTH objects, and only their .bss sections. The storage moved to
 # kmain.o, so a scan of kdata.o alone would now find nothing and pass for the
 # wrong reason. The migration this check was written to protect has happened;
@@ -272,7 +272,7 @@ for obj in kmain.o kdata.o; do
     fail "$obj holds MUTABLE STATIC '$sym'. M11's state is ONE symbol behind three offsets (ADR-0015 §1) — a second one is a second thing the storage seam would have had to know about."
   done
 done
-echo "STRUCTURAL: pass  exactly 9664 bytes of mutable static storage — 5496 inherited, 4160 for procStore and 8 for the alignment fxsave requires, in ONE symbol"
+echo "STRUCTURAL: pass  exactly 9728 bytes of mutable static storage — 5496 inherited, 4224 for procStore and 8 for the alignment fxsave requires, in ONE symbol"
 
 # 3b. `proc_store` IS 16-BYTE ALIGNED IN THE LINKED IMAGE, AND SO IS EVERY
 #     FXSAVE AREA INSIDE IT.
@@ -637,8 +637,8 @@ for sym in sse_enabled cr4_read fx_save fx_restore; do
   grep -qE "\b$sym\b" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
 done
 # M11's fifth was `proc_store_addr` (asserted absent above). What it addressed is
-# now `procStore`, the 4160-byte @bss block asserted at check 3a.
-[[ "$(bsssize procStore)" == "4160" ]] || fail "procStore is not a 4160-byte object in kmain.o's .bss — M11's process table did not survive the ADR-0021 migration"
+# now `procStore`, the 4224-byte @bss block asserted at check 3a.
+[[ "$(bsssize procStore)" == "4224" ]] || fail "procStore is not a 4224-byte object in kmain.o's .bss — M11's process table did not survive the ADR-0021 migration, or M18's scheduler header did not land in it"
 grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 40 from M10 plus exactly four (M11's fifth, proc_store_addr, is gone with ADR-0021), and kdata.o still passes standalone"
 
@@ -731,7 +731,19 @@ fi
 # four FXSAVE areas, the kernel's own six page-table frames, and every frame
 # both processes' address spaces were built out of. A walk that needed a byte
 # outside it RAISES rather than reading zero (derive.py's `Memory`).
-HOLD_KEYS="$(typekeys "proc run $LBA_A $LBA_BHOLD"),ret,wait:3000"
+# `proc coop`, NOT `proc run`, AND M18 IS WHY.
+#
+# `proc run` became a PREEMPTIVE session at M18 (ADR-0022): a process that holds
+# is taken off the CPU after one quantum and the other one resumes, which is the
+# milestone working and is exactly what this boot must not have. Everything
+# below needs a process PARKED at its entry point with the OTHER one suspended
+# and both address spaces live, and a preemptive scheduler abolishes that state.
+#
+# `proc coop` is the one command that keeps M11's semantics, it is named for
+# them, and it prints exactly the same lines -- so every regex in this section
+# is unchanged. `m18-preempt/run.sh` uses the same command as its NEGATIVE
+# CONTROL and requires it to hang, which is the other half of the same claim.
+HOLD_KEYS="$(typekeys "proc coop $LBA_A $LBA_BHOLD"),ret,wait:3000"
 drive_session "$WORKDIR/hold" "$HOLD_KEYS" "$WORKDIR/hold/shot.png" "hold" 80 128M qemu64 \
   --addr-from-serial ' FX ([0-9A-F]{16})' \
   --monitor-command 'info registers' \
@@ -843,24 +855,49 @@ if len(sigs) == 2:
         fails.append("processes A and B reported the SAME XMM0 value %s — that is one "
                      "FPU state shared by two processes" % sorted(va & vb))
 
-# 6. THE SWITCHING IS COOPERATIVE, AND THIS IS THE ASSERTION THAT SAYS SO.
-#    Every switch must be accounted for by a yield or by an exit that had a
-#    survivor. If a timer ever started switching processes, this number would
-#    not add up -- and nothing else in this harness would notice.
+# 6. EVERY SWITCH IS ACCOUNTED FOR, AND M18 ADDED THE THIRD TERM.
+#
+#    Until M18 this read `switches == yields + surviving exits`, and its stated
+#    reason was that those were the only two things that could switch a process:
+#    "there is no preemption (GAP-0097), and a number that does not add up would
+#    be the first sign of one." There IS preemption now, so the identity gets
+#    the term it was missing rather than being deleted:
+#
+#        switches == yields + surviving exits + preemptions
+#
+#    and the preemption count is not taken from the kernel's own counter but
+#    COUNTED OUT OF THE LOG, one `PROC PREEMPT` line at a time. That keeps the
+#    check falsifiable from two directions at once: a kernel that switched
+#    without printing fails it, and so does one that printed without switching.
+#
+#    In THIS harness's sessions the third term must be zero, and that is a claim
+#    about arithmetic rather than about hope: `proc run` IS preemptive at M18,
+#    but a quantum is eight 10 ms ticks of ring-3 time and M11's programs reach
+#    a `yield` within a few thousand instructions, so a slice here never
+#    survives one tick, let alone eight. If that ever stops being true this
+#    check fails loudly instead of the golden silently drifting.
 for block in cap.split("oscortex> "):
     if "PROC END SWITCHES" not in block:
         continue
     yields = len(re.findall(r"^PROC YIELD \d\d -> \d\d ", block, re.M))
+    preempts = len(re.findall(r"^PROC PREEMPT \d\d -> \d\d ", block, re.M))
     exits = re.findall(r"^PROC EXIT SLOT \d\d ID \w{8} CODE \w{16} LEFT (\w{8})\n", block, re.M)
     survivors = sum(1 for left in exits if int(left, 16) > 0)
     end = re.search(r"^PROC END SWITCHES (\w{8}) EXITS (\w{8}) ", block, re.M)
     total = int(end.group(1), 16)
-    if total != yields + survivors:
-        fails.append("a session reports %d switches but %d yields and %d exits with a "
-                     "survivor. Every switch this kernel performs is one of those two "
-                     "things -- there is no preemption (GAP-0097), and a number that "
-                     "does not add up would be the first sign of one."
-                     % (total, yields, survivors))
+    if preempts:
+        fails.append("a session in this harness performed %d INVOLUNTARY switch(es). "
+                     "M11's 4096-byte golden is an interleaving only a scheduler that "
+                     "did not preempt produces; a quantum is %d ticks of ring-3 time "
+                     "and these programs yield within microseconds, so this should be "
+                     "arithmetically impossible. See ADR-0022 on the quantum."
+                     % (preempts, 8))
+    if total != yields + survivors + preempts:
+        fails.append("a session reports %d switches but %d yields, %d exits with a "
+                     "survivor and %d preemptions. Every switch this kernel performs is "
+                     "one of those three things, and a number that does not add up is "
+                     "the first sign of a fourth."
+                     % (total, yields, survivors, preempts))
     if int(end.group(2), 16) != len(exits):
         fails.append("a session reports %s exits and shows %d PROC EXIT lines"
                      % (end.group(2), len(exits)))

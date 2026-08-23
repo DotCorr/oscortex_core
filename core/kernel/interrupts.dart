@@ -486,7 +486,33 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     if (ticks == u64(1)) {
       m1ReportPic(vector);
     }
+    // M18: `procTick` IS CALLED AFTER THE EOI, NOT BEFORE IT, AND THAT SIDE OF
+    // THE LINE IS DELIBERATE RATHER THAN INHERITED.
+    //
+    // The EOI was already the last thing this arm did before M18. What is new
+    // is that there is now a handler body at all, and it goes AFTER.
+    //
+    // [procTick] is the preemptive scheduler, and on one path — the session's
+    // quantum budget running out — it does NOT return: it abandons this
+    // interrupt frame through `user_return` and reappears inside
+    // `shellProcRun`. An EOI written after the call would never be written on
+    // that path, IRQ0 would stay in the PIC's in-service register — which
+    // blocks IRQ1 with it, because the keyboard is a LOWER priority line on
+    // the same PIC — and the shell we returned to would answer nothing at
+    // all for the rest of the boot.
+    //
+    // Acknowledging first is safe because every gate in this IDT is an INTERRUPT
+    // gate: IF is clear for the whole of this handler, so acknowledging the PIC
+    // early cannot let a second tick arrive inside the first one. That is the
+    // same property the keyboard arm's comment below relies on to justify the
+    // OPPOSITE order — and the difference between them is which one has a path
+    // that never returns.
+    //
+    // M0/M1 output is unchanged: `m1ReportPic` still runs before the EOI, and
+    // `procTick` prints nothing at all with no process live, which is every
+    // tick M1 ever takes.
     picEoiMaster();
+    procTick(frame);
     return;
   }
 

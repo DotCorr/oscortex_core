@@ -153,7 +153,7 @@ symsize() {
 # So the total is a SUM OF TWO OBJECTS, and every historical number below is
 # reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
 # 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
-# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# M14, 14048 at M16, and 9728/11552/14112 at M18 -- M18 (ADR-0022) grew procStore by 64 bytes -- six scheduler header words and two per-slot counters, in the block the process table already owns rather than in a second one -- so every total below moves by exactly 64. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
 # half; offset arithmetic ("bytes from this block to the end") is done inside
 # DART_BSS, because every block a later milestone added is in that half.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
@@ -196,10 +196,10 @@ M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
 [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7)"
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-[[ "$KDATA_BSS" -eq 11488 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 11488 — 9664 through M13 plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
+[[ "$KDATA_BSS" -eq 11552 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 11552 — 9728 through M13 (9664, plus M18's 64-byte scheduler header, ADR-0022) plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
 FAT_STORE_SIZE=$(bsssize fatStore)
 [[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824"
-[[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 9664 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 — M14 moved storage it does not own"
+[[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 9728 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 plus M18's 64 — M14 moved storage it does not own"
 
 META_OFF=$(dartconst fatMetaOffset fat.dart)
 CHAIN_OFF=$(dartconst fatChainOffset fat.dart)
@@ -219,7 +219,7 @@ NAME_BYTES=$(dartconst fatNameBytes fat.dart)
   || fail "the 512-byte sector buffer runs from $SECTOR_OFF to $(( SECTOR_OFF + 512 )) and the name buffer starts at $NAME_OFF — they overlap"
 [[ $(( NAME_OFF + NAME_BYTES )) -le "$STORE_BYTES" ]] \
   || fail "the $NAME_BYTES-byte name buffer ends at $(( NAME_OFF + NAME_BYTES )) and the block is only $STORE_BYTES bytes"
-echo "STRUCTURAL: pass  kdata.o donates $KDATA_BSS bytes of .bss — M13's 9664 plus fat_store's $FAT_STORE_SIZE — and fat.dart's four regions (meta $META_WORDS words at $META_OFF, chain $CHAIN_MAX entries at $CHAIN_OFF, sector 512 at $SECTOR_OFF, name $NAME_BYTES at $NAME_OFF) tile it without overlapping or overrunning"
+echo "STRUCTURAL: pass  kdata.o donates $KDATA_BSS bytes of .bss — M13's 9728 plus fat_store's $FAT_STORE_SIZE — and fat.dart's four regions (meta $META_WORDS words at $META_OFF, chain $CHAIN_MAX entries at $CHAIN_OFF, sector 512 at $SECTOR_OFF, name $NAME_BYTES at $NAME_OFF) tile it without overlapping or overrunning"
 
 # 2b. THE STORAGE SEAM IS EXACTLY FOUR CALL SITES.
 #
