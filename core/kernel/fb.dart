@@ -242,23 +242,29 @@ const int fbColorBg = 0x00101018;
 ///     +16  u64  cursor column, in glyph cells
 ///     +24  u64  cursor row, in glyph cells
 ///
-/// One block with fixed offsets rather than four symbols with four accessors,
-/// for the reason `cpu_info` gives in GAP-0061: every extra accessor is another
-/// `@extern` declaration and another line of assembly.
-@extern
-external u64 fb_state_addr();
+/// One block with fixed offsets rather than four symbols with four accessors.
+/// The original reason was the one `cpu_info` gives in GAP-0061 -- every extra
+/// accessor was another `@extern` declaration and another line of assembly --
+/// and M17 (ADR-0021) removed that reason by making the storage a DCDart `@bss`
+/// block. The shape is kept anyway: [fbState]/[fbSetState] are two functions
+/// that know the layout, which is the property, not the assembly.
+@bss
+final Bss fbStateBlock = const Bss(bytes: fbStateBytes);
 
 /// Reads word [i] of the framebuffer state block.
 @bare
 u64 fbState(u64 i) {
-  return Pointer<u64>.fromAddress(fb_state_addr() + (i * u64(8))).value;
+  return Pointer<u64>.fromAddress(Bss.addressOf(fbStateBlock) + (i * u64(8))).value;
 }
 
 /// Writes word [i] of the framebuffer state block.
 @bare
 void fbSetState(u64 i, u64 v) {
-  Pointer<u64>.fromAddress(fb_state_addr() + (i * u64(8))).value = v;
+  Pointer<u64>.fromAddress(Bss.addressOf(fbStateBlock) + (i * u64(8))).value = v;
 }
+
+/// Bytes in the state block: four `u64` words.
+const int fbStateBytes = 32;
 
 /// Word indices inside the state block.
 const int fbStateBase = 0;

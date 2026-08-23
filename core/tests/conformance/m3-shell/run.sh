@@ -131,30 +131,86 @@ KERNEL_ELF="$CORE_DIR/build/kernel.elf"
 # still present and still the right sizes. A shrunk, renamed or missing shell
 # word is still caught here; a deliberate growth elsewhere is no longer a false
 # failure here.
-KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
-KDATA_BSS=$((16#$KDATA_BSS_HEX))
+# ---------------------------------------------------------------------------
+# M17 (docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md):
+# WHERE THE MUTABLE STORAGE LIVES NOW. This check did not change what it
+# asserts; it changed where it reads it from, and it is written out here rather
+# than only in a commit message because an accounting assertion that moves is
+# exactly the kind of thing that must never move quietly.
+#
+# Until M17 every mutable byte in this kernel was hand-donated `.bss` in
+# core/boot/kdata.S, because DCDart had no mutable static data (GAP-0053).
+# DCDart ADR-0051 landed `@bss`, so the blocks are now DCDart mutable statics
+# declared in the subsystem that owns them, and they land in `kmain.o`'s `.bss`.
+# FIVE WORDS DID NOT MOVE and never will: `cpu_info`, `shell_resume_rsp`,
+# `shell_resume_ok`, `user_resume_rsp` and `user_resume_ok` are written by
+# assembly itself (isr.S), and a `@bss` symbol is LOCAL, so assembly cannot
+# name one. Those 96 bytes are still in kdata.o.
+#
+# So the total is a SUM OF TWO OBJECTS, and every historical number below is
+# reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
+# 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
+# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# half; offset arithmetic ("bytes from this block to the end") is done inside
+# DART_BSS, because every block a later milestone added is in that half.
+bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
+  local f="$1" n="$2" o v
+  for o in kmain.o kdata.o; do
+    v=$(x86_64-elf-readelf -sW "$CORE_DIR/build/$o" \
+          | awk -v s="$n" -v f="$f" '$4=="OBJECT" && $8==s {print $f; exit}')
+    [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+  done
+  return 1
+}
+bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
+  # A `@bss` symbol is LOCAL to kmain.o and kernel.ld's OUTPUT_FORMAT(elf32-i386)
+  # container keeps no local symbols, so kernel.elf's symbol table cannot answer
+  # this. The LINK MAP can, and it is the linker's own statement of where it put
+  # kmain.o's `.bss`; the block's offset inside that section comes from kmain.o.
+  local n="$1" base off
+  base=$(awk '$1==".bss" && $4 ~ /kmain\.o$/ {print $2; exit}' "$CORE_DIR/build/kernel.map")
+  [[ -n "$base" ]] || return 1
+  off=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+          | awk -v s="$n" '$4=="OBJECT" && $8==s {print $2; exit}')
+  [[ -n "$off" ]] || return 1
+  printf '%x\n' $(( 16#${base#0x} + 16#$off ))
+}
+bsssize() { bssfield 3 "$1"; }
+bssoff()  { bssfield 2 "$1"; }
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+DART_BSS=$((16#$DART_BSS_HEX))
+ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ASM_BSS=$((16#$ASM_BSS_HEX))
+[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+KDATA_BSS=$(( DART_BSS + ASM_BSS ))
 if [[ "$KDATA_BSS" -lt 304 ]]; then
-  fail "kdata.o .bss is $KDATA_BSS bytes, which is less than the 304 M2's console and M3's shell need between them (known-gaps GAP-0053)"
+  fail "the kernel's mutable static storage is $KDATA_BSS bytes, which is less than the 304 M2's console and M3's shell need between them (known-gaps GAP-0053)"
 fi
-for sym in shell_len shell_state shell_mbinfo kbd_prefix; do
-  SZ=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ "$SZ" == "8" ]] || fail "kdata.o's $sym is ${SZ:-missing} bytes, expected 8 — the shell's donated state changed shape"
+for sym in shellLenWord shellStateWord shellMbinfoWord kbdPrefixWord; do
+  SZ=$(bsssize "$sym")
+  [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — the shell's mutable state changed shape"
 done
-echo "STRUCTURAL: pass  kdata.o donates $KDATA_BSS bytes of .bss, including all four of M3's shell state words at 8 bytes each"
+echo "STRUCTURAL: pass  the kernel holds $KDATA_BSS bytes of mutable static storage ($DART_BSS DCDart @bss + $ASM_BSS assembly-written), including all four of M3's shell state words at 8 bytes each"
 
 # 2b. The line buffer is really 256 bytes, and shell.dart's shellLineMax says
 # the same. A buffer shorter than the constant is a silent overflow of donated
 # .bss — it would write over kbd_prefix and whatever came next.
-LINE_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="shell_line" {print $3; exit}')
-[[ -n "$LINE_SIZE" ]] || fail "shell_line symbol not found in kdata.o"
+LINE_SIZE=$(bsssize shellLineBuf)
+[[ -n "$LINE_SIZE" ]] || fail "shellLineBuf symbol not found in kmain.o or kdata.o"
 if [[ "$LINE_SIZE" -ne 256 ]]; then
-  fail "shell_line is $LINE_SIZE bytes, expected 256"
+  fail "shellLineBuf is $LINE_SIZE bytes, expected 256"
 fi
 if ! grep -q 'const int shellLineMax = 256;' "$CORE_DIR/kernel/shell.dart"; then
-  fail "core/kernel/shell.dart's shellLineMax no longer says 256 — the DCDart bound and the donated buffer would disagree, and the editor would write past the end of .bss"
+  fail "core/kernel/shell.dart's shellLineMax no longer says 256 — the DCDart bound and the buffer would disagree, and the editor would write past the end of .bss"
 fi
-echo "STRUCTURAL: pass  shell_line is 256 bytes and shell.dart's shellLineMax agrees"
+# M17: the buffer is now declared FROM that constant, so the two cannot drift at
+# all. Asserted as a literal because the linked size above is what the CPU sees
+# and this is what the source says; both, or neither.
+grep -q 'const Bss(bytes: shellLineMax)' "$CORE_DIR/kernel/shell.dart" \
+  || fail "shell.dart's line buffer is no longer declared as const Bss(bytes: shellLineMax) — the bound and the buffer can drift again"
+echo "STRUCTURAL: pass  shellLineBuf is 256 bytes, declared from shell.dart's own shellLineMax"
 
 # 2c. THE COMMAND-NAME TABLES ARE EXACT.
 #

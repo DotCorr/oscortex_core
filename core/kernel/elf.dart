@@ -835,20 +835,21 @@ const int elfMetaZeroed = 15;
 // `tests/conformance/m10-elf/run.sh` counts it.
 // ---------------------------------------------------------------------------
 
-/// Address of the 128-byte donated block that holds the whole subsystem.
+/// The 128 bytes this subsystem owns, as a DCDart mutable static.
 ///
-/// `core/boot/kdata.S`. Returns an ADDRESS rather than a `Pointer<T>` because
-/// DCDart still forbids `Pointer<T>` in an extern signature (DCDart GAP-0025),
-/// and lives in assembly because DCDart has no mutable static data of any kind
-/// (docs/known-gaps.md GAP-0053). **Both are temporary and this function is the
-/// seam they will be removed through.**
-@extern
-external u64 elf_store_addr();
+/// Until M17 (ADR-0021) this was `elf_store` in core/boot/kdata.S, reached through
+/// `@extern u64 elf_store_addr()`. DCDart grew `@bss` (its ADR-0051), so the storage is
+/// declared here, in the file that owns it, and the assembly and its accessor
+/// are gone. The seam function below  is unchanged in name, arity and meaning;
+/// only the expression it returns moved. That is the whole of ADR-0011 section
+/// 0's claim, tested.
+@bss
+final Bss elfStore = const Bss(bytes: elfStoreBytes);
 
 /// Base of the sixteen-word metadata block.
 @bare
 u64 elfMetaBase() {
-  return elf_store_addr();
+  return Bss.addressOf(elfStore);
 }
 
 // ======================  END OF THE STORAGE SEAM  ==========================

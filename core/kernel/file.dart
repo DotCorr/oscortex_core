@@ -489,42 +489,36 @@ const int fileRetNoSpace = 0xFFFFFFFFFFFFFFF2;
 
 // ======================  THE STORAGE SEAM  ======================
 //
-// `file_store` in core/boot/kdata.S is 2560 bytes of assembly-donated `.bss`.
-// It is the ONLY place this subsystem's mutable state lives, and the FOUR
-// functions below are the ONLY call sites of `file_store_addr`.
+// `fileStore` is 2560 bytes of DCDart `@bss` mutable static, declared here in
+// the file that owns it. Until M17 (ADR-0021) it was 2560 bytes of
+// assembly-donated `.bss` in core/boot/kdata.S reached through
+// `@extern u64 file_store_addr()`; the migration was the declaration below plus
+// four `return file_store_addr()` becoming four `return
+// Bss.addressOf(fileStore)`, AND NOTHING ELSE IN THIS FILE.
 //
-// Do NOT call `file_store_addr()` anywhere else, and do NOT add a second
-// `@extern` accessor for a piece of descriptor state. Either one turns the
-// migration below from a three-line rewrite into an audit of the whole file. If
-// a new piece of state is needed, give it one of the four spare metadata words
-// — that is what they are for.
-//
-// The migration plan, when DCDart grows mutable statics (GAP-0053):
-//
-//   1. declare the metadata, the descriptor table and the two sector buffers as
-//      DCDart mutable statics in this file;
-//   2. rewrite the four seam functions to take their addresses;
-//   3. delete `file_store` and `file_store_addr` from core/boot/kdata.S, and
-//      the `@extern` declaration below.
+// It is still the ONLY place this subsystem's mutable state lives, and the FOUR
+// functions below are still the only things that know where it is. Do NOT name
+// `fileStore` anywhere else. If a new piece of state is needed, give it one of
+// the four spare metadata words — that is what they are for.
 //
 // `tests/conformance/m16-filewrite/run.sh` COUNTS exactly four
-// `return file_store_addr()` in this file and zero anywhere else in
+// `return Bss.addressOf(fileStore)` in this file and zero anywhere else in
 // core/kernel/, and m15-fileio counts the same four.
 
-/// Base of the donated block. See `core/boot/kdata.S`.
-@extern
-external u64 file_store_addr();
+/// The 2560 bytes this subsystem owns, as a DCDart mutable static.
+@bss
+final Bss fileStore = const Bss(bytes: fileStoreBytes);
 
 /// The 32 metadata words.
 @bare
 u64 fileMetaBase() {
-  return file_store_addr();
+  return Bss.addressOf(fileStore);
 }
 
 /// The 5 x 4 x 8 descriptor words.
 @bare
 u64 fileTableBase() {
-  return file_store_addr() + u64(fileTableOffset);
+  return Bss.addressOf(fileStore) + u64(fileTableOffset);
 }
 
 /// The one-sector bounce buffer. **No user pointer ever names this address.**
@@ -535,7 +529,7 @@ u64 fileTableBase() {
 /// argument — see [fileSysWrite].
 @bare
 u64 fileBufBase() {
-  return file_store_addr() + u64(fileBufOffset);
+  return Bss.addressOf(fileStore) + u64(fileBufOffset);
 }
 
 /// M16 — the read-modify-write sector. **No user pointer ever names this one
@@ -556,7 +550,7 @@ u64 fileBufBase() {
 /// sector was a FAT sector.
 @bare
 u64 fileSecBase() {
-  return file_store_addr() + u64(fileSecOffset);
+  return Bss.addressOf(fileStore) + u64(fileSecOffset);
 }
 
 // ========================  END OF THE STORAGE SEAM  ========================

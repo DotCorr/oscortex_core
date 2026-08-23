@@ -542,33 +542,58 @@ final List<u8> shellStrAbandoned = const [
 
 
 // ---------------------------------------------------------------------------
-// Donated mutable storage.
+// Mutable storage.
 //
-// Every word below lives in `core/boot/kdata.S`'s `.bss` because DCDart has no
-// mutable static data of any kind (docs/known-gaps.md GAP-0053). These
-// accessors return an ADDRESS rather than a `Pointer<T>` because DCDart still
-// forbids `Pointer<T>` in an extern signature (DCDart GAP-0025).
+// Until M17 (ADR-0021) every word below was hand-donated `.bss` in
+// `core/boot/kdata.S`, because DCDart had no mutable static data of any kind
+// (docs/known-gaps.md GAP-0053). DCDart grew `@bss` (its ADR-0051) and they are
+// now DCDart mutable statics, declared here, in the file that uses them. The
+// line buffer is the one that shows what the gap was costing: 256 bytes of
+// hand-written assembly to express what `const Bss(bytes: shellLineMax)` now
+// says in one line, and the bound is now the SAME CONSTANT the editor checks
+// against rather than a second copy of it.
 //
-// The line buffer is the expensive one: 256 bytes of assembly-donated `.bss`
-// to express what `static u8 line[256];` would say in one line. That is the
-// measured cost recorded in GAP-0053, and `tests/conformance/m3-shell/run.sh`
-// asserts the total so it moves only on purpose.
+// THE ACCESSOR NAMES DID NOT CHANGE, deliberately. `shell_line_addr()` and its
+// five siblings are called from seventeen places across two files; keeping the
+// names made this a change to six declarations and six one-line bodies and to
+// NOTHING ELSE, which is the property ADR-0011 section 0 was written to make
+// measurable. They read as C names because they used to be C symbols; renaming
+// them is cosmetic and belongs to whoever wants it, not to this migration.
+// `tests/conformance/m3-shell/run.sh` still asserts the total.
 // ---------------------------------------------------------------------------
 
-/// Address of the 256-byte line buffer.
-@extern
-external u64 shell_line_addr();
+/// The 256-byte line buffer, sized from [shellLineMax] itself.
+@bss
+final Bss shellLineBuf = const Bss(bytes: shellLineMax);
 
-/// Address of the line-length word (bytes currently in the buffer).
-@extern
-external u64 shell_len_addr();
+/// Address of the block above. **The whole storage seam for this word.**
+@bare
+u64 shell_line_addr() {
+  return Bss.addressOf(shellLineBuf);
+}
 
-/// Address of the shell state word: 0 = accepting, 1 = line submitted,
+/// The line-length word (bytes currently in the buffer).
+@bss
+final Bss shellLenWord = const Bss(bytes: 8);
+
+/// Address of the block above. **The whole storage seam for this word.**
+@bare
+u64 shell_len_addr() {
+  return Bss.addressOf(shellLenWord);
+}
+
+/// The shell state word: 0 = accepting, 1 = line submitted,
 /// 2 = command running.
-@extern
-external u64 shell_state_addr();
+@bss
+final Bss shellStateWord = const Bss(bytes: 8);
 
-/// Address of the word holding the Multiboot information-structure pointer.
+/// Address of the block above. **The whole storage seam for this word.**
+@bare
+u64 shell_state_addr() {
+  return Bss.addressOf(shellStateWord);
+}
+
+/// The word holding the Multiboot information-structure pointer.
 ///
 /// `boot.S` stashes that pointer in ITS own `.bss` and hands it to `kmain()`
 /// as an ordinary C-ABI argument. The shell needs it again, long after
@@ -580,12 +605,24 @@ external u64 shell_state_addr();
 /// object that currently passes `verify-freestanding.sh` standalone
 /// (docs/known-gaps.md GAP-0056 records that pass as a real data point). Eight
 /// bytes is the honest price of keeping it.
-@extern
-external u64 shell_mbinfo_addr();
+@bss
+final Bss shellMbinfoWord = const Bss(bytes: 8);
 
-/// Address of the one-byte "an 0xE0 prefix was seen" flag -- GAP-0055 item 2.
-@extern
-external u64 kbd_prefix_addr();
+/// Address of the block above. **The whole storage seam for this word.**
+@bare
+u64 shell_mbinfo_addr() {
+  return Bss.addressOf(shellMbinfoWord);
+}
+
+/// The one-byte "an 0xE0 prefix was seen" flag -- GAP-0055 item 2.
+@bss
+final Bss kbdPrefixWord = const Bss(bytes: 8);
+
+/// Address of the block above. **The whole storage seam for this word.**
+@bare
+u64 kbd_prefix_addr() {
+  return Bss.addressOf(kbdPrefixWord);
+}
 
 /// Address of the 64-byte CPUID result block: a 12-byte vendor string at +0
 /// and a 48-byte brand string at +16.
@@ -597,12 +634,26 @@ external u64 kbd_prefix_addr();
 /// result could be returned *as* and nothing it could be stored *into*.
 /// `cpu_probe()` writes the bytes into donated `.bss` and this hands back the
 /// address they landed at. Cost recorded in docs/known-gaps.md GAP-0061.
+///
+/// **STILL DONATED AFTER M17, deliberately (ADR-0021 section 4).** `cpu_probe`
+/// in `core/boot/isr.S` writes this block by name — `leaq cpu_info(%rip), %r8`
+/// — and a DCDart `@bss` symbol is LOCAL to `kmain.o`, so assembly cannot name
+/// one. Migrating it would mean changing `cpu_probe`'s signature to take a
+/// destination pointer, which is a change to an assembly function rather than
+/// to a storage seam, and it is not what this milestone was for. 64 of the 96
+/// bytes left in `kdata.S` are this block. See GAP-0134.
 @extern
 external u64 cpu_info_addr();
 
-/// Address of the count of faults caught and recovered from since boot.
-@extern
-external u64 fault_count_addr();
+/// The count of faults caught and recovered from since boot.
+@bss
+final Bss faultCountWord = const Bss(bytes: 8);
+
+/// Address of the block above. **The whole storage seam for this word.**
+@bare
+u64 fault_count_addr() {
+  return Bss.addressOf(faultCountWord);
+}
 
 /// Address of the "the shell's resume point is valid" guard word.
 ///
@@ -612,6 +663,13 @@ external u64 fault_count_addr();
 /// zeroed by anything in this kernel, so without this a fault taken before the
 /// shell ever started would resume onto a garbage stack pointer and triple-fault
 /// the machine *while reporting a fault*.
+///
+/// **STILL DONATED AFTER M17, and it always will be (ADR-0021 section 4).**
+/// `shell_run_forever` writes this word and `shell_resume_rsp` beside it, both
+/// by name, from `core/boot/isr.S`, at the instant a fault is taken. A `@bss`
+/// symbol is LOCAL to `kmain.o`; assembly cannot name one, and there is nowhere
+/// to pass an address in from at fault time. `user.dart` says the same thing
+/// about `user_resume_ok`.
 @extern
 external u64 shell_resume_ok_addr();
 

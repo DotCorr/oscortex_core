@@ -88,19 +88,34 @@ const int crtcCursorLow = 15;
 // ---------------------------------------------------------------------------
 // Cursor state.
 //
-// The cursor is a LINEAR CELL INDEX (row * 80 + column) in the range 0..1999,
-// living in `core/boot/kdata.S`'s `.bss` because DCDart has no mutable static
-// data of any kind (docs/known-gaps.md GAP-0053). These two functions are the
-// only readers and writers.
+// The cursor is a LINEAR CELL INDEX (row * 80 + column) in the range 0..1999.
+// Until M17 (ADR-0021) it lived in `core/boot/kdata.S`'s `.bss`, because DCDart
+// had no mutable static data of any kind (docs/known-gaps.md GAP-0053); it is
+// now a DCDart `@bss` block declared here. These two functions are still the
+// only readers and writers, and their names did not change -- see shell.dart's
+// note on why the accessor names were deliberately left alone.
 // ---------------------------------------------------------------------------
 
-/// Address of the donated cursor word.
-@extern
-external u64 vga_cursor_addr();
+/// The cursor word itself -- a DCDart mutable static (`@bss`), no longer a
+/// donated block in `core/boot/kdata.S`.
+@bss
+final Bss vgaCursorWord = const Bss(bytes: 8);
 
-/// Address of the donated M2 phase word.
-@extern
-external u64 m2_phase_addr();
+/// The M2 phase word itself.
+@bss
+final Bss m2PhaseWord = const Bss(bytes: 8);
+
+/// Address of the cursor word.
+@bare
+u64 vga_cursor_addr() {
+  return Bss.addressOf(vgaCursorWord);
+}
+
+/// Address of the M2 phase word.
+@bare
+u64 m2_phase_addr() {
+  return Bss.addressOf(m2PhaseWord);
+}
 
 /// Reads the cursor.
 @bare

@@ -663,32 +663,34 @@ const int pmmFreeDouble = 5;
 // turns the mutable-statics migration from three functions into an audit.
 // ---------------------------------------------------------------------------
 
-/// Address of the 4672-byte donated block that holds the entire allocator.
+/// The 4672-byte block that holds the entire allocator, as a DCDart mutable
+/// static (ADR-0021, DCDart ADR-0051).
 ///
-/// `core/boot/kdata.S`. Returns an ADDRESS rather than a `Pointer<T>` because
-/// DCDart still forbids `Pointer<T>` in an extern signature (DCDart GAP-0025),
-/// and lives in assembly because DCDart has no mutable static data of any kind
-/// (docs/known-gaps.md GAP-0053). **Both of those are temporary and this
-/// function is the seam they will be removed through.**
-@extern
-external u64 pmm_store_addr();
+/// Until M17 this was `pmm_store` in `core/boot/kdata.S`, reached through an
+/// `@extern u64 pmm_store_addr()`. DCDart grew `@bss`, so the storage is now
+/// declared here, in the file that owns it, and the assembly and its accessor
+/// are gone. The three functions below are unchanged in name, arity and
+/// meaning — only the expression they return moved, which is exactly what
+/// ADR-0011 §0 promised.
+@bss
+final Bss pmmStore = const Bss(bytes: pmmStoreBytes);
 
 /// Base of the frame bitmap: one bit per frame, 1 = used or reserved.
 @bare
 u64 pmmBitmapBase() {
-  return pmm_store_addr();
+  return Bss.addressOf(pmmStore);
 }
 
 /// Base of the eight-word metadata block.
 @bare
 u64 pmmMetaBase() {
-  return pmm_store_addr() + u64(pmmMetaOffset);
+  return Bss.addressOf(pmmStore) + u64(pmmMetaOffset);
 }
 
 /// Base of the self-test's 64-entry allocation ledger.
 @bare
 u64 pmmLedgerBase() {
-  return pmm_store_addr() + u64(pmmLedgerOffset);
+  return Bss.addressOf(pmmStore) + u64(pmmLedgerOffset);
 }
 
 // ======================  END OF THE STORAGE SEAM  ==========================

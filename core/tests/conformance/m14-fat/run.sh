@@ -134,18 +134,70 @@ symsize() {
 # fat.dart are multiplied out against the block's own size here, because a
 # region that ran past the end would corrupt whatever `.bss` follows and would
 # do it silently -- `.bss` is not zeroed and nothing in this kernel guards it.
-KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
-KDATA_BSS=$((16#$KDATA_BSS_HEX))
+# ---------------------------------------------------------------------------
+# M17 (docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md):
+# WHERE THE MUTABLE STORAGE LIVES NOW. This check did not change what it
+# asserts; it changed where it reads it from, and it is written out here rather
+# than only in a commit message because an accounting assertion that moves is
+# exactly the kind of thing that must never move quietly.
+#
+# Until M17 every mutable byte in this kernel was hand-donated `.bss` in
+# core/boot/kdata.S, because DCDart had no mutable static data (GAP-0053).
+# DCDart ADR-0051 landed `@bss`, so the blocks are now DCDart mutable statics
+# declared in the subsystem that owns them, and they land in `kmain.o`'s `.bss`.
+# FIVE WORDS DID NOT MOVE and never will: `cpu_info`, `shell_resume_rsp`,
+# `shell_resume_ok`, `user_resume_rsp` and `user_resume_ok` are written by
+# assembly itself (isr.S), and a `@bss` symbol is LOCAL, so assembly cannot
+# name one. Those 96 bytes are still in kdata.o.
+#
+# So the total is a SUM OF TWO OBJECTS, and every historical number below is
+# reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
+# 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
+# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# half; offset arithmetic ("bytes from this block to the end") is done inside
+# DART_BSS, because every block a later milestone added is in that half.
+bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
+  local f="$1" n="$2" o v
+  for o in kmain.o kdata.o; do
+    v=$(x86_64-elf-readelf -sW "$CORE_DIR/build/$o" \
+          | awk -v s="$n" -v f="$f" '$4=="OBJECT" && $8==s {print $f; exit}')
+    [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+  done
+  return 1
+}
+bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
+  # A `@bss` symbol is LOCAL to kmain.o and kernel.ld's OUTPUT_FORMAT(elf32-i386)
+  # container keeps no local symbols, so kernel.elf's symbol table cannot answer
+  # this. The LINK MAP can, and it is the linker's own statement of where it put
+  # kmain.o's `.bss`; the block's offset inside that section comes from kmain.o.
+  local n="$1" base off
+  base=$(awk '$1==".bss" && $4 ~ /kmain\.o$/ {print $2; exit}' "$CORE_DIR/build/kernel.map")
+  [[ -n "$base" ]] || return 1
+  off=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+          | awk -v s="$n" '$4=="OBJECT" && $8==s {print $2; exit}')
+  [[ -n "$off" ]] || return 1
+  printf '%x\n' $(( 16#${base#0x} + 16#$off ))
+}
+bsssize() { bssfield 3 "$1"; }
+bssoff()  { bssfield 2 "$1"; }
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+DART_BSS=$((16#$DART_BSS_HEX))
+ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ASM_BSS=$((16#$ASM_BSS_HEX))
+[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+KDATA_BSS=$DART_BSS
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes. Subtracted
 # here so that M14's own number keeps meaning what it meant when it was written.
-M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
+M15_OFF_HEX=$(bssoff fileStore)
 [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
 [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7)"
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
-[[ "$KDATA_BSS" -eq 11488 ]] || fail "kdata.o .bss outside M15's file_store is $KDATA_BSS bytes, expected 11488 — 9664 through M13 plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
-FAT_STORE_SIZE=$(symsize "$CORE_DIR/build/kdata.o" fat_store)
+KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
+[[ "$KDATA_BSS" -eq 11488 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 11488 — 9664 through M13 plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
+FAT_STORE_SIZE=$(bsssize fatStore)
 [[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824"
 [[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 9664 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 — M14 moved storage it does not own"
 
@@ -179,16 +231,16 @@ echo "STRUCTURAL: pass  kdata.o donates $KDATA_BSS bytes of .bss — M13's 9664 
 # Comment lines are stripped first: this file DESCRIBES the seam at length, and
 # a rule that counted its own documentation would be measuring prose.
 CODE=$(grep -v '^[[:space:]]*//' "$CORE_DIR/kernel/fat.dart")
-SEAM=$(printf '%s\n' "$CODE" | grep -c "return fat_store_addr()")
-MENTIONS=$(printf '%s\n' "$CODE" | grep -c "fat_store_addr")
-[[ "$SEAM" -eq 4 ]] || fail "core/kernel/fat.dart has $SEAM call sites of fat_store_addr(), expected exactly 4 (fatMetaBase, fatChainBase, fatSectorBase, fatNameBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
-[[ "$MENTIONS" -eq 5 ]] || fail "fat.dart names fat_store_addr $MENTIONS times, expected 5: one @extern declaration and the four seam functions"
-OUTSIDE=$(grep -rl "fat_store_addr" "$CORE_DIR/kernel/" | grep -v "/fat.dart$" | wc -l | tr -d ' ')
-[[ "$OUTSIDE" -eq 0 ]] || fail "fat_store_addr is named outside core/kernel/fat.dart"
+SEAM=$(printf '%s\n' "$CODE" | grep -c "return Bss[.]addressOf(fatStore)")
+MENTIONS=$(printf '%s\n' "$CODE" | grep -cw "fatStore")
+[[ "$SEAM" -eq 4 ]] || fail "core/kernel/fat.dart has $SEAM call sites of Bss.addressOf(fatStore), expected exactly 4 (fatMetaBase, fatChainBase, fatSectorBase, fatNameBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
+[[ "$MENTIONS" -eq 5 ]] || fail "fat.dart names fatStore $MENTIONS times, expected 5: one @extern declaration and the four seam functions"
+OUTSIDE=$(grep -rlw "fatStore" "$CORE_DIR/kernel/" | grep -v "/fat.dart$" | wc -l | tr -d ' ')
+[[ "$OUTSIDE" -eq 0 ]] || fail "fatStore is named outside core/kernel/fat.dart"
 for f in fatMetaBase fatChainBase fatSectorBase fatNameBase; do
   grep -q "u64 $f() {" "$CORE_DIR/kernel/fat.dart" || fail "core/kernel/fat.dart has no $f()"
 done
-echo "STRUCTURAL: pass  the storage seam is exactly 4 \`return fat_store_addr()\` in fat.dart and 0 anywhere else in core/kernel/"
+echo "STRUCTURAL: pass  the storage seam is exactly 4 \`return Bss.addressOf(fatStore)\` in fat.dart and 0 anywhere else in core/kernel/"
 
 # 2c. EVERY @rodata TABLE IS THE SIZE ITS CALL SITE PASSES.
 #
@@ -415,15 +467,23 @@ VF_STATUS=$?
 echo "$VF_OUT"
 [[ $VF_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed on kmain.o"
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VF_OUT" | head -1 | grep -oE '[0-9]+')
-# M15 (ADR-0019) added exactly ONE: `file_store_addr`. Subtracted so that M14's
+# M15 (ADR-0019) added exactly ONE: `fileStore`. Subtracted so that M14's
 # own count keeps meaning what it meant when it was written.
-M15_PRESENT=0
-grep -q "\bfile_store_addr\b" <<<"$VF_OUT" && M15_PRESENT=1
-[[ "$M15_PRESENT" -eq 1 ]] || fail "M15's file_store_addr is not in kmain.o's manifest"
-EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
-[[ "$EXTERN_COUNT" -eq 59 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M15's, expected 59 — M13's 58 plus fat_store_addr, and nothing else"
-grep -qx "fat_store_addr" "$CORE_DIR/build/kmain.o.externs" \
-  || fail "fat_store_addr is not among kmain.o's declared externs"
+# M17 (ADR-0021) deleted all SIXTEEN `_addr()` accessor externs: every block of
+# assembly-donated `.bss` they addressed is now a DCDart `@bss` mutable static in
+# the subsystem that owns it. The kernel declares 44 externs, not 60, and each of
+# the sixteen is asserted ABSENT as well — a count alone can be restored by an
+# unrelated extern.
+for gone in \
+            vga_cursor_addr m2_phase_addr shell_line_addr \
+            shell_len_addr shell_state_addr shell_mbinfo_addr \
+            kbd_prefix_addr fault_count_addr fb_state_addr \
+            pmm_store_addr vm_store_addr user_store_addr \
+            elf_store_addr proc_store_addr fat_store_addr \
+            file_store_addr; do
+  grep -q "\\b$gone\\b" <<<"$VF_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+done
+[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — M13's 58 less the fourteen accessors ADR-0021 deleted at or before M13; M14's only extern was fat_store_addr, so M14 now adds NONE"
 # kdata.o and portio.o and nothing else: isr.o and boot.o are the assembly
 # stubs that CALL into DCDart by name, so they are undefined-by-construction and
 # every harness since M2 has left them out for that reason.
@@ -431,7 +491,7 @@ for obj in kdata.o portio.o; do
   (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh "build/$obj" >/dev/null 2>&1) \
     || fail "verify-freestanding.sh failed on $obj"
 done
-echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o, M13's 58 plus fat_store_addr and nothing else; kdata.o and portio.o clean standalone"
+echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o, M13's 58 less the fourteen accessors ADR-0021 deleted; M14's own fat_store_addr is gone too, so M14 adds NONE; kdata.o and portio.o clean standalone"
 
 # ---------------------------------------------------------------------------
 # Step 4 — build the two programs and the volume, and have TWO INDEPENDENT
@@ -863,4 +923,4 @@ fi
 echo "GOLDEN: pass  ${SERIAL_BYTES}-byte serial match, 80x25 screen match, and m1-interrupts' ${M1_BYTES}-byte golden intact as a byte-exact prefix"
 [[ -f "$SHOT_PNG" ]] || fail "no screenshot at $SHOT_PNG"
 
-echo "M14-fat: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs that HASH THEIR OWN R+X SEGMENT -> make-image.py writes a real FAT16 volume (${IMG_BYTES} bytes = $(( IMG_BYTES / 512 )) sectors, $(d clusters) clusters of $(( $(d spc) * $(d bps) ))B) on which NOTHING IS CONTIGUOUS -> fsck_msdos accepts it and macOS's own msdos driver mounts it and reads both programs back byte-for-byte -> 8 structural checks (donated .bss 9664 -> 11488 with fat_store's four regions tiling 1824 bytes without overlap, the storage seam exactly 4 call sites in one file, 67 @rodata tables (66 in fat.dart, one in elf.dart) each equal to the string its doc comment records and to every length literal passed to it, shellStrHelp 1871 -> 2147 with all four new commands and no line over 78 columns, 31 refusal codes each reachable and each distinctly worded, the FAT12/FAT16 boundary computed from the cluster count and BS_FilSysType never read, the ATA write path M16 added reachable from exactly one place with the only port_outw at 0x1F0 inside it, and fatFileSector indexing the chain array) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 58 + fat_store_addr) -> SEVEN real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's ${M1_BYTES}-byte golden intact as a prefix; \`fs\` reproducing the BPB and four derived region offsets; \`ls\` printing 4 entries and skipping 5 (a volume label, a deleted entry and three real long-filename entries the host driver resolves); \`cat\` printing a file across a 98-cluster hole with not one byte of the pattern filling the gap; TWO PROGRAMS LOADED BY NAME whose clusters interleave with each other's, each hashing its own image to the value derive.py computes from the ELF and NEITHER printing the hash a contiguous read would have produced; four refusals for four kinds of bad name; \`run <lba>\` still taking the contiguous path; the allocator's free count identical before and after; THE VOLUME BYTE-FOR-BYTE IDENTICAL AFTER EVERY BOOT, which is what M16 replaced this harness's read-only greps with; four boots against four one-thing-wrong volumes producing four different refusals; one boot against a volume whose three files have three different broken chains producing a named cycle, a bad cluster and a short chain; one against a volume whose chain leaves the data region by exactly one cluster; and every load-bearing expectation REQUIRED to fail against the broken-chain transcript. Screenshot at $SHOT_PNG"
+echo "M14-fat: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs that HASH THEIR OWN R+X SEGMENT -> make-image.py writes a real FAT16 volume (${IMG_BYTES} bytes = $(( IMG_BYTES / 512 )) sectors, $(d clusters) clusters of $(( $(d spc) * $(d bps) ))B) on which NOTHING IS CONTIGUOUS -> fsck_msdos accepts it and macOS's own msdos driver mounts it and reads both programs back byte-for-byte -> 8 structural checks (donated .bss 9664 -> 11488 with fat_store's four regions tiling 1824 bytes without overlap, the storage seam exactly 4 call sites in one file, 67 @rodata tables (66 in fat.dart, one in elf.dart) each equal to the string its doc comment records and to every length literal passed to it, shellStrHelp 1871 -> 2147 with all four new commands and no line over 78 columns, 31 refusal codes each reachable and each distinctly worded, the FAT12/FAT16 boundary computed from the cluster count and BS_FilSysType never read, the ATA write path M16 added reachable from exactly one place with the only port_outw at 0x1F0 inside it, and fatFileSector indexing the chain array) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 58 + fatStore) -> SEVEN real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's ${M1_BYTES}-byte golden intact as a prefix; \`fs\` reproducing the BPB and four derived region offsets; \`ls\` printing 4 entries and skipping 5 (a volume label, a deleted entry and three real long-filename entries the host driver resolves); \`cat\` printing a file across a 98-cluster hole with not one byte of the pattern filling the gap; TWO PROGRAMS LOADED BY NAME whose clusters interleave with each other's, each hashing its own image to the value derive.py computes from the ELF and NEITHER printing the hash a contiguous read would have produced; four refusals for four kinds of bad name; \`run <lba>\` still taking the contiguous path; the allocator's free count identical before and after; THE VOLUME BYTE-FOR-BYTE IDENTICAL AFTER EVERY BOOT, which is what M16 replaced this harness's read-only greps with; four boots against four one-thing-wrong volumes producing four different refusals; one boot against a volume whose three files have three different broken chains producing a named cycle, a bad cluster and a short chain; one against a volume whose chain leaves the data region by exactly one cluster; and every load-bearing expectation REQUIRED to fail against the broken-chain transcript. Screenshot at $SHOT_PNG"

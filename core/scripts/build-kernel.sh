@@ -128,7 +128,16 @@ done
 # ---------------------------------------------------------------------------
 # Step 3 — link via kernel.ld
 # ---------------------------------------------------------------------------
-"$LD_CMD" -T "$CORE_DIR/link/kernel.ld" -o "$BUILD_DIR/kernel.elf" "$BUILD_DIR/boot.o" "$BUILD_DIR/isr.o" "$BUILD_DIR/kdata.o" "$BUILD_DIR/portio.o" "$BUILD_DIR/kmain.o"
+# -Map is M17 (ADR-0021) and it is not a convenience. The kernel's mutable
+# storage is now DCDart `@bss`, and a `@bss` symbol is LOCAL to kmain.o; the
+# link script's OUTPUT_FORMAT(elf32-i386) container discards every local symbol,
+# so `pmmStore` and `procStore` have no entry in kernel.elf's symbol table at
+# all. The link map is where the linker states, in its own words, the address it
+# placed kmain.o's `.bss` at -- which is what m7-frames needs to prove the frame
+# bitmap is inside the kernel image, and what m11-proc needs to prove every
+# FXSAVE area is 16-byte aligned in the LINKED image rather than only in the
+# declaration.
+"$LD_CMD" -T "$CORE_DIR/link/kernel.ld" -Map "$BUILD_DIR/kernel.map" -o "$BUILD_DIR/kernel.elf" "$BUILD_DIR/boot.o" "$BUILD_DIR/isr.o" "$BUILD_DIR/kdata.o" "$BUILD_DIR/portio.o" "$BUILD_DIR/kmain.o"
 LINK_STATUS=$?
 if [[ $LINK_STATUS -ne 0 ]]; then
   fail "linking kernel.elf with $LD_CMD exited $LINK_STATUS"

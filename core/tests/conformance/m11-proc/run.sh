@@ -179,14 +179,65 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 3 program 
 # operand is a #GP, `elf_store` ends at 5496, and 5496 is 8 short of a multiple
 # of 16. The padding is charged HERE rather than hidden, and every earlier
 # harness subtracts M11's share the same way.
-KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
-KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
+# ---------------------------------------------------------------------------
+# M17 (docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md):
+# WHERE THE MUTABLE STORAGE LIVES NOW. This check did not change what it
+# asserts; it changed where it reads it from, and it is written out here rather
+# than only in a commit message because an accounting assertion that moves is
+# exactly the kind of thing that must never move quietly.
+#
+# Until M17 every mutable byte in this kernel was hand-donated `.bss` in
+# core/boot/kdata.S, because DCDart had no mutable static data (GAP-0053).
+# DCDart ADR-0051 landed `@bss`, so the blocks are now DCDart mutable statics
+# declared in the subsystem that owns them, and they land in `kmain.o`'s `.bss`.
+# FIVE WORDS DID NOT MOVE and never will: `cpu_info`, `shell_resume_rsp`,
+# `shell_resume_ok`, `user_resume_rsp` and `user_resume_ok` are written by
+# assembly itself (isr.S), and a `@bss` symbol is LOCAL, so assembly cannot
+# name one. Those 96 bytes are still in kdata.o.
+#
+# So the total is a SUM OF TWO OBJECTS, and every historical number below is
+# reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
+# 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
+# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# half; offset arithmetic ("bytes from this block to the end") is done inside
+# DART_BSS, because every block a later milestone added is in that half.
+bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
+  local f="$1" n="$2" o v
+  for o in kmain.o kdata.o; do
+    v=$(x86_64-elf-readelf -sW "$CORE_DIR/build/$o" \
+          | awk -v s="$n" -v f="$f" '$4=="OBJECT" && $8==s {print $f; exit}')
+    [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+  done
+  return 1
+}
+bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
+  # A `@bss` symbol is LOCAL to kmain.o and kernel.ld's OUTPUT_FORMAT(elf32-i386)
+  # container keeps no local symbols, so kernel.elf's symbol table cannot answer
+  # this. The LINK MAP can, and it is the linker's own statement of where it put
+  # kmain.o's `.bss`; the block's offset inside that section comes from kmain.o.
+  local n="$1" base off
+  base=$(awk '$1==".bss" && $4 ~ /kmain\.o$/ {print $2; exit}' "$CORE_DIR/build/kernel.map")
+  [[ -n "$base" ]] || return 1
+  off=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+          | awk -v s="$n" '$4=="OBJECT" && $8==s {print $2; exit}')
+  [[ -n "$off" ]] || return 1
+  printf '%x\n' $(( 16#${base#0x} + 16#$off ))
+}
+bsssize() { bssfield 3 "$1"; }
+bssoff()  { bssfield 2 "$1"; }
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+DART_BSS=$((16#$DART_BSS_HEX))
+ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ASM_BSS=$((16#$ASM_BSS_HEX))
+[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+KDATA_BSS=$DART_BSS
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
 # metadata words, five rows of four file descriptors, and a one-sector bounce
 # buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
 # number continues to mean in 2026 what it meant when it was written.
-M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
+M15_OFF_HEX=$(bssoff fileStore)
 [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
 [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
@@ -195,22 +246,33 @@ KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # no padding because proc_store ends at a multiple of 16. Subtracted here so
 # that M11's own number stays exactly what it was before M14 existed -- the same
 # accounting every earlier harness does for every later milestone's block.
-M14_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fat_store"{print $2; exit}')
+M14_OFF_HEX=$(bssoff fatStore)
 [[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
-[[ "$KDATA_BSS" -eq 9664 ]] || fail "kdata.o .bss outside M14's fat_store is $KDATA_BSS bytes, expected 9664 (5496 through M10, plus 4160 for the process table and 8 for the alignment its .align 16 forces). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
-PROC_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="proc_store"{print $3; exit}')
-[[ "$PROC_STORE" == "4160" ]] || fail "kdata.o's proc_store is ${PROC_STORE:-missing} bytes, expected 4160"
-ELF_STORE_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
-ELF_STORE_SZ=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
-[[ $(( KDATA_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )) -eq 4168 ]] \
-  || fail "the donated bytes past the end of elf_store are $(( KDATA_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )), expected 4168"
-for sym in $(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8 ~ /buffer|sector|proc_scratch|proc_head|proc_table|proc_fx/ {print $8}'); do
-  fail "kdata.o donates '$sym'. M11's state is ONE symbol behind three offsets (ADR-0015 §1) — a second one is a second thing the mutable-statics migration has to find."
+KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))
+[[ "$KDATA_BSS" -eq 9664 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9664 (5496 through M10, plus 4160 for the process table and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053."
+PROC_STORE=$(bsssize procStore)
+[[ "$PROC_STORE" == "4160" ]] || fail "procStore is ${PROC_STORE:-missing} bytes, expected 4160"
+ELF_STORE_OFF_HEX=$(bssoff elfStore)
+ELF_STORE_SZ=$(bsssize elfStore)
+# The offset arithmetic runs inside the DCDart half (ASM_BSS is 96 bytes of
+# assembly-owned words that are NOT at the end of it), so subtract it back out.
+[[ $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )) -eq 4168 ]] \
+  || fail "the mutable static bytes past the end of elfStore are $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )), expected 4168"
+# M17: scan BOTH objects, and only their .bss sections. The storage moved to
+# kmain.o, so a scan of kdata.o alone would now find nothing and pass for the
+# wrong reason. The migration this check was written to protect has happened;
+# what it protects now is that it did not have to find a second symbol.
+for obj in kmain.o kdata.o; do
+  BIX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/$obj" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.bss[[:space:]].*/\1/p')
+  [[ -n "$BIX" ]] || continue
+  for sym in $(x86_64-elf-readelf -sW "$CORE_DIR/build/$obj" | awk -v b="$BIX" '$4=="OBJECT" && $7==b && $8 ~ /buffer|sector|proc_scratch|proc_head|proc_table|proc_fx|procScratch|procHead|procTable|procFx|Buffer|Sector/ {print $8}'); do
+    fail "$obj holds MUTABLE STATIC '$sym'. M11's state is ONE symbol behind three offsets (ADR-0015 §1) — a second one is a second thing the storage seam would have had to know about."
+  done
 done
-echo "STRUCTURAL: pass  kdata.o donates exactly 9664 bytes of .bss — 5496 inherited, 4160 for proc_store and 8 for the alignment fxsave requires, in ONE symbol"
+echo "STRUCTURAL: pass  exactly 9664 bytes of mutable static storage — 5496 inherited, 4160 for procStore and 8 for the alignment fxsave requires, in ONE symbol"
 
 # 3b. `proc_store` IS 16-BYTE ALIGNED IN THE LINKED IMAGE, AND SO IS EVERY
 #     FXSAVE AREA INSIDE IT.
@@ -220,10 +282,46 @@ echo "STRUCTURAL: pass  kdata.o donates exactly 9664 bytes of .bss — 5496 inhe
 # context switch, on a machine where everything else worked. The address is
 # read out of kernel.elf, after linking, and each of the four areas is
 # multiplied out from it.
-PROC_STORE_ADDR_HEX=$(x86_64-elf-readelf -sW "$KERNEL_ELF" | awk '$8=="proc_store"{print $2; exit}')
-[[ -n "$PROC_STORE_ADDR_HEX" ]] || fail "proc_store is not in the linked kernel's symbol table"
+# ---------------------------------------------------------------------------
+# THIS CHECK CHANGED AT M17 (ADR-0021) AND IT GOT STRONGER, in three places.
+#
+# What it used to do: read `proc_store`'s address out of kernel.elf's symbol
+# table and check it mod 16. That worked because `.align 16` in kdata.S produced
+# a GLOBAL symbol. The storage is now a DCDart `@bss` block, `@bss` symbols are
+# LOCAL, and kernel.ld's OUTPUT_FORMAT(elf32-i386) container discards every
+# local symbol -- so kernel.elf's symbol table cannot answer the question at
+# all. Dropping the check would have been the silent way to lose it.
+#
+# What it does instead, and why no part of it is weaker than what it replaced:
+#
+#   (a) THE DECLARATION SAYS SO. `proc.dart` must declare the block with an
+#       explicit `align: 16`. This is stronger than a directive in an assembly
+#       file, because DCDart REJECTS a non-power-of-two alignment at compile
+#       time (DCDart ADR-0051) -- the wrong kind of wrong cannot be built at
+#       all, where `.align 15` in kdata.S would have assembled quietly.
+#
+#   (b) THE OBJECT AGREES. `procStore`'s offset inside kmain.o's `.bss` is a
+#       multiple of 16 AND the section's own alignment is at least 16, which is
+#       what makes that offset mean anything after linking.
+#
+#   (c) THE LINKED IMAGE AGREES. The address comes from the LINK MAP -- the
+#       linker's own statement of where it placed kmain.o's `.bss` -- and is
+#       checked mod 16, exactly as before. Same claim, same artifact, read from
+#       the only place that still states it.
+#
+# All three, or this is not the check it replaced.
+grep -qE '^final Bss procStore = const Bss\(bytes: procStoreBytes, align: 16\);$' "$CORE_DIR/kernel/proc.dart" \
+  || fail "proc.dart no longer declares 'final Bss procStore = const Bss(bytes: procStoreBytes, align: 16);' — fxsave on a misaligned operand is a #GP, not a slow path, and the declaration is where that requirement now lives"
+grep -qE '^@bss$' "$CORE_DIR/kernel/proc.dart" || fail "proc.dart's procStore is not annotated @bss"
+PROC_STORE_OFF=$(( 16#$(bssoff procStore) ))
+[[ $(( PROC_STORE_OFF % 16 )) -eq 0 ]] || fail "procStore sits at +$PROC_STORE_OFF inside kmain.o's .bss, which is not a multiple of 16"
+KMAIN_BSS_ALIGN=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $NF; exit}')
+KMAIN_BSS_ALIGN=${KMAIN_BSS_ALIGN##*\*}
+[[ "$KMAIN_BSS_ALIGN" -ge 4 ]] || fail "kmain.o's .bss is only 2**$KMAIN_BSS_ALIGN aligned; procStore's declared align: 16 did not reach the section, so the linker is free to place the section wherever"
+PROC_STORE_ADDR_HEX=$(bssaddr procStore)
+[[ -n "$PROC_STORE_ADDR_HEX" ]] || fail "procStore's linked address is not derivable from core/build/kernel.map — the link map is the only place a @bss block's linked address is stated (see core/scripts/build-kernel.sh)"
 PROC_STORE_ADDR=$(hexnum "$PROC_STORE_ADDR_HEX")
-[[ $(( PROC_STORE_ADDR % 16 )) -eq 0 ]] || fail "proc_store is linked at 0x$PROC_STORE_ADDR_HEX, which is not 16-byte aligned — fxsave would #GP"
+[[ $(( PROC_STORE_ADDR % 16 )) -eq 0 ]] || fail "procStore is linked at 0x$PROC_STORE_ADDR_HEX, which is not 16-byte aligned — fxsave would #GP"
 PROC_FX_OFFSET=$(dartconst procFxOffset proc.dart)
 PROC_FX_BYTES=$(dartconst procFxBytes proc.dart)
 PROC_MAX=$(dartconst procMax proc.dart)
@@ -231,7 +329,7 @@ for i in $(seq 0 $(( PROC_MAX - 1 ))); do
   A=$(( PROC_STORE_ADDR + PROC_FX_OFFSET + i * PROC_FX_BYTES ))
   [[ $(( A % 16 )) -eq 0 ]] || fail "FXSAVE area $i lands at 0x$(printf %X $A), which is not 16-byte aligned"
 done
-echo "STRUCTURAL: pass  proc_store is linked 16-byte aligned at 0x$PROC_STORE_ADDR_HEX and all $PROC_MAX FXSAVE areas inherit it"
+echo "STRUCTURAL: pass  proc.dart declares procStore with align: 16, kmain.o puts it at +$PROC_STORE_OFF inside a 2**$KMAIN_BSS_ALIGN-aligned .bss, the link map places it at 0x$PROC_STORE_ADDR_HEX, and all $PROC_MAX FXSAVE areas inherit the alignment"
 
 # 3c. THE TABLE'S GEOMETRY MULTIPLIES OUT, against itself and against the
 #     donated block. GAP-0077 forces every one of these to be a separate
@@ -248,7 +346,7 @@ PROC_FX_SHIFT=$(dartconst procFxShift proc.dart)
 PROC_MAX_SLOT=$(dartconst procMaxSlot proc.dart)
 PROC_FRAME_WORDS=$(dartconst procFrameWords proc.dart)
 PROC_SLOT_SAVED=$(dartconst procSlotSaved proc.dart)
-[[ "$PROC_STORE_BYTES" -eq "$PROC_STORE" ]] || fail "proc.dart says procStoreBytes = $PROC_STORE_BYTES but kdata.S donates $PROC_STORE"
+[[ "$PROC_STORE_BYTES" -eq "$PROC_STORE" ]] || fail "proc.dart says procStoreBytes = $PROC_STORE_BYTES but kmain.o's procStore is $PROC_STORE bytes"
 [[ $(( PROC_HEAD_WORDS * 8 )) -eq "$PROC_TABLE_OFFSET" ]] || fail "the header is $PROC_HEAD_WORDS words but the table starts at +$PROC_TABLE_OFFSET"
 [[ $(( PROC_SLOT_WORDS * 8 )) -eq "$PROC_SLOT_BYTES" ]] || fail "a slot is $PROC_SLOT_WORDS words but $PROC_SLOT_BYTES bytes"
 [[ $(( PROC_TABLE_OFFSET + PROC_MAX * PROC_SLOT_BYTES )) -eq "$PROC_FX_OFFSET" ]] || fail "the table does not end where the FPU areas start: $PROC_TABLE_OFFSET + $PROC_MAX * $PROC_SLOT_BYTES != $PROC_FX_OFFSET"
@@ -281,23 +379,23 @@ echo "STRUCTURAL: pass  derive.py's nine copies of proc.dart's constants all agr
 #
 # ADR-0011 §0's migration plan is only three lines long if the number of places
 # that know where this memory came from is three. This counts them, and counts
-# every OTHER mention of `proc_store_addr` in that file (there must be exactly
+# every OTHER mention of `procStore` in that file (there must be exactly
 # one, the `external` declaration) and in every other kernel source (none).
-SEAM_SITES=$(grep -c '^\s*return proc_store_addr()' "$CORE_DIR/kernel/proc.dart")
-[[ "$SEAM_SITES" -eq 3 ]] || fail "proc_store_addr() is returned bare from $SEAM_SITES functions in proc.dart, expected exactly 3 (procHeadBase, procTableBase, procFxBase). The storage seam is the whole mutable-statics migration plan — see proc.dart's header."
+SEAM_SITES=$(grep -c '^\s*return Bss[.]addressOf(procStore)' "$CORE_DIR/kernel/proc.dart")
+[[ "$SEAM_SITES" -eq 3 ]] || fail "Bss.addressOf(procStore) is returned bare from $SEAM_SITES functions in proc.dart, expected exactly 3 (procHeadBase, procTableBase, procFxBase). The storage seam is the whole mutable-statics migration plan — see proc.dart's header."
 for fn in procHeadBase procTableBase procFxBase; do
   grep -q "^u64 $fn()" "$CORE_DIR/kernel/proc.dart" || fail "$fn is not in proc.dart — the storage seam's three named functions are what ADR-0011 §0's migration rewrites"
 done
-STRAY=$(grep -n 'proc_store_addr()' "$CORE_DIR/kernel/proc.dart" \
+STRAY=$(grep -n 'Bss[.]addressOf(procStore)' "$CORE_DIR/kernel/proc.dart" \
         | grep -vE '^\s*[0-9]+:\s*(//|///|\*)' \
-        | grep -vE 'external u64 proc_store_addr\(\);' \
-        | grep -vcE 'return proc_store_addr\(\)')
-[[ "$STRAY" -eq 0 ]] || fail "proc.dart has $STRAY call(s) of proc_store_addr() outside the three seam functions"
+        | grep -vE 'final Bss procStore = ' \
+        | grep -vcE 'return Bss[.]addressOf[(]procStore[)]')
+[[ "$STRAY" -eq 0 ]] || fail "proc.dart has $STRAY call(s) of Bss.addressOf(procStore) outside the three seam functions"
 for f in "$CORE_DIR"/kernel/*.dart; do
   [[ "$(basename "$f")" == "proc.dart" ]] && continue
-  grep -q 'proc_store_addr' "$f" && fail "$(basename "$f") references proc_store_addr — the process table's storage seam must not leak out of proc.dart"
+  grep -qw 'procStore' "$f" && fail "$(basename "$f") references procStore — the process table's storage seam must not leak out of proc.dart"
 done
-echo "STRUCTURAL: pass  proc_store_addr() is returned from exactly 3 named functions in proc.dart's storage seam, and from nowhere else in the kernel"
+echo "STRUCTURAL: pass  Bss.addressOf(procStore) is returned from exactly 3 named functions in proc.dart's storage seam, and from nowhere else in the kernel"
 
 # 3f. EVERY @rodata TABLE IS EXACTLY THE SIZE ITS CALL SITE PASSES.
 #
@@ -483,11 +581,16 @@ echo "STRUCTURAL: pass  the 22-word saved frame and the RAX word proc.dart patch
 # ---------------------------------------------------------------------------
 # Step 4 — verify-freestanding.sh (CLAUDE.md rule 1).
 #
-# FIVE new externs, 53 -> 58, and that is a claim about the design: `sse_enabled`
-# and `cr4_read` are the two ways to ask the machine what happened, `fx_save`
-# and `fx_restore` are the two instructions DCDart cannot emit, and
-# `proc_store_addr` is the storage seam. A process table, a scheduler and a
-# second address space needed no assembly at all beyond those.
+# M11 added FIVE new externs, 53 -> 58, and that was a claim about the design:
+# `sse_enabled` and `cr4_read` are the two ways to ask the machine what
+# happened, `fx_save` and `fx_restore` are the two instructions DCDart cannot
+# emit, and `proc_store_addr` was the storage seam. A process table, a scheduler
+# and a second address space needed no assembly at all beyond those.
+#
+# M17 (ADR-0021) DELETED THE FIFTH. `procStore` is a DCDart `@bss` mutable
+# static, so the seam needs no symbol from assembly: 44 = 40 through M10 plus
+# M11's remaining FOUR, and the four instructions above are still the whole of
+# what a process table needs assembly for.
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
 [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
@@ -499,23 +602,45 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
-# M15 (ADR-0019) added exactly ONE: `file_store_addr`, the file-descriptor
+# M15 (ADR-0019) added exactly ONE: `fileStore`, the file-descriptor
 # table's storage seam. Subtracted for the same reason every block above is.
+# M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
+# `@bss` mutable static in the subsystem that owns it, so the extern is gone.
+# The check INVERTS rather than disappearing — a resurrected accessor would
+# otherwise be invisible here, and that is the regression ADR-0021 must prevent.
+grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && fail "file_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fileStore"
 M15_PRESENT=0
-grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && M15_PRESENT=1
-[[ "$M15_PRESENT" -eq 1 ]] || fail "M15's file_store_addr is not in kmain.o's manifest"
 EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
-# M14 added exactly ONE: `fat_store_addr`, the filesystem's storage seam.
+# M14 added exactly ONE: `fatStore`, the filesystem's storage seam.
+# M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
+# `@bss` mutable static in the subsystem that owns it, so the extern is gone.
+# The check INVERTS rather than disappearing — a resurrected accessor would
+# otherwise be invisible here, and that is the regression ADR-0021 must prevent.
+grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && fail "fat_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fatStore"
 M14_PRESENT=0
-grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && M14_PRESENT=1
-[[ "$M14_PRESENT" -eq 1 ]] || fail "M14's fat_store_addr is not in kmain.o's manifest"
 EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
-[[ "$EXTERN_COUNT" -eq 58 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 58 (53 from M10 plus M11's five: sse_enabled, cr4_read, fx_save, fx_restore, proc_store_addr)"
-for sym in sse_enabled cr4_read fx_save fx_restore proc_store_addr; do
+# M17 (ADR-0021) deleted 14 `_addr()` accessor externs at or before this
+# milestone, because the assembly-donated `.bss` they addressed became DCDart
+# `@bss` mutable statics. M10's 53 becomes 40 and M11's own five become four.
+# Each deleted name is asserted ABSENT as well as the count being asserted: a
+# count alone can be restored by an unrelated extern.
+for gone in \
+            vga_cursor_addr m2_phase_addr shell_line_addr \
+            shell_len_addr shell_state_addr shell_mbinfo_addr \
+            kbd_prefix_addr fault_count_addr fb_state_addr \
+            pmm_store_addr vm_store_addr user_store_addr \
+            elf_store_addr proc_store_addr; do
+  grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+done
+[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 (40 from M10 after ADR-0021 plus M11's four: sse_enabled, cr4_read, fx_save, fx_restore)"
+for sym in sse_enabled cr4_read fx_save fx_restore; do
   grep -qE "\b$sym\b" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
 done
+# M11's fifth was `proc_store_addr` (asserted absent above). What it addressed is
+# now `procStore`, the 4160-byte @bss block asserted at check 3a.
+[[ "$(bsssize procStore)" == "4160" ]] || fail "procStore is not a 4160-byte object in kmain.o's .bss — M11's process table did not survive the ADR-0021 migration"
 grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
-echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 53 from M10 plus exactly five, and kdata.o still passes standalone"
+echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 40 from M10 plus exactly four (M11's fifth, proc_store_addr, is gone with ADR-0021), and kdata.o still passes standalone"
 
 # ---------------------------------------------------------------------------
 # Step 5 — the boots.

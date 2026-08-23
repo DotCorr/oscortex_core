@@ -688,26 +688,33 @@ final List<u8> procCmdProc = const [
 // one harness assertion.
 // ---------------------------------------------------------------------------
 
-/// Address of the 4160-byte donated block that holds the whole subsystem.
+/// The 4160 bytes this subsystem owns, as a DCDart mutable static.
 ///
-/// `core/boot/kdata.S`. Returns an ADDRESS rather than a `Pointer<T>` because
-/// DCDart still forbids `Pointer<T>` in an extern signature (DCDart GAP-0025),
-/// and lives in assembly because DCDart has no mutable static data of any kind
-/// (docs/known-gaps.md GAP-0053). **Both are temporary and these three
-/// functions are the seam they will be removed through.**
-@extern
-external u64 proc_store_addr();
+/// Until M17 (ADR-0021) this was `proc_store` in core/boot/kdata.S, reached
+/// through `@extern u64 proc_store_addr()`. The three seam functions below are
+/// unchanged in name, arity and meaning; only the expression they return moved.
+///
+/// **`align: 16` IS A CORRECTNESS REQUIREMENT, NOT HYGIENE.** `fxsave` and
+/// `fxrstor` on an operand that is not 16-byte aligned raise `#GP` — a fault in
+/// the middle of a context switch, on a machine where everything else worked.
+/// It is declared here rather than asserted downstream because DCDart REJECTS a
+/// non-power-of-two alignment at compile time (its ADR-0051), which `.align 15`
+/// in an assembly file would not have. `m11-proc/run.sh` checks all three
+/// links of the chain: this declaration, the offset and section alignment in
+/// `kmain.o`, and the linked address in `core/build/kernel.map`.
+@bss
+final Bss procStore = const Bss(bytes: procStoreBytes, align: 16);
 
 /// Base of the eight-word header.
 @bare
 u64 procHeadBase() {
-  return proc_store_addr();
+  return Bss.addressOf(procStore);
 }
 
 /// Base of the four-slot table.
 @bare
 u64 procTableBase() {
-  return proc_store_addr() + u64(procTableOffset);
+  return Bss.addressOf(procStore) + u64(procTableOffset);
 }
 
 /// Base of the four 512-byte FXSAVE areas. **16-byte aligned or `fxsave` is a
@@ -715,7 +722,7 @@ u64 procTableBase() {
 /// reads the alignment out of the linked image.
 @bare
 u64 procFxBase() {
-  return proc_store_addr() + u64(procFxOffset);
+  return Bss.addressOf(procStore) + u64(procFxOffset);
 }
 
 // ======================  END OF THE STORAGE SEAM  ==========================

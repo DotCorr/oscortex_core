@@ -167,14 +167,66 @@ symsize() {
 # file.dart are multiplied out against the block's own size here, because a
 # region that ran past the end would corrupt whatever `.bss` follows and would
 # do it silently.
-KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section"
-KDATA_BSS=$((16#$KDATA_BSS_HEX))
-[[ "$KDATA_BSS" -eq 14048 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, expected 14048 — 11488 through M14 plus file_store's 2560. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
-FILE_STORE_SIZE=$(symsize "$CORE_DIR/build/kdata.o" file_store)
+# ---------------------------------------------------------------------------
+# M17 (docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md):
+# WHERE THE MUTABLE STORAGE LIVES NOW. This check did not change what it
+# asserts; it changed where it reads it from, and it is written out here rather
+# than only in a commit message because an accounting assertion that moves is
+# exactly the kind of thing that must never move quietly.
+#
+# Until M17 every mutable byte in this kernel was hand-donated `.bss` in
+# core/boot/kdata.S, because DCDart had no mutable static data (GAP-0053).
+# DCDart ADR-0051 landed `@bss`, so the blocks are now DCDart mutable statics
+# declared in the subsystem that owns them, and they land in `kmain.o`'s `.bss`.
+# FIVE WORDS DID NOT MOVE and never will: `cpu_info`, `shell_resume_rsp`,
+# `shell_resume_ok`, `user_resume_rsp` and `user_resume_ok` are written by
+# assembly itself (isr.S), and a `@bss` symbol is LOCAL, so assembly cannot
+# name one. Those 96 bytes are still in kdata.o.
+#
+# So the total is a SUM OF TWO OBJECTS, and every historical number below is
+# reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
+# 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
+# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# half; offset arithmetic ("bytes from this block to the end") is done inside
+# DART_BSS, because every block a later milestone added is in that half.
+bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
+  local f="$1" n="$2" o v
+  for o in kmain.o kdata.o; do
+    v=$(x86_64-elf-readelf -sW "$CORE_DIR/build/$o" \
+          | awk -v s="$n" -v f="$f" '$4=="OBJECT" && $8==s {print $f; exit}')
+    [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+  done
+  return 1
+}
+bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
+  # A `@bss` symbol is LOCAL to kmain.o and kernel.ld's OUTPUT_FORMAT(elf32-i386)
+  # container keeps no local symbols, so kernel.elf's symbol table cannot answer
+  # this. The LINK MAP can, and it is the linker's own statement of where it put
+  # kmain.o's `.bss`; the block's offset inside that section comes from kmain.o.
+  local n="$1" base off
+  base=$(awk '$1==".bss" && $4 ~ /kmain\.o$/ {print $2; exit}' "$CORE_DIR/build/kernel.map")
+  [[ -n "$base" ]] || return 1
+  off=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+          | awk -v s="$n" '$4=="OBJECT" && $8==s {print $2; exit}')
+  [[ -n "$off" ]] || return 1
+  printf '%x\n' $(( 16#${base#0x} + 16#$off ))
+}
+bsssize() { bssfield 3 "$1"; }
+bssoff()  { bssfield 2 "$1"; }
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+DART_BSS=$((16#$DART_BSS_HEX))
+ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ASM_BSS=$((16#$ASM_BSS_HEX))
+[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+KDATA_BSS=$DART_BSS
+KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
+[[ "$KDATA_BSS" -eq 14048 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 14048 — 11488 through M14 plus file_store's 2560. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
+FILE_STORE_SIZE=$(bsssize fileStore)
 [[ "$FILE_STORE_SIZE" == "2560" ]] || fail "kdata.o's file_store is ${FILE_STORE_SIZE:-missing} bytes, expected 2560"
 [[ $(( KDATA_BSS - FILE_STORE_SIZE )) -eq 11488 ]] || fail "the .bss outside file_store is $(( KDATA_BSS - FILE_STORE_SIZE )), not M14's 11488 — M16 moved storage it does not own"
-FAT_STORE_SIZE=$(symsize "$CORE_DIR/build/kdata.o" fat_store)
+FAT_STORE_SIZE=$(bsssize fatStore)
 [[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824 — M16 added a write path to the FAT driver and it was supposed to cost that driver NO new storage at all"
 
 META_OFF=$(dartconst fileMetaOffset file.dart)
@@ -212,13 +264,13 @@ echo "STRUCTURAL: pass  kdata.o donates 14048 bytes of .bss, 2560 of them file_s
 
 # 2b. THE STORAGE SEAM: ONE ACCESSOR, FOUR CALL SITES, ONE FILE (ADR-0011 §0).
 CODE=$(grep -v '^[[:space:]]*//' "$CORE_DIR/kernel/file.dart")
-SEAM=$(printf '%s\n' "$CODE" | grep -c "return file_store_addr()")
-[[ "$SEAM" -eq 4 ]] || fail "core/kernel/file.dart has $SEAM call sites of file_store_addr(), expected exactly 4 (fileMetaBase, fileTableBase, fileBufBase, fileSecBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
-OTHERS=$(grep -l "file_store_addr" "$CORE_DIR/kernel/"*.dart | grep -v "file.dart" | wc -l | tr -d ' ')
-[[ "$OTHERS" -eq 0 ]] || fail "file_store_addr is named in $OTHERS kernel files other than file.dart"
-FATSEAM=$(grep -v '^[[:space:]]*//' "$CORE_DIR/kernel/fat.dart" | grep -c "return fat_store_addr()")
-[[ "$FATSEAM" -eq 4 ]] || fail "core/kernel/fat.dart has $FATSEAM call sites of fat_store_addr(), expected exactly 4 — M16's write path was supposed to reuse the four regions that were already there"
-echo "STRUCTURAL: pass  the storage seam is exactly 4 call sites of file_store_addr() in file.dart and none anywhere else, and fat.dart's four are unchanged"
+SEAM=$(printf '%s\n' "$CODE" | grep -c "return Bss[.]addressOf(fileStore)")
+[[ "$SEAM" -eq 4 ]] || fail "core/kernel/file.dart has $SEAM call sites of Bss.addressOf(fileStore), expected exactly 4 (fileMetaBase, fileTableBase, fileBufBase, fileSecBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
+OTHERS=$(grep -l "fileStore" "$CORE_DIR/kernel/"*.dart | grep -v "file.dart" | wc -l | tr -d ' ')
+[[ "$OTHERS" -eq 0 ]] || fail "fileStore is named in $OTHERS kernel files other than file.dart"
+FATSEAM=$(grep -v '^[[:space:]]*//' "$CORE_DIR/kernel/fat.dart" | grep -c "return Bss[.]addressOf(fatStore)")
+[[ "$FATSEAM" -eq 4 ]] || fail "core/kernel/fat.dart has $FATSEAM call sites of Bss.addressOf(fatStore), expected exactly 4 — M16's write path was supposed to reuse the four regions that were already there"
+echo "STRUCTURAL: pass  the storage seam is exactly 4 call sites of Bss.addressOf(fileStore) in file.dart and none anywhere else, and fat.dart's four are unchanged"
 
 # 2c. THE TWO POINTER VALIDATORS, AND THE ONE BIT BETWEEN THEM.
 #
@@ -589,8 +641,22 @@ FS_STATUS=$?
 echo "$FS_OUT"
 [[ $FS_STATUS -eq 0 ]] || fail "verify-freestanding.sh rejected build/kmain.o"
 EXTERN_COUNT=$(sed -E 's/.*\(([0-9]+) declared extern.*/\1/' <<<"$FS_OUT")
-[[ "$EXTERN_COUNT" -eq 60 ]] \
-  || fail "kmain.o declares $EXTERN_COUNT externs, expected 60 — M16 was supposed to add NONE: the write path reuses port_outw, which core/boot/portio.S has carried since M5"
+# M17 (ADR-0021) deleted all SIXTEEN `_addr()` accessor externs: every block of
+# assembly-donated `.bss` they addressed is now a DCDart `@bss` mutable static in
+# the subsystem that owns it. The kernel declares 44 externs, not 60, and each of
+# the sixteen is asserted ABSENT as well — a count alone can be restored by an
+# unrelated extern.
+for gone in \
+            vga_cursor_addr m2_phase_addr shell_line_addr \
+            shell_len_addr shell_state_addr shell_mbinfo_addr \
+            kbd_prefix_addr fault_count_addr fb_state_addr \
+            pmm_store_addr vm_store_addr user_store_addr \
+            elf_store_addr proc_store_addr fat_store_addr \
+            file_store_addr; do
+  grep -q "\\b$gone\\b" <<<"$FS_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+done
+[[ "$EXTERN_COUNT" -eq 44 ]] \
+  || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — M16 was supposed to add NONE (the write path reuses port_outw, which core/boot/portio.S has carried since M5), and ADR-0021 took 60 to 44 by deleting sixteen accessors"
 for o in kdata.o portio.o; do
   (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh "build/$o" >/dev/null 2>&1) \
     || fail "verify-freestanding.sh rejected build/$o"

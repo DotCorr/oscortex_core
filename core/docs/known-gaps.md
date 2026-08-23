@@ -571,13 +571,38 @@ the evidence that made it true, and so the one uncovered half is named.
 
 ---
 
-## GAP-0053 — DCDart still has no mutable static data, and the shell made that expensive rather than merely awkward
+## GAP-0053 — RESOLVED at M17: DCDart grew mutable statics, and 13952 of the 14048 donated bytes went home
 
-**Domain:** kernel (M2, M3, M4, M5, M6, M7, M8, M9), DCDart-side language gap
-**Status:** OPEN — worked around, with the cost measured. **16 → 304 at M3, → 392 at M4, → 424 at
+**Domain:** kernel (M2–M16), DCDart-side language gap
+**Status:** **RESOLVED at M17** (`docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md`),
+verified by all eighteen harnesses. DCDart ADR-0051 landed `@bss` mutable statics;
+`DCDART_PIN.txt` moved to `8713298` and the migration was carried out.
+
+**The running total, and where it ended.** **16 → 304 at M3, → 392 at M4, → 424 at
 M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, → 5496 at M10,
 → 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14, → 12768 at M15,
-→ 14048 at M16.**
+→ 14048 at M16, → 96 at M17.**
+
+**The donated total does not reach zero, and that is why this gap CLOSES rather than shrinking.** The
+96 bytes left in `core/boot/kdata.S` are not a measure of a missing language feature: a DCDart `@bss`
+symbol is emitted LOCAL, assembly cannot name a local symbol in another object, and all five remaining
+words (`cpu_info` 64, `shell_resume_rsp`/`shell_resume_ok`/`user_resume_rsp`/`user_resume_ok` 8 each)
+are written by `isr.S` **by name**. Two of ADR-0007's and ADR-0013's predictions — made milestones
+before the feature existed — said exactly those four resume words would still be there on this day,
+and they were right. What remains is the true size of the DCDart/assembly boundary, tracked as
+**GAP-0134** (the one block that could still move, `cpu_info`, and the price of moving it).
+
+**What the migration cost, measured.** 13952 bytes moved into ten DCDart source files as sixteen
+`@bss` blocks; 27 storage-seam functions rewrote their one-line bodies; 16 `@extern` accessor
+declarations were deleted; `kmain.o`'s declared externs went **60 → 44**; and the number of lines
+changed **outside a storage seam was ZERO**. That last number is the settlement of the design bet
+ADR-0011 §0 opened at M7 and eight later ADRs repeated. See ADR-0021 §0.
+
+**Every historical number above is still asserted, byte for byte**, by the harness that owned it —
+the totals are now `kmain.o`'s `.bss` plus `kdata.o`'s, and `kdata.o`'s half is pinned to exactly 96
+so storage cannot drift back into assembly unnoticed. ADR-0021 §5.
+
+**The record of what the workaround cost, kept:**
 
 **M15's share was 1280 and M16 DOUBLED IT to 2560** — `file_store` is still one symbol, now behind
 FOUR seam functions rather than three. M15 put 16 metadata words, five rows of four file descriptors
@@ -4671,3 +4696,173 @@ noise** — which is a change to `m10-elf`, owned by M10, and was not made insid
 
 **What to do meanwhile:** if `m10-elf` fails with exactly this one-line difference, re-run it. If it
 fails twice, it is not this.
+
+---
+
+## GAP-0134 — 96 bytes are still assembly-donated, and only one of them could move
+
+**Domain:** kernel (M17), DCDart/assembly boundary
+**Status:** OPEN, and **three fifths of it is CLOSED BY DESIGN and will never move.** Recorded
+because GAP-0053's running total ends at 96 rather than 0, and a number that stops short needs a
+reason attached to it rather than a hope.
+
+**Why anything is left.** A DCDart `@bss` symbol is emitted with **LOCAL** binding (DCDart ADR-0051).
+Assembly in another object file cannot name a local symbol. So storage that **assembly itself writes,
+by name** cannot become a `@bss` block, whatever the language grows next.
+
+| Symbol | Bytes | Written by | Could it move? |
+|---|---|---|---|
+| `cpu_info` | 64 | `cpu_probe` in `isr.S`: `leaq cpu_info(%rip)`, four `cpuid` leaves stored through it | **Yes, at a price — see below** |
+| `shell_resume_rsp` | 8 | `shell_run_forever` in `isr.S`, read by `fault_resume` at fault time | **No.** It holds RSP, which DCDart cannot read or write at all |
+| `shell_resume_ok` | 8 | the guard for the word above, written by the same code | **No.** Same instant, same code, no caller to pass an address in from |
+| `user_resume_rsp` | 8 | `enter_user` / `user_return` | **No**, for `shell_resume_rsp`'s reason |
+| `user_resume_ok` | 8 | the guard for the word above | **No**, for `shell_resume_ok`'s reason |
+
+**The four resume words were predicted.** ADR-0007 (M4, "The constraint everything else follows
+from") and ADR-0013 (M9) each said, milestones
+before mutable statics existed, that these two pairs would still be in `kdata.S` on the day the
+language feature landed. They are. That is not a gap; it is a boundary that was correctly drawn in
+advance, and `m4-fault/run.sh` and `m9-ring3/run.sh` now assert they are **defined in `kdata.o`**
+rather than merely present somewhere — "somewhere" would mean a local symbol assembly cannot reach.
+
+**`cpu_info` is the one that could move, and the price is why it did not.** `cpu_probe()` currently
+takes no arguments and writes a fixed symbol. Migrating the block means changing `cpu_probe`'s
+**signature** to take a destination pointer and rewriting its four store sequences — a change to an
+assembly function, not to a storage seam, and therefore not the change M17 was measuring. It would
+take the residue from 96 bytes to 32 and the assembly-owned symbol count from five to four.
+
+**Cost of the workaround:** 96 bytes of `.bss` and three `@extern` accessors (`cpu_info_addr`,
+`shell_resume_ok_addr`, `user_resume_ok_addr`) out of `kmain.o`'s 44 declared externs. `kdata.S` still
+exists as a file, at 96 bytes and five symbols instead of 14048 bytes and twenty-one.
+
+**What would close it:** either the `cpu_probe` signature change above (closing three fifths of what
+is left), or a DCDart facility for giving a `@bss` block **external** linkage on request — which
+ADR-0051 did not provide and which nothing in this kernel currently needs, since the four words that
+would want it are ones DCDart cannot manipulate anyway.
+
+---
+
+## GAP-0135 — Nothing in this kernel zeroes `.bss`, and `@bss` did not change that
+
+**Domain:** boot, kernel (M17)
+**Status:** OPEN, **pre-existing, and currently harmless because every subsystem initializes its own
+state before first use.** Recorded at M17 because DCDart ADR-0051 states that `@bss` storage is
+zero-initialized, and it would be easy for a later reader to believe this kernel gets that for free.
+
+**What is true.** DCDart's `@bss` lowers to an LLVM `zeroinitializer` global in `.bss`. That makes the
+storage zero **if something zeroes it** — an ELF loader that honours `p_memsz > p_filesz`, or startup
+code. This kernel's Multiboot boot path does neither for `.bss` as a whole. `boot.S` zeroes exactly
+two things by explicit address range: the three page-table pages (`zero_tables`) and the 104-byte TSS
+(`zero_tss`), and it says so in comments at both sites precisely because nothing else is zeroed.
+`isr.S`'s `idt_load` zeroes the IDT and the tick counter for the same reason.
+
+**Why it is not biting.** It was already the case for all 14048 donated bytes, which had exactly the
+same property, and every subsystem was written against it: `pmmInit`, `vmInit`, `userInit`, `elfInit`,
+`procInit`, `fatInit`, `fileInit`, `shellInit` and `fbInit` each write their metadata before anything
+reads it, and the two `_ok` guard words in `kdata.S` exist specifically because a stale non-zero value
+there would triple-fault the machine. **None of that initialization was removed at M17**, deliberately,
+even where ADR-0051's zero-initialization promise would appear to make it redundant.
+
+**The trap this entry exists to prevent:** a future subsystem declaring `@bss final Bss x = const
+Bss(bytes: N);` and reading it before writing it, on the strength of ADR-0051's wording. In this
+kernel that reads whatever the loader left in memory.
+
+**What would close it:** zeroing `.bss` in `_start`, between `__bss_start` and `__kernel_end`, before
+the jump to `kmain`. `kernel.ld` already defines `__kernel_end`; a `__bss_start` and a `rep stosb`
+would be about six instructions. It was not done at M17 because it is a change to the boot path, which
+is outside this milestone's unit, and because doing it silently would make the initialization every
+subsystem currently performs look unnecessary when it is the only thing making the kernel correct.
+
+---
+
+## GAP-0136 — `@bss` has no atomicity story: the tick counter is a read-modify-write that only works because there is one core
+
+**Domain:** kernel (M1 onward), DCDart-side language gap
+**Status:** OPEN, **PRE-EXISTING — not introduced by M17, and not fixed by it.** Recorded here
+because M17 is the milestone that made "where mutable state lives" a language question, and the first
+question anyone asks about a mutable global is what happens when two things write it.
+
+**The concrete case.** The PIT handler increments a tick counter on every timer interrupt; the shell
+reads it (`uptime`, and the idle path). That is a **read-modify-write**, and it is correct today for
+exactly one reason: interrupt entry serializes against the interrupted code **on a single core**. The
+handler cannot be interrupted by itself, and the reader cannot observe a half-updated value because
+there is only one execution context that is not the handler.
+
+**It is not M17's.** The tick counter is `isr.S`'s own `.bss`, reached through `tick_count()` and
+`tick_counter_addr()`, and it **did not migrate** — it is written by assembly, by name, so GAP-0134's
+rule applies to it. Every word of this was equally true at M1. What M17 changes is only that the
+kernel now has sixteen DCDart-declared mutable blocks alongside it, none of which is concurrently
+accessed either, for the same single-core reason.
+
+**What DCDart does not provide.** ADR-0051 is explicit that `@bss` is raw bytes with no
+initialization order and says nothing about atomicity: there is no atomic load/store, no
+read-modify-write intrinsic, no memory ordering, and no `volatile` on a `@bss` block (ADR-0041's
+volatile access is a `Pointer<T>` property, which the seam functions do compose with, and which gives
+ordering against the compiler but not against another core).
+
+**When it starts mattering:** a second core, or a preemptive scheduler that can switch inside a
+sequence that reads-modifies-writes a shared word. This kernel has neither. `procYield` is called
+from a known point, not from the timer.
+
+**What would close it:** a DCDart atomics story, or a stated single-core invariant in
+`OSCORTEX_SPEC.md` that this kernel is entitled to rely on. The second is cheaper and is probably the
+honest one, since nothing else in this design is SMP-ready either.
+
+---
+
+## GAP-0137 — What M17's new assertions catch, tested by mutation, and the one link in the alignment chain that catches nothing on its own
+
+**Domain:** conformance (M1–M16), M17
+**Status:** OPEN as a record. **Twelve mutants, twelve killed. One sub-check is disclosed as unable to
+kill on its own** and is kept for continuity rather than for coverage.
+
+M17 changed the *meaning* of three families of assertion — the donated-`.bss` totals, the symbol-size
+checks, and `proc_store`'s alignment proof — so "the harnesses still pass" says nothing about whether
+they still catch anything. Each was mutated deliberately. Every mutant was run to completion against
+the real harness; no golden was regenerated for any of them.
+
+| # | Mutant | Harness | Result |
+|---|---|---|---|
+| M1 | `procStore` declared without `align: 16` | m11-proc | **KILLED** — by the 9664 total first (the 8 padding bytes vanish), then, with the total suppressed, by the declaration grep, then, with that suppressed too, by the object check |
+| M1c | as M1, with the total *and* the declaration grep suppressed | m11-proc | **KILLED** — "procStore sits at +5400 inside kmain.o's .bss, which is not a multiple of 16" |
+| M1d | as M1c, with the object check suppressed too, leaving only the link map | m11-proc | **SURVIVED the alignment chain.** See below |
+| M2 | `align: 16` → `align: 32` | m11-proc | **KILLED** — declaration grep is an exact literal |
+| M3 | `bytes: procStoreBytes` → `bytes: 4176` | m11-proc | **KILLED** — total is 9680 |
+| M4 | a new `@bss` block declared and never referenced | m1-interrupts | **KILLED** — LLVM really does drop it, and the name-for-name source↔image comparison really does notice |
+| M5 | an 8-byte `.skip` added back to `kdata.S` | m2-console | **KILLED** — "kdata.o still donates 104 bytes, expected exactly 96" |
+| M6 | a fourth `return Bss.addressOf(procStore)` in `proc.dart` | m11-proc | **KILLED** — seam site count |
+| M7b | `heap.dart` given a function returning `Bss.addressOf(procStore)` | m11-proc | **KILLED** — "heap.dart references procStore" |
+| M8 | `fatStoreBytes` 1824 → 1832 | m5-pci | **KILLED** — the subtract-M14's-block arithmetic |
+| M9 | line buffer declared `const Bss(bytes: 256)` instead of `bytes: shellLineMax` | m3-shell | **KILLED** — the new "cannot drift again" grep |
+| M11 | `fat_store` and `fat_store_addr` restored in assembly and used | m14-fat | **KILLED** — kdata.o donates 1920, expected 96 |
+| M12 | `fat_store_addr` resurrected as an extern **without** re-donating any `.bss` | m14-fat | **KILLED** — "fat_store_addr is still declared extern", the inverted check, which is the only one that could have caught this |
+
+**THE SURVIVOR, precisely.** ADR-0021 §2 describes the alignment proof as three links: the
+declaration, the object, and the linked address from `core/build/kernel.map`. **The third link alone
+does not catch a dropped `align: 16`.** With `align:` removed, `kmain.o`'s `.bss` alignment falls to
+2\*\*3 and the linker places that section at `0x142068` — itself 8 short of a multiple of 16 — while
+`procStore`'s offset inside it becomes `0x1518`, also 8 short. **The two errors cancel**: the linked
+address is `0x143580`, which is 16-aligned, and the check passes. (In that particular build `fxsave`
+would not actually have faulted, which is exactly why "verify the declaration, not one build's
+output" is the right rule.) M1d died only to the byte-exact serial golden, which is an address check
+and not an alignment check.
+
+**What this means for the three links.** Links (a) the declaration and (b) the object each kill
+independently; link (c) does not. (c) is kept because it is the assertion M11 originally made and
+because it is the only one that speaks about the *linked image*, but **it is not what makes this check
+sound, and this entry exists so that nobody deletes (b) believing (c) covers it.** The pre-M17 check
+was (c) alone, read from `kernel.elf` instead of the link map — so the check as it stood at M16 had
+this same blind spot, and M17 closed it rather than opened it.
+
+**Untested, and disclosed as such:** no mutant was written for the `.bss`-section-alignment half of
+link (b) on its own (`KMAIN_BSS_ALIGN -ge 4`), because every mutation that lowers it also lowers the
+offset, and the two cannot be separated from the source.
+
+**The sandbox verification (GAP-0110, GAP-0084).** All eighteen harnesses were run inside
+`/private/tmp` — not `/tmp` — against an isolated clone of DCDart checked out at `DCDART_PIN.txt`'s
+`8713298`, with an rsync'd copy of this repo beside it: **18/18, first attempt**, `m10-elf` included
+(GAP-0133's flake did not appear). The pin was chosen and then *tested*: `8713298` is the first commit
+at which this kernel builds, and the **unmigrated** sources at `cf2737f` were also rebuilt against it
+and produced a byte-identical `.text` and `__kernel_end`, which is what makes ADR-0021 §5a's claim
+that the image growth is all migration and none of it toolchain a measurement rather than an
+assumption.

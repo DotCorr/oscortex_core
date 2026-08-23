@@ -135,19 +135,57 @@ if x86_64-elf-objdump -h "$KERNEL_ELF" | grep -qE '\.got(\.plt)?[[:space:]]'; th
 fi
 echo "STRUCTURAL: pass  kernel.elf has no .got/.got.plt"
 
-# Every OBJECT symbol dcc emits is a @rodata table (DCDart emits no other
-# globals), so all of them must live in .rodata's section index.
+# Every OBJECT symbol dcc emits is either a @rodata table or -- since M17
+# (ADR-0021) -- a @bss mutable static, and each must land in its own section.
+#
+# ---------------------------------------------------------------------------
+# THIS CHECK CHANGED AT M17 AND IT GOT STRONGER. Until M17 the assertion was
+# "every OBJECT symbol is in .rodata", which was true only because DCDart could
+# not emit a mutable global at all; the kernel's mutable state was 14048 bytes
+# of hand-written `.bss` in core/boot/kdata.S. DCDart ADR-0051 landed `@bss`,
+# so "every OBJECT is read-only" would now be FALSE for a correct kernel, and
+# relaxing it to "OBJECTs may be anywhere" would have thrown away the property
+# it was protecting: that a @rodata table is never writable.
+#
+# The substitution is: PARTITION the OBJECT symbols into exactly two sets, and
+# require BOTH to be complete.
+#
+#   * every @rodata table is in .rodata  -- unchanged, and still the point
+#   * every @bss block is in .bss        -- new, and the reason .bss exists
+#   * NOTHING is anywhere else           -- unchanged
+#   * the .bss set matches, name for name, the `@bss` declarations in
+#     core/kernel/*.dart                 -- new, and the strongest half: a
+#     mutable static cannot appear in the image without appearing in the
+#     source, and cannot be declared in the source without reaching the image
+#     (an unreferenced `@bss` block is dropped by LLVM, silently, which is
+#     exactly the failure this catches).
+# ---------------------------------------------------------------------------
 RODATA_IDX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.rodata[[:space:]].*/\1/p')
 [[ -n "$RODATA_IDX" ]] || fail "kmain.o has no .rodata section — the @rodata message tables are missing entirely"
+BSS_IDX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.bss[[:space:]].*/\1/p')
+[[ -n "$BSS_IDX" ]] || fail "kmain.o has no .bss section — the @bss mutable statics (ADR-0021) are missing entirely"
 
 TABLE_COUNT=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v ix="$RODATA_IDX" '$4=="OBJECT" && $7==ix' | wc -l | tr -d ' ')
-STRAY=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v ix="$RODATA_IDX" '$4=="OBJECT" && $7!=ix {print $8" (section "$7")"}')
+STRAY=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+  | awk -v r="$RODATA_IDX" -v b="$BSS_IDX" '$4=="OBJECT" && $7!=r && $7!=b {print $8" (section "$7")"}')
 if [[ -n "$STRAY" ]]; then
   echo "$STRAY" >&2
-  fail "a @rodata table landed outside .rodata — it would be writable, or not loaded at all"
+  fail "an OBJECT symbol landed outside both .rodata and .bss — a @rodata table there would be writable or unloaded, a @bss block there would not be zeroed"
 fi
 [[ "$TABLE_COUNT" -ge 16 ]] || fail "only $TABLE_COUNT @rodata table(s) found in kmain.o .rodata, expected at least 16 (one per fixed message)"
-echo "STRUCTURAL: pass  all $TABLE_COUNT @rodata message tables are in .rodata"
+
+# The @bss set, from the image and from the source, compared name for name.
+BSS_IN_IMAGE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+  | awk -v b="$BSS_IDX" '$4=="OBJECT" && $7==b {print $8}' | sort)
+BSS_IN_SOURCE=$(grep -h -A1 '^@bss$' "$CORE_DIR"/kernel/*.dart \
+  | sed -n 's/^final Bss \([A-Za-z0-9_]*\) = .*/\1/p' | sort)
+[[ -n "$BSS_IN_SOURCE" ]] || fail "no @bss declaration found in core/kernel/*.dart — the mutable statics ADR-0021 migrated to are gone"
+if [[ "$BSS_IN_IMAGE" != "$BSS_IN_SOURCE" ]]; then
+  diff <(echo "$BSS_IN_SOURCE") <(echo "$BSS_IN_IMAGE") >&2 || true
+  fail "the @bss blocks declared in core/kernel/*.dart and the ones in kmain.o's .bss are not the same set (< source, > image). An unreferenced @bss block is dropped silently by LLVM."
+fi
+BSS_COUNT=$(echo "$BSS_IN_SOURCE" | wc -l | tr -d ' ')
+echo "STRUCTURAL: pass  all $TABLE_COUNT @rodata message tables are in .rodata, all $BSS_COUNT @bss blocks are in .bss, and nothing is anywhere else"
 
 # ADR-0040's core layout promise: ELEMENTS ONLY, no header of any kind. If a
 # length word or class pointer were emitted in front of element 0, every

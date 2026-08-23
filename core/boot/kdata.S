@@ -1,220 +1,75 @@
 /* core/boot/kdata.S
  *
- * oscortex_core M2/M3: DONATED MUTABLE STORAGE.
+ * oscortex_core: THE 96 BYTES OF DONATED STORAGE THAT ASSEMBLY ITSELF WRITES.
  *
- * WHY THIS FILE EXISTS (and why it is not a design choice)
+ * WHAT THIS FILE WAS, AND WHY IT IS 96 BYTES INSTEAD OF 14048
  * ------------------------------------------------------------------
- * DCDart has no mutable static data of ANY kind. `@rodata` (DCDart ADR-0040)
- * gives read-only tables and nothing else; there is no `static`, no global,
- * no `var` outside a function body. Every byte of kernel state that must
- * outlive a call therefore has to be donated by assembly and reached from
- * DCDart through a `u64` address — exactly the pattern `isr.S` already uses
- * for the IDT and the tick counter (ADR-0002), and recorded as a real
- * language gap in docs/known-gaps.md (GAP-0004 item 1, GAP-0053).
+ * From M2 to M16 this file held EVERY mutable byte in the kernel, because
+ * DCDart had no mutable static data of any kind: `@rodata` (DCDart ADR-0040)
+ * gave read-only tables and nothing else, and there was no `static`, no global,
+ * no `var` outside a function body. Every byte of kernel state that had to
+ * outlive a call was donated here and reached from DCDart through a `u64`
+ * address returned by an `@extern` accessor. It reached **14048 bytes across
+ * twenty-one symbols and sixteen accessors** (docs/known-gaps.md GAP-0053).
  *
- * M1 could hide that inside isr.S, because the only state it needed WAS
- * interrupt state. M2's console cursor is not interrupt state, and putting it
- * in isr.S would have made "the interrupt file" quietly mean "the file where
- * we keep globals." A separate file named for what it is keeps the workaround
- * legible, and keeps the count of donated words visible in one place: when
- * DCDart grows mutable statics, this whole file is what gets deleted.
+ * DCDart grew mutable statics (its ADR-0051, `@bss`). M17 (ADR-0021) moved
+ * **13952 of those bytes** into the DCDart source files that own them, and
+ * deleted sixteen `@extern` accessors and the assembly behind them. The kernel
+ * declares 44 externs where it declared 60.
+ *
+ * WHAT IS LEFT, AND WHY IT IS NOT A LANGUAGE GAP
+ * ------------------------------------------------------------------
+ * A DCDart `@bss` symbol is emitted with LOCAL binding. Assembly cannot name a
+ * local symbol in another object file. So any storage that ASSEMBLY ITSELF
+ * writes, by name, cannot be a `@bss` block — and all five words below are
+ * exactly that:
+ *
+ *   cpu_info          64  written by `cpu_probe` in isr.S: `leaq cpu_info(%rip)`
+ *                         then four `cpuid` leaves stored through it. DCDart
+ *                         cannot execute `cpuid` and cannot return 12 bytes.
+ *   shell_resume_rsp   8  written by `shell_run_forever`, read by
+ *   shell_resume_ok    8  `fault_resume` — both in isr.S, at fault time, with
+ *                         no caller to pass an address in from. The RSP word is
+ *                         a stack pointer, which DCDart cannot read or write at
+ *                         all.
+ *   user_resume_rsp    8  the same pair for the ring-3 entry/return path
+ *   user_resume_ok     8  (`enter_user` / `user_return`).
+ *
+ * ADR-0013 and ADR-0007 both predicted, years of milestones before the language
+ * feature existed, that these four resume words would still be here on the day
+ * DCDart grew mutable statics. They were right. `cpu_info` is the one that
+ * COULD move, at the price of changing `cpu_probe`'s signature to take a
+ * destination pointer — a change to an assembly function rather than to a
+ * storage seam, which is not what M17 was for. Recorded as GAP-0134.
+ *
+ * The residue is therefore not a measure of a missing language feature and
+ * GAP-0053's running total is no longer counting one. It is the true size of
+ * the DCDart/assembly boundary in this kernel.
  *
  * NOT ZEROED HERE. `.bss` is not cleared by anything in this kernel — boot.S
- * zeroes only the three page-table pages, by explicit address range. Every
- * word below is initialized by DCDart through its address before first use
- * (`vgaInit()` for the cursor, `m2Enter()` for the phase word, `shellInit()`
- * for the whole M3 block). Assuming `.bss` is zero would be a real bug on
- * this kernel, not a portability nit.
+ * zeroes only the three page-table pages, by explicit address range. Every word
+ * below is initialized before first use, and for `shell_resume_ok` /
+ * `user_resume_ok` that ordering is the whole guard — see their notes below.
+ * The same is true of the `@bss` blocks that left this file: DCDart's `@bss` is
+ * zero-initialized by the ELF loader in principle, but nothing in this kernel's
+ * Multiboot boot path zeroes `.bss`, so the initialization those subsystems
+ * already did in their `init()` functions is still load-bearing and was not
+ * removed. GAP-0135.
  *
- * SIZE, AND WHY IT IS TRACKED. M5 adds 32 bytes for the framebuffer console's
- * state (base, pitch, cursor column, cursor row), taking the total to **424**.
- * M5's OTHER subsystem, PCI enumeration, added zero -- it prints as it walks
- * and retains nothing -- so the 32 bytes are precisely the cost of a console
- * having a cursor. `tests/conformance/m5-pci/run.sh` asserts the total.
+ * WHO WRITES WHAT. All five words below are written by isr.S. DCDart reads
+ * `cpu_info` through `cpu_info_addr()` and clears the two `_ok` guards through
+ * `shell_resume_ok_addr()` / `user_resume_ok_addr()`; nothing in DCDart touches
+ * either RSP word, and nothing should.
  *
- * M7 TAKES IT TO 5096, AND THAT IS THE MILESTONE THIS FILE WAS WAITING FOR.
- * `pmm_store` (below) is 4672 bytes -- a 4KiB frame bitmap, 64 bytes of
- * allocator metadata and a 512-byte self-test ledger -- which is eleven times
- * everything M2 through M6 donated put together. It is deliberately ONE symbol
- * behind ONE accessor, so that when DCDart grows mutable statics the migration
- * is a three-function change in core/kernel/pmm.dart rather than a rewrite of
- * the allocator; the block's own comment states that as a rule.
- * `tests/conformance/m7-frames/run.sh` asserted the 5096 total and owned it
- * until M8; it now asserts 5096 EXCLUDING `vm_store`, which is the same claim
- * stated so that a later milestone cannot dilute it.
- *
- * M8 TAKES IT TO 5224. `vm_store` (below) is 128 bytes -- sixteen words for the
- * virtual-memory subsystem: the PML4 it built, the six frames it took from the
- * allocator, the page counts it mapped, the page-fault it last reported, and
- * one deliberately WRITABLE scratch word that exists so `vmtest rw` can be the
- * control for `vmtest ro`. It is ONE symbol behind ONE accessor called from ONE
- * function, which is the tightest storage seam in this kernel;
- * `tests/conformance/m8-paging/run.sh` asserts the 5224 total and owns it now.
- *
- * M9 TAKES IT TO 5368. `user_store` (below) is 128 bytes -- sixteen words for the
- * ring-3 subsystem: which payload is loaded, the two frames it is running in,
- * the CS/SS/RFLAGS the CPU pushed on its last syscall, the counters, and the
- * canary word `user pf` aims at and must not reach. It is ONE symbol behind ONE
- * accessor called from ONE function, the same seam `vm_store` uses.
- * `user_resume_rsp` and `user_resume_ok` add 16 more and are DIFFERENT IN KIND:
- * they hold a stack pointer and its guard, DCDart cannot read or write RSP, and
- * they will still be assembly-owned on the day DCDart grows mutable statics --
- * exactly like M4's `shell_resume_rsp`. `tests/conformance/m9-ring3/run.sh`
- * asserts the 5368 total and owns it now.
- *
- * M10 TAKES IT TO 5496. `elf_store` (below) is 128 bytes -- sixteen words for
- * the ELF loader: where on the disk the program came from, the entry point read
- * out of its header, the page-table and scratch frames it borrowed, the extent
- * it mapped, and the counters. It is ONE symbol behind ONE accessor called from
- * ONE function, the same seam `vm_store` and `user_store` use, and a SEPARATE
- * one from `user_store` on purpose -- see `elf_store`'s own note.
- * `tests/conformance/m10-elf/run.sh` asserts the 5496 total and owns it now.
- *
- * M10 ADDS NO SECTOR BUFFER EITHER, which is the sentence M6 below could not
- * write. `ataReadInto` reads into an address the caller supplies, and every
- * caller supplies a frame from `allocFrame()`. The 512 bytes M6 had nowhere to
- * put now come out of the allocator instead of out of this file.
- *
- * M6 ADDS NOTHING, AND THAT WAS A CHOICE RATHER THAN AN ABSENCE OF NEED.
- * An ATA PIO driver's obvious shape is `read(lba, buffer)` and the buffer is
- * 512 bytes, which would have taken this file from 424 to 936 -- more than
- * doubling in one milestone, for one command. core/kernel/ata.dart hexdumps
- * each 16-bit word as it arrives off the data port instead, so there is no
- * sector buffer anywhere in this kernel. The cost is that the driver can SHOW
- * you a sector and cannot GIVE you one (docs/known-gaps.md GAP-0074 item 1).
- * `tests/conformance/m6-disk/run.sh` asserts that this total did NOT move.
- *
- * M2 donated 16 bytes (two words). M3's line
- * editor needs a BUFFER, and DCDart has no array type either, so the total went
- * to 304 bytes: 16 + 256 (line buffer) + 8 (length) + 8 (shell state) + 8
- * (Multiboot pointer copy) + 8 (0xE0-prefix flag). M4 adds 88 more — 64 for the
- * CPUID result strings, and 24 for the three words fault recovery needs — so
- * the total is 392 at M4 and **424** at M5 (see above).
- * `tests/conformance/m4-fault/run.sh` and `m5-pci/run.sh` assert their own
- * milestone's number exactly, so it moves only as a deliberate edit — it is the running
- * measure of what DCDart's missing mutable statics cost downstream
- * (docs/known-gaps.md GAP-0053).
- *
- * WHO WRITES WHAT, at M4. Every word through `kbd_prefix` is written only by
- * DCDart, through the accessors below. The M4 block is the first that is
- * written by ASSEMBLY as well: `cpu_info` is filled by `cpu_probe` in isr.S
- * (DCDart cannot execute `cpuid`), and `shell_resume_rsp`/`shell_resume_ok` are
- * written by `shell_run_forever` in isr.S (DCDart cannot read RSP). DCDart
- * still initializes them, and that ordering is what makes the recovery guard
- * mean anything — see `shell_resume_ok` below.
+ * `tests/conformance/m4-fault/run.sh` and `m9-ring3/run.sh` assert that these
+ * words are still DEFINED IN THIS OBJECT rather than merely present somewhere,
+ * because "somewhere" would mean a local symbol assembly cannot reach.
  */
 
 /* ==================================================================
  * Storage.
  * ================================================================== */
 .section .bss
-
-/* VGA text-console cursor, as a LINEAR CELL INDEX (row * 80 + column), not a
- * row/column pair — one word is one store, and every operation the console
- * performs (advance, newline, backspace, scroll) is arithmetic on the linear
- * index. Range 0..1999 for an 80x25 screen; core/kernel/vga.dart maintains
- * that invariant and is the only writer.
- *
- * Initialized by vgaInit(). */
-.align 8
-vga_cursor:
-    .skip 8
-    .size vga_cursor, 8
-    .type vga_cursor, @object
-
-/* M2 phase word. 0 = M2 has not been entered; 1 = it has.
- *
- * Load-bearing, not bookkeeping: M2 is entered from the FAULT path of
- * isrDispatch (M1's last act is a deliberate #UD, and a fault handler cannot
- * `iretq` back to a faulting instruction — see core/kernel/vga.dart's
- * m2Enter). That path is also where a genuine, unexpected fault during M2
- * would land, so without this word a fault inside the console would re-enter
- * the console recursively instead of stopping. Initialized by m2Enter()
- * itself, whose first act is to read it. */
-.align 8
-m2_phase:
-    .skip 8
-    .size m2_phase, 8
-    .type m2_phase, @object
-
-/* ------------------------------------------------------------------
- * M3 (ADR-0006): the shell's state.
- *
- * This is the block that turned GAP-0053 from "awkward" into "expensive."
- * M2 needed two words; a line editor needs a BUFFER, and there is no way to
- * spell one in DCDart at all -- no array type, no mutable static, no
- * allocator. 256 bytes of assembly-donated .bss is what `static u8
- * line[256];` costs in this language today.
- *
- * Every word here is initialized by shellInit() through its address, called
- * from kmain() alongside vgaInit(). .bss is NOT zeroed by anything in this
- * kernel: a garbage shell_len would make the first keystroke store hundreds
- * of bytes past the end of the buffer, and a garbage kbd_prefix would swallow
- * the first real key.
- * ------------------------------------------------------------------ */
-
-/* Current line buffer. Holds the bytes typed since the last Enter, WITHOUT
- * the prompt and without the terminating newline -- the prompt is screen
- * output, not part of the line, which is exactly why backspace cannot erase
- * it (core/kernel/shell.dart's shellKey stops at length 0). */
-.align 8
-shell_line:
-    .skip 256
-    .size shell_line, 256
-    .type shell_line, @object
-
-/* Number of valid bytes in shell_line, 0..256. */
-.align 8
-shell_len:
-    .skip 8
-    .size shell_len, 8
-    .type shell_len, @object
-
-/* Shell state: 0 = accepting input, 1 = a line was submitted and is waiting
- * to run, 2 = a command is running.
- *
- * State 2 is not bookkeeping. Commands run in TASK context with interrupts
- * enabled, so an IRQ1 can arrive in the middle of one; without a state the
- * handler would append to shell_line and bump shell_len while shellExecute
- * was walking them. The cost is that type-ahead during a command is dropped
- * -- there is still no input queue (GAP-0055 item 4). */
-.align 8
-shell_state:
-    .skip 8
-    .size shell_state, 8
-    .type shell_state, @object
-
-/* The Multiboot1 information-structure pointer, copied here by shellInit()
- * from the argument boot.S passes to kmain().
- *
- * A COPY rather than an accessor for boot.S's own stash, deliberately:
- * exporting multiboot_info_ptr and taking its address from here would give
- * kdata.o an undefined symbol, and kdata.o passing verify-freestanding.sh
- * standalone is a documented property (docs/known-gaps.md GAP-0056). Eight
- * bytes is the price of keeping it. */
-.align 8
-shell_mbinfo:
-    .skip 8
-    .size shell_mbinfo, 8
-    .type shell_mbinfo, @object
-
-/* "The previous scancode was 0xE0." One word for a one-byte state machine,
- * because a word is the smallest thing an accessor can hand back cleanly.
- *
- * This closes GAP-0055 item 2, which was a WRONG behaviour rather than a
- * missing one: extended keys (arrows, right-hand modifiers, keypad Enter)
- * send 0xE0 and then an ordinary-looking make code in a second interrupt. The
- * driver used to ignore the 0xE0 and then translate its follower as if it
- * were a normal key, so the up arrow (0xE0 0x48) typed `8`. */
-.align 8
-kbd_prefix:
-    .skip 8
-    .size kbd_prefix, 8
-    .type kbd_prefix, @object
-
-/* ------------------------------------------------------------------
- * M4 (ADR-0007): CPUID results, and the fault-recovery resume point.
- * ------------------------------------------------------------------ */
 
 /* CPUID result strings, as ONE 64-byte block:
  *
@@ -232,24 +87,13 @@ kbd_prefix:
  * It is written into donated .bss by the assembly that produced it and read
  * back a byte at a time by DCDart through an address. See docs/known-gaps.md
  * GAP-0061. */
+
 .align 8
 .global cpu_info
 cpu_info:
     .skip 64
     .size cpu_info, 64
     .type cpu_info, @object
-
-/* How many faults the kernel has caught and RECOVERED from since boot.
- *
- * Incremented by the DCDart fault handler and printed by shellRecover(), so
- * `FAULT RECOVERED 0002` is a count the kernel kept rather than a constant it
- * prints. M1's own boot-time deliberate #UD is NOT counted: it is not
- * recovered from, it is the event that brings the console up. */
-.align 8
-fault_count:
-    .skip 8
-    .size fault_count, 8
-    .type fault_count, @object
 
 /* The stack pointer the shell loop runs on, recorded ONCE by
  * `shell_run_forever` (core/boot/isr.S) at the moment the shell is entered.
@@ -262,6 +106,7 @@ fault_count:
  * discarded by that one store, which is also why N faults cost no stack.
  *
  * DCDart never reads or writes this word; it cannot read RSP at all. */
+
 .align 8
 .global shell_resume_rsp
 shell_resume_rsp:
@@ -281,232 +126,13 @@ shell_resume_rsp:
  * shellInit() zeroes it at the top of kmain(), long before anything can fault;
  * shell_run_forever sets it to 1 in the same breath as recording RSP;
  * fault_resume refuses to switch stacks unless it reads exactly 1. */
+
 .align 8
 .global shell_resume_ok
 shell_resume_ok:
     .skip 8
     .size shell_resume_ok, 8
     .type shell_resume_ok, @object
-
-/* ------------------------------------------------------------------
- * M5 (ADR-0009): the framebuffer console's state.
- * ------------------------------------------------------------------ */
-
-/* Linear-framebuffer console state, as ONE 32-byte block:
- *
- *     +0   u64  base physical address of the framebuffer, or 0 = none
- *     +8   u64  bytes per scanline (pitch)
- *     +16  u64  cursor column, in 8-pixel glyph cells
- *     +24  u64  cursor row, in 16-pixel glyph cells
- *
- * ONE block with fixed offsets rather than four symbols with four accessors,
- * for the reason cpu_info's own comment gives: each accessor is another
- * `@extern external` declaration on the DCDart side and another `leaq` here.
- *
- * A base address of 0 is the "no framebuffer" state and EVERY writer checks
- * it, which is why fbInit() zeroing this block is a correctness requirement
- * and not hygiene: .bss is not zeroed by anything in this kernel, so a garbage
- * base would make the first glyph blit scatter 32-bit stores across memory at
- * an address nothing chose.
- *
- * THIS IS 32 OF THE 424 DONATED BYTES, and it is the first growth since M4.
- * PCI enumeration (ADR-0008) added none because it retains nothing; a console
- * has a cursor and cannot. docs/known-gaps.md GAP-0053. */
-.align 8
-fb_state:
-    .skip 32
-    .size fb_state, 32
-    .type fb_state, @object
-
-/* ------------------------------------------------------------------
- * M7 (ADR-0011): the physical memory manager's ENTIRE mutable state.
- *
- * ONE SYMBOL, ONE ACCESSOR, AND THAT IS THE WHOLE POINT.
- *
- * This block is 4672 bytes -- eleven times everything above it put together
- * -- and it is the block that a previous unit correctly argued should not be
- * built on this workaround, because doing so would make assembly-donated
- * `.bss` load-bearing for the kernel's most important subsystem and turn the
- * eventual DCDart mutable-statics fix into a rewrite.
- *
- * The answer is the shape rather than the wait. There is exactly ONE symbol
- * and exactly ONE accessor for the whole allocator, and `core/kernel/pmm.dart`
- * routes every read and write of every byte below through three functions
- * (`pmmBitmapBase`, `pmmMetaBase`, `pmmLedgerBase`) that call it. Nothing else
- * in the allocator knows this file exists. When DCDart grows mutable statics,
- * those three functions change and nothing else does -- which is a deletion,
- * not a rewrite, and is exactly the property that was at risk.
- *
- * WHAT MUST NOT HAPPEN, stated so it is a rule and not a hope: do not scatter
- * `@extern` address calls through the allocator. A second call site for
- * `pmm_store_addr` outside the seam is the moment the migration stops being a
- * three-function change.
- *
- * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern
- * `cpu_info` and `fb_state` already use:
- *
- *     +0     4096 bytes  frame bitmap. One bit per 4KiB physical frame,
- *                        1 = in use or reserved, 0 = free. 4096 bytes is
- *                        32768 frames is 128MiB of RAM, which is also the
- *                        extent boot.S identity-maps -- see below.
- *     +4096    64 bytes  eight u64 words of metadata: ready flag, frames
- *                        managed, free count, baseline free count, the
- *                        allocation cursor, the count of usable frames ABOVE
- *                        the bound, the rejected-operation count, and the
- *                        lifetime allocation count.
- *     +4160   512 bytes  the self-test's allocation ledger: 64 physical
- *                        addresses. `frames test` allocates 64 frames and has
- *                        to hold them all at once to prove they are pairwise
- *                        distinct and to give every one of them back; there is
- *                        no array type and no allocator to ask (the allocator
- *                        IS what is being tested).
- *
- * WHY 128MiB AND NOT MORE. The bound has to be picked, not discovered, and
- * three things want to be the same number: the bitmap's size, the identity
- * map's extent, and the largest machine this kernel claims to manage. 4096
- * bytes of bitmap is exactly one page and exactly 128MiB of RAM at 4KiB
- * granularity, and boot.S maps exactly 128MiB (MAP_2MIB_PAGES = 64), so a
- * frame that is tracked is a frame that can be written. Raising it is
- * mechanical and costs `.bss` linearly: 4GiB would be 128KiB of bitmap and
- * 2048 page-directory entries.
- *
- * EXCEEDING IT IS LOUD, NOT SILENT. Usable frames above the bound are COUNTED
- * at init and reported by `frames` as `OVER nnnnnnnn CAPPED`; they are never
- * marked free, so they cannot be handed out.
- *
- * NOT ZEROED HERE -- the same rule as every word above. `pmmInit()` fills the
- * whole bitmap with 0xFF (everything reserved) before it frees anything, which
- * is the safe direction to be wrong in: a garbage bitmap read as free would
- * hand out the kernel's own image.
- *
- * `.global` because `tests/conformance/m7-frames/run.sh` reads this symbol's
- * LINK-TIME ADDRESS out of `kernel.elf` and compares it against the address the
- * kernel prints, then dumps the bitmap out of guest memory at that address and
- * checks it bit-for-bit against one the harness computes itself. The storage
- * seam is checked from outside rather than taken on the kernel's word.
- *
- * THIS TAKES DONATED `.bss` FROM 424 BYTES TO 5096. docs/known-gaps.md
- * GAP-0053 carries the running total and the reason.
- * ------------------------------------------------------------------ */
-.align 8
-.global pmm_store
-pmm_store:
-    .skip 4672
-    .size pmm_store, 4672
-    .type pmm_store, @object
-
-/* ------------------------------------------------------------------
- * M8 (ADR-0012): the virtual-memory subsystem's ENTIRE mutable state.
- *
- * 128 bytes, sixteen `u64` words, ONE symbol, ONE accessor -- the same shape
- * `pmm_store` above uses and for the same reason, taken one step tighter:
- * `core/kernel/vm.dart` reaches this block through exactly ONE function
- * (`vmMetaBase`), which is the only place in the kernel that calls
- * `vm_store_addr`. `tests/conformance/m8-paging/run.sh` counts that call site
- * the way `m7-frames/run.sh` counts the allocator's three, and for the same
- * reason: it is what keeps the eventual DCDart mutable-statics migration a
- * one-function change instead of an audit.
- *
- * WHY IT IS SIXTEEN WORDS AND NOT FOUR. Words 0..9 are what the subsystem
- * needs; 10..15 are the page-table frame addresses it holds, which have to be
- * kept because they are the answer to a question the page allocator asks on
- * every `free` and every `frames refill`: "is this frame one the kernel's own
- * address space is standing on?" Before M8 the allocator's reserved set was
- * the memory map, the first megabyte and `[__kernel_start, __kernel_end)`; the
- * page tables are the first permanently-owned kernel memory that is NOT inside
- * the image, because they come out of `allocFrame()`. `pmmAllocatable` gained
- * one clause and `vm.dart` answers it from these six words.
- *
- * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern
- * `cpu_info`, `fb_state` and `pmm_store` already use:
- *
- *     +0    u64  ready:      0 until the new CR3 is live, 1 after
- *     +8    u64  status:     why it refused, if it refused (a vmStatus* code)
- *     +16   u64  pml4:       physical address of the PML4 this kernel built
- *     +24   u64  frames:     how many frames the page tables consumed
- *     +32   u64  pages4k:    4KiB pages mapped
- *     +40   u64  pages2m:    2MiB pages mapped
- *     +48   u64  scratch:    `vmtest rw`'s target -- a WRITABLE word, so that
- *                            the control for the read-only test is a store of
- *                            exactly the same shape to a different page
- *     +56   u64  faults:     page faults reported since boot (vector 14 only)
- *     +64   u64  lastCr2:    the faulting address of the most recent one
- *     +72   u64  lastErr:    its error code
- *     +80.. u64  frame[0..5] the six page-table frames, in allocation order
- *
- * NOT ZEROED HERE -- the same rule as every word above. `vmInit()` writes all
- * sixteen before anything reads them, and it runs from `kmain()` before the
- * first byte of output.
- *
- * `.global` because `tests/conformance/m8-paging/run.sh` reads this symbol's
- * LINK-TIME ADDRESS out of `kernel.elf` and compares it against the address
- * the kernel prints, exactly as m7-frames does for `pmm_store`.
- *
- * THIS TAKES DONATED `.bss` FROM 5096 BYTES TO 5224. docs/known-gaps.md
- * GAP-0053 carries the running total and the reason. m5-pci, m6-disk and
- * m7-frames each still assert their own milestone's number by SUBTRACTING the
- * blocks that came after theirs, so no older claim is weakened by this.
- * ------------------------------------------------------------------ */
-.align 8
-.global vm_store
-vm_store:
-    .skip 128
-    .size vm_store, 128
-    .type vm_store, @object
-
-/* ------------------------------------------------------------------
- * M9 (ADR-0013): the ring-3 subsystem's ENTIRE mutable state.
- *
- * 128 bytes, sixteen `u64` words, ONE symbol, ONE accessor -- `vm_store`'s
- * shape exactly, for `vm_store`'s exact reason. `core/kernel/user.dart` reaches
- * this block through ONE function (`userMetaBase`), the only place in the
- * kernel that calls `user_store_addr`, and
- * `tests/conformance/m9-ring3/run.sh` counts that call site.
- *
- * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern
- * `cpu_info`, `fb_state`, `pmm_store` and `vm_store` already use:
- *
- *     +0    u64  live:       1 while a payload is executing in ring 3
- *     +8    u64  mode:       which payload is loaded (a userMode* code)
- *     +16   u64  codeFrame:  physical frame the payload's code is in, or 0
- *     +24   u64  stackFrame: physical frame the payload's stack is in, or 0
- *     +32   u64  entries:    ring-3 entries since boot
- *     +40   u64  syscalls:   syscalls serviced since boot
- *     +48   u64  lastCs:     the CS the CPU pushed on the last syscall. Its low
- *                            two bits ARE the CPL the payload was running at,
- *                            and reading them out of the interrupt frame is the
- *                            only honest way to know it
- *     +56   u64  lastSs:     likewise SS
- *     +64   u64  lastFlags:  likewise RFLAGS
- *     +72   u64  exitCode:   what the last `exit` syscall was given
- *     +80   u64  refusals:   syscalls the kernel REFUSED (a bad pointer, an
- *                            unknown number, a caller that was not in ring 3)
- *     +88   u64  written:    bytes accepted by the `write` syscall
- *     +96   u64  aborts:     payloads killed by a fault instead of exiting
- *     +104  u64  canary:     THE TARGET of `user pf`. A word in supervisor
- *                            `.bss` that ring 3 tries to store into and must
- *                            not reach. Its value is set before the attempt and
- *                            checked after, so "the store did not land" is a
- *                            comparison rather than the absence of a fault
- *     +112  u64  lastRip:    the RIP the CPU pushed on the last fault taken in
- *                            ring 3, so the report can say WHERE in the payload
- *     +120  u64  lastErr:    that fault's error code
- *
- * NOT ZEROED HERE -- the same rule as every word above. `userInit()` writes all
- * sixteen from `kmain()` before the first byte of output.
- *
- * THIS TAKES DONATED `.bss` FROM 5224 BYTES TO 5368: 128 here and 16 more in
- * the two asm-owned resume words below. docs/known-gaps.md GAP-0053 carries the
- * running total. m5-pci, m6-disk, m7-frames and m8-paging each still assert
- * their own milestone's number by SUBTRACTING the blocks that came after
- * theirs, so no older claim is weakened by this.
- * ------------------------------------------------------------------ */
-.align 8
-.global user_store
-user_store:
-    .skip 128
-    .size user_store, 128
-    .type user_store, @object
 
 /* The stack pointer `shellUser` was running on when it called `enter_user`,
  * recorded by `enter_user` (core/boot/isr.S) at the moment it is called.
@@ -519,6 +145,7 @@ user_store:
  * fault, with the difference that nothing here went wrong.
  *
  * DCDart never reads or writes this word; it cannot read RSP at all. */
+
 .align 8
 .global user_resume_rsp
 user_resume_rsp:
@@ -534,6 +161,7 @@ user_resume_rsp:
  * shell's, this one is also CLEARED on every return -- an `exit` syscall is a
  * one-shot event and a second one, from ring 0, from a payload that has already
  * finished, has nothing to return to. */
+
 .align 8
 .global user_resume_ok
 user_resume_ok:
@@ -541,310 +169,14 @@ user_resume_ok:
     .size user_resume_ok, 8
     .type user_resume_ok, @object
 
-/* ------------------------------------------------------------------
- * M10 (ADR-0014): the ELF loader's ENTIRE mutable state.
- *
- * 128 bytes, sixteen `u64` words, ONE symbol, ONE accessor -- `pmm_store`'s,
- * `vm_store`'s and `user_store`'s shape exactly, for their exact reason.
- * `core/kernel/elf.dart` reaches this block through ONE function
- * (`elfMetaBase`), the only place in the kernel that calls `elf_store_addr`,
- * and `tests/conformance/m10-elf/run.sh` counts that call site.
- *
- * It is a SEPARATE block from `user_store` rather than four more words inside
- * it, and that is a decision rather than an oversight. M9's block describes a
- * payload that is bytes in this kernel's own `.rodata`; this one describes a
- * program that arrived on a disk, in an address space of its own, with an entry
- * point nobody here chose. Folding them together would make one seam serve two
- * subsystems, and the whole content of the seam pattern (ADR-0011 §0) is that
- * each subsystem's donated storage is one symbol reached from one function, so
- * that the eventual mutable-statics migration is a deletion per subsystem
- * rather than an audit.
- *
- * LAYOUT -- fixed offsets, the same "one block, no extra accessors" pattern:
- *
- *     +0    u64  live:        1 while the loaded program is executing in ring 3
- *     +8    u64  headerLba:   the LBA of the header sector `run` was given
- *     +16   u64  imageLba:    the LBA of the ELF image's first sector
- *     +24   u64  imageBytes:  the image's length, from the header sector
- *     +32   u64  entry:       e_entry, AS READ OUT OF THE FILE. Nothing in this
- *                             kernel chooses it and nothing may default it
- *     +40   u64  ptFrame:     the frame holding the program window's page
- *                             table, or 0
- *     +48   u64  scratch:     the frame sectors are read into, or 0
- *     +56   u64  pages:       4KiB pages of the program currently mapped
- *     +64   u64  segments:    PT_LOAD segments loaded
- *     +72   u64  loMapped:    lowest mapped virtual address
- *     +80   u64  hiMapped:    one past the highest -- the two together are what
- *                             a syscall pointer is bounded against
- *     +88   u64  exitCode:    what the program's `exit` syscall was given
- *     +96   u64  status:      the last load's status code (an elfErr*)
- *     +104  u64  sectors:     sectors read off the disk for this load
- *     +112  u64  stackFrame:  the frame behind the user stack page, or 0
- *     +120  u64  zeroed:      bytes of `p_memsz - p_filesz` tail zeroed
- *
- * NOT ZEROED HERE -- the same rule as every word above. `elfInit()` writes all
- * sixteen from `kmain()` before the first byte of output, and it must, because
- * `elfOnFault` reads the live flag on EVERY fault this kernel takes.
- *
- * THIS TAKES DONATED `.bss` FROM 5368 BYTES TO 5496. docs/known-gaps.md
- * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging and
- * m9-ring3 each still assert their own milestone's number by SUBTRACTING the
- * blocks that came after theirs, so no older claim is weakened by this.
- * ------------------------------------------------------------------ */
-.align 8
-.global elf_store
-elf_store:
-    .skip 128
-    .size elf_store, 128
-    .type elf_store, @object
-
-/* ------------------------------------------------------------------
- * M11 (docs/decisions/0015-processes-and-fpu-state.md): THE PROCESS TABLE AND
- * THE FPU SAVE AREAS.  4160 bytes, three regions, ONE symbol.
- *
- *   +0      64 bytes    header, 8 u64 words
- *   +64     2048 bytes  table: 4 slots x 512 bytes (64 u64 words each)
- *   +2112   2048 bytes  FPU state: 4 x 512-byte FXSAVE areas
- *
- * ONE SYMBOL AND NOT THREE, for ADR-0011's reason repeated a fourth time: the
- * storage seam's whole value is that the number of places that know where this
- * memory came from is a number a harness can count. Three symbols would be
- * three accessors and three call sites to audit on the day DCDart grows
- * mutable statics; one symbol is three OFFSETS behind three seam functions in
- * `core/kernel/proc.dart`, and `tests/conformance/m11-proc/run.sh` counts
- * exactly three `return proc_store_addr()` in that file and zero anywhere else.
- *
- * `.align 16` IS A CORRECTNESS REQUIREMENT AND NOT HYGIENE. `fxsave` and
- * `fxrstor` raise #GP -- not a slow path, a fault -- on an operand that is not
- * 16-byte aligned. The FPU region starts at +2112 and 2112 = 16 * 132, so
- * every one of the four 512-byte areas is 16-byte aligned if and only if
- * `proc_store` itself is. `.align 8` here would be a general protection fault
- * on the first context switch, on a machine where every other line worked.
- * The harness reads the symbol's address out of the LINKED image and requires
- * `addr % 16 == 0`, because a directive is not evidence.
- *
- * NOT ZEROED HERE -- the same rule as every block above. `procInit()` writes
- * all 520 words from `kmain()` before the first byte of output, and it must:
- * `procOnFault` reads the "a process is live" word on EVERY fault this kernel
- * takes, and `procFxInit` has to put a legal MXCSR image in every save area
- * before any `fxrstor` can touch one -- a reserved MXCSR bit is a #GP inside a
- * context switch.
- *
- * THIS TAKES DONATED `.bss` FROM 5496 BYTES TO 9664 -- 4160 for the block and
- * EIGHT MORE for the padding this `.align 16` inserts after `elf_store`, which
- * ends at 5496 and is 8 short of a multiple of 16. The padding is charged to
- * M11 rather than hidden, and every harness that subtracts this block measures
- * it as everything past `elf_store`'s end for exactly that reason.
- * docs/known-gaps.md
- * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
- * m9-ring3 and m10-elf each still assert their own milestone's number by
- * SUBTRACTING the blocks that came after theirs, so no older claim is weakened
- * by this.
- * ------------------------------------------------------------------ */
-.align 16
-.global proc_store
-proc_store:
-    .skip 4160
-    .size proc_store, 4160
-    .type proc_store, @object
-
-/* ------------------------------------------------------------------
- * M14 (docs/decisions/0018-a-read-only-fat16-filesystem.md): THE FILESYSTEM'S
- * STATE.  1824 bytes, four regions, ONE symbol.
- *
- *   +0      256 bytes   metadata, 32 u64 words (fatMeta* in fat.dart)
- *   +256    1024 bytes  the open file's cluster chain, 256 x u32
- *   +1280   512 bytes   one sector buffer -- every FAT and directory read
- *   +1792   32 bytes    the 11 raw bytes of the 8.3 name being looked up
- *
- * ONE SYMBOL AND NOT FOUR, for ADR-0011's reason repeated a fifth time: the
- * storage seam's whole value is that the number of places that know where this
- * memory came from is a number a harness can count. Four symbols would be four
- * accessors and four call sites to audit on the day DCDart grows mutable
- * statics; one symbol is four OFFSETS behind four seam functions in
- * `core/kernel/fat.dart`, and `tests/conformance/m14-fat/run.sh` counts
- * exactly four `return fat_store_addr()` in that file and zero anywhere else.
- *
- * WHY 256 CHAIN ENTRIES. A chain entry is a cluster, and this driver refuses a
- * file longer than 256 of them (`fatChainMax`) rather than reading part of it.
- * At the 1KiB clusters `m14-fat`'s volume uses that is 256KiB, four times
- * `elfImageMax`; at the 32KiB clusters a large FAT16 volume uses it is 8MiB.
- * The bound is a REFUSAL with its own sentence, not a truncation.
- *
- * WHY A SECTOR BUFFER AT ALL. The FAT and the root directory are read
- * repeatedly and are not the caller's business -- `elf.dart` reads file DATA
- * straight into the frame it owns, and never through this buffer. One sector
- * of cache turns a chain confined to one FAT sector, which is what every chain
- * on a small volume is, into one disk read instead of one per link.
- *
- * NOT ZEROED HERE -- the same rule as every block above. `fatInit()` writes all
- * 32 metadata words from `kmain()` before the first byte of output, and it
- * must: `elfReadSectors` reads the "a file is open" word on EVERY sector of
- * EVERY `run`, including `run <lba>`, which has nothing to do with a
- * filesystem. A garbage word there would send the ELF loader's reads through a
- * chain array full of `.bss` litter.
- *
- * THIS TAKES DONATED `.bss` FROM 9664 BYTES TO 11488. docs/known-gaps.md
- * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
- * m9-ring3, m10-elf and m11-proc each still assert their own milestone's number
- * by SUBTRACTING the blocks that came after theirs, so no older claim is
- * weakened by this.
- * ------------------------------------------------------------------ */
-.align 8
-.global fat_store
-fat_store:
-    .skip 1824
-    .size fat_store, 1824
-    .type fat_store, @object
-
-/* ------------------------------------------------------------------
- * M15 (docs/decisions/0019-file-descriptors-and-a-program-that-reads.md):
- * THE FILE-DESCRIPTOR TABLES AND THE READ BOUNCE BUFFER.  1280 bytes, three
- * regions, ONE symbol.
- *
- *   +0      256 bytes   metadata, 32 u64 words (fileMeta* in file.dart)
- *   +256   1280 bytes   5 owner rows x 4 descriptors x 8 u64 words
- *   +1536   512 bytes   the bounce buffer -- one sector, kernel-side only
- *   +2048   512 bytes   M16's read-modify-write sector -- also kernel-side only
- *
- * M16 (docs/decisions/0020-writing-to-a-disk.md) TOOK THIS FROM 1280 TO 2560,
- * in three separate pieces, because a write path needs all three:
- *
- *   * SIXTEEN MORE METADATA WORDS. Six of them are M16's counters (writes,
- *     bytes, data sectors, files created, files truncated, directory flushes)
- *     and the rest are declared spares. The block was 16 words and 11 were in
- *     use, so M16 could have had five for free and would then have had none.
- *
- *   * FOUR MORE WORDS PER DESCRIPTOR. A write descriptor has to remember which
- *     root-directory entry it came from (so `close` writes the right one
- *     without looking the name up again), which cluster is currently last (so
- *     appending never walks a chain), and how many bytes of cluster it has
- *     allocated (so a retry after a failed sector write does not allocate a
- *     second one). The fourth is a declared spare.
- *
- *   * A SECOND SECTOR BUFFER. A write that does not start and end on a sector
- *     boundary has to have the caller's bytes and the sector already on the
- *     drive in memory AT THE SAME TIME. One buffer for both would mean the read
- *     destroyed the data being written, on every write whose length is not a
- *     multiple of 512 -- which is most of them.
- *
- * STILL ONE SYMBOL, now behind FOUR seam functions, and
- * `tests/conformance/m16-filewrite/run.sh` counts exactly four
- * `return file_store_addr()` in `core/kernel/file.dart` and zero anywhere else.
- *
- * ONE SYMBOL AND NOT THREE, for ADR-0011's reason repeated a sixth time: the
- * storage seam's whole value is that the number of places that know where this
- * memory came from is a number a harness can count. One symbol is three
- * OFFSETS behind three seam functions in `core/kernel/file.dart`, and
- * `tests/conformance/m15-fileio/run.sh` counts exactly three
- * `return file_store_addr()` in that file and zero anywhere else.
- *
- * WHY FIVE OWNER ROWS AND NOT FOUR. Two different things can be in ring 3 on
- * this machine and only one of them is a process: `proc run` creates a process
- * (slots 0..3) and `run <name>` does not. Rows 0..3 belong to the four process
- * slots and row 4 belongs to the `run <name>` program, so "a descriptor table
- * per program in ring 3" is true for both without either one being able to see
- * the other's descriptors. `fileOwnerRow()` is the only function that decides
- * which row is current.
- *
- * WHY A BOUNCE BUFFER, AND WHY NOT `fat_store`'s. A `read` syscall moves file
- * DATA, and file data is the one thing `fat.dart`'s sector buffer deliberately
- * never holds (its own note says so: `elf.dart` reads straight into the frame
- * it owns). Reading data through that buffer would make a data sector look
- * like a cached FAT sector to `fatReadCached`. This buffer is written by
- * `fatReadSector` and read by the copy into the caller's pages, and NO USER
- * POINTER EVER NAMES IT.
- *
- * NOT ZEROED HERE -- the same rule as every block above. `fileInit()` writes
- * all 16 metadata words and all 80 descriptor words from `kmain()` before the
- * first byte of output, and it must: `fileExitReport` reads the "did this
- * program ever open a file" word on EVERY exit from ring 3, including the
- * exits of programs that have nothing to do with a filesystem, and a garbage
- * word there would print a line into the middle of six existing goldens.
- *
- * M15 TOOK DONATED `.bss` FROM 11488 BYTES TO 12768; M16 TAKES IT TO 14048. docs/known-gaps.md
- * GAP-0053 carries the running total. m5-pci, m6-disk, m7-frames, m8-paging,
- * m9-ring3, m10-elf, m11-proc, m12-heap and m13-libc each still assert their
- * own milestone's number by SUBTRACTING the blocks that came after theirs, so
- * no older claim is weakened by this.
- * ------------------------------------------------------------------ */
-.align 8
-.global file_store
-file_store:
-    .skip 2560
-    .size file_store, 2560
-    .type file_store, @object
-
-/* ==================================================================
- * C-ABI address accessors, called from DCDart via @extern (DCDart ADR-0038).
- *
- * RIP-relative `leaq`, not `movq $symbol`, for the same reason isr.S uses it:
- * `movq $sym,%reg` assembles to a `movabs` needing a 64-bit absolute
- * relocation, and this kernel links into an `elf32-i386` container (ADR-0001).
- *
- * These return an ADDRESS rather than taking or returning a `Pointer<T>`
- * because DCDart still forbids `Pointer<T>` in an extern signature
- * (DCDart GAP-0025).
- * ================================================================== */
 .section .text
 .code64
 
-/* uint64_t vga_cursor_addr(void) */
-.align 16
-.global vga_cursor_addr
-.type vga_cursor_addr, @function
-vga_cursor_addr:
-    leaq vga_cursor(%rip), %rax
-    ret
-
-/* uint64_t m2_phase_addr(void) */
-.align 16
-.global m2_phase_addr
-.type m2_phase_addr, @function
-m2_phase_addr:
-    leaq m2_phase(%rip), %rax
-    ret
-
 /* uint64_t shell_line_addr(void) */
-.align 16
-.global shell_line_addr
-.type shell_line_addr, @function
-shell_line_addr:
-    leaq shell_line(%rip), %rax
-    ret
-
 /* uint64_t shell_len_addr(void) */
-.align 16
-.global shell_len_addr
-.type shell_len_addr, @function
-shell_len_addr:
-    leaq shell_len(%rip), %rax
-    ret
-
 /* uint64_t shell_state_addr(void) */
-.align 16
-.global shell_state_addr
-.type shell_state_addr, @function
-shell_state_addr:
-    leaq shell_state(%rip), %rax
-    ret
-
 /* uint64_t shell_mbinfo_addr(void) */
-.align 16
-.global shell_mbinfo_addr
-.type shell_mbinfo_addr, @function
-shell_mbinfo_addr:
-    leaq shell_mbinfo(%rip), %rax
-    ret
-
 /* uint64_t kbd_prefix_addr(void) */
-.align 16
-.global kbd_prefix_addr
-.type kbd_prefix_addr, @function
-kbd_prefix_addr:
-    leaq kbd_prefix(%rip), %rax
-    ret
-
 /* uint64_t cpu_info_addr(void) -- base of the 64-byte CPUID block. Vendor at
  * +0 (12 bytes), brand at +16 (48 bytes). */
 .align 16
@@ -855,13 +187,6 @@ cpu_info_addr:
     ret
 
 /* uint64_t fault_count_addr(void) */
-.align 16
-.global fault_count_addr
-.type fault_count_addr, @function
-fault_count_addr:
-    leaq fault_count(%rip), %rax
-    ret
-
 /* uint64_t shell_resume_ok_addr(void) -- so shellInit() can clear the guard
  * before anything is able to fault. The RSP word itself gets no accessor: no
  * DCDart code has any business reading or writing a stack pointer. */
@@ -874,13 +199,6 @@ shell_resume_ok_addr:
 
 /* uint64_t fb_state_addr(void) -- base of the 32-byte framebuffer console
  * state block. Base at +0, pitch at +8, cursor column at +16, row at +24. */
-.align 16
-.global fb_state_addr
-.type fb_state_addr, @function
-fb_state_addr:
-    leaq fb_state(%rip), %rax
-    ret
-
 /* uint64_t pmm_store_addr(void) -- base of the 4672-byte physical-memory-
  * manager storage block. Bitmap at +0 (4096 bytes), metadata at +4096 (64),
  * self-test ledger at +4160 (512).
@@ -889,13 +207,6 @@ fb_state_addr:
  * called from exactly three places, all of them in core/kernel/pmm.dart's
  * "storage seam" section. Adding a fourth call site anywhere else is the
  * change this design exists to prevent -- see the comment on `pmm_store`. */
-.align 16
-.global pmm_store_addr
-.type pmm_store_addr, @function
-pmm_store_addr:
-    leaq pmm_store(%rip), %rax
-    ret
-
 /* uint64_t vm_store_addr(void) -- base of the 128-byte virtual-memory state
  * block. See `vm_store` above for the word layout.
  *
@@ -905,13 +216,6 @@ pmm_store_addr:
  * prevent -- the same rule `pmm_store_addr` states, one call site tighter
  * because this block has one accessor's worth of structure rather than three.
  * `tests/conformance/m8-paging/run.sh` counts it. */
-.align 16
-.global vm_store_addr
-.type vm_store_addr, @function
-vm_store_addr:
-    leaq vm_store(%rip), %rax
-    ret
-
 /* uint64_t user_store_addr(void) -- base of the 128-byte ring-3 state block.
  * See `user_store` above for the word layout.
  *
@@ -919,13 +223,6 @@ vm_store_addr:
  * is called from exactly ONE place: `userMetaBase()` in core/kernel/user.dart.
  * The same rule `vm_store_addr` states, and `tests/conformance/m9-ring3/run.sh`
  * counts it the same way. */
-.align 16
-.global user_store_addr
-.type user_store_addr, @function
-user_store_addr:
-    leaq user_store(%rip), %rax
-    ret
-
 /* uint64_t user_resume_ok_addr(void) -- so `userInit()` can clear the guard
  * before anything can enter ring 3. The RSP word itself gets no accessor, for
  * the reason `shell_resume_rsp` gets none: no DCDart code has any business
@@ -944,13 +241,6 @@ user_resume_ok_addr:
  * called from exactly ONE place: `elfMetaBase()` in core/kernel/elf.dart. The
  * same rule `vm_store_addr` and `user_store_addr` state, and
  * `tests/conformance/m10-elf/run.sh` counts it the same way. */
-.align 16
-.global elf_store_addr
-.type elf_store_addr, @function
-elf_store_addr:
-    leaq elf_store(%rip), %rax
-    ret
-
 /* uint64_t proc_store_addr(void) -- base of the 4160-byte process-table block.
  * See `proc_store` above for the three regions and their offsets.
  *
@@ -962,13 +252,6 @@ elf_store_addr:
  * functions is what keeps the eventual migration to DCDart mutable statics a
  * three-line rewrite instead of an audit.
  * `tests/conformance/m11-proc/run.sh` counts the call sites. */
-.align 16
-.global proc_store_addr
-.type proc_store_addr, @function
-proc_store_addr:
-    leaq proc_store(%rip), %rax
-    ret
-
 /* uint64_t fat_store_addr(void) -- base of the 1824-byte filesystem block.
  * See `fat_store` above for the four regions and their offsets.
  *
@@ -980,26 +263,12 @@ proc_store_addr:
  * behind four named functions is what keeps the eventual migration to DCDart
  * mutable statics a four-line rewrite instead of an audit.
  * `tests/conformance/m14-fat/run.sh` counts the call sites. */
-.align 16
-.global fat_store_addr
-.type fat_store_addr, @function
-fat_store_addr:
-    leaq fat_store(%rip), %rax
-    ret
-
 /* uint64_t file_store_addr(void) -- base of the 1280-byte file-descriptor
  * block. See `file_store` above for the three region offsets.
  *
  * ONE accessor for THREE regions, and THREE call sites in
  * `core/kernel/file.dart` and nowhere else. Same rule, same reason, sixth
  * time. `tests/conformance/m15-fileio/run.sh` counts the call sites. */
-.align 16
-.global file_store_addr
-.type file_store_addr, @function
-file_store_addr:
-    leaq file_store(%rip), %rax
-    ret
-
 /* Mark the stack non-executable. Nothing here needs an executable stack, and
  * without this note GNU ld warns (and, historically, silently marked the
  * whole image's stack executable).

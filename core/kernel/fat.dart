@@ -862,53 +862,51 @@ final List<u8> fatStrE31 = const [
 
 // ===========================  THE STORAGE SEAM  ============================
 //
-// ADR-0011 section 0, for the fifth time. `fat_store` in core/boot/kdata.S is
-// the ONLY place this subsystem's mutable state lives, and the FOUR functions
-// below are the ONLY call sites of `fat_store_addr`.
+// ADR-0011 section 0, for the fifth time -- AND THE MIGRATION IT DESCRIBED HAS
+// HAPPENED (M17, ADR-0021). `fatStore` is a DCDart `@bss` mutable static
+// declared right here, in the file that owns it, and not 1824 bytes of
+// hand-donated `.bss` in core/boot/kdata.S. The FOUR functions below are still
+// the only things in this kernel that know where the bytes are.
 //
-// Do NOT call `fat_store_addr()` anywhere else, and do NOT add a second
-// `@extern` accessor for a piece of filesystem state. Either one turns the
-// migration below from a four-line rewrite into an audit of the whole file. If
-// a new piece of state is needed, give it one of the eight spare metadata
-// words -- that is what they are for.
+// WHAT THE MIGRATION ACTUALLY COST IN THIS FILE, exactly:
+//   - `@extern u64 fat_store_addr();`      became the `@bss` declaration below
+//   - four `return fat_store_addr()`       became four `return
+//                                          Bss.addressOf(fatStore)`
+// Nothing else moved. Not one line of the driver, not one shell command.
 //
-// The migration plan, when DCDart grows mutable statics (GAP-0053):
-//
-//   1. declare the metadata, the chain array, the sector buffer and the name
-//      buffer as DCDart mutable statics in this file;
-//   2. rewrite the four seam functions to take their addresses;
-//   3. delete `fat_store` and `fat_store_addr` from core/boot/kdata.S, and the
-//      `@extern` declaration below.
+// The rule is unchanged and still enforced: do NOT name `fatStore` anywhere
+// else. If a new piece of state is needed, give it one of the eight spare
+// metadata words -- that is what they are for.
 //
 // `tests/conformance/m14-fat/run.sh` COUNTS exactly four `return
-// fat_store_addr()` in this file and zero anywhere else in core/kernel/.
+// Bss.addressOf(fatStore)` in this file and zero anywhere else in core/kernel/.
 
-/// Base of the donated block. See `core/boot/kdata.S`.
-@extern
-external u64 fat_store_addr();
+/// The 1824 bytes this subsystem owns, as a DCDart mutable static.
+@bss
+final Bss fatStore = const Bss(bytes: fatStoreBytes);
 
 /// The 32 metadata words.
 @bare
 u64 fatMetaBase() {
-  return fat_store_addr();
+  return Bss.addressOf(fatStore);
 }
 
 /// The 256-entry cluster-chain array of the open file, four bytes per entry.
 @bare
 u64 fatChainBase() {
-  return fat_store_addr() + u64(fatChainOffset);
+  return Bss.addressOf(fatStore) + u64(fatChainOffset);
 }
 
 /// The one-sector buffer every FAT and directory read lands in.
 @bare
 u64 fatSectorBase() {
-  return fat_store_addr() + u64(fatSectorOffset);
+  return Bss.addressOf(fatStore) + u64(fatSectorOffset);
 }
 
 /// The 11 raw bytes of the 8.3 name currently being looked up.
 @bare
 u64 fatNameBase() {
-  return fat_store_addr() + u64(fatNameOffset);
+  return Bss.addressOf(fatStore) + u64(fatNameOffset);
 }
 
 // ========================  END OF THE STORAGE SEAM  ========================

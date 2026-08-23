@@ -168,10 +168,61 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 7 programs
 # M10's 128 bytes are the ELF loader's state and nothing else -- in particular
 # there is still NO SECTOR BUFFER in this file: `ataReadInto` reads into an
 # address the caller owns. docs/known-gaps.md GAP-0053.
-KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
-KDATA_BSS=$(hexnum "$KDATA_BSS_HEX")
-ELF_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $3; exit}')
+# ---------------------------------------------------------------------------
+# M17 (docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md):
+# WHERE THE MUTABLE STORAGE LIVES NOW. This check did not change what it
+# asserts; it changed where it reads it from, and it is written out here rather
+# than only in a commit message because an accounting assertion that moves is
+# exactly the kind of thing that must never move quietly.
+#
+# Until M17 every mutable byte in this kernel was hand-donated `.bss` in
+# core/boot/kdata.S, because DCDart had no mutable static data (GAP-0053).
+# DCDart ADR-0051 landed `@bss`, so the blocks are now DCDart mutable statics
+# declared in the subsystem that owns them, and they land in `kmain.o`'s `.bss`.
+# FIVE WORDS DID NOT MOVE and never will: `cpu_info`, `shell_resume_rsp`,
+# `shell_resume_ok`, `user_resume_rsp` and `user_resume_ok` are written by
+# assembly itself (isr.S), and a `@bss` symbol is LOCAL, so assembly cannot
+# name one. Those 96 bytes are still in kdata.o.
+#
+# So the total is a SUM OF TWO OBJECTS, and every historical number below is
+# reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
+# 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
+# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# half; offset arithmetic ("bytes from this block to the end") is done inside
+# DART_BSS, because every block a later milestone added is in that half.
+bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
+  local f="$1" n="$2" o v
+  for o in kmain.o kdata.o; do
+    v=$(x86_64-elf-readelf -sW "$CORE_DIR/build/$o" \
+          | awk -v s="$n" -v f="$f" '$4=="OBJECT" && $8==s {print $f; exit}')
+    [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+  done
+  return 1
+}
+bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
+  # A `@bss` symbol is LOCAL to kmain.o and kernel.ld's OUTPUT_FORMAT(elf32-i386)
+  # container keeps no local symbols, so kernel.elf's symbol table cannot answer
+  # this. The LINK MAP can, and it is the linker's own statement of where it put
+  # kmain.o's `.bss`; the block's offset inside that section comes from kmain.o.
+  local n="$1" base off
+  base=$(awk '$1==".bss" && $4 ~ /kmain\.o$/ {print $2; exit}' "$CORE_DIR/build/kernel.map")
+  [[ -n "$base" ]] || return 1
+  off=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+          | awk -v s="$n" '$4=="OBJECT" && $8==s {print $2; exit}')
+  [[ -n "$off" ]] || return 1
+  printf '%x\n' $(( 16#${base#0x} + 16#$off ))
+}
+bsssize() { bssfield 3 "$1"; }
+bssoff()  { bssfield 2 "$1"; }
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+DART_BSS=$((16#$DART_BSS_HEX))
+ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ASM_BSS=$((16#$ASM_BSS_HEX))
+[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+KDATA_BSS=$DART_BSS
+ELF_STORE=$(bsssize elfStore)
 [[ "$ELF_STORE" == "128" ]] || fail "kdata.o's elf_store is ${ELF_STORE:-missing} bytes, expected 128"
 M10_STORE="$ELF_STORE"
 # M11 (ADR-0015) added a fifth block after M10's: `proc_store` (4160 bytes -- an
@@ -184,13 +235,13 @@ M10_STORE="$ELF_STORE"
 # rather than as `proc_store`'s own size: the padding is charged to the
 # milestone whose alignment made it necessary, and this harness's own number
 # comes out exactly as it did before M11 existed.
-M11_ELF_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="elf_store"{print $2; exit}')
+M11_ELF_OFF_HEX=$(bssoff elfStore)
 [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
 # metadata words, five rows of four file descriptors, and a one-sector bounce
 # buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
 # number continues to mean in 2026 what it meant when it was written.
-M15_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="file_store"{print $2; exit}')
+M15_OFF_HEX=$(bssoff fileStore)
 [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
 [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
@@ -201,31 +252,37 @@ KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # multiple of 16. Measured as everything from `fat_store`'s offset to the end of
 # `.bss` and subtracted out below, so that THIS harness's own number and M11's
 # both come out exactly as they did before M14 existed.
-M14_OFF_HEX=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="fat_store"{print $2; exit}')
+M14_OFF_HEX=$(bssoff fatStore)
 [[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
 [[ "$M11_BSS" -eq 4168 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4168 (M11's 4160-byte proc_store plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
-[[ $(( KDATA_BSS - M11_BSS - M14_BSS )) -eq 5496 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, of which $M11_BSS are M11's process table and $M14_BSS are M14's filesystem block, leaving $(( KDATA_BSS - M11_BSS - M14_BSS )) — expected 5496 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in kdata.S's header and in GAP-0053."
-for sym in $(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8 ~ /buffer|sector|elf_scratch/ {print $8}'); do
-  fail "kdata.o donates '$sym'. M10 was supposed to add NO sector buffer: ataReadInto reads into a frame from the allocator, which is the whole answer to ROADMAP.md's 'the kernel can now read a disk and has nowhere to put what it read'."
+[[ $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) -eq 5496 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M11_BSS are M11's process table and $M14_BSS are M14's filesystem block, leaving $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) — expected 5496 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in GAP-0053."
+# M17: scan BOTH objects. The storage moved to kmain.o, so a scan of kdata.o
+# alone would now find nothing and pass for the wrong reason.
+for obj in kmain.o kdata.o; do
+  BIX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/$obj" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.bss[[:space:]].*/\1/p')
+  [[ -n "$BIX" ]] || continue
+  for sym in $(x86_64-elf-readelf -sW "$CORE_DIR/build/$obj" | awk -v b="$BIX" '$4=="OBJECT" && $7==b && $8 ~ /buffer|sector|elf_scratch|Buffer|Sector|elfScratch/ {print $8}'); do
+    fail "$obj holds MUTABLE STATIC '$sym'. M10 was supposed to add NO sector buffer: ataReadInto reads into a frame from the allocator, which is the whole answer to ROADMAP.md's 'the kernel can now read a disk and has nowhere to put what it read'."
+  done
 done
-echo "STRUCTURAL: pass  kdata.o donates exactly 5496 bytes of .bss — 5368 inherited, 128 for the ELF loader, and still no sector buffer"
+echo "STRUCTURAL: pass  exactly 5496 bytes of mutable static storage — 5368 inherited, 128 for the ELF loader, and still no sector buffer"
 
 # 3b. THE STORAGE SEAM IS EXACTLY ONE CALL SITE.
 #
 # The fourth subsystem to use ADR-0011 §0's pattern, and the same check
 # m7-frames, m8-paging and m9-ring3 make on theirs.
-SEAM_SITES=$(grep -c '^\s*return elf_store_addr()' "$CORE_DIR/kernel/elf.dart")
-[[ "$SEAM_SITES" -eq 1 ]] || fail "elf_store_addr() is returned from $SEAM_SITES functions in elf.dart, expected exactly 1 (elfMetaBase). The storage seam is the whole mutable-statics migration plan — see elf.dart's header."
-STRAY=$(grep -n 'elf_store_addr()' "$CORE_DIR/kernel/elf.dart" | grep -vE '^\s*[0-9]+:\s*(//|///|\*)' | grep -vE 'external u64 elf_store_addr\(\);' | grep -vc 'return elf_store_addr()')
-[[ "$STRAY" -eq 0 ]] || fail "elf.dart has $STRAY call(s) of elf_store_addr() outside elfMetaBase"
+SEAM_SITES=$(grep -c '^\s*return Bss[.]addressOf(elfStore)' "$CORE_DIR/kernel/elf.dart")
+[[ "$SEAM_SITES" -eq 1 ]] || fail "Bss.addressOf(elfStore) is returned from $SEAM_SITES functions in elf.dart, expected exactly 1 (elfMetaBase). The storage seam is the whole mutable-statics migration plan — see elf.dart's header."
+STRAY=$(grep -n 'Bss[.]addressOf(elfStore)' "$CORE_DIR/kernel/elf.dart" | grep -vE '^\s*[0-9]+:\s*(//|///|\*)' | grep -vE 'final Bss elfStore = ' | grep -vc 'return Bss[.]addressOf(elfStore)')
+[[ "$STRAY" -eq 0 ]] || fail "elf.dart has $STRAY call(s) of Bss.addressOf(elfStore) outside elfMetaBase"
 for f in "$CORE_DIR"/kernel/*.dart; do
   [[ "$(basename "$f")" == "elf.dart" ]] && continue
-  grep -q 'elf_store_addr' "$f" && fail "$(basename "$f") references elf_store_addr — the loader's storage seam must not leak out of elf.dart"
+  grep -qw 'elfStore' "$f" && fail "$(basename "$f") references elfStore — the loader's storage seam must not leak out of elf.dart"
 done
-echo "STRUCTURAL: pass  elf_store_addr() is called from exactly 1 function, in elf.dart's storage seam, and from no other kernel source"
+echo "STRUCTURAL: pass  Bss.addressOf(elfStore) is called from exactly 1 function, in elf.dart's storage seam, and from no other kernel source"
 
 # 3c. THE ELF FIELD OFFSETS elf.dart USES ARE THE REAL ONES.
 #
@@ -554,7 +611,7 @@ echo "STRUCTURAL: pass  25 refusal codes, 25 distinct sentences, each naming the
 # Step 4 — verify-freestanding.sh (CLAUDE.md rule 1).
 #
 # ONE new extern, 52 -> 53, and that is a claim about the design: an ELF loader
-# is arithmetic and memory, and neither needs a new instruction. `elf_store_addr`
+# is arithmetic and memory, and neither needs a new instruction. `elfStore`
 # is the storage seam and nothing else.
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
@@ -568,31 +625,54 @@ if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; 
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
 # M11 (ADR-0015) added FIVE more -- `sse_enabled`, `cr4_read`, `fx_save`,
-# `fx_restore` and `proc_store_addr`. They are subtracted BY NAME for the reason
+# `fx_restore` and `procStore`. They are subtracted BY NAME for the reason
 # M8's twelve, M9's eight and M10's one are: this harness's claim is about ITS
 # OWN milestone's count, and it must keep meaning what it meant before M11.
-M11_EXTERNS="sse_enabled cr4_read fx_save fx_restore proc_store_addr"
+# M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
+# `@bss` mutable static in the subsystem that owns it, so the extern is gone.
+# The check INVERTS rather than disappearing — a resurrected accessor would
+# otherwise be invisible here, and that is the regression ADR-0021 must prevent.
+grep -q "\bproc_store_addr\b" <<<"$VERIFY_OUT" && fail "proc_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static procStore"
+M11_EXTERNS="sse_enabled cr4_read fx_save fx_restore"
 M11_PRESENT=0
 for sym in $M11_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
 done
-[[ "$M11_PRESENT" -eq 5 ]] || fail "only $M11_PRESENT of M11's 5 externs are in kmain.o's manifest ($M11_EXTERNS)"
-# M15 (ADR-0019) added exactly ONE: `file_store_addr`, the file-descriptor
+[[ "$M11_PRESENT" -eq 4 ]] || fail "only $M11_PRESENT of M11's 4 externs are in kmain.o's manifest ($M11_EXTERNS)"
+# M15 (ADR-0019) added exactly ONE: `fileStore`, the file-descriptor
 # table's storage seam. Subtracted for the same reason every block above is.
+# M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
+# `@bss` mutable static in the subsystem that owns it, so the extern is gone.
+# The check INVERTS rather than disappearing — a resurrected accessor would
+# otherwise be invisible here, and that is the regression ADR-0021 must prevent.
+grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && fail "file_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fileStore"
 M15_PRESENT=0
-grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && M15_PRESENT=1
-[[ "$M15_PRESENT" -eq 1 ]] || fail "M15's file_store_addr is not in kmain.o's manifest"
 EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
-# M14 (ADR-0018) added exactly ONE: `fat_store_addr`, the filesystem's storage
+# M14 (ADR-0018) added exactly ONE: `fatStore`, the filesystem's storage
 # seam. Subtracted for the same reason M11's is: this harness's claim is about
 # ITS OWN milestone's count.
+# M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
+# `@bss` mutable static in the subsystem that owns it, so the extern is gone.
+# The check INVERTS rather than disappearing — a resurrected accessor would
+# otherwise be invisible here, and that is the regression ADR-0021 must prevent.
+grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && fail "fat_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fatStore"
 M14_PRESENT=0
-grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && M14_PRESENT=1
-[[ "$M14_PRESENT" -eq 1 ]] || fail "M14's fat_store_addr is not in kmain.o's manifest"
 EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M11_PRESENT ))
-[[ "$EXTERN_COUNT" -eq 53 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 53 (52 from M9 plus M10's one, elf_store_addr)"
-grep -q "elf_store_addr" <<<"$VERIFY_OUT" || fail "elf_store_addr is not in kmain.o's extern manifest"
+# M17 (ADR-0021) deleted 13 `_addr()` accessor externs at or before this
+# milestone, because the assembly-donated `.bss` they addressed became DCDart
+# `@bss` mutable statics. M9's 52 becomes 40, and M10's ONLY extern was `elf_store_addr`, so M10 now adds ZERO.
+# Each deleted name is asserted ABSENT as well as the count being asserted: a
+# count alone can be restored by an unrelated extern.
+for gone in \
+            vga_cursor_addr m2_phase_addr shell_line_addr \
+            shell_len_addr shell_state_addr shell_mbinfo_addr \
+            kbd_prefix_addr fault_count_addr fb_state_addr \
+            pmm_store_addr vm_store_addr user_store_addr \
+            elf_store_addr; do
+  grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+done
+[[ "$EXTERN_COUNT" -eq 40 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 40 (M9's 52 less the twelve accessors ADR-0021 deleted; M10 itself now adds none, because elf_store_addr was its only one)"
 grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 52 from M9 plus exactly one, and kdata.o still passes standalone"
 

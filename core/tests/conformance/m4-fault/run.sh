@@ -139,22 +139,81 @@ mnemonics() {
 # this milestone's own contribution to GAP-0053 and they are checked by symbol
 # size rather than by a section total, so they do not move when a later
 # milestone donates something of its own.
-KDATA_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$KDATA_BSS_HEX" ]] || fail "kdata.o has no .bss section — the donated storage is missing"
-KDATA_BSS=$((16#$KDATA_BSS_HEX))
-[[ "$KDATA_BSS" -ge 392 ]] || fail "kdata.o .bss is $KDATA_BSS bytes, which is less than the 392 M4 itself needs — something M4 donated has been deleted"
-for sym in fault_count shell_resume_rsp shell_resume_ok; do
-  SZ=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ "$SZ" == "8" ]] || fail "kdata.o's $sym is ${SZ:-missing} bytes, expected 8 — a word M4's fault recovery depends on"
+# ---------------------------------------------------------------------------
+# M17 (docs/decisions/0021-mutable-statics-and-the-end-of-donated-bss.md):
+# WHERE THE MUTABLE STORAGE LIVES NOW. This check did not change what it
+# asserts; it changed where it reads it from, and it is written out here rather
+# than only in a commit message because an accounting assertion that moves is
+# exactly the kind of thing that must never move quietly.
+#
+# Until M17 every mutable byte in this kernel was hand-donated `.bss` in
+# core/boot/kdata.S, because DCDart had no mutable static data (GAP-0053).
+# DCDart ADR-0051 landed `@bss`, so the blocks are now DCDart mutable statics
+# declared in the subsystem that owns them, and they land in `kmain.o`'s `.bss`.
+# FIVE WORDS DID NOT MOVE and never will: `cpu_info`, `shell_resume_rsp`,
+# `shell_resume_ok`, `user_resume_rsp` and `user_resume_ok` are written by
+# assembly itself (isr.S), and a `@bss` symbol is LOCAL, so assembly cannot
+# name one. Those 96 bytes are still in kdata.o.
+#
+# So the total is a SUM OF TWO OBJECTS, and every historical number below is
+# reproduced by it byte for byte: 16 at M2, 304 at M3, 392 at M4, 424 at M5/M6,
+# 5096 at M7, 5224 at M8, 5368 at M9, 5496 at M10, 9664 at M11-M13, 11488 at
+# M14, 14048 at M16. `DART_BSS` is the DCDart half, `ASM_BSS` the assembly
+# half; offset arithmetic ("bytes from this block to the end") is done inside
+# DART_BSS, because every block a later milestone added is in that half.
+bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
+  local f="$1" n="$2" o v
+  for o in kmain.o kdata.o; do
+    v=$(x86_64-elf-readelf -sW "$CORE_DIR/build/$o" \
+          | awk -v s="$n" -v f="$f" '$4=="OBJECT" && $8==s {print $f; exit}')
+    [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+  done
+  return 1
+}
+bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
+  # A `@bss` symbol is LOCAL to kmain.o and kernel.ld's OUTPUT_FORMAT(elf32-i386)
+  # container keeps no local symbols, so kernel.elf's symbol table cannot answer
+  # this. The LINK MAP can, and it is the linker's own statement of where it put
+  # kmain.o's `.bss`; the block's offset inside that section comes from kmain.o.
+  local n="$1" base off
+  base=$(awk '$1==".bss" && $4 ~ /kmain\.o$/ {print $2; exit}' "$CORE_DIR/build/kernel.map")
+  [[ -n "$base" ]] || return 1
+  off=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+          | awk -v s="$n" '$4=="OBJECT" && $8==s {print $2; exit}')
+  [[ -n "$off" ]] || return 1
+  printf '%x\n' $(( 16#${base#0x} + 16#$off ))
+}
+bsssize() { bssfield 3 "$1"; }
+bssoff()  { bssfield 2 "$1"; }
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+DART_BSS=$((16#$DART_BSS_HEX))
+ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
+[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ASM_BSS=$((16#$ASM_BSS_HEX))
+[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+KDATA_BSS=$(( DART_BSS + ASM_BSS ))
+[[ "$KDATA_BSS" -ge 392 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, which is less than the 392 M4 itself needs — something M4 owned has been deleted"
+# M17 SPLIT M4's THREE WORDS, and the split is the point. `faultCountWord` is
+# ordinary kernel state and became a DCDart `@bss`; `shell_resume_rsp` and
+# `shell_resume_ok` are written by `shell_run_forever` and read by
+# `fault_resume`, both in core/boot/isr.S, and a `@bss` symbol is LOCAL to
+# kmain.o, so assembly cannot name one. They stay donated, deliberately, and
+# `bsssize` finds each in whichever object now defines it.
+for sym in faultCountWord shell_resume_rsp shell_resume_ok; do
+  SZ=$(bsssize "$sym")
+  [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — a word M4's fault recovery depends on"
 done
-echo "STRUCTURAL: pass  M4's own three donated words are 8 bytes each and kdata.o's .bss is $KDATA_BSS (the exact total is owned by m5-pci/run.sh as of M5)"
+x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8=="shell_resume_rsp"' | grep -q . \
+  || fail "shell_resume_rsp is no longer defined in kdata.o — isr.S writes it by name and a DCDart @bss symbol is local, so it cannot live in kmain.o"
+echo "STRUCTURAL: pass  M4's own three words are 8 bytes each (faultCountWord a DCDart @bss, the two resume words still assembly-owned) and the kernel's mutable static storage is $KDATA_BSS ($DART_BSS + $ASM_BSS; the exact total is owned by m5-pci/run.sh as of M5)"
 
 # 2b. THE CPUID RESULT BLOCK IS THE SIZE CPUID ACTUALLY RETURNS.
 #
 # Vendor is 12 bytes at +0, brand is 48 bytes at +16. `cpu_probe` writes them
 # by fixed offset, so a block shorter than 64 would have `cpu_probe` writing
 # past the end of its own object and over whatever kdata.S put next.
-CPU_INFO_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="cpu_info" {print $3; exit}')
+CPU_INFO_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="cpu_info" {print $3; exit}')  # still kdata.o: isr.S's cpu_probe writes it by name
 [[ "$CPU_INFO_SIZE" == "64" ]] || fail "kdata.o's cpu_info is ${CPU_INFO_SIZE:-missing} bytes, expected 64 (12-byte vendor at +0, 48-byte brand at +16)"
 echo "STRUCTURAL: pass  cpu_info is exactly 64 bytes, the size CPUID's two strings need"
 
