@@ -84,6 +84,8 @@ EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 MAKE_IMAGE="$SCRIPT_DIR/make-image.py"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
 [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
 [[ -f "$MAKE_IMAGE" ]] || setup_error "image generator not found at $MAKE_IMAGE"
@@ -241,6 +243,18 @@ M10_STORE=$(bsssize elfStore)
 # comes out exactly as it did before M11 existed.
 M11_ELF_OFF_HEX=$(bssoff elfStore)
 [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+# M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
+# `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
+# 128 bytes of argument text, which is where a command line is staged before it
+# is copied onto the program's own stack page. Subtracted FIRST, before every
+# earlier milestone's, so that this harness's own number continues to mean what
+# it meant when it was written. Exactly the accounting M14, M15 and M16 each got
+# in turn.
+M19_OFF_HEX=$(bssoff argsStore)
+[[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
+M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
+[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
 # metadata words, five rows of four file descriptors, and a one-sector bounce
 # buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
@@ -334,7 +348,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M6 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 2147  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
+check_table shellStrHelp 2224  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table ataCmdName 4
 check_table ataCmdIdName 7
 check_table ataCmdReadName 10
@@ -522,7 +536,13 @@ drive_session() {
   mkdir -p "$outdir"
   local ser="$outdir/serial.txt"
   : >"$ser"
-  local port=$(( 47000 + ($$ % 8000) + portoff ))
+  # GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+  # than a hash of this shell's PID -- which collides with a concurrent
+  # harness, with a re-run onto a recycled PID, and with this harness's own
+  # previous boot still in TIME_WAIT. All three used to surface as QEMU
+  # dying with "Address already in use".
+  local port
+  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 180 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \

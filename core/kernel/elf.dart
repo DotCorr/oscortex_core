@@ -1806,8 +1806,8 @@ void shellElfRun(u64 headerLba) {
 /// file" and "that file is not an ELF this kernel will run" are not the same
 /// answer and a user who confuses them looks in the wrong place.
 @bare
-void shellElfRunName(u64 from) {
-  final u64 fs = fatOpen(from);
+void shellElfRunName(u64 from, u64 end) {
+  final u64 fs = fatOpenAt(from, end);
   if (fs > u64(fatErrOk)) {
     fatReportError(fs);
     return;
@@ -1910,15 +1910,33 @@ void shellElfLoadAndEnter(u64 headerLba, u64 named) {
   elfPageReport();
   elfWindowLine();
 
+  // M19 (ADR-0023): THE INITIAL PROCESS STACK. The arguments the shell staged
+  // are copied onto the program's own stack page -- through the frame's
+  // physical address, which is what the kernel can reach -- and the RSP this
+  // returns is the one ring 3 is entered with. It is 16-byte aligned and points
+  // at `argc`, which is what the System V ABI says a process entry point sees.
+  //
+  // A refusal here tears the load down the same way every other refusal does:
+  // the frames go back and the shell survives. It is not reachable with the
+  // bounds `args.dart` enforces and it is checked anyway, because those bounds
+  // and the size of a page are two numbers in two files.
+  final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));
+  if (rsp < u64(1)) {
+    argsReportError(u64(argsErrNoRoom));
+    elfReclaim();
+    return;
+  }
+  argsReport();
+
   final u64 entry = elfMeta(u64(elfMetaEntry));
   uartWrite(Rodata.addressOf(elfStrEnter), u64(14));
   uartPutHex(entry, u64(16));
   uartWrite(Rodata.addressOf(userStrRsp), u64(5));
-  uartPutHex(u64(vmProgStackTop), u64(16));
+  uartPutHex(rsp, u64(16));
   uartNewline();
 
   elfSetMeta(u64(elfMetaLive), u64(1));
-  enter_user(entry, u64(vmProgStackTop), u64(0), u64(userCodeSel), u64(userDataSel));
+  enter_user(entry, rsp, u64(0), u64(userCodeSel), u64(userDataSel));
 
   // Reached only through `user_return`, i.e. only if the program called `exit`.
   // A program that faulted came back to the shell through `fault_resume` and
@@ -1952,9 +1970,24 @@ void shellElfUsage() {
 /// separate spelling was not worth four goldens.
 @bare
 void shellElfRunCmd() {
-  final u64 lba = ataParseLba(u64(4));
+  // M19: THE LINE IS TOKENISED NOW, and this is the only place it is. The first
+  // token names the program -- an LBA or an 8.3 name, told apart exactly as
+  // before -- and the whole of the rest of the line, THE FIRST TOKEN INCLUDED,
+  // is the program's `argv`. `argv[0]` is therefore the word the user typed to
+  // name the program, which is what `argv[0]` means everywhere else.
+  //
+  // The arguments are staged BEFORE the load, so a command line this shell will
+  // not accept costs nothing: no frame is taken, no sector is read, and the
+  // shell prints one sentence and comes back to the prompt.
+  final u64 end = argsTokenEnd(u64(4));
+  final u64 as = argsCollect(u64(4));
+  if (as > u64(argsErrOk)) {
+    argsReportError(as);
+    return;
+  }
+  final u64 lba = ataParseLbaAt(u64(4), end);
   if (lba > u64(ataLba28Max)) {
-    shellElfRunName(u64(4));
+    shellElfRunName(u64(4), end);
     return;
   }
   shellElfRun(lba);

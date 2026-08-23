@@ -14,6 +14,9 @@
  *              openmode(), create(), fdwrite()                     (§ M16, raw)
  *              RFILE, rfopen/rfread/rfgets/rfseek/rfclose         (§ rfile.c)
  *   memory     malloc, free                                       (§ malloc.c)
+ *   argv       ARGS_MAX_COUNT, ARGS_MAX_BYTES                  (§ M19)
+ *              `_start` in start.c calls main(argc, argv) and exits with
+ *              what it returns; the kernel builds the SysV initial stack.
  *   strings    memcpy, memset, strlen, strcmp, strcpy
  *   output     printf, with EXACTLY five conversions
  *
@@ -335,6 +338,30 @@ unsigned long rfclose(RFILE *f);
  * argument as sbrk_last_error(): eleven distinct refusals collapsed to NULL
  * would be eleven diagnostics thrown away. */
 unsigned long rf_last_error(void);
+
+/* ---------------------------------------------------------------------------
+ * 3d. M19 — argc, argv, and the two bounds the kernel enforces on them.
+ *
+ *     A program does not have to know these to run: `main(argc, argv)` is
+ *     handed whatever the kernel built. They are here so that a program CAN
+ *     know them -- so that a `wc` given nine file names can say "this shell
+ *     passes at most eight" instead of being refused by the shell with no way
+ *     to have predicted it. core/kernel/args.dart's `argsMaxCount` and
+ *     `argsMaxBytes`, read back out of that file by m19-argv/derive.py.
+ *
+ *     THERE IS NO envp AND NO getenv. The kernel puts a NULL where `envp[0]`
+ *     goes and there is no environment on this operating system at all --
+ *     docs/known-gaps.md GAP-0146. `main` takes two parameters here; a third
+ *     one would be a pointer to a vector of length zero.
+ * ------------------------------------------------------------------------- */
+
+/* The most arguments one command line may carry, argv[0] INCLUDED. A ninth is
+ * refused by the shell, before the program is loaded. */
+#define ARGS_MAX_COUNT 8
+
+/* The most argument TEXT one command line may carry, in bytes, INCLUDING one
+ * NUL terminator per argument. */
+#define ARGS_MAX_BYTES 128
 
 /* ---------------------------------------------------------------------------
  * 4. printf. Returns the number of bytes written, or -1 if the formatted string

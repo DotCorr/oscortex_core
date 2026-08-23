@@ -97,6 +97,8 @@ DERIVE="$SCRIPT_DIR/derive.py"
 BUILD_PROG="$SCRIPT_DIR/build-prog.sh"
 MAKE_IMAGE="$SCRIPT_DIR/make-image.py"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 for f in "$DERIVE" "$BUILD_PROG" "$MAKE_IMAGE"; do
   [[ -f "$f" ]] || setup_error "$f not found"
 done
@@ -237,6 +239,18 @@ M10_STORE="$ELF_STORE"
 # comes out exactly as it did before M11 existed.
 M11_ELF_OFF_HEX=$(bssoff elfStore)
 [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+# M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
+# `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
+# 128 bytes of argument text, which is where a command line is staged before it
+# is copied onto the program's own stack page. Subtracted FIRST, before every
+# earlier milestone's, so that this harness's own number continues to mean what
+# it meant when it was written. Exactly the accounting M14, M15 and M16 each got
+# in turn.
+M19_OFF_HEX=$(bssoff argsStore)
+[[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
+M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
+[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
 # metadata words, five rows of four file descriptors, and a one-sector bounce
 # buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
@@ -486,7 +500,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M10 depends on was not emitted (a table with no call site is dropped by the linker)"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 2147
+check_table shellStrHelp 2224
 check_table elfStrDisk 13
 check_table elfStrImage 7
 check_table elfStrBytes 7
@@ -695,7 +709,13 @@ drive_session() {
   mkdir -p "$outdir"
   local ser="$outdir/serial.txt"
   : >"$ser"
-  local port=$(( 47000 + ($$ % 8000) + portoff ))
+  # GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+  # than a hash of this shell's PID -- which collides with a concurrent
+  # harness, with a re-run onto a recycled PID, and with this harness's own
+  # previous boot still in TIME_WAIT. All three used to surface as QEMU
+  # dying with "Address already in use".
+  local port
+  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 300 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m "$mem" \
@@ -920,9 +940,29 @@ else:
     if rip != entry:
         fails.append("the kernel entered at 0x%X but the file's e_entry is 0x%X"
                      % (rip, entry))
-    if int(m.group(2), 16) != d.PROG_STACK_TOP:
-        fails.append("RSP was 0x%X, expected the top of the stack page 0x%X"
-                     % (int(m.group(2), 16), d.PROG_STACK_TOP))
+    # M19 (ADR-0023) MOVED THIS ASSERTION AND MADE IT STRONGER, and it is
+    # written out here rather than only in a commit message because an
+    # assertion that moves is exactly the kind of thing that must never move
+    # quietly. Until M19 the kernel entered ring 3 with RSP at the TOP of the
+    # stack page and nothing on it, and this line said so. The kernel now builds
+    # the System V initial process stack in that page, so RSP points at `argc`
+    # somewhere below the top. What M10 owns is that ring 3 was entered on a
+    # stack pointer inside the ONE page THIS loader mapped, correctly aligned;
+    # what the block CONTAINS is m19-argv's, which reads it out of guest memory.
+    rsp_seen = int(m.group(2), 16)
+    if rsp_seen % 16 != 0:
+        fails.append("RSP was 0x%X, which is not 16-byte aligned -- the System V "
+                     "ABI requires a 16-byte-aligned RSP at process entry"
+                     % rsp_seen)
+    if not (d.PROG_STACK_PAGE <= rsp_seen < d.PROG_STACK_TOP):
+        fails.append("RSP was 0x%X, which is not inside the one stack page "
+                     "[0x%X, 0x%X) this loader mapped"
+                     % (rsp_seen, d.PROG_STACK_PAGE, d.PROG_STACK_TOP))
+    if d.PROG_STACK_TOP - rsp_seen > 512:
+        fails.append("RSP was 0x%X, %d bytes below the top of the stack page. "
+                     "M19's argument block for a one-token command line is a few "
+                     "dozen bytes; this is something else."
+                     % (rsp_seen, d.PROG_STACK_TOP - rsp_seen))
     if int(m.group(3), 16) != 0x23 or int(m.group(6)) != 3:
         fails.append("the program ran with CS %s / CPL %s, expected 0023 / 3 -- "
                      "the CS comes out of the frame the CPU pushed, so this is "
@@ -1324,7 +1364,31 @@ for p in elf.loads:
             va = a + off
             if p["vaddr"] <= va < p["vaddr"] + p["filesz"]:
                 img[off] = elf.blob[p["offset"] + (va - p["vaddr"])]
-want_image[d.PROG_STACK_PAGE] = bytearray(d.PAGE_BYTES)   # the stack, all zero
+# THE STACK PAGE, AND WHAT M19 CHANGED ABOUT IT.
+#
+# Until M19 this page was required to be 4096 zero bytes: the loader zeroed the
+# frame and nothing wrote to it before ring 3 was entered. The kernel now builds
+# the System V initial process stack in the top of it (ADR-0023), so the page is
+# zero BELOW the entry RSP and M19's block at and above it.
+#
+# The split is asserted rather than assumed: everything below RSP must still be
+# zero -- a loader that left allocator litter there would be handing an
+# untrusted program a page of whatever the kernel last did with that frame,
+# which is the property this check has always been about -- and the bytes at and
+# above RSP are excluded here and checked, byte for byte and against the command
+# line that was typed, by m19-argv/check-stack.py. RSP comes from QEMU's own
+# register dump, not from anything the kernel printed.
+rsp_live = regs.get("RSP")
+if rsp_live is None:
+    m_rsp = re.search(r"ELF ENTER RIP [0-9A-F]{16} RSP ([0-9A-F]{16})", cap)
+    rsp_live = int(m_rsp.group(1), 16) if m_rsp else d.PROG_STACK_TOP
+if not (d.PROG_STACK_PAGE <= rsp_live <= d.PROG_STACK_TOP):
+    fails.append("the spinning program's RSP is 0x%X, outside its own stack page"
+                 % rsp_live)
+    rsp_live = d.PROG_STACK_TOP
+stack_zero_bytes = rsp_live - d.PROG_STACK_PAGE
+want_image[d.PROG_STACK_PAGE] = bytearray(d.PAGE_BYTES)
+skip_from = {d.PROG_STACK_PAGE: stack_zero_bytes}
 checked = 0
 for va in prog_pages:
     leaf = tables.leaf(va)
@@ -1340,9 +1404,11 @@ for va in prog_pages:
     got = b"".join(mem.qword(pa + o).to_bytes(8, "little")
                    for o in range(0, d.PAGE_BYTES, 8))
     want = bytes(want_image.get(va, bytearray(d.PAGE_BYTES)))
+    n_cmp = skip_from.get(va, d.PAGE_BYTES)
+    got, want = got[:n_cmp], want[:n_cmp]
     if got != want:
-        first = next(i for i in range(d.PAGE_BYTES) if got[i] != want[i])
-        nz = sum(1 for i in range(d.PAGE_BYTES) if got[i] != want[i])
+        first = next(i for i in range(len(got)) if got[i] != want[i])
+        nz = sum(1 for i in range(len(got)) if got[i] != want[i])
         kind = "a file byte" if want[first] else "ZERO (no segment covers it, or it is the p_memsz tail)"
         fails.append("page 0x%X (frame 0x%X) does not hold what the ELF says it "
                      "should: %d of 4096 bytes differ, first at offset 0x%X "

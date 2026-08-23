@@ -1477,11 +1477,19 @@ u64 fatParseAt(u64 addr, u64 len) {
 /// the shell's bytes are.
 @bare
 u64 fatParseName(u64 from) {
-  final u64 len = shellLen();
-  if (len <= from) {
+  return fatParseNameAt(from, shellLen());
+}
+
+/// The same, over `[from, end)`. **M19.** `run WC.ELF ALPHA.TXT` must parse
+/// `WC.ELF` and not `WC.ELF ALPHA.TXT`, which before M19 was
+/// [fatErrBadName] because a space is below 0x21. `cat` and `open` still pass
+/// [shellLen] and still mean "the rest of the line".
+@bare
+u64 fatParseNameAt(u64 from, u64 end) {
+  if (end <= from) {
     return fatParseAt(shellLineBase(), u64(0)); // clears the buffer, refuses
   }
-  return fatParseAt(shellLineBase() + from, len - from);
+  return fatParseAt(shellLineBase() + from, end - from);
 }
 
 /// Finds the name already in the name buffer in the root directory, validates
@@ -1562,8 +1570,14 @@ u64 fatLookup() {
 /// refusal code. The shell's whole entry point into the filesystem.
 @bare
 u64 fatOpen(u64 from) {
+  return fatOpenAt(from, shellLen());
+}
+
+/// The same, over `[from, end)`. **M19**, for [fatParseNameAt]'s reason.
+@bare
+u64 fatOpenAt(u64 from, u64 end) {
   fatSetMeta(u64(fatMetaOpen), u64(0));
-  final u64 pn = fatParseName(from);
+  final u64 pn = fatParseNameAt(from, end);
   if (pn > u64(fatErrOk)) {
     return pn;
   }

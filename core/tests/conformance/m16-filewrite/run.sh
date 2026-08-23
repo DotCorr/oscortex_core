@@ -120,6 +120,8 @@ EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 [[ -f "$DRIVER" ]] || setup_error "qmp-drive.py not found at $DRIVER"
 [[ -f "$M1_EXPECTED" ]] || setup_error "m1-interrupts/expected.txt not found"
 [[ -d "$LIBC_DIR" ]] || setup_error "no C library at $LIBC_DIR"
@@ -221,6 +223,18 @@ ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{
 ASM_BSS=$((16#$ASM_BSS_HEX))
 [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$DART_BSS
+# M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
+# `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
+# 128 bytes of argument text, which is where a command line is staged before it
+# is copied onto the program's own stack page. Subtracted FIRST, before every
+# earlier milestone's, so that this harness's own number continues to mean what
+# it meant when it was written. Exactly the accounting M14, M15 and M16 each got
+# in turn.
+M19_OFF_HEX=$(bssoff argsStore)
+[[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
+M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
+[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
 [[ "$KDATA_BSS" -eq 14112 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 14112 — 11552 through M14 (11488, plus M18's 64-byte scheduler header, ADR-0022) plus file_store's 2560. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
 FILE_STORE_SIZE=$(bsssize fileStore)
@@ -577,7 +591,7 @@ echo "STRUCTURAL: pass  all 25 of oslibc.h's file numbers read back out of core/
 # move and neither does any golden that contains it. If a later milestone adds
 # `write` or `rm` to the shell, this is where the budget is.
 HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
-[[ "$HELP_SIZE" == "2147" ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — M16 was not supposed to add a shell command, and every harness that asserts a help-text golden moves with this number"
+[[ "$HELP_SIZE" == "2224" ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — M16 was not supposed to add a shell command, and every harness that asserts a help-text golden moves with this number"
 echo "STRUCTURAL: pass  shellStrHelp is unchanged at 2147 bytes — M16 adds no shell command, so no help-text golden moves"
 
 # 2g. EVERY @rodata TABLE EQUALS THE STRING ITS DOC COMMENT RECORDS.
@@ -764,7 +778,13 @@ drive_session() {
   mkdir -p "$outdir"
   local ser="$outdir/serial.txt"
   : >"$ser"
-  local port=$(( 47500 + ($$ % 8000) + portoff ))
+  # GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+  # than a hash of this shell's PID -- which collides with a concurrent
+  # harness, with a re-run onto a recycled PID, and with this harness's own
+  # previous boot still in TIME_WAIT. All three used to surface as QEMU
+  # dying with "Address already in use".
+  local port
+  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 600 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \

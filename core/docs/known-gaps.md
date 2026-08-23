@@ -583,6 +583,13 @@ M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, �
 → 9664 at M11, → 9664 at M12 and M13 (unchanged, twice), → 11488 at M14, → 12768 at M15,
 → 14048 at M16, → 96 at M17.**
 
+**The total after M17 is a total of DCDart `@bss` rather than of donated bytes, and it keeps moving.**
+14048 + 64 (M18's scheduler header, ADR-0022) = **14112 at M18**, + 256 (`argsStore`, ADR-0023) =
+**14368 at M19**. `argsStore` is the LAST block in `kmain.o`'s `.bss` and `m19-argv` asserts that it
+ends exactly at the end of the section — the same convention M14, M15 and M16 each followed, so that
+every earlier harness's "the donated bytes from MY block to the end of `.bss`" keeps meaning what it
+meant when it was written, by subtracting each later milestone's block first.
+
 **The donated total does not reach zero, and that is why this gap CLOSES rather than shrinking.** The
 96 bytes left in `core/boot/kdata.S` are not a measure of a missing language feature: a DCDart `@bss`
 symbol is emitted LOCAL, assembly cannot name a local symbol in another object, and all five remaining
@@ -3578,14 +3585,25 @@ the host computed independently.
 * `exit` runs no atexit handlers and flushes nothing — **unchanged, and now it means something**:
   an `RFILE` that is never `rfclose`d is not flushed, because there is nothing to flush; the KERNEL
   closes the descriptor on teardown and prints `FILE ORPHANS <n>` when it had to.
-* `argc`/`argv`/`envp` — **unchanged.** `_start` still calls `progMain()` with nothing, and a program
-  still cannot be told which file to open: `m15-fileio`'s program has `"DATA.BIN"` in its own
-  `.rodata`. This is now the most visible remaining hole, because a file API without a way to name a
-  file from outside the program is half an interface.
+* `argc`/`argv`/`envp` — **`argc` and `argv` ARE PRESENT AT M19**
+  (`docs/decisions/0023-argv-and-the-initial-process-stack.md`), and this bullet is the one item of
+  GAP-0113 that M15 could not touch. `core/kernel/args.dart` builds the System V x86-64 initial
+  process stack — `argc` at a 16-byte-aligned `RSP`, `argv[0..argc-1]` pointing at NUL-terminated
+  strings on the program's own stack page, a NULL terminator — and `core/user/libc/start.c`'s `_start`
+  unpacks it and calls `int main(int argc, char **argv)`, passing what `main` returns to `exit`. The
+  shell types `run PROG.ELF one two three`. `m19-argv` runs ONE BINARY over TWO DIFFERENT FILES named
+  on the command line and requires two different derived answers, and reads the constructed stack back
+  out of guest physical memory to check its shape against the ABI. **`envp` IS STILL ABSENT**: the
+  kernel writes a NULL where `envp[0]` goes, there is no environment of any kind, and `main` takes two
+  parameters — GAP-0146. The bounds, and everything a program still cannot learn about how it was
+  invoked, are GAP-0144.
 
-**What it would take**, restated: `argv` needs the ELF loading path to have somewhere for a command
-line to come from (ADR-0015's process creation is the obvious place); `stdin` needs a console-input
-syscall and a decision about blocking, which needs a scheduler that can block (GAP-0097); writes need
+**What it would take**, restated: ~~`argv` needs the ELF loading path to have somewhere for a command
+line to come from (ADR-0015's process creation is the obvious place)~~ — **done at M19, though not
+where this sentence guessed**: it went into the `run <name>` path in `elf.dart`, not into
+ADR-0015's `procCreate`, and `proc run` still passes no arguments at all (GAP-0149). `stdin` needs a
+console-input syscall and a decision about blocking, which needs a scheduler that can block
+(GAP-0097 — narrowed at M18, which made the scheduler PREEMPTIVE but not BLOCKING); writes need
 GAP-0116 item 1, which is a milestone of its own.
 
 **The rest of GAP-0122 is the honest boundary of M15.**
@@ -4044,9 +4062,16 @@ eleven distinct refusals above one floor; and a buffered read-only layer (`RFILE
    original entry made the argument and it is unchanged.
 7. **NO INPUT THAT IS NOT A FILE.** No `stdin`, no `getchar`, no console-input syscall of any kind.
    The keyboard belongs to the shell, in ring 0. A program still cannot be asked a question.
-8. **NO `argv`, SO A PROGRAM CANNOT BE TOLD WHICH FILE TO OPEN.** `m15-fileio`'s program has
+8. ~~**NO `argv`, SO A PROGRAM CANNOT BE TOLD WHICH FILE TO OPEN.** `m15-fileio`'s program has
    `"DATA.BIN"` in its own `.rodata`. This is half an interface and it is the most visible thing left:
-   a file API whose file name is a compile-time constant is a program with a file in it.
+   a file API whose file name is a compile-time constant is a program with a file in it.~~
+   **RESOLVED AT M19** (`docs/decisions/0023-argv-and-the-initial-process-stack.md`). The kernel builds
+   the System V initial process stack, the C library's `_start` unpacks it and calls
+   `main(argc, argv)`, and `run WC.ELF ALPHA.TXT` runs a program that was not compiled to know either
+   word. **GAP-0144 is the successor entry** and lists what a program still cannot learn about how it
+   was invoked — the largest being that there is no environment (GAP-0146) and no auxiliary vector
+   (GAP-0147), and that `proc run` passes nothing at all (GAP-0149). `m15-fileio`'s own program still
+   has `"DATA.BIN"` in its `.rodata` and was deliberately not converted: GAP-0151.
 9. **FOUR DESCRIPTORS, 512 BYTES PER `read`, 12 CHARACTERS PER NAME.** Each is a refusal a program can
    test and each is asserted by a boot. A fifth `open` is `fileRetNoSlot`; a 513-byte `read` is
    `fileRetBadLen`; a 13-character name is `fileRetBadLen`.
@@ -4726,6 +4751,29 @@ Once in roughly six runs the third of those lines comes back as `RFLAGS 00000000
 **bit 16, RF, the Resume Flag** — and the byte-exact serial comparison fails. Nothing else in the
 9-kilobyte capture differs.
 
+**M19 HIT IT ON A DIFFERENT HARNESS, AND `--regen` ALMOST ENSHRINED IT.** On 2026-08-23 the flake
+appeared on **`m11-proc`**, not `m10-elf`: the THIRD of its four `USER CS ... RFLAGS` lines came back
+`0000000000010246`. That is the same bit and the same cause, and it says the flake belongs to the
+`int $0x80` path rather than to any one harness — every harness whose golden contains that line can
+show it.
+
+**The dangerous part is what happened next.** M19 regenerated `m11-proc`'s golden (the kernel image
+grew, so every printed physical address moved), and the boot it regenerated FROM was one where RF was
+set. Every derived check in that harness passed — because **nothing in `m11-proc` asserts RFLAGS
+except the byte-exact comparison itself** — so `--regen` wrote `0x10246` into the golden as if it were
+the truth, and the next three runs failed against it. It was caught by re-running, noticing the
+failure was in the *opposite direction* to the flake, and diffing the golden against its pre-M19
+version, which carries `0x246` at that line as every earlier golden does. The line was corrected by
+hand and the kernel then reproduced the file byte-for-byte.
+
+**The lesson is about `--regen`, not about RF.** "A wrong kernel cannot enshrine itself, because every
+derived check still has to pass" is true and is not the same claim as "a wrong BOOT cannot enshrine
+itself". A value that only the byte-exact comparison ever looks at has no derived check behind it, so
+a regeneration is exactly as trustworthy as the single boot it came from. **Any golden regenerated
+while this flake is open should be diffed against its predecessor and required to differ only in what
+the change actually moved** — which for M19 was hexadecimal addresses and its own new lines, and RF is
+neither.
+
 **It is not M16's.** The golden at `7ffd8ab` carries `0x246` and so does the regenerated one; the
 value the kernel prints is whatever the CPU pushed, and this kernel does not touch RF. The same
 harness passed twice in a row immediately after the failure, passed in the pinned-toolchain sandbox
@@ -5195,3 +5243,234 @@ preemptions in a separate counter and left `SWITCHES` meaning "voluntary switche
 have held unchanged on a kernel that preempts, and M11's stated tripwire would have been disarmed
 without anybody editing it. The identity now carries the third term explicitly (ADR-0022 §6) rather
 than relying on a counter's meaning that nobody had written down.
+
+---
+
+## GAP-0144 — What a program can and cannot learn about how it was invoked
+
+**Domain:** kernel, userland (M19)
+**Status:** OPEN — deliberately scoped out. GAP-0122's shape, restated for the thing that now exists,
+because "oscortex programs get argv now" is exactly the kind of sentence that grows in the retelling.
+`docs/decisions/0023-argv-and-the-initial-process-stack.md` makes the argument; this is the accounting.
+
+**What IS there:** the System V x86-64 initial process stack, built by `core/kernel/args.dart` in the
+program's own address space; `argc` at `RSP`, 16-byte aligned; `argv[0..argc-1]` pointing at
+NUL-terminated strings on the program's own stack page; a NULL argv terminator; a NULL `envp[0]`; one
+`AT_NULL` auxiliary entry; and `core/user/libc/start.c`'s `_start`, which unpacks all of it and calls
+`int main(int argc, char **argv)`, passing what `main` returns to the `exit` syscall. The shell passes
+`run PROG.ELF one two three`.
+
+1. **EIGHT ARGUMENTS AND 128 BYTES, AND BOTH BOUNDS ARE EXERCISED FROM BOTH SIDES.** `argsMaxCount`
+   is 8 **including `argv[0]`**, and `argsMaxBytes` is 128 **including one NUL per argument**. Neither
+   is a truncation, and both are decided in the shell's parse before a frame is allocated, so a refused
+   command line costs the machine nothing.
+
+   **What a boot actually establishes**, because a bound asserted only from the refusing side is half a
+   bound: `m19-argv` runs a command line of **exactly eight tokens** (`run wc.elf -c` plus six file
+   names) and requires the program to report `argc 8` and to count all six files; it runs one of
+   **exactly 128 bytes** (`wc.elf\0` is 7, plus a 120-character argument and its NUL) and requires the
+   kernel to report `BYTES 0080`; and it then types **nine** arguments and **129** bytes and requires
+   each to be refused by its own sentence with nothing loaded. The two accepted cases are at the
+   boundary to the byte, and the two refused ones are one unit past it.
+
+   **Eight arguments and 128 bytes are not a design maximum anybody measured a need for** — they are
+   what fits in a 256-byte block whose whole point was to be small, and raising them is one constant
+   and one `.bss` size.
+2. **`argv[0]` IS THE TOKEN THE USER TYPED**, which for `run WC.ELF` is `wc.elf` (lower case, as typed —
+   the FAT lookup upper-cases its own copy and `argv` does not). For `run 2A` it is the string `2A`.
+   There is no path, no `/proc/self/exe`, and no way for a program to learn where it was loaded from.
+3. **NOTHING ELSE IS PASSED.** No environment (GAP-0146), no auxiliary vector (GAP-0147), no file
+   descriptors inherited from anywhere, no working directory, no umask, no process group, no TTY, no
+   signal mask. A process's entire inheritance is `argc` and `argv`.
+4. **THE ARGUMENTS DO NOT SURVIVE THE PROCESS.** They live on the stack page and `elfTeardown` frees it
+   like any other. Nothing in `argv` outlives the address space, which `m19-argv` proves by bracketing a
+   three-program session with `frames` and requiring the free count to be identical to the frame.
+5. **THERE IS NO WAY FOR A PROGRAM TO SET ANOTHER PROGRAM'S ARGUMENTS.** There is no `exec` and no
+   `fork` (GAP-0141 unchanged). `argv` is a thing the shell hands the loader, once, at load time.
+6. **`argsErrBadByte` HAS NEVER EXECUTED ON A BOOT.** It refuses a byte outside `0x21..0x7E`, which is
+   `fatParseAt`'s grammar applied to every argument, and the line editor accepts only printable ASCII —
+   so nothing that can reach `argsCollect` can carry one. It is kept because the two parsers should
+   agree about what a byte may be, and it is named here rather than left to be discovered, exactly as
+   GAP-0122 item 13 names `fileRetNoOwner`. **`argsErrNoRoom` has never executed either**: with eight
+   arguments and 128 bytes the worst case is 240 bytes on a 4096-byte page, so the check is a guard on
+   two constants in two files rather than a reachable path.
+7. **THE STAGING AREA IS 256 BYTES OF `.bss` AND IS NOT PER-PROCESS.** `argsStore` holds one command
+   line. That is correct today because `run` is synchronous and one program at a time is loaded through
+   it, and it is exactly the kind of thing that stops being correct the day two loads can overlap.
+
+---
+
+## GAP-0145 — The shell's tokeniser is runs of spaces, and there is nothing else
+
+**Domain:** kernel, shell (M19)
+**Status:** OPEN — deliberately scoped out. Narrows GAP-0057 item 3 for **one command**.
+
+Before M19 this shell had no tokeniser at all: every command took "the rest of the line", which is why
+`run PROGRAMME.ELF x` was `fatErrBadName` — a space is below 0x21 and the 8.3 parser refused it.
+`argsTokenEnd` and `argsCollect` now split the line after `run ` on runs of spaces. That is the entire
+grammar:
+
+* **No quoting.** `'a b'` is two arguments, `a` and `b'`, and `'a` is the first of them.
+* **No escapes.** A backslash is an ordinary byte, and `\ ` is two arguments.
+* **No way to pass an argument containing a space**, therefore, and no way to pass an empty one.
+* **No globbing.** `*.TXT` is the four bytes `*.TX` and a `T`; there is no expansion and nothing that
+  could do one — the shell's `ls` is ring-0 code and no program can enumerate the volume (GAP-0122
+  item 2 unchanged).
+* **No redirection and no pipes.** `>` and `|` are ordinary bytes in an argument.
+* **No `--` and no option grammar of any kind.** `-l` is a four-byte argument like any other; that it
+  means something is a decision `m19-argv`'s program makes, not the shell.
+* **`run` IS THE ONLY COMMAND WITH A TOKENISER.** `cat`, `echo` and every other command still take the
+  rest of the line, and GAP-0057 item 3 is unchanged for them. `cat A.TXT B.TXT` is still one bad name.
+
+---
+
+## GAP-0146 — There is no environment
+
+**Domain:** kernel, userland (M19)
+**Status:** OPEN — deliberately scoped out.
+
+The initial process stack has an `envp` and it is **empty**: the word after `argv`'s NULL terminator is
+a NULL, `envp[0]` **is** the terminator, and `environ` — if anything declared one — would be a vector of
+length zero. `m19-argv`'s `check-stack.py` reads that word out of guest physical memory and asserts it
+is zero, so "empty" is a claim a boot makes rather than a thing this file asserts.
+
+There is no `getenv`, no `setenv`, no `putenv`, no `environ` symbol in the C library, and `main` takes
+**two** parameters. There is nowhere for an environment to come from: the shell has no `export` and no
+variables of any kind, and there is no init, no login and no profile.
+
+**What it would take:** somewhere for the strings to come from (shell variables), a place to keep them
+across commands (more `.bss`, or a heap the shell can use — it has neither), and three library
+functions. The stack layout already has the slot, so the kernel half is `argsBuild` writing more than
+one NULL.
+
+---
+
+## GAP-0147 — The auxiliary vector is a terminator and nothing else
+
+**Domain:** kernel (M19)
+**Status:** OPEN — deliberately scoped out.
+
+`argsBuild` writes exactly one `Elf64_auxv_t` and its `a_type` is `AT_NULL`: two zero words. There is no
+`AT_PHDR`, `AT_PHENT`, `AT_PHNUM`, `AT_PAGESZ`, `AT_ENTRY`, `AT_BASE`, `AT_RANDOM`, `AT_HWCAP`,
+`AT_SECURE`, `AT_CLKTCK` or `AT_SYSINFO_EHDR`.
+
+**The terminator is there rather than the whole thing being omitted** because an ABI-conformant `_start`
+or dynamic loader walks past `envp`'s NULL looking for the vector, and a terminator is the difference
+between "the vector is empty" and "the vector is absent and you are now reading the argument strings as
+`a_type` values". `check-stack.py` asserts both words are zero.
+
+**What is lost by having none of them.** A program cannot find its own program headers (so no
+self-relocation and no `dl_iterate_phdr`), cannot learn the page size except by knowing it is 4096, and
+has no kernel-provided entropy. None of those matter yet: there is no dynamic linking (GAP-0096), no
+`mmap`, and no randomisation anywhere in this kernel — `vmProgBase` is a fixed 0x10000000 and every
+program is loaded at the same addresses on every boot, which is exactly why `m10-elf`'s goldens can be
+byte-exact.
+
+---
+
+## GAP-0148 — `_start` runs no initialisers and `exit` runs no finalisers
+
+**Domain:** userland (M19)
+**Status:** OPEN — deliberately scoped out.
+
+`core/user/libc/start.c` zeroes `%rbp`, reads `argc` and `argv`, calls `main`, and passes what `main`
+returns to `exit`. Between the kernel's `iretq` and the first line of `main` **nothing else happens**:
+
+* **No `.init_array`/`.preinit_array` walk and no `.fini_array` walk.** A C file-scope object with a
+  non-constant initialiser, or any C++ static constructor, would silently never run. `prog.ld` does not
+  even emit the sections; a program that needed them would link with them discarded, which is louder
+  than running them in the wrong order but is still not a diagnostic.
+* **No `atexit` and no `on_exit`.** GAP-0113's original entry said `exit` runs no handlers and flushes
+  nothing, and that is unchanged. An `RFILE` that is never `rfclose`d is closed by the KERNEL at
+  teardown, which prints `FILE ORPHANS <n>`.
+* **No TLS.** No `%fs` base is set, `FS.base` is whatever the kernel left, and `__thread` does not work.
+* **No `errno` location**, and there is no `errno` (GAP-0122 item 6 unchanged).
+* **No stack guard, no `__stack_chk_guard`.** The programs are built `-fno-stack-protector`.
+* **No `argv`-derived `program_invocation_name`** or any other global; `argv[0]` is a parameter and
+  nothing copies it anywhere.
+
+---
+
+## GAP-0149 — `proc run` passes no arguments, and a program built against `start.c` cannot be started that way
+
+**Domain:** kernel (M19)
+**Status:** OPEN — a real limitation with a named cost, not a deferral of work nobody wants.
+
+M19 gives `argv` to **`run`**, the shell command that loads a program by name (or by LBA) into the
+single-address-space M9/M10 path. It does **not** give `argv` to **`proc run`**, M11's process-creation
+path: `procCreate` still sets `procSlotRsp` to `vmProgStackTop` and enters ring 3 with an empty stack
+page, exactly as before.
+
+**Why not.** `proc run` takes an LBA and only an LBA (GAP-0119), so there is no name to be `argv[0]`,
+and building even a zero-argument block there would move `m11-proc`'s and `m18-preempt`'s goldens —
+`PROC START SLOT 00 ENTRY ... RSP 0000000010200000` — for two harnesses whose programs are hand-written
+assembly that never reads `(%rsp)`.
+
+**What it costs, named rather than left to be found.** A program whose `_start` is `core/user/libc/
+start.c`'s — which reads `(%rsp)` as its second instruction — started with `proc run` **page-faults
+immediately**, at `vmProgStackTop`, which is one past the last mapped byte of its address space. The
+failure is clean: the kernel reports the fault at `_start + 2`, tears the process down, and the shell
+survives. It is not silent and it is not corruption. But it is a real footgun, and the honest statement
+is that **there are two ways to start a program on this operating system and only one of them satisfies
+the C entry contract.**
+
+**What closing it takes:** `procCreate` calling `argsBuild` on the slot's stack frame, `proc run`
+growing a name form, and regenerating two harnesses' goldens.
+
+---
+
+## GAP-0150 — The QMP port is probed, not reserved
+
+**Domain:** tests (M19)
+**Status:** OPEN — halved rather than closed, and the residual race is named.
+
+Every harness that drives QEMU through QMP used to pick its port arithmetically:
+
+```bash
+port=$(( 47000 + ($$ % 8000) + portoff ))
+```
+
+which is a hash of a process id, not a free port. It collides three ways — two harnesses whose PIDs are
+8000 apart, a re-run onto a recycled PID, and a previous boot's socket still in `TIME_WAIT` — and every
+one of them surfaces as QEMU dying with `Failed to find an available port: Address already in use` and a
+harness reporting a failure that has nothing to do with the kernel. **It was observed twice in one sweep
+on 2026-08-23**, on `m5-pci` and `m16-filewrite`.
+
+**What M19 did.** `core/tests/conformance/m2-console/pick-port.py` asks the host kernel for a free port
+(bind to 0, read it back, close) and every `drive_session` in every harness now calls it. On top of
+that, `drive_session` **retries the launch up to five times** when — and only when — QEMU's own log says
+the address was in use, printing a line when it does so.
+
+**What is still racy.** The port is released before QEMU claims it, so something else can take it in the
+window between. The retry covers that; it does not eliminate it. **Fully closing it needs QEMU to be
+handed an already-bound file descriptor**, which its `-qmp tcp:` form does not accept — `-qmp
+fd:<n>` does, but then the harness owns the listening socket's lifetime and the `wait`/`timeout`
+structure every harness shares would have to change. That is a bigger edit than the failure justifies
+today, and this entry is where whoever decides otherwise should start.
+
+---
+
+## GAP-0151 — Four test programs still carry their own `_start`
+
+**Domain:** tests, userland (M19)
+**Status:** OPEN — a deliberate non-migration, recorded so nobody reads M19 as bigger than it is.
+
+`core/user/libc/start.c` is the C entry contract and `m19-argv`'s program is written against it: it
+defines `int main(int argc, char **argv)` and nothing else, and `build-progs.sh` refuses a build in
+which `prog.c` defines `_start`.
+
+**The four older test programs were not converted.** `m10-elf`'s are hand-written assembly with no
+library at all; `m13-libc`'s, `m15-fileio`'s and `m16-filewrite`'s each carry a four-instruction
+`_start` that aligns the stack, zeroes `%rbp` and calls a `progMain(void)`. Converting them would have
+changed every one of those programs' R+X segments, and therefore the self-hashes those harnesses derive
+from them and the goldens that carry those hashes — for no gain to this milestone.
+
+**What that means precisely.** M19's claim is *a C program written as `main(argc, argv)` runs on this
+operating system*, evidenced by one program that is. It is **not** *every program on this operating
+system now goes through the library's `_start`*. The older programs are not broken by M19 — an initial
+stack a program ignores is harmless, and all four still pass — but they are not evidence for it either.
+
+**One thing they now do differently and it is worth knowing:** their `_start` begins
+`andq $-16, %rsp`, which on a stack the kernel has already 16-byte aligned is a no-op, and which
+**would silently repair a kernel that had got the alignment wrong**. That is exactly why `start.c` does
+not do it and why `build-progs.sh` asserts no write to `%rsp` anywhere in `_start`.

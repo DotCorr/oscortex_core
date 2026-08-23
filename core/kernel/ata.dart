@@ -1201,7 +1201,19 @@ u64 ataHexDigit(u8 c) {
 /// drive/head register's low nibble.
 @bare
 u64 ataParseLba(u64 from) {
-  final u64 len = shellLen();
+  return ataParseLbaAt(from, shellLen());
+}
+
+/// The same parse over `[from, end)` rather than `[from, shellLen())`.
+///
+/// **M19 split this out and did not copy it.** `run 2A one two` must read `2A`
+/// as a sector and `one two` as the program's argv, so the LBA form needs to
+/// stop at the first space; every other caller still wants the rest of the
+/// line and passes [shellLen] for [end]. Two copies of a hex parser would be
+/// two chances for `run 2A` and `run 2A x` to disagree about what 2A is.
+@bare
+u64 ataParseLbaAt(u64 from, u64 end) {
+  final u64 len = end;
   if (len < from + u64(1)) {
     return u64(ataLba28Limit); // nothing after the space
   }

@@ -87,6 +87,8 @@ done
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
 [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
 [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m4-fault reuses m2-console's)"
@@ -342,7 +344,7 @@ check_table() {
   [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M4 depends on was not emitted"
   [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 2147  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
+check_table shellStrHelp 2224  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table shellCmdCpu 3
 check_table shellCmdCrash 5
 check_table shellCmdCrashUd 8
@@ -439,7 +441,13 @@ drive_session() {
   mkdir -p "$outdir"
   local ser="$outdir/serial.txt"
   : >"$ser"
-  local port=$(( 46000 + ($$ % 8000) + ${5:-0} ))
+  # GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+  # than a hash of this shell's PID -- which collides with a concurrent
+  # harness, with a re-run onto a recycled PID, and with this harness's own
+  # previous boot still in TIME_WAIT. All three used to surface as QEMU
+  # dying with "Address already in use".
+  local port
+  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   # -cpu qemu64 is PINNED: the `CPU VENDOR`/`CPU BRAND`/`CPU LEAF` lines report
   # what CPUID says, so the golden is only meaningful against a fixed CPU
   # model. Same reasoning as -m 128M for the memory map. It is also the TCG

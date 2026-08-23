@@ -86,6 +86,8 @@ EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 # Deliberately the M2 harness's driver, not a copy of it.
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
 [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
 [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m3-shell reuses m2-console's)"
@@ -236,7 +238,7 @@ check_table shellStrPrompt 10
 # is the table's real size and both it and the literal in shellHelp() are
 # maintained by hand (GAP-0060) — the first M4 build printed 237 bytes of the
 # 395-byte table because only one of the two had been updated.
-check_table shellStrHelp 2147  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` and three filesystem lines; GAP-0060
+check_table shellStrHelp 2224  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` and three filesystem lines; GAP-0060
 check_table shellStrUnknown 27
 echo "STRUCTURAL: pass  all 8 shell @rodata tables are exactly the sizes the dispatcher compares"
 
@@ -356,7 +358,13 @@ drive_session() {
   : >"$ser"
   # Port derived from the shell PID so concurrent runs do not collide; the
   # second call adds 1 so the two boots in ONE run cannot collide either.
-  local port=$(( 46000 + ($$ % 8000) + ${5:-0} ))
+  # GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+  # than a hash of this shell's PID -- which collides with a concurrent
+  # harness, with a re-run onto a recycled PID, and with this harness's own
+  # previous boot still in TIME_WAIT. All three used to surface as QEMU
+  # dying with "Address already in use".
+  local port
+  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 120 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \

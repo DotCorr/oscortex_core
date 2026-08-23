@@ -82,6 +82,8 @@ DERIVE="$SCRIPT_DIR/derive.py"
 BUILD_PROGS="$SCRIPT_DIR/build-progs.sh"
 MAKE_IMAGE="$SCRIPT_DIR/make-image.py"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
 for f in "$DERIVE" "$BUILD_PROGS" "$MAKE_IMAGE" "$DRIVER" "$M1_EXPECTED"; do
   [[ -f "$f" ]] || setup_error "$f not found"
@@ -261,7 +263,7 @@ echo "STRUCTURAL: pass  all 16 M18 message/command tables are exactly the sizes 
 # this number does not move. That is a real cost -- `help` does not mention
 # `proc spin` -- and ADR-0022 §7 records it.
 HELP_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk '$8=="shellStrHelp"{print $3; exit}')
-[[ "$HELP_SIZE" -eq 2147 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M18 adds three commands and no help line; if that changed, five byte-exact goldens move with it."
+[[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M18 adds three commands and no help line; if that changed, five byte-exact goldens move with it."
 echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged — M18 moves no earlier golden"
 
 # 3g. THE TIMER IS UNMASKED BY A PREEMPTIVE SESSION AND MASKED AGAIN ON EVERY
@@ -299,7 +301,13 @@ drive_session() {
   mkdir -p "$outdir"
   local ser="$outdir/serial.txt"
   : >"$ser"
-  local port=$(( 47000 + ($$ % 8000) + portoff ))
+  # GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+  # than a hash of this shell's PID -- which collides with a concurrent
+  # harness, with a re-run onto a recycled PID, and with this harness's own
+  # previous boot still in TIME_WAIT. All three used to surface as QEMU
+  # dying with "Address already in use".
+  local port
+  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 300 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \

@@ -36,6 +36,7 @@ part 'proc.dart';
 part 'heap.dart';
 part 'fat.dart';
 part 'file.dart';
+part 'args.dart';
 
 /// Kernel entry point.
 ///

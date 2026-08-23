@@ -85,6 +85,8 @@ done
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 DRIVER="$SCRIPT_DIR/qmp-drive.py"
+PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
+[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
 [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
 [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER"
@@ -259,7 +261,12 @@ fi
 # ---------------------------------------------------------------------------
 SERIAL_CAPTURE="$WORKDIR/serial.txt"
 : >"$SERIAL_CAPTURE"
-QMP_PORT=$(( 45000 + ($$ % 10000) ))
+# GAP-0150: a port that is FREE RIGHT NOW, from the host kernel, rather
+# than a hash of this shell's PID -- which collides with a concurrent
+# harness, with a re-run onto a recycled PID, and with this harness's own
+# previous boot still in TIME_WAIT. All three used to surface as QEMU
+# dying with "Address already in use".
+QMP_PORT=$(python3 "$PICKER") || setup_error "pick-port.py could not find a free TCP port"
 SCREEN_TEXT="$WORKDIR/screen.txt"
 SHOT_DIR="$CORE_DIR/build"
 SHOT_PNG="$SHOT_DIR/screenshot.png"

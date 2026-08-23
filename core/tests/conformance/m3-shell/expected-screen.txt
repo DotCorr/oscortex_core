@@ -1,4 +1,3 @@
-  frames drain  allocate every free frame, then prove the next one fails
   frames refill free every frame drain took, back to the baseline count
   alloc         allocate one 4KiB frame, print its physical address
   free <addr>   free one frame by physical address
@@ -13,6 +12,7 @@
   user pages    TSS, gate DPLs, and how many pages ring 3 can reach
   run <lba>     load an ELF program from that disk sector and run it
   run <name>    load an ELF program from the filesystem by name and run it
+                the words after <name> become the program's argv (at most 8)
   fs            FAT16: mount the primary master and report its geometry
   ls            list the root directory: name, size, first cluster
   cat <name>    print a file, following its FAT cluster chain
