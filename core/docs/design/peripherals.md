@@ -20,15 +20,17 @@ letters costs nothing and cannot collide.
 
 ## 0. The ranking, first
 
+*("lines of code" means non-comment, non-blank lines; this repo writes roughly 2.2–3.7 total lines per code line — §0.3.)*
+
 | rank | item | cost | build it? |
 |---|---|---|---|
-| 1 | **AC97 output** (`-device AC97`) | ~300–400 lines, **pure port I/O, no MMIO, no BAR mapping**, one DMA descriptor list in one `allocFrame` page | **Yes — it is the cheapest real device left in the machine**, and its exit criterion is a byte count on a file the host writes |
-| 2 | **UHCI + control transfers + enumeration** (`-M pc,usb=on`) | ~600–900 lines, **pure port I/O on x86**, one 4 KiB frame list | **Yes, eventually** — but only after the PIC-mask fix, and only if input on ARM64 is not solved more cheaply |
-| 3 | **USB HID boot-protocol keyboard** | +~200 lines on top of USB2 | **Only when there is a reason** — the PS/2 keyboard works and `-M virt` has a cheaper answer (§4.3) |
-| 4 | **Intel HDA** | ~1200–2000 lines, MMIO BARs, CORB/RIRB, codec-graph walk | **No.** It buys nothing AC97 does not, at 4× the size |
-| 5 | **USB mass storage (BOT/SCSI)** | +~800 lines on top of a working bulk-transfer stack | **No.** `storage.md` already owns the disk, over ATA and then AHCI |
-| 6 | **xHCI** | ~2500–4000 lines, five DMA structure types, 64-byte contexts, scratchpad buffers | **No — not for years.** §1.2 |
-| 7 | **EHCI, OHCI, USB hubs, isochronous transfers, USB audio, virtio-sound** | each ≥ the item above it | **No.** §9 lists each with a reason |
+| 1 | **AC97 output** (`-device AC97`) | ~300–400 lines of code, **pure port I/O, no MMIO, no BAR mapping**, one DMA descriptor list in one `allocFrame` page | **Yes — it is the cheapest real device left in the machine**, and its exit criterion is a byte count on a file the host writes |
+| 2 | **UHCI + control transfers + enumeration** (`-M pc,usb=on`) | ~600–900 lines of code (~1200+ with HID), **pure port I/O on x86**, one 4 KiB frame list | **Yes, eventually** — but only after the PIC-mask fix, and only if input on ARM64 is not solved more cheaply |
+| 3 | **USB HID boot-protocol keyboard** | +~200 lines of code on top of USB5 | **Only when there is a reason** — the PS/2 keyboard works and `-M virt` has a cheaper answer (§2.6) |
+| 4 | **Intel HDA** | ~1200–2000 lines of code, MMIO BARs, CORB/RIRB, codec-graph walk | **No.** It buys nothing AC97 does not, at 4× the size |
+| 5 | **USB mass storage (BOT/SCSI)** | +~800 lines of code on top of a working bulk-transfer stack | **No.** `storage.md` already owns the disk, over ATA and then AHCI |
+| 6 | **xHCI** | ~2500–4000 lines of code, five DMA structure types, 64-byte contexts, scratchpad buffers | **No — not for years.** §1.2 |
+| 7 | **EHCI, OHCI, USB hubs, isochronous transfers, USB audio, virtio-sound** | each ≥ the item above it | **No.** §8 lists each with a reason |
 
 **The one-sentence version: build AC97, do not build USB yet, and never build HDA or xHCI on the
 strength of an argument that starts "modern hardware has".** This machine is QEMU. What QEMU
@@ -37,7 +39,7 @@ presents, measured, is §0.1.
 **And the finding that reframes both subsystems:**
 
 > **QEMU's default x86 machines present no USB controller and no audio device at all.** Measured:
-> `-M pc` and `-M q35` each expose five to six PCI functions, and **not one of them is class `0x0C03`
+> `-M pc` and `-M q35` each expose exactly six PCI functions, and **not one of them is class `0x0C03`
 > or class `0x04xx`**. USB appears only with `-M pc,usb=on` (or an explicit `-device`); audio appears
 > only with an explicit `-device` **and** an `-audiodev`.
 
@@ -128,7 +130,9 @@ Grepped across `core/kernel/` and `core/boot/`:
   `fb.dart:251`, `fat.dart` all declare them today. **So a USB or audio driver may declare its own
   state block directly, with no donated `.bss`, no `@extern` accessor and no storage seam.** This is
   the same correction `README.md` makes about the allocator ("it expired at M7"), one milestone
-  later and for a different constraint.
+  later and for a different constraint. **`stale-comments.md` §D already catalogues every header that
+  still says otherwise** — including `pci.dart:53-60` and `ata.dart:36-42` — so this is a citation,
+  not a rediscovery.
 * **Nothing blocks** (`blocking-and-threads.md`, GAP-0141). Every wait in this kernel is an
   iteration-counted spin, and `ata.dart`'s header explains why every one of them is bounded.
 * **The PIC mask is written as eight whole bytes** at `keyboard.dart:173,190`, `kmain.dart:272`,
@@ -139,7 +143,7 @@ Grepped across `core/kernel/` and `core/boot/`:
   concludes "leave it". A USB IRQ and an audio IRQ would be the third and fourth. That is still not
   hot; the recommendation stands.
 
-### 0.3 The unit these estimates are in
+## 0.3 The unit these estimates are in
 
 Every line count below is given twice, because this repo's files are mostly prose. Measured:
 
@@ -301,7 +305,7 @@ the general case requires a parser. **The boot protocol exists precisely to avoi
 | **control** | every device, every enumeration | one QH, three TDs (setup / data / status) | **yes, first** |
 | **interrupt** | HID keyboard and mouse | one QH placed in every *n*-th frame-list entry | **yes** |
 | **bulk** | mass storage, usb-serial, usb-net | one QH on the async chain | only for storage |
-| **isochronous** | USB audio, webcams | TDs placed directly in frame-list entries, no retry, no error recovery, **hard real-time** | **no — §9** |
+| **isochronous** | USB audio, webcams | TDs placed directly in frame-list entries, no retry, no error recovery, **hard real-time** | **no — §8** |
 
 **Interrupt transfers are not interrupts.** The controller polls the device every *n* frames and
 writes the result into a TD; whether the *driver* learns about it via an IRQ or by re-reading the TD's
@@ -319,7 +323,7 @@ command anyway.
 * **Mass storage (BOT)** — Bulk-Only Transport wraps SCSI: a 31-byte CBW out, data in or out, a
   13-byte CSW in. Then a SCSI command set: `INQUIRY`, `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)`,
   `TEST UNIT READY`, and `REQUEST SENSE` for every failure. **That is a second storage stack**, and
-  `storage.md` already owns storage with a shorter path (AHCI). §9.
+  `storage.md` already owns storage with a shorter path (AHCI). §8.
 
 ### 2.6 HID would eventually replace PS/2 — and on ARM64 there is no PS/2 to replace
 
@@ -345,19 +349,32 @@ something a compiler port fixes.
 * an estimated **150–250 lines of code** on top of that transport, versus **~1200+ code lines** for
   UHCI-plus-enumeration-plus-HID.
 
-**Therefore, the honest ranking of "how does ARM64 get a keystroke":**
+**Therefore, USB is not the cheapest answer, and it is not even the second cheapest.**
 
-| option | cost | reusability |
+**And `arm64-port.md` names a third option that is cheaper than both, and it is right.** That
+document's file-by-file table marks `keyboard.dart` **"MUST BE REWRITTEN or DROPPED"** and concludes:
+*"The honest first move is to drop keyboard input on aarch64 entirely and drive the shell from serial
+input, which the UART already carries."* Measured, `-M virt`'s default device list includes `pl011`,
+so the UART is there with no `-device` at all. **That is the correct first answer and this document
+endorses it** — with one operational note the two documents together need: **the existing harnesses
+use `-serial file:<capture>`, which is output-only.** Driving the shell from serial input needs a
+chardev that carries both directions (`-serial stdio`, a pty, or a socket), which is a harness change,
+not a kernel change.
+
+So the full ranking of "how does ARM64 get a keystroke" is four deep, not three:
+
+| option | cost | note |
 |---|---|---|
-| **VirtIO-input**, on the transport `gpu.md` already needs | **lowest** | reuses the GPU milestone's queue code entirely; works on `-M virt` **and** on `-M pc` |
-| **USB HID over UHCI** | ~5–8× more | reuses nothing already planned; the register-access half does not port to ARM64 without §1.3's abstraction |
-| **USB HID over xHCI** | ~15× more | the only option on real ARM64 hardware |
+| **serial input over PL011** | **~zero new device code** | `arm64-port.md`'s recommendation; needs a bidirectional chardev in the harness |
+| **VirtIO-input** | low | reuses `gpu.md`'s transport; absolute coordinates; works on `-M pc` too |
+| **USB HID over UHCI** | ~5–8× VirtIO-input | §1.3's register abstraction first |
+| **USB HID over xHCI** | ~15× | the only option on a physical board |
 
 **So the accurate sentence is not "USB is on the critical path for ARM64". It is: *input* is on the
-critical path for ARM64, USB is one of two ways to supply it, and it is the expensive way under
-QEMU and the only way on metal.** If the ARM64 goal is "boot `-M virt` and type at the shell",
-**build VirtIO-input, not USB.** If the ARM64 goal is a physical board, USB HID over xHCI is
-unavoidable and it is a multi-month item that should be scheduled as one.
+critical path for ARM64, USB is the most expensive of three ways to supply it under QEMU, and the
+only way on metal.** If the ARM64 goal is "boot `-M virt` and type at the shell", **build serial
+input, then VirtIO-input if a pointer is wanted — not USB.** If the ARM64 goal is a physical board,
+USB HID over xHCI is unavoidable and it is a multi-month item that should be scheduled as one.
 
 **One thing USB gives that VirtIO-input does not**, and it is worth naming: on `-M pc`, a `usb-kbd`
 plus `usb-tablet` gives **absolute pointer coordinates**, which `display-protocol.md`'s input routing
@@ -545,7 +562,7 @@ document, cited:
 * **The timer is masked at rest** (§0.2 there): `picUnmaskKeyboardOnly` leaves master mask `0xFD`,
   and that is the shell's steady state. Two sites unmask IRQ0 temporarily; a plain shell command
   never does.
-* **A free-running timer costs one mask byte and two golden lines** (§0's decision 3, §2.3), and
+* **A free-running timer costs one mask byte and two golden lines** (§0's decision 3 and §2.3 there), and
   `README.md` has already promoted it to **Tier 1, first**, because `blocking-and-threads.md` B1
   depends on it.
 * **Sub-tick resolution is available for free**: latching PIT channel 0 gives **838 ns** (§2.4 there),
@@ -679,3 +696,473 @@ So the ladder to "this OS plays a sound file", cheapest first:
 **Step 4 is not a milestone. It is a consequence of eight to twelve other milestones**, which is the
 same shape of conclusion `exec-format.md` §4.5 reached, arrived at from the output side instead of the
 input side. Step 3 is the honest target for "this OS plays music".
+
+---
+
+## 7. The ladders
+
+Twelve rungs across two ladders. **Each rung has a binary exit criterion and a negative control**, per
+CLAUDE.md rule 2. Where a criterion says *derived*, the harness computes the expectation from the
+machine (QMP `query-pci`) rather than having it typed — the discipline `m7-frames` and `m18-preempt`
+already follow, and `time-and-power.md` §7 restates.
+
+**`README.md`'s `xp` trap is respected throughout.** No criterion below reads a device BAR with `xp`.
+The BAR *addresses* come from QMP `query-pci`, which reports the host's own bookkeeping and is not an
+MMIO access at all — measured, after SeaBIOS assigns them: **UHCI BAR4 = `0x0000C540`, size 32;
+AC97 BAR0 = `0x0000C000`, size 1024; BAR1 = `0x0000C400`, size 256; both devices on IRQ 11.**
+
+### 7.0 The one measured fact that shapes both ladders
+
+**Both devices land on IRQ 11, which is on the SLAVE PIC.** SeaBIOS's PIIX3 PIRQ routing put them
+there; the interrupt line is readable from configuration space offset `0x3C`, which `pci.dart` does
+not currently read.
+
+`time-and-power.md` §4.5 already rejected RTC periodic interrupts partly for this reason, and the
+objection transfers verbatim: **using IRQ 11 means unmasking a line on the slave PIC *and* IRQ 2 (the
+cascade) on the master, and issuing EOI to *both* PICs** — a second interrupt path with a second
+correctness rule. Combined with `README.md` fix #1 (the eight whole-byte mask writes, which would
+silently re-mask it at the next shell command), the conclusion is not close:
+
+> **Every rung below is poll-only. Neither ladder unmasks an interrupt. `USBINTR` stays 0 and the
+> AC97 interrupt-enable bits stay clear**, and each rung's structural check asserts it.
+
+This is the same call `net-e1000.md` makes — polling for seven milestones, interrupts at the eighth —
+and for the same two reasons.
+
+---
+
+## 7.1 The USB ladder
+
+### USB1 — the kernel reads a BAR, for the first time ever
+
+*The smallest possible step, and it is genuinely a first: no code in this kernel has ever read PCI
+configuration offset `0x10`.*
+
+1. `pci.dart` gains `pciReadBar(bus, dev, fn, n)` and `pciReadIrqLine(...)` (offset `0x3C`). Neither
+   writes anything; `pciWrite32` is still absent at this rung.
+2. A new `usb` shell command finds the first class-`0x0C03` function, prints its BDF, its BAR4 I/O
+   base with the low two bits masked off, its BAR4 size (probed read-only is impossible without a
+   write — **so the size is NOT probed and NOT printed**; see the negative control), and its IRQ line.
+3. **Criterion, derived:** run with `-M pc,usb=on -qmp ...`; the harness reads `query-pci`, finds the
+   class-`0x0C03` function, and requires the guest's printed base to equal `regions[bar==4].address`
+   and the printed IRQ to equal `irq`. Nothing is typed into the harness.
+4. **Negative control 1:** the same kernel on plain `-M pc` must print `USB NONE` and must not print a
+   base. This is the control that catches the whole class of "the device was never there" vacuity,
+   and it is the inverse of `net-e1000.md`'s trap.
+5. **Negative control 2 (the one that matters):** a mutant that prints BAR4 *unmasked* (low bits
+   intact) must fail the derived comparison. The low bit of an I/O BAR is 1, so an unmasked base is
+   off by one and every subsequent port access is to the wrong register.
+6. **Structural check:** the linked kernel contains no `port_outl` to `0xCFC` — i.e. this rung really
+   is read-only.
+
+### USB2 — the controller runs, and the frame counter proves it
+
+*The first rung that needs `pciWrite32` (`README.md` Tier 1) and the first that uses `allocFrame` for
+DMA.*
+
+1. Set `PCI_COMMAND` bits 0 (I/O space) and 2 (bus master) via `pciWrite32`. **Read it back and print
+   it**; `README.md`'s BME resolution says the bit arrives clear here, so the before/after pair is
+   itself the evidence.
+2. `allocFrame` one page for the frame list, **explicitly zero all 4096 bytes**, then write the
+   terminate bit (`0x00000001`) into all 1024 entries. Write the page's physical address to
+   `FLBASEADD`, `0` to `FRNUM`, `0` to `USBINTR`, then set the run bit in `USBCMD`.
+3. **Criterion:** the guest prints `FRNUM` twice with a bounded spin between, and the two values
+   **differ**. Printed as `USB FRNUM <a> <b>`.
+4. **Negative control:** a second boot of the *same kernel* with a `usb norun` argument that skips the
+   run bit must print two **equal** values. This is what distinguishes "the controller is running"
+   from "two reads of an unimplemented register returned different garbage".
+5. **Structural check:** the zeroing loop exists and covers 4096 bytes, and `USBINTR` is written with
+   `0` on every path. A frame list of uninitialised memory is a list of plausible TD pointers and the
+   controller will follow them (§3.1).
+6. `pmm`'s free-frame count after the command is exactly one less than before, printed and compared —
+   this reuses `m7-frames`'s existing ledger discipline.
+
+### USB3 — a port sees a device, and an empty port sees nothing
+
+1. Read `PORTSC1`/`PORTSC2`; print connect-status, connect-status-change, enable and the low-speed
+   bit for both. Drive the reset sequence (set reset, bounded delay, clear reset, set enable, bounded
+   delay) and print `PORTSC` again.
+2. **Criterion:** with `-device usb-kbd`, exactly one port reports connected, and after the reset
+   sequence that port reports **enabled** with the low-speed bit **clear** — measured, `usb-kbd`
+   attaches at **port 1 at 12 Mb/s**, so full speed is the correct expectation and a driver that
+   reports low speed is wrong.
+3. **Negative control:** the same kernel with no `-device usb-kbd` reports **zero** ports connected
+   and performs no reset.
+4. **The delay is the hazard.** Both waits are counted spins whose duration is a host property
+   (§2.2). The rung's structural check asserts every spin is bounded and that exhaustion prints a
+   diagnostic naming the register — `ata.dart`'s rule, applied.
+
+### USB4 — one control transfer, and the device says who it is
+
+*The rung where a USB stack stops being register poking.*
+
+1. Build one queue head and three transfer descriptors (SETUP / IN / OUT-status) in a second
+   `allocFrame` page, zeroed. Point frame-list entry 0 at the queue head. Issue
+   `GET_DESCRIPTOR(DEVICE, 8)`, then `GET_DESCRIPTOR(DEVICE, 18)` using the `bMaxPacketSize0` the
+   first read returned.
+2. **Criterion:** the guest prints the 18-byte device descriptor as hex. The harness requires
+   `bLength == 0x12`, `bDescriptorType == 0x01`, and `bcdUSB`, `idVendor` and `idProduct` **equal to
+   what QEMU reports for the attached device** — derived from the monitor, not typed.
+3. **Criterion 2, and this is the one that proves the transfer really happened:** the guest also reads
+   the **product string descriptor** and prints it as ASCII. It must be exactly
+   `QEMU USB Keyboard` — measured, that is what `info usb` reports for `-device usb-kbd`. A string
+   that arrived over three chained descriptor reads cannot be a coincidence of garbage.
+4. **Negative control:** with `-device usb-mouse` instead, the string must be different and the
+   harness must reject the keyboard string. Two devices, one kernel, different output.
+5. **Structural check:** exactly one frame-list entry is non-terminate.
+
+### USB5 — enumeration: a device gets an address and a configuration
+
+1. `SET_ADDRESS(1)`, ≥2 ms settle, re-read the device descriptor **at address 1**, then
+   `GET_DESCRIPTOR(CONFIGURATION, 9)`, read `wTotalLength`, re-read the full configuration, then
+   `SET_CONFIGURATION(1)`.
+2. **Criterion:** the guest prints the interface descriptor's `bInterfaceClass`, `bInterfaceSubClass`
+   and `bInterfaceProtocol`. For `usb-kbd` these must be `03 / 01 / 01` (HID / boot / keyboard) and
+   for `usb-mouse` `03 / 01 / 02`. **Two devices, one kernel, two different derived expectations** —
+   the same two-boot shape `time-and-power.md` T3 uses for the RTC century.
+3. **Criterion 2:** the second device-descriptor read is issued to **address 1**, proven by a mutant:
+   a kernel that keeps talking to address 0 after `SET_ADDRESS` must fail. (It will: the device stops
+   answering there.)
+4. **Negative control:** `wTotalLength` is *read from the device*, not assumed. A mutant that
+   hardcodes a plausible configuration length must fail on one of the two devices.
+
+### USB6 — a USB keystroke reaches the shell
+
+*The first rung that produces user-visible behaviour, and the first that could replace PS/2.*
+
+1. `SET_PROTOCOL(0)` (boot protocol). One interrupt queue head placed in every 8th frame-list entry,
+   with an 8-byte data TD. Poll the TD's status word.
+2. Decode the 8-byte boot report — modifier byte, reserved, six keycodes — into the same character
+   stream `keyboard.dart` feeds the shell, **through a shared function rather than a duplicated
+   table**, so there is exactly one HID/scancode-to-ASCII decision in the kernel.
+3. **Criterion:** the harness sends keystrokes with QMP `send-key` and the resulting **serial capture
+   is byte-identical to `m3-shell`'s existing golden** for the same input. The strongest available
+   criterion: the new input path must be indistinguishable from the old one.
+4. **Negative control:** a boot with `-device usb-kbd` but with the PS/2 path compiled out and the USB
+   poll disabled must produce a capture with **no echoed characters at all** — proving the golden in
+   (3) came from USB and not from the 8042 still sitting there.
+5. **The known limitation, stated in the rung rather than discovered later:** polling from a shell
+   command means keystrokes are only collected while a command runs. **A usable USB keyboard needs
+   either the IRQ (blocked on `README.md` fix #1) or a resident process (`blocking-and-threads.md`
+   B1 / `display-protocol.md` D3).** `display-protocol.md` §4.4 makes this identical point about the
+   PS/2 mouse — "polling a PS/2 port from a shell loop is not a design anyone chose".
+
+### USB7 — the same kernel enumerates on ARM64 `-M virt`
+
+*Do not build this until the DCDart AArch64 backend exists. It is listed so the shape is on record.*
+
+1. §1.3's register-access abstraction has two implementations: `in`/`out` on x86, and a load/store to
+   the GPEX I/O window on AArch64.
+2. **Criterion:** on `qemu-system-aarch64 -M virt -device qemu-xhci -device usb-kbd`, the guest
+   prints the same `QEMU USB Keyboard` string USB4 asserts on x86. **Note this requires an xHCI
+   driver, not the UHCI one** — §1.2. On `-M virt -device piix3-usb-uhci -device usb-kbd` the UHCI
+   driver should also work, and if it does, that is a strictly cheaper route worth measuring first.
+3. **Negative control:** `-M virt` with no USB device must print `USB NONE`, and the **PS/2 path must
+   report absent** rather than silently reading `0xFF` from a port that does not exist — measured,
+   `-M virt` contains **zero** `i8042` devices.
+
+---
+
+## 7.2 The audio ladder
+
+### AUD1 — the mixer answers
+
+*Cheapest rung in this document. No DMA, no buffers, no timing.*
+
+1. Find class `0x0401`, read BAR0 and BAR1, mask the low two bits, print both. Set `PCI_COMMAND` bits
+   0 and 2 with `pciWrite32` and print the before/after values.
+2. Write `0x0000` to NAM `0x00` (reset). Write `0x0000` (0 dB, unmuted) to NAM `0x02` (master) and NAM
+   `0x18` (PCM Out).
+3. **Criterion, derived:** the printed I/O bases equal `query-pci`'s `regions[0].address` and
+   `regions[1].address` for the class-`0x0401` function — measured `0x0000C000` and `0x0000C400`.
+4. **Criterion 2:** the guest prints a **read-back** of NAM `0x02` after writing it. A mixer register
+   that reads back what was written proves the I/O base is right; a wrong base reads `0xFFFF`. Print
+   both a write of `0x0000` and a write of `0x8000` (mute) and require the two read-backs to differ.
+5. **Negative control:** the same kernel with no `-device AC97` must print `AUDIO NONE`.
+6. **Structural check:** no MMIO access and no `allocFrame` call in `ac97.dart` at this rung.
+
+### AUD2 — the machine makes a sound, and the host has the file to prove it
+
+*The rung this ladder exists for, and its exit criterion is unusually strong.*
+
+1. `allocFrame` a page for the buffer-descriptor list (zeroed), `allocFrame` N pages for PCM. Generate
+   a **square wave of a known frequency and known amplitude** into them — computed with integer
+   arithmetic, no floating point (§5.2).
+2. Fill the BDL: physical address + **sample count, in samples not bytes**. Set `BDBAR`, set `LVI`,
+   set `CR` run. Poll `CIV`/`PICB`/`SR` until `DCH`. Stop, print the final `CIV` and `SR`.
+3. **Criterion, and this is the good one:** the harness runs with
+   `-audiodev wav,id=s,path=out.wav -device AC97,audiodev=s`. Measured: **with no driver, `out.wav` is
+   exactly 44 bytes** — the canonical PCM header, `0x0001` format, 2 channels, `44100`, 16-bit,
+   `data` length `0`. So:
+   * `stat out.wav` must report **more than 44 bytes**;
+   * the header's `data` chunk length must be **non-zero**;
+   * and — the real check — **the exact byte sequence of the generated square wave must appear as a
+     contiguous substring of the file's PCM payload.** The guest computed those samples; finding them
+     verbatim in a file the host wrote is not something a broken driver produces. Substring rather
+     than equality, deliberately, so that leading or trailing silence from stream start/stop does not
+     make the criterion flaky.
+4. **Negative control:** the same kernel with the run bit never set must produce **exactly 44 bytes**.
+   This is the audio analogue of `net-e1000.md`'s `romfile=` control, and unlike the NIC's case it is
+   already true today — measured on an unmodified QEMU, twice, for both `AC97` and
+   `intel-hda`+`hda-output`.
+5. **Second negative control, and it is the one that catches the likeliest bug:** a mutant that
+   leaves the mixer **muted** (skip AUD1's step 2) must fail. A muted driver produces a *large* file
+   full of zeros — it passes a naive "more than 44 bytes" check and fails the substring check. This is
+   why criterion 3 has three parts.
+6. **The harness must pass `-audiodev`.** Measured: with no audio backend at all, `-device AC97`
+   prints `Can not open 'ac97.pi'` warnings (those are the *capture* streams; the `wav` backend is
+   output-only and they are harmless), and with no `audiodev=` at all on AArch64 the device refuses to
+   instantiate. Both are loud failures, which is the good kind.
+
+### AUD3 — a file on the disk plays
+
+1. A `play <NAME.WAV>` shell command: open through the FAT16 path, parse the RIFF header, refuse
+   anything that is not 16-bit stereo PCM **with a printed reason**, and stream the payload into the
+   BDL a page at a time, refilling behind `CIV`.
+2. **Criterion:** the PCM payload of the input `.WAV` on the disk image and the PCM payload of
+   `out.wav` are **bit-identical over the overlapping region** — the harness extracts both with a
+   dozen lines of Python and compares. A resampling bug, an endianness bug, a channel-swap bug and an
+   off-by-one in the sample-count field all fail this.
+3. **Negative control 1:** a `.WAV` with a mono or 8-bit header must be refused **by name**, and
+   `out.wav` must be exactly 44 bytes.
+4. **Negative control 2:** the input file's samples must not appear in `out.wav` when the run bit is
+   skipped.
+5. **Criterion 3 (`m14-fat`'s discipline):** the boot issues **no disk write**. `m14-fat` and
+   `m15-fileio` already assert this about their own boots and this rung inherits the assertion.
+6. **Known limitation to state in the rung:** this command busy-polls for the duration of the file
+   (§5.1). A ten-second WAV is a ten-second unresponsive machine. That is acceptable *here* and is
+   exactly what AUD4 fixes.
+
+### AUD4 — streaming, and the machine stays responsive
+
+**Blocked on `blocking-and-threads.md` B1 + `display-protocol.md` D3 (one milestone, per
+`README.md`), and on the free-running timer (`time-and-power.md` §2.3, Tier 1).** Do not attempt
+before both.
+
+1. A cyclic BDL with `LVI` chasing `CIV`, refilled from `procTick` rather than from a spin —
+   `time-and-power.md` §4.3's "fixed sequence of named calls in `procTick`", not a callback registry
+   (DCDart has no function pointers, GAP-0002).
+2. **Criterion:** a boot plays a 10-second WAV **and** echoes keystrokes sent by QMP `send-key`
+   during playback, with both the audio comparison of AUD3 and the echo comparison of `m3-shell`
+   passing in the same capture.
+3. **Criterion 2 — the underrun counter:** the driver counts `CELV`/`DCH` events and prints the
+   total. It must be **zero**. This is the number that makes "it sounded fine" into a measurement, and
+   it is the one this ladder would otherwise have no way to check.
+4. **Negative control:** a deliberately under-sized ring (one page, 23 ms — §5.1's table) must produce
+   a **non-zero** underrun count, proving the counter can move.
+
+### AUD5 — ring 3 can open `audio:` and write to it
+
+**Blocked on `namespace.md` (the device branch in `fileSysOpen`, sigil `:`) and on the `fdwrite`
+512-byte cap (§6.1 item 3).**
+
+1. `open("audio:")` returns a descriptor; `fdwrite` appends PCM to the ring; the write refuses (or
+   waits, once `fdwait` exists) when the ring is full.
+2. **Criterion:** a ring-3 program produces the same bit-identical `out.wav` payload AUD3's kernel
+   command produces, from the same input file.
+3. **Criterion 2:** the syscall count for one second of 44.1 kHz stereo is printed and equals
+   **345** (176,400 / 512, rounded up) at the current cap. **That number is the argument for raising
+   the cap**, and printing it turns an assertion into a measurement.
+4. **Negative control:** a second `open("audio:")` while the first is open must be refused with a
+   named error (§5.2 — one client, exclusive).
+
+---
+
+## 8. What should simply not be built, and for how long
+
+**This is the most useful section in the document.** Each row says what would have to change for the
+answer to become "yes", so the refusal is revisable rather than permanent.
+
+| do not build | why not | what would change the answer |
+|---|---|---|
+| **xHCI** | 7+ DMA structure types against UHCI's 3; a command/event/completion model with no counterpart in UHCI; an estimated **4–6×** the code. **And on QEMU there is nothing it can reach that UHCI cannot** — `usb-kbd`, `usb-mouse`, `usb-tablet` and `usb-storage` are all full speed (measured: 12 Mb/s) | **Physical ARM64 hardware.** A real board has xHCI and nothing else, and then this is unavoidable and should be scheduled as a multi-month item, not a milestone |
+| **EHCI** | High speed **only** [spec]; full/low-speed devices need a companion controller or a hub doing split transactions — which is why `-M q35,usb=on` gives **three UHCI companions plus one EHCI** (measured). So EHCI is not a simpler xHCI, it is UHCI plus a routing problem | Wanting >12 Mb/s over USB, which nothing here does |
+| **OHCI** | A third schedule format (HCCA + ED/TD) that reaches exactly what UHCI reaches | Nothing under QEMU. Real non-Intel hardware |
+| **USB hubs** | Enumeration behind a hub means port status/change bitmaps, hub descriptors, and per-port power. QEMU attaches devices directly to the root ports | Wanting more than the root ports supply |
+| **Isochronous transfers** | No retry, no error recovery, hard real-time TD placement in the frame list, and **`blocking-and-threads.md` says nothing on this machine can block** | Nothing. This is the last USB feature to build, not an early one |
+| **`usb-audio`** | A USB sound card is isochronous audio *plus* the whole USB stack, to reach what one AC97 driver reaches over I/O ports (§4.2) | Nothing, ever, under QEMU |
+| **USB mass storage (BOT/SCSI)** | A second storage stack — CBW/CSW framing plus `INQUIRY`, `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)`, `REQUEST SENSE`. `storage.md` already owns storage and gets there over AHCI for far less | A USB stick being the *only* medium, which QEMU never forces |
+| **`usb-net`, `usb-serial`, `usb-ccid`, `usb-mtp`** | `net-e1000.md` owns networking over a NIC that is present by default; the UART already exists | Nothing |
+| **Intel HDA** | ~4× AC97's size for capabilities nothing here uses. The CORB/RIRB rings and the codec widget-graph walk are the entire difference and they are all cost (§4.2) | Physical hardware, where AC97 does not exist. The AC97 driver's upper half transfers |
+| **`virtio-sound`** | A third audio device to reach what AC97 reaches. Would only make sense if the VirtIO transport were already built for `gpu.md` **and** AC97 were not | If `gpu.md`'s transport lands *and* audio has not been started yet, re-evaluate — this is the one refusal on this list that could flip |
+| **`sb16`, `ES1370`, `adlib`, `gus`, `cs4231a`** | Legacy ISA devices, no better than AC97 and mostly worse. `adlib` is FM synthesis, not PCM at all | Nothing |
+| **Audio capture / microphone** | There is no consumer. `hda-duplex`'s capture streams are why `-device AC97` prints `Can not open 'ac97.pi'` under a `wav` backend — the input direction is not even connected in the harness | A recording application, which does not exist |
+| **A software mixer / multiple concurrent streams** | **There is no second audio client.** Processes exist only while a shell command runs, four slots, nothing blocks (§5.2). `smp.md` refuses a second CPU by the identical argument | A resident process (`display-protocol.md` D3) *and* a second audio-producing program |
+| **Sample-rate conversion** | No floating point in kernel code (grepped: no `f32`/`f64` under `core/kernel/`), and AC97's VRA lets the *hardware* change rate instead | A file whose rate the hardware refuses. Then it is fixed-point, by hand |
+| **MIDI, 3D/positional audio, DSP effects** | No consumer, no application, no plan | Nothing on any current roadmap |
+| **USB device mode / OTG** | This machine is a host | Nothing |
+| **Interrupt-driven anything on this page** | Both devices land on **IRQ 11**, on the **slave** PIC (measured) — two PICs to EOI, a cascade line to unmask, and `README.md` fix #1 means it dies at the next shell command anyway (§7.0) | `README.md` fix #1 (consolidate the eight mask writes), and preferably the APIC + MSI work `README.md` promotes to Tier 1 |
+
+### 8.1 And the ranking restated as a schedule
+
+| when | build |
+|---|---|
+| **After `pciWrite32` lands (Tier 1), any time** | **AUD1, AUD2, AUD3.** Three rungs, no dependencies beyond `pciWrite32`, and AUD2's exit criterion is a file the host writes. This is the cheapest real capability left in the machine |
+| **After B1/D3 and the free-running timer** | **AUD4**, then **AUD5** if a ring-3 audio program is wanted |
+| **Only if input on `-M virt` is not solved by serial input (`arm64-port.md`) or VirtIO-input** | **USB1–USB6** |
+| **Only when there is physical ARM64 hardware** | **USB7**, and only then, xHCI |
+| **Never, on current facts** | everything in §8's table |
+
+---
+
+## 9. What I did not decide, and would rather be told
+
+1. **Is the ARM64 goal QEMU `-M virt` or a physical board?** §2.6's whole ranking turns on it. If it
+   is `-M virt`, **`arm64-port.md`'s serial-input answer is cheaper still and VirtIO-input is 5–8×
+   cheaper than USB while reusing `gpu.md`'s transport**, and USB should be deferred outright. If it is a board, xHCI is unavoidable and is a multi-month item that
+   should be on the roadmap as one. **This is the single highest-value answer anyone could give this
+   document.**
+2. **Is "audio" a goal at all, or only a consequence of the ffmpeg goal?** If it is only ffmpeg, §6.3
+   says the ordering is WAV player → ring-3 WAV player → single-file decoder → ffmpeg, and AUD1–AUD3
+   are on that path either way. If audio is wanted for its own sake, AUD1–AUD3 are worth doing now
+   regardless of ffmpeg.
+3. **Should `display-protocol.md` D1 (a PS/2 mouse) become a VirtIO-input milestone instead?**
+   §2.6 argues it would run on both machines and deliver the absolute coordinates D1 §4.3 wants. That
+   is the display specialist's call, not mine — I only supply the measurement that `-M virt` has no
+   8042.
+4. **Who owns raising the `fdwrite` 512-byte cap?** Two subsystems need it for the same reason —
+   `display-protocol.md` calls it "128 pixels", this document calls it "345 syscalls per second"
+   (§6.1). It should be one change with one owner, not two.
+5. **Is a `--play`-style demo wanted for `demo-harness.md`?** AUD2's WAV artifact is the most
+   demonstrable thing in this document and I did not look at whether that harness wants it.
+
+---
+
+## 10. Corrections and additions this document makes
+
+* **`pci.dart`'s class-name table already knows about USB and does not know about audio.** It has
+  `0C/03` → `"usb"` and a wildcard `04/FF` → `"multimedia"`, with **no** `04/01` or `04/03` entry. So
+  `-device AC97` prints `04/01/00 H00 multimedia` today. Adding two 16-byte records is a
+  one-line-per-record change to a table whose total size the `m5-pci` harness asserts
+  (`pciNameCount * pciNameStride` = 20 × 16 = 320) — **so it moves that assertion**, which is exactly
+  the kind of coupling `hot-files.md` exists to warn about.
+* **`pci.dart` never reads a BAR.** Its register constants are `0x00`, `0x08`, `0x0C`, `0x18` only.
+  Offsets `0x10` (BAR0) and `0x3C` (interrupt line) have no constant and no reader. USB1 and AUD1
+  both need them; whoever builds the first one should add them for both.
+* **QEMU 11.0.0 has removed the bare `-usb` option.** Measured: `-M pc -usb` fails with
+  `invalid option`. The spelling is `-M pc,usb=on`.
+* **`-M q35,usb=on` instantiates four USB controllers** (three ICH9 UHCI companions plus one EHCI),
+  `-M pc,usb=on` exactly one. Any USB harness should use `pc`, which is also the machine every
+  existing harness uses.
+* **`intel-hda` takes no `audiodev`; its codec does.** Measured: `Property 'intel-hda.audiodev' not
+  found`. And `-device intel-hda` with no codec child instantiates a controller with nothing behind
+  it.
+* **Both new devices land on IRQ 11 — the slave PIC.** `time-and-power.md` §4.5's objection to RTC
+  IRQ8 (two PICs to EOI, a cascade to unmask) applies verbatim, and neither document could have
+  noticed that overlap alone.
+* **`allocFrame` does not zero the frame.** Nothing in the corpus says so, and for a DMA structure it
+  is the difference between a driver and a memory corrupter running at 1000 Hz.
+* **An addition to `arm64-port.md`, not a disagreement with it.** Its recommendation to drive the
+  aarch64 shell from serial input is right and this document endorses it (§2.6). The operational
+  detail neither document had alone: **every existing harness uses `-serial file:<capture>`, which is
+  output-only.** Serial *input* needs a bidirectional chardev — a harness change, not a kernel change.
+* **A third harness trap, alongside `README.md`'s two.** The NIC's trap is that a device *acts before
+  the guest runs*, so a "capture is non-empty" criterion passes with no driver. USB and audio have the
+  **inverse** trap: **the device is absent unless the command line asks for it**, so a criterion fails
+  with no driver and the tempting fix — add `-device` and move on — proves nothing. **Both rungs above
+  therefore carry a device-absent negative control as well as a driver-disabled one.**
+
+---
+
+## Appendix A — every measurement, and how to reproduce it
+
+Host: `qemu-system-x86_64` / `qemu-system-aarch64` **11.0.0**, macOS arm64, 2026-08-23. Same QEMU as
+`time-and-power.md`'s Appendix A.
+
+**A1 — no USB and no audio on the default machines.**
+```sh
+printf 'info pci\nquit\n' | qemu-system-x86_64 -M pc  -display none -monitor stdio -m 128M
+printf 'info pci\nquit\n' | qemu-system-x86_64 -M q35 -display none -monitor stdio -m 128M
+```
+→ neither listing contains a `USB controller` or an `Audio controller`. `-M pc` has no `00:01.2`.
+
+**A2 — `-usb` is gone; `usb=on` is the spelling.**
+```sh
+qemu-system-x86_64 -M pc -usb -display none      # -> "invalid option"
+qemu-system-x86_64 -M pc,usb=on -display none    # -> USB controller 8086:7020 at 00:01.2
+```
+
+**A3 — `-M q35,usb=on` gives four controllers.** `8086:2934`, `8086:2935`, `8086:2936` (UHCI
+companions) and `8086:293a` (EHCI).
+
+**A4 — class codes and BAR shapes, via QMP rather than `xp`.**
+```sh
+printf '{"execute":"qmp_capabilities"}\n{"execute":"query-pci"}\n{"execute":"quit"}\n' \
+| qemu-system-x86_64 -M pc,usb=on -display none -qmp stdio -m 128M \
+    -audiodev wav,id=s,path=/tmp/x.wav \
+    -device AC97,audiodev=s -device intel-hda -device hda-output,audiodev=s \
+    -device qemu-xhci -device usb-ehci -device pci-ohci
+```
+→ `8086:7020` class `0x0c03` BAR4 io 32 · `8086:2415` class `0x0401` BAR0 io 1024, BAR1 io 256 ·
+`8086:2668` class `0x0403` BAR0 mem 16384 · `1b36:000d` class `0x0c03` BAR0 mem 16384 ·
+`8086:24cd` class `0x0c03` BAR0 mem 4096 · `106b:003f` class `0x0c03` BAR0 mem 256.
+
+**A5 — BAR addresses and IRQ, after SeaBIOS assigns them.** Same command as A4, but issue
+`query-pci` **~4 s after** `qmp_capabilities` instead of immediately (a bare `query-pci` at startup
+reports every BAR as *not mapped*, which is a trap of its own):
+→ UHCI BAR4 `0x0000C540`, AC97 BAR0 `0x0000C000` / BAR1 `0x0000C400`, **both devices `irq: 11`**.
+
+**A6 — the audio negative control is 44 bytes, twice.**
+```sh
+qemu-system-x86_64 -M pc -display none -m 128M -monitor stdio \
+  -audiodev wav,id=s,path=/tmp/a1.wav -device AC97,audiodev=s            <<< quit
+qemu-system-x86_64 -M pc -display none -m 128M -monitor stdio \
+  -audiodev wav,id=s,path=/tmp/a2.wav -device intel-hda -device hda-output,audiodev=s <<< quit
+```
+→ both files are **exactly 44 bytes**, and the header decodes as PCM (`0x0001`), 2 channels,
+`44100` Hz, byte rate `176400`, block align 4, 16 bits, `data` length **0**.
+
+**A7 — `intel-hda` has no `audiodev` property.**
+`-device intel-hda,audiodev=s` → `Property 'intel-hda.audiodev' not found`.
+
+**A8 — ARM64 `-M virt` has no PS/2, no USB, no audio, no VGA.**
+```sh
+printf 'info qtree\nquit\n' | qemu-system-aarch64 -M virt -cpu cortex-a57 -display none \
+  -monitor stdio -m 128M | grep -c i8042        # -> 0   (the same grep on -M pc -> 2)
+printf 'info pci\nquit\n'  | qemu-system-aarch64 -M virt -cpu cortex-a57 -display none \
+  -monitor stdio -m 128M                        # -> host bridge + virtio-net-pci, nothing else
+```
+Default `-M virt` devices: `pl011`, `pl031`, `pl061`, `arm_gic`, `arm-gicv2m`, `gpex-pcihost`,
+`gpex-root`, `virtio-mmio`, `cfi.pflash01`, `fw_cfg_mem`, `gpio-key`, `virtio-net-pci`.
+
+**A9 — every USB controller instantiates on `-M virt`.** `qemu-xhci`, `nec-usb-xhci`, `usb-ehci`,
+`piix3-usb-uhci`, `pci-ohci` — all accepted. `virtio-keyboard-pci`, `virtio-mouse-pci` and
+`virtio-tablet-pci` are accepted on **both** `-M virt` and `-M pc`. `AC97` and `virtio-sound-pci`
+refuse without an explicit `audiodev=`.
+
+**A10 — `usb-kbd` is a full-speed device on port 1.**
+```sh
+printf 'info usb\nquit\n' | qemu-system-x86_64 -M pc,usb=on -display none -monitor stdio \
+  -m 128M -device usb-kbd
+```
+→ `Device 0.0, Port 1, Speed 12 Mb/s, Product QEMU USB Keyboard`.
+
+**A11 — MMCONFIG is not a shortcut.** `xp /1wx 0xB00_2_0008` on `-M q35` reports
+`Cannot access memory` at startup. The 0xCF8/0xCFC mechanism `pci.dart` already uses is the only path
+that needs no firmware cooperation, on either machine.
+
+**A12 — repo figures.** `wc -l` and a comment-stripping grep over `core/kernel/`:
+`ata.dart` 1251/554, `pci.dart` 500/203, `fb.dart` 854/381, `keyboard.dart` 268/72.
+`pmmMaxFrames` = 32768 (`pmm.dart:611`). `port_inl`, `port_outl`, `port_inw`, `port_outw` are the four
+`.global`s in `core/boot/portio.S`. No `f32`/`f64` anywhere under `core/kernel/`.
+
+---
+
+## Appendix B — repo facts this design depends on
+
+| fact | where | why it matters here |
+|---|---|---|
+| `pciWrite32` does not exist; configuration space is read-only | `README.md` Tier 1; `pci.dart` has only `pciRead32` | **blocks every rung past USB1 and AUD1** |
+| BME is set only where an option ROM ran | `README.md`, the three-way disagreement | UHCI and AC97 both arrive with bus mastering **off** |
+| the PIC mask is eight whole-byte writes | `README.md` fix #1, eight named sites | both ladders are poll-only until it is fixed |
+| nothing blocks | `blocking-and-threads.md`; GAP-0141 | survivable for USB, fatal for streaming audio (§5.1) |
+| `allocFrame` returns single 4 KiB frames, does not zero them, bounded to 128 MiB | `pmm.dart:1090`, `pmm.dart:611` | UHCI's frame list fits **exactly**; every DMA structure must be zeroed by hand |
+| `@bss` mutable statics exist since M17 | ADR-0021; `stale-comments.md` §D | driver state costs nothing; several headers still say otherwise |
+| the timer is masked at rest; free-running is Tier 1 | `time-and-power.md` §0.2, §2.3 | AUD1–AUD3 need no timer; AUD4 needs the Tier 1 work |
+| `fdwrite` caps at 512 bytes | `display-protocol.md` / `README.md` | 345 syscalls/second for CD-quality audio (§6.1) |
+| the device-name sigil is `:`, and the branch goes in `fileSysOpen` | `namespace.md`; `README.md` | `audio:` is how ring 3 reaches AUD5 |
+| ffmpeg is gated on size: 65,536 / 262,144 / 2,097,152 / 4096 | `exec-format.md` §4.2 | §6 builds on this rather than re-measuring |
+| ffmpeg's libc gap is ~220–260 symbols against 41 | `libc-roadmap.md` §2.4 | ditto |
+| `isrDispatch` is measured as *not* a hot file | `hot-files.md` §3 | a USB arm and an audio arm are fine to add |
+| `-M virt` has no PS/2; serial input is the cheapest aarch64 answer | `arm64-port.md` (its `keyboard.dart` row) | §2.6 endorses it and adds the `-serial file:` note |
+| `kmain.dart`'s `part` list is append-only and load-bearing | `hot-files.md` §1 | `usb.dart` and `ac97.dart` each append one line, and two agents appending last collide silently |

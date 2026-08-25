@@ -100,6 +100,18 @@ extern char __rw_end[];
 #define ZERO_NEW 40UL
 #define RO_BYTES 64UL
 
+/* GAP-0152. RO.TXT is on the volume with attribute 0x21 -- archive AND
+ * READ-ONLY -- and holds ROFILE_BYTES bytes make-image.py generated. Opening
+ * it for WRITING must be refused, and it must STILL HOLD THOSE BYTES
+ * afterwards. Before the fix, `create` emptied it and returned a descriptor.
+ *
+ * The refusal alone would not have caught a fix placed one line too low: a
+ * guard after `fatTruncate` returns the same number and leaves an empty file.
+ * So this program hashes the file back through its own `read` as well, and
+ * run.sh compares the same bytes a THIRD time through macOS's `msdos` driver. */
+#define ROFILE_NAME "RO.TXT"
+#define ROFILE_BYTES 1024UL
+
 #define NEW_NAME "NEW.BIN"
 #define SEED_NAME "SEED.TXT"
 #define EMPTY_NEW "EMPTY2.TX"
@@ -284,7 +296,7 @@ void progMain(void) {
   unsigned long fd, wfd, rfd, got, h, n, wrote, refusal, status;
   unsigned long rBadModeW, rBadModeR, rBadModeS, rBadModeO;
   unsigned long rBadPtr, rBadLen0, rBadLenB, rBadFd, rClosed;
-  unsigned long rIsDir, rBadName, rRodata, rHole, rStraddle;
+  unsigned long rIsDir, rBadName, rRodata, rHole, rStraddle, rReadOnly;
   const unsigned char *edge;
 
   printf("SELF %x %d\n", (int)selfBefore, (int)roBytes);
@@ -420,6 +432,19 @@ void progMain(void) {
 
   h = hashFile(SCRATCH_NAME, &got);
   printf("SCRATCH BACK %d H %x\n", (int)got, (int)h);
+
+  /* ----------------------------------------------------------------------
+   * Phase 6 — THE FILE THIS PROGRAM IS NOT ALLOWED TO EMPTY. GAP-0152.
+   *
+   * Every descriptor is closed by the time this runs, so the refusal below is
+   * about the FILE and not about a slot, a mode or a neighbouring descriptor.
+   * Two statements, printed on one line: what `create` returned, and what the
+   * file still contains when this program reads it back through `open`/`read`.
+   * -------------------------------------------------------------------- */
+  rReadOnly = create(ROFILE_NAME);
+  h = hashFile(ROFILE_NAME, &got);
+  printf("RO REFUSED %x BACK %d H %x\n", (int)(rReadOnly & 0xFFFFUL),
+         (int)got, (int)h);
 
   /* ----------------------------------------------------------------------
    * The program's own image, again. Nothing above may have changed one byte of

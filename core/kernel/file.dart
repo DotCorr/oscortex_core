@@ -487,6 +487,21 @@ const int fileRetBadMode = 0xFFFFFFFFFFFFFFF3;
 /// "the disk filled up" a refusal rather than a corruption.
 const int fileRetNoSpace = 0xFFFFFFFFFFFFFFF2;
 
+/// GAP-0152 — the file is marked read-only on the volume, so `open(name,
+/// O_WRITE)` is refused.
+///
+/// **Nothing was changed when this is returned, and that is the whole point.**
+/// The refusal is produced by [fileMakeEmpty] before [fatClose], before
+/// [fatTruncate] and before [fatDirWrite], so the chain, the FAT and the
+/// directory entry are all exactly as they were. A refusal that still truncated
+/// would satisfy a test that only looked at the return value, which is why
+/// m16-filewrite compares the file's bytes back through the host's own `msdos`
+/// driver afterwards rather than trusting this number.
+///
+/// It is the fourteenth refusal and the first that is about PERMISSION. See
+/// docs/decisions/0024-the-read-only-attribute.md.
+const int fileRetReadOnly = 0xFFFFFFFFFFFFFFF1;
+
 // ======================  THE STORAGE SEAM  ======================
 //
 // `fileStore` is 2560 bytes of DCDart `@bss` mutable static, declared here in
@@ -834,6 +849,9 @@ u64 fileFromFat(u64 code) {
   if (code == u64(fatErrEmpty)) {
     return u64(fileRetEmpty);
   }
+  if (code == u64(fatErrReadOnly)) {
+    return u64(fileRetReadOnly);
+  }
   return u64(fileRetIo);
 }
 
@@ -1038,6 +1056,11 @@ u64 fileFlushFd(u64 row, u64 fd) {
 /// with itself about this file, and truncating it would be this kernel deciding
 /// which of the two accounts to believe. It is [fileRetIo] and the FAT-level
 /// code is in [fileMetaStatus]. GAP-0127 item 5.
+///
+/// **A file marked read-only is REFUSED, not emptied.** [fileRetReadOnly], and
+/// the volume is untouched. Until GAP-0152 this function looked at
+/// [fatAttrDirectory] and at nothing else in the attribute byte, so
+/// `open(name, O_WRITE)` on a read-only file destroyed it from ring 3.
 @bare
 u64 fileMakeEmpty() {
   final u64 fs = fatLookup();
@@ -1072,6 +1095,24 @@ u64 fileMakeEmpty() {
       fileSetMeta(u64(fileMetaStatus), fs);
       return fileFromFat(fs);
     }
+  }
+  // A FILE THE VOLUME MARKS READ-ONLY IS NOT EMPTIED. GAP-0152.
+  //
+  // This is the last question asked before the first destructive act. Every
+  // line below it changes the volume: [fatTruncate] returns the chain's
+  // clusters to the free pool and [fatDirWrite] zeroes the entry's first
+  // cluster and size. So the check is HERE and not in `fileSysOpen`, not in
+  // `fileFlushFd`, and not folded in beside the [fatErrIsDir] branch above --
+  // it has to sit after the lookup has been established as a HIT (which is
+  // what makes [fatMetaFileAttr] meaningful, see [fatWritable]) and before
+  // anything has been undone.
+  //
+  // The attribute belongs to fat.dart, so the question is asked there; this
+  // file only translates the answer into the vocabulary ring 3 sees.
+  final u64 ro = fatWritable();
+  if (ro > u64(fatErrOk)) {
+    fileSetMeta(u64(fileMetaStatus), ro);
+    return fileFromFat(ro);
   }
   final u64 entry = fatMeta(u64(fatMetaFileEntry));
   final u64 first = fatMeta(u64(fatMetaFileFirst));

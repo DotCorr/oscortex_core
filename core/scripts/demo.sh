@@ -23,6 +23,8 @@
 #     core/scripts/demo.sh --status        # is one running, and which commit
 #     core/scripts/demo.sh --clean         # kill it, then delete every worktree,
 #                                          # toolchain copy and run this made
+#     core/scripts/demo.sh --watch [secs]  # never stop: re-demo every time the
+#                                          # commit moves (default poll 60s)
 #
 #   Exit status: 0 on a completed tour, 1 on a build/boot failure, 2 on a
 #   setup error (missing tool, unusable checkout).
@@ -82,6 +84,7 @@ COMMITISH="HEAD"
 FORCE_DISPLAY=""      # "", "cocoa", "none"
 ACTION="run"
 QUIT_WHEN_DONE=0
+WATCH=0
 REFRESH_DCDART=0
 
 while [[ $# -gt 0 ]]; do
@@ -93,6 +96,9 @@ while [[ $# -gt 0 ]]; do
     --clean)           ACTION="clean" ;;
     --quit-when-done)  QUIT_WHEN_DONE=1 ;;
     --refresh-toolchain) REFRESH_DCDART=1 ;;
+    --watch)           WATCH=60
+                       # an optional numeric argument, without eating a commit-ish
+                       if [[ "${2:-}" =~ ^[0-9]+$ ]]; then WATCH="$2"; shift; fi ;;
     --commit)          shift; COMMITISH="${1:-}" ;;
     -h|--help)         sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)                setup_error "unknown option $1 (try --help)" ;;
@@ -102,6 +108,36 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$DEMO_ROOT" || setup_error "could not create $DEMO_ROOT"
+
+# ---------------------------------------------------------------------------
+# --watch: the owner's actual request -- a window that is ALWAYS showing the
+# current commit. Re-invokes this script rather than looping around its body, so
+# one demo is still exactly one process and a failed build is one failed child
+# rather than a broken loop. The child never inherits --watch, so this cannot
+# recurse.
+# ---------------------------------------------------------------------------
+if [[ $WATCH -gt 0 && "$ACTION" == "run" ]]; then
+  say "watching $COMMITISH every ${WATCH}s — every new commit gets a fresh window"
+  LAST=""
+  while :; do
+    CUR="$(git -C "$REPO_DIR" rev-parse "$COMMITISH" 2>/dev/null)"
+    if [[ -n "$CUR" && "$CUR" != "$LAST" ]]; then
+      [[ -n "$LAST" ]] && say "$COMMITISH moved ${LAST:0:7} -> ${CUR:0:7} — re-demoing"
+      CHILD=(bash "${BASH_SOURCE[0]}" --commit "$CUR")
+      case "$FORCE_DISPLAY" in
+        none)   CHILD+=(--headless) ;;
+        window) CHILD+=(--window) ;;
+      esac
+      if "${CHILD[@]}"; then
+        LAST="$CUR"
+      else
+        say "the demo of ${CUR:0:7} failed — leaving the previous window up, retrying at the next change"
+        LAST="$CUR"   # do not spin on a commit that cannot build
+      fi
+    fi
+    sleep "$WATCH"
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # Kill whatever the last run left behind. This runs on EVERY path, including
@@ -402,8 +438,21 @@ TOUR="$RUN_DIR/tour.txt"
   echo "mark FAULTING ON PURPOSE, AND COMING BACK"
   echo "send 6000 crash div"
   echo "send 6000 proc"
-  echo "shot $RUN_DIR/demo.png"
+  # The VGA text buffer is read BEFORE `fb`, deliberately. `conPutc` keeps
+  # writing 0xB8000 either way, so the dump stays valid -- but taking it first
+  # keeps the text artefact and the final PNG describing the same screen.
   echo "screen $RUN_DIR/screen.txt"
+  # THE ONLY PIXELS THIS OPERATING SYSTEM HAS. `fb` finds the display
+  # controller by PCI class, reads BAR0, sets an 800x600x32 mode through the
+  # Bochs VBE registers and blits 8x16 glyphs out of a .rodata font. Something
+  # has to be PRINTED afterwards or the new mode shows an empty screen, which
+  # is why `pci` follows it -- m5-pci's own session does the same for the same
+  # reason. The demo ENDS here so the window you are left looking at is the
+  # graphical console rather than VGA text.
+  echo "mark THE FRAMEBUFFER — REAL PIXELS, AT AN ADDRESS THE KERNEL DISCOVERED"
+  echo "send 8000 fb"
+  echo "send 8000 pci"
+  echo "shot $RUN_DIR/demo.png"
 } >"$TOUR"
 
 # ---------------------------------------------------------------------------

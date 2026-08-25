@@ -435,6 +435,10 @@ second CPU to matter.
   Three syscalls, two of which exist to be refused.
 * **No SMEP, no SMAP, no PCID.** The kernel can still execute and read
   user-accessible pages, and nothing stops it.
+  *(Superseded in part: SMEP was enabled by ADR-0025, outside any milestone, so the kernel can no
+  longer EXECUTE a user page on a CPU that has it. SMAP and PCID are still absent, and GAP-0153 says
+  why SMAP is a design decision here rather than one instruction — four sites read or write a ring-3
+  virtual address at CPL=0 and one of them has no supervisor alias.)*
 * **The syscall ABI is not DCDart's.** `DCDART_SPEC.md` §2's `@syscall` is a
   language feature that does not exist on either side; this milestone builds the
   machine boundary it would compile down to, not the declaration.

@@ -30,6 +30,17 @@ file reads back correctly THROUGH THIS KERNEL. None of them survives
 `fsck_msdos` and a byte-for-byte comparison of KEEP.BIN read back through
 macOS's own `msdos` driver, which is why run.sh requires both.
 
+THE FILE THE GUEST MAY NOT TOUCH AT ALL
+---------------------------------------------------------------------------
+RO.TXT is 1024 bytes with attribute 0x21 — archive AND READ-ONLY. GAP-0152:
+before it was fixed, `open("RO.TXT", O_WRITE)` from ring 3 emptied it. It takes
+its single cluster off the end of FILL.BIN's run rather than out of the free
+pool, exactly as SUB does, so not one cluster of the allocation this harness
+predicts moves because of it. The guest tries to create it and must be refused;
+run.sh then compares its 1024 bytes, read back through macOS's own `msdos`
+driver, against the bytes this script generated. A refusal that truncated
+anyway returns the same number to ring 3 and fails that comparison.
+
 THE FREE SET IS EXPORTED, NOT GUESSED
 ---------------------------------------------------------------------------
 `--json` prints `free_clusters`: exactly which clusters are free, in order.
@@ -116,6 +127,7 @@ SEED_BYTES = 5000
 SEED_CLUSTERS = (3001, 3005, 3009, 3013, 3017)
 KEEP_HEAD = b"M16KEEP\n"
 SEED_HEAD = b"M16SEED\n"
+RO_HEAD = b"M16RO\n\n\n"
 
 
 def keep_bytes(n):
@@ -141,6 +153,22 @@ def seed_bytes(n):
 
 def fill_bytes(n):
     return bytes(((i * 7) ^ 0xC3) & 0xFF for i in range(n))
+
+
+def ro_bytes(n):
+    """RO.TXT: the bytes a read-only file must STILL HAVE after a ring-3
+    program has tried to open it for writing. GAP-0152.
+
+    Every byte depends on its offset, and both ends are marked, for
+    `keep_bytes`' reason and one more of its own: the failure this file exists
+    to catch is a truncation, and a truncation is invisible in a comparison
+    that only looks at a prefix. `ENDRO\\n` at the very last bytes means a file
+    that came back one cluster short, or empty, or full of the sector pattern,
+    fails at the tail rather than passing on the head."""
+    b = bytearray((((i * 149) ^ (i >> 5) ^ 0x5B) & 0xFF) for i in range(n))
+    b[0:8] = RO_HEAD
+    b[n - 6:n] = b"ENDRO\n"
+    return bytes(b)
 
 
 def sector_pattern(s):
@@ -323,12 +351,25 @@ def main():
     # the end of FILL.BIN's run rather than out of the free pool.
     subdir_cluster = fill_chain[-1]
     fill_chain = fill_chain[:-1]
+    # RO.TXT: THE FILE THE GUEST IS REFUSED. GAP-0152.
+    #
+    # One cluster, taken off the end of FILL.BIN's run exactly as SUB's is and
+    # for exactly SUB's reason: it must NOT come out of the free pool, because
+    # the whole of derive.py's chain prediction is a function of that pool and a
+    # file this program never writes has no business moving a cluster of it.
+    # Everything the guest does allocate is therefore byte-identical to what it
+    # allocated before this file existed, which is what makes "no golden moved
+    # because of the volume" checkable rather than hoped for.
+    ro_cluster = fill_chain[-1]
+    fill_chain = fill_chain[:-1]
     chains["FILL.BIN"] = fill_chain
+    chains["RO.TXT"] = [ro_cluster]
 
     blobs = dict(progs)
     blobs["KEEP.BIN"] = keep_bytes(len(keep_chain) * CLUSTER_BYTES)
     blobs["SEED.TXT"] = seed_bytes(SEED_BYTES)
     blobs["FILL.BIN"] = fill_bytes(len(fill_chain) * CLUSTER_BYTES)
+    blobs["RO.TXT"] = ro_bytes(CLUSTER_BYTES)
 
     for name, chain in chains.items():
         if len(chain) != len(set(chain)):
@@ -389,6 +430,12 @@ def main():
     # is exactly the state `create` leaves a new one in.
     add("EMPTY.TXT", 0x20, 0, 0)
     add("SUB", 0x10, subdir_cluster, 0)
+    # GAP-0152: A FILE THE VOLUME MARKS READ-ONLY. Attribute 0x21 is archive +
+    # read-only, which is what every DOS/Windows tool writes for one. It is
+    # added LAST, after every entry the harness names by index, so no earlier
+    # entry moves and `ghost_entry` -- the slot NEW.BIN is required to land in
+    # -- is exactly where it was.
+    add("RO.TXT", 0x21, chains["RO.TXT"][0], len(blobs["RO.TXT"]))
     used_entries = len(root) // 32
     if variant == "dirjunk":
         # One entry PAST the end marker. Everything up to `used_entries` is live,
@@ -496,6 +543,10 @@ def main():
         "media": MEDIA, "first_cluster": FIRST_CLUSTER,
         "last_cluster": LAST_CLUSTER,
         "subdir_cluster": subdir_cluster,
+        "ro_cluster": ro_cluster,
+        "ro_bytes": len(blobs["RO.TXT"]),
+        "ro_attr": 0x21,
+        "ro_entry": entry_index["RO.TXT"],
         "free_clusters": free,
         "free_after_truncate": free_after_truncate,
         "seed_clusters": list(SEED_CLUSTERS),
@@ -515,6 +566,7 @@ def main():
     base = os.path.basename(out)
     open(os.path.join(outdir, base + ".keep"), "wb").write(blobs["KEEP.BIN"])
     open(os.path.join(outdir, base + ".seed"), "wb").write(blobs["SEED.TXT"])
+    open(os.path.join(outdir, base + ".ro"), "wb").write(blobs["RO.TXT"])
 
     if want_json:
         print(json.dumps(layout))

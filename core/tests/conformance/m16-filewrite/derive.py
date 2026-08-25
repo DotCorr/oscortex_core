@@ -99,6 +99,22 @@ def zero_byte(i):
     return (0x61 + (i % 26)) & 0xFF
 
 
+def ro_file_bytes(n):
+    """RO.TXT's contents. GAP-0152.
+
+    A SECOND, INDEPENDENT IMPLEMENTATION of make-image.py's `ro_bytes`, written
+    out here rather than imported, for the reason the three generators above
+    are: the file this predicts must equal the file that was written, and two
+    copies of one function cannot disagree while one copy and itself always
+    agree. run.sh hashes make-image.py's own output as well and requires the
+    two numbers to be the same, so a drift between them is a failure rather
+    than a silent agreement about the wrong bytes."""
+    b = bytearray((((i * 149) ^ (i >> 5) ^ 0x5B) & 0xFF) for i in range(n))
+    b[0:8] = b"M16RO\n\n\n"
+    b[n - 6:n] = b"ENDRO\n"
+    return bytes(b)
+
+
 # ---------------------------------------------------------------------------
 # THE ALLOCATOR.
 # ---------------------------------------------------------------------------
@@ -184,6 +200,7 @@ def main():
     seed_new = cconst(progsrc, "SEED_NEW")
     zero_new = cconst(progsrc, "ZERO_NEW")
     ro_bytes = cconst(progsrc, "RO_BYTES")
+    rofile_bytes = cconst(progsrc, "ROFILE_BYTES")
 
     filesrc = open(os.path.join(kdir, "file.dart")).read()
     fatsrc = open(os.path.join(kdir, "fat.dart")).read()
@@ -198,6 +215,21 @@ def main():
     out["seed_new"] = seed_new
     out["zero_new"] = zero_new
     out["ro_bytes"] = ro_bytes
+    # GAP-0152. RO.TXT's size is stated in THREE places and all three must
+    # agree: prog.c's ROFILE_BYTES, the directory entry make-image.py wrote,
+    # and the cluster it was given. A harness that read the size out of the
+    # image would still pass if the guest had truncated the file.
+    if rofile_bytes != layout["ro_bytes"]:
+        raise SystemExit("derive: prog.c says RO.TXT is %d bytes and the image "
+                         "generator wrote %d" % (rofile_bytes, layout["ro_bytes"]))
+    out["rofile_bytes"] = rofile_bytes
+    out["rofile_fnv_hex"] = "%x" % fnv1a(ro_file_bytes(rofile_bytes))
+    # Decimal, because run.sh formats them into the kernel's own uppercase
+    # `ls` line with printf. The refusal values above are lowercase hex because
+    # the PROGRAM prints those, through an oslibc printf whose %x is lowercase.
+    out["ro_cluster"] = layout["ro_cluster"]
+    out["ro_entry"] = layout["ro_entry"]
+    out["ro_attr"] = layout["ro_attr"]
     out["write_max"] = write_max
     out["read_max"] = read_max
 
@@ -247,10 +279,13 @@ def main():
     # to end of file performs one more `read` syscall than the kernel's line
     # reports. Getting this wrong by four — one per file — is exactly the kind
     # of off-by-a-branch a `> 0` assertion would never have found.
+    # GAP-0152 adds one more file the program reads back: RO.TXT, which it was
+    # REFUSED permission to empty and must still be able to read.
     r_calls = (calls(seed_new) + calls(new_bytes) + calls(zero_new) +
-               calls(ro_bytes))
+               calls(ro_bytes) + calls(rofile_bytes))
     out["read_calls"] = r_calls
-    out["read_bytes"] = seed_new + new_bytes + zero_new + ro_bytes
+    out["read_bytes"] = (seed_new + new_bytes + zero_new + ro_bytes
+                         + rofile_bytes)
 
     def sector_writes(nbytes):
         """How many 512-byte sectors the kernel writes for a file of `nbytes`
@@ -384,13 +419,15 @@ def main():
                         ("eio", "fileRetIo"), ("ebadseek", "fileRetBadSeek"),
                         ("enoowner", "fileRetNoOwner"),
                         ("ebadmode", "fileRetBadMode"),
-                        ("enospace", "fileRetNoSpace")):
+                        ("enospace", "fileRetNoSpace"),
+                        ("ereadonly", "fileRetReadOnly")):
         out[label] = "%04x" % (dartconst(filesrc, name) & 0xFFFF)
     out["fat_badname"] = "%02x" % dartconst(fatsrc, "fatErrBadName")
     out["fat_isdir"] = "%02x" % dartconst(fatsrc, "fatErrIsDir")
     out["fat_full"] = "%02x" % dartconst(fatsrc, "fatErrFull")
     out["fat_nodirslot"] = "%02x" % dartconst(fatsrc, "fatErrNoDirSlot")
     out["fat_chaincycle"] = "%02x" % dartconst(fatsrc, "fatErrChainCycle")
+    out["fat_readonly"] = "%02x" % dartconst(fatsrc, "fatErrReadOnly")
 
     for k in sorted(out):
         print("%s=%s" % (k, out[k]))

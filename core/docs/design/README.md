@@ -13,14 +13,15 @@ in this corpus is a proposal.
 
 ## The count
 
-**114 milestones are specified across 14 ladders.** That is the answer to "how many tasks are left",
+**145 milestones are specified across 18 ladders.** That is the answer to "how many tasks are left",
 for the parts that have been designed. It is not the whole answer:
 
 | specified | not yet specified |
 |---|---|
-| blocking · memory · namespace · storage · exec format · libc · text · display · SMP · GPU · NIC · net stack · time & power · **ARM64** | USB · audio · security model · package format · applications · ffmpeg itself · reflection |
+| blocking · memory · namespace · storage · exec format · libc · text · display · SMP · GPU · NIC · net stack · time & power · ARM64 · **applications** · **security** · **USB & audio** | package format · ffmpeg itself · reflection · a window manager's *policy* (as opposed to the protocol) |
 
-Four of those are still being written as this index is updated, so the number will grow. It is also
+**Twenty-one documents now.** The count moved from 97 to 136 during a single afternoon of writing, so
+treat it as a floor rather than a total. It is also
 not a *schedule*: several ladders share milestones (`blocking` B1 **is** `display` D3), and several
 are blocked on the same four small fixes below.
 
@@ -58,8 +59,12 @@ that, and it should be read before anyone plans a fleet.
 
 ## Fix these before anyone writes code
 
-Four items, all small, each blocking or corrupting work that would otherwise proceed in parallel.
+Five items, all small. Four block or corrupt work that would otherwise proceed in parallel; the
+first is a live defect reachable from ring 3 today.
 
+0. **`open(name, O_WRITE)` truncates a read-only file.** `fileMakeEmpty` checks for a directory and
+   never looks at `fatAttrReadOnly`. **~6 lines.** See the section below for how an audit found what a
+   nineteen-item gap entry about the same code did not.
 1. **Consolidate the eight whole-byte PIC-mask writes.** `keyboard.dart:173,190`, `kmain.dart:272`,
    `shell.dart:1085,1090`, `proc.dart:2006,2434`, `vga.dart:426`. Each re-masks everything it does
    not name, so **any newly unmasked IRQ works until the next shell command and then stops, silently.**
@@ -76,6 +81,65 @@ Four items, all small, each blocking or corrupting work that would otherwise pro
 
 ---
 
+## A live defect in the shipped write path
+
+**`open(name, O_WRITE)` truncates a read-only file.** `fileMakeEmpty` checks for a directory
+(`fatErrIsDir`) and never looks at `fatAttrReadOnly`, so any ring-3 program can destroy a file the
+volume marks read-only. It is **about six lines** to fix and it is reachable today.
+
+Worth noting how it was found: M16 shipped with a nineteen-item gap entry enumerating what its write
+path deliberately does *not* do — and this was not one of them, because the author (me) was
+enumerating *design* limits and this is an *omission*. It took an independent audit with a different
+question to see it. That is the argument for the audit, not against the gap entry.
+
+## The finding that most limits what this OS can run today
+
+**No program on this machine can have both `argv` and `malloc`.** The two doors into ring 3 have
+disjoint capabilities and nobody had written that down:
+
+* **`run <name> args...`** gives a program its arguments and four descriptors — but it never calls
+  `procCreate`, and `user.dart:1585` refuses `sbrk` unless `procLive() > 0`. **So `malloc` returns
+  `NULL` for every program that can be told what to work on.**
+* **`proc run <lba> <lba>`** gives a real process with a heap — and passes it nothing. A `start.c`
+  program launched that way page-faults at `_start + 2`.
+
+**M19 landed while this index was being written, and it did NOT close this — it sharpened it.**
+Verified against `d4e768c`: `elf.dart` still contains **zero** calls to `procCreate` and enters ring 3
+directly through `enter_user`, while `user.dart:1586` still reads
+`if (procLive() < u64(1)) { userRefuse(...) }`. So as of today a program **can** be told what to do
+and **still cannot allocate a byte.** M19 delivered the half that makes the missing half visible.
+
+Every "write a useful program" milestone in `applications.md` is gated on closing that, and it is not
+on any ladder. **It belongs in Tier 1**: a program that can be told which file to work on and can also
+allocate memory is the precondition for `cp`, `wc`, an editor, and a userland shell.
+
+A related measurement worth having: **`elfImageMax` bounds *disk* bytes, not mapped bytes**, so `.bss`
+is a free multi-hundred-KiB static buffer that nothing currently uses. Flagged as derived rather than
+measured; `applications.md`'s APP1 proves or falsifies it.
+
+## `fileWriteMax` is 512, and three subsystems hit it independently
+
+None of these documents could make this argument alone; together they make it decisively.
+
+* **Display:** 512 bytes is **128 pixels**, one sixth of a scanline. This is what forced the entire
+  protocol away from pixel transfer and onto server-side drawing verbs.
+* **Audio:** 512 bytes is **345 `fdwrite` calls per second** for CD-quality stereo.
+* **Storage:** a 512-byte write costs five sector writes and five cache flushes.
+
+**Raising the cap is a shared unblock**, and it is the clearest example in the corpus of something
+that looks like a local tuning constant from inside any one subsystem and like a structural limit from
+outside all of them.
+
+## Two hazards in the frame allocator nobody had written down
+
+* **`allocFrame` does not zero the frame it returns.** Harmless for a page a program is about to fill;
+  **not** harmless for a UHCI frame list, which is a page the controller reads as pointers *at 1000
+  Hz* — uninitialised bytes are plausible transfer-descriptor addresses. Any future DMA structure
+  inherits this.
+* **A frame mapped into two address spaces is freed by whichever process dies first** — `freeFrame` is
+  a bit-clear and `procSpaceFree` frees every present leaf unconditionally. Recorded in
+  `display-protocol.md` §1.3; it is a property of `pmm.dart`, not of any display design.
+
 ## Two traps in the verification method itself
 
 Several ladders propose deriving expectations from a QMP memory dump. Two specialists hit failure
@@ -86,6 +150,14 @@ before anyone writes a criterion.
   itself misreading a VirtIO `num_queues` field this way. **No criterion may derive an expectation
   from an `xp` dump of a device BAR** — the number you get is not the number the device has. Dumping
   guest *RAM* is unaffected, which is what m5-pci, m7-frames and m10-elf already do.
+* **The inverse trap: QEMU's default x86 machines have NO USB controller and NO audio device at
+  all.** Measured — `-M pc` and `-M q35` each expose exactly six PCI functions and none is class
+  `0x0C03` or `0x04xx`. So a naive criterion *fails* with no driver, and "fixing" it by adding
+  `-device` proves nothing at all. Every rung in those ladders therefore carries **two** negative
+  controls: device-absent and driver-disabled.
+* **`-serial file:` is output-only, and every harness uses it.** That blocks the cheap ARM64 plan
+  (drive the shell from serial input) and any future input testing until the driver grows a
+  `chardev`-based path.
 * **A default `-device e1000` sends seven packets, including a full DHCP exchange, with no guest OS
   running at all.** The option ROM does it during POST. Any "the capture is non-empty" criterion
   therefore passes against a kernel that does nothing. `romfile=` (empty) removes it and yields zero
@@ -99,6 +171,18 @@ before anyone writes a criterion.
 
 Both belong in whatever the anti-vacuity guidance ends up being; they are the same failure the
 existing harnesses guard against when `check-pixels.py` refuses to pass on a blank screen.
+
+## A fleet-coordination hazard, learned the hard way
+
+**A blanket `pkill qemu-system-x86_64` kills every other agent's work.** One happened during this
+session and took down the live demo window; no `run.sh` in the tree does it, so it came from an
+agent's own cleanup. With many agents running conformance harnesses simultaneously — each of which
+boots QEMU — a blanket pkill is indistinguishable from sabotage from the victim's side, and no
+pidfile or `-name` scheme defends against it.
+
+**Cleanup must be scoped to what you started**: kill by recorded pid, or by a `-name` you set and then
+match, never by process name alone. Worth stating in whatever contributor guidance the fleet ends up
+with, because it is invisible until it bites someone else.
 
 ## One environment trap that costs hours
 
@@ -140,6 +224,15 @@ clone (`cp -Rc`) does work and is near-free.
 * **A second ring-3 region** (`memory.md` MEM-1, `exec-format.md` X2). Splitting `vmProgEnd` rather
   than widening it.
 
+* **SMEP and SMAP — the best value-per-line item in the corpus, and it moves no golden.** ~12 lines of
+  assembly, zero new externs, zero DCDart changes, and it catches an entire bug class (the kernel
+  dereferencing a ring-3 pointer it forgot to validate). Measured on QEMU 11.0.0: plain `qemu64` has
+  **neither** feature, so a probe finds nothing, CR4 stays `0x620`, and the eight goldens carrying a
+  full CR4 dump do not move; `qemu64,+smep,+smap` enables both **and leaves `CPU LEAF 0000000D EXT
+  8000000A` unchanged**, so the feature boot is a new assertion rather than a moved one. It is cheap
+  here for a specific reason: the kernel dereferences a ring-3 *virtual* address in exactly **four**
+  places — the ELF loader, `args.dart` and `vmZeroFrame` all already write through the physical alias
+  — so SMAP needs a conversion rather than `stac`/`clac` everywhere.
 * **ACPI + APIC — a late addition to this tier, and the corpus argues for it rather than me.** The SMP
   specialist concludes that *multiple CPUs* are not worth building (there is no workload for a second
   core: nothing blocks, no `fork`, no `exec`, four slots, and processes only exist while a shell
@@ -169,11 +262,15 @@ Recorded rather than silently resolved.
 |---|---|
 | Is PCI bus mastering already enabled? | **Three specialists measured three things and all three are right.** The network-stack agent read `cmd=0x0107` on the **e1000** — bus master *set*. The GPU agent read `cmd=0x0103` on **both VirtIO devices** — bus master *clear*. The NIC agent predicted it would need setting. The rule they resolve to: **BME is set only where an option ROM ran.** iPXE drives the e1000 during POST (it completes a whole DHCP exchange before any guest OS starts); nothing drives a VirtIO device, so its bit stays clear. Consequences: **`GAP-0067` item 2's blanket claim that "firmware has already set up config space" is wrong as a general statement**; `pciWrite32` is mandatory (~5 lines, `Port.outl` already exists); every driver must set BME defensively; and the NIC ladder's N2 negative control is valid **only because it mandates `romfile=`** — drop that flag for convenience and the test passes without a driver. |
 | Device-name sigil: `:` or `/`? | **`:`.** Both are already illegal in 8.3, but `/` is what a future path grammar wants. |
+| Does ring 3 see frames it did not earn? | **Unresolved, and it is a real contradiction.** `net-e1000.md`'s step 11 sets `UPE` (unicast promiscuous), which directly contradicts `net-stack.md` §7.2's central claim that ring 3 *"never sees a frame it did not earn"*. One of the two designs has to give, and the security audit is right that it should be decided before either is built rather than after. |
 | Does the "no allocator" constraint still hold? | **No — it expired at M7.** Two briefs repeated it; `pmm.dart` has given out frames since M7. |
 
-**A naming collision to fix now:** `namespace.md`, `net-e1000.md` and `net-stack.md` all use an `N`
-prefix, so "N1" names three different milestones. Rename before anyone builds a queue from these —
-the same class of collision as the syscall numbers, caught early this time.
+**Naming collisions, now three and counting:** `N1` names a milestone in `namespace.md`,
+`net-e1000.md` **and** `net-stack.md`; `T1` names one in both `text.md` and `time-and-power.md`; and
+`arm64-port.md` claimed `A…` while `applications.md` was drafting the same prefix — that one was
+caught mid-session and renamed to `APP`. **Adopt multi-letter prefixes for every ladder** before
+anyone builds a work queue from these. It is the same class of collision as the syscall numbers, and
+independent agents keep walking into it because nobody owns the namespace.
 
 ---
 

@@ -5474,3 +5474,199 @@ stack a program ignores is harmless, and all four still pass — but they are no
 `andq $-16, %rsp`, which on a stack the kernel has already 16-byte aligned is a no-op, and which
 **would silently repair a kernel that had got the alignment wrong**. That is exactly why `start.c` does
 not do it and why `build-progs.sh` asserts no write to `%rsp` anywhere in `_start`.
+
+---
+
+## GAP-0152 — `open(name, O_WRITE)` truncated a read-only file, and a nineteen-item gap entry did not mention it
+
+**Domain:** kernel, filesystem (fix batch, ADR-0024)
+**Status:** **CLOSED.** Recorded rather than deleted because the way it was missed is the useful part.
+
+**The defect.** `fatAttrReadOnly` was declared at `fat.dart:154` at M14 and **read by nothing anywhere
+in the tree**. `fileMakeEmpty` — the function `open(name, O_WRITE)` reaches before it has a descriptor
+— tested `fatErrIsDir` and looked at no other bit of the attribute byte. So **any ring-3 program could
+empty a file the volume marks read-only**, and the refusal it should have received did not exist as a
+value.
+
+**The fix.** `fatErrReadOnly` (32) with its own sentence and its own branch in `fatReportError`;
+`fatWritable()` in `fat.dart`, which is where the attribute byte's meaning lives; `fileRetReadOnly`
+(`0xFFFFFFFFFFFFFFF1`), the fourteenth refusal ring 3 can see and the first that is about permission;
+`FILE_EREADONLY` in `oslibc.h`. The guard sits after the lookup is known to be a HIT and **before**
+`fatClose`, `fatTruncate` and `fatDirWrite` — the first three things that change the volume.
+
+**Why the test is not just the refusal.** A guard placed one line lower returns ring 3 the same
+`FILE_EREADONLY` and leaves an empty file behind. `m16-filewrite` therefore requires three separate
+statements about the same file: the program's `create("RO.TXT")` is refused; the **same program** then
+reopens RO.TXT for reading and hashes all 1024 bytes to a value the host computed; and after the boot
+the harness mounts the image with macOS's own `msdos` driver and compares RO.TXT byte-for-byte against
+the bytes `make-image.py` generated before the machine was switched on. RO.TXT takes its single
+cluster off the end of `FILL.BIN`'s run rather than out of the free pool, exactly as `SUB` does, so no
+cluster of the allocation this harness predicts moves because it exists.
+
+**What is still not there, so this entry is not read as bigger than it is:**
+
+* **This is not a permission system.** FAT has no owner, no group, no mode. Bit 0 of `DIR_Attr` is the
+  whole access-control vocabulary of the format and this kernel has no user identity to compare it
+  against. Any ring-3 program may still create, truncate and write any file that is not marked.
+* **The bit cannot be set from this OS.** No `chmod`, no `attrib`; `fatDirCreate` writes
+  `fatAttrArchive` and nothing else. A read-only file arrives from the host.
+* **`fatAttrHidden` and `fatAttrSystem` are still read by nothing**, deliberately — neither is a
+  protection bit and inventing a meaning for them here would be this kernel making up policy the
+  format does not have. They are the two remaining declared-and-unread constants in `fat.dart`, and
+  they are named here so the next audit does not have to find them twice.
+* **There is no delete and no rename**, so there is nothing else to gate.
+
+**The part worth keeping.** M16 shipped GAP-0127, nineteen items of what its write path deliberately
+does not do, and this was not among them. That list is not careless; it is careless about one specific
+thing. GAP-0127 enumerates **design limits** — decisions not to build something — and it was written
+by asking *what did I choose not to do?* An **omission** cannot appear in the answer to that question,
+because it is a case the author never brought to mind. A read-only file is not something M16 decided
+not to honour; it is something M16 did not notice existed, in a constant its own file declares.
+
+So: **a gap list written by its author bounds the author's intent, not the code.** Nineteen items of
+deliberate non-coverage is evidence of care and is not evidence of coverage, and it must not be cited
+as though it were. What found this was an audit asking a *different* question — *which declared
+constants does nothing read?* — which is a question no author asks about their own work, because every
+constant they wrote had a purpose when they wrote it.
+
+---
+
+## GAP-0153 — SMEP is enabled and is NOT proved to block anything; SMAP is refused, by four lines of kernel
+
+**Domain:** kernel, boot (fix batch, ADR-0025)
+**Status:** OPEN — half shipped, half named. Read §2 before citing this as a security property.
+
+**Which kind of "not proved" this is: A TEST NOBODY HAS WRITTEN, not a limit of the emulator.** The
+distinction matters and this entry is easy to misread as the other kind, because GAP-0154 sits beside
+it using the same words for the opposite cause. There, QEMU genuinely cannot tell the truth — it hands
+out zeroed guest RAM, so no boot can distinguish a zeroed first allocation from an unzeroed one, and
+no amount of work in this repo would change that. Here the emulator is not the obstacle at all: QEMU
+accepts `+smep`, the bit reaches `CR4` (`0x100620`, asserted in `m11-proc`), and the feature is live on
+the emulated CPU. What is missing is a `vmtest smep` this project has not built, blocked by its own
+fault-path cleanup (§2). So the honest one-line statement of this gap is: **the kernel sets `CR4.SMEP`
+and nothing in this repo proves the bit does anything.** It is a hole in the protection story, not an
+unavoidable consequence of testing under emulation, and it should not be cited as though it were.
+
+**What shipped.** `boot.S` probes CPUID leaf 7 subleaf 0 (`EBX[7]`) and folds `CR4` bit 20 into its
+single CR4 write when the CPU has SMEP. Seventeen lines of assembly, no DCDart change, no new extern
+(still 44), no new `.bss`, no new shell command. On `-cpu qemu64` — which reports `smep=false` — CR4
+stays `0x620`.
+
+**"Measured to move zero goldens" was the claim, and it is false.** It is true of the `CR4` *value*:
+plain `qemu64` has neither feature, so nothing that prints `CR4` changes. It is not true of the
+goldens. Four kernels were linked and their section headers read:
+
+| build | `.text` end | `.rodata` end | `.bss` |
+|---|---|---|---|
+| HEAD | `0x131820` | `0x135CAE` | 71728 |
+| + SMEP only | `0x131850` (**+48**) | unchanged | unchanged |
+| + GAP-0152's read-only fix only | `0x131910` (+240) | `0x135D0A` (+92) | unchanged |
+| both (shipped) | `0x131940` (+288) | `0x135D0A` (+92) | unchanged |
+
+`m8-paging`, `m9-ring3` and `m10-elf` each print a `VM SECT` line carrying the kernel's own section
+extents, so **all three move — for the SMEP change alone, and for the read-only change alone.** Any
+change that adds one instruction to this kernel moves them. That is a property of what those three
+goldens chose to record, not of this change, and it is the reason "no golden moves" is a claim that
+has to be measured per change rather than inherited from a design note.
+
+**1. WHAT IS PROVED.** `m11-proc` boots four CPU models and reads `CR4` back with `cr4_read()`:
+`qemu64` → `…0620`; `qemu64,-sse,-fxsr` → `…0020` (the pre-existing control); `qemu64,+smep` →
+`…100620`; `qemu64,+smep,+smap` → `…100620`. That is: the probe finds the feature when it is there,
+the bit really reaches `CR4`, the machine still boots and still runs a ring-3 program with it on, and
+SMAP is **not** set — the last of those asserted mechanically so that "we chose not to" is not merely
+a sentence in an ADR.
+
+**2. WHAT IS NOT PROVED, AND THIS IS THE ENTRY'S POINT.** **No boot in this repo shows SMEP refusing an
+instruction fetch.** Everything above is a read-back of a control register plus "nothing broke". A
+`CR4` bit that is set and does nothing looks exactly like this. `security.md` §5.5 names this the
+vacuity trap.
+
+The demonstration is reachable and costs no new extern: `vm_exec_probe(addr)` (`isr.S:816`, already an
+extern, already used by `vmtest nx`) does `call *%rdi`, and `vmMapUser(va, 1)` makes a 4 KiB identity
+page user-accessible and executable. `vmtest smep` would be: map a page holding a `ret` as user+exec,
+probe it, and require `#PF ERR 0x11` on a `+smep` boot and a clean return on a plain one — **the pair,
+or it proves nothing.**
+
+**What stopped it here, which is a real obstacle rather than a shortage of time:** the faulting probe
+never returns. `fault_resume` abandons the stack and re-enters the shell loop, so the `vmClearUser`
+that puts the page back to supervisor is skipped **on precisely the run where the test succeeds**, and
+the machine is left holding a user-accessible kernel page. Closing that needs fault-path cleanup — a
+pending-restore note the shell loop honours — plus a new `vmtest` sub-command, a longer
+`vmStrTestUsage`, and a regenerated `m8-paging` golden.
+
+**3. WHY SMAP IS NOT SET.** This kernel dereferences a ring-3 **virtual** address at CPL=0 in exactly
+four places, and all 160 `Pointer<…>.fromAddress` sites in `core/kernel/` were classified to be sure
+the number is four: `user.dart:1393` (`userSysWrite` → `uartWrite`), `file.dart:1398` (`open`'s name
+copy), `file.dart:975` (`fileCopyIn`), `file.dart:811` (`fileCopyOut`). With `CR4.SMAP` set every one
+of them `#PF`s — `open()` from ring 3 would fault inside the kernel on the first syscall m15 and m16
+make. Enabling it today ships a kernel that works only on CPUs lacking the feature.
+
+The ELF loader and `args.dart` are **not** among the four: `elfCopyPageBytes` writes at the frame's
+identity address before `vmProgMap` runs at all, and `argsBuild` goes through `argsPhys(frame, va) =
+frame + (va - vmProgStackPage)`. Both use the physical alias, which is supervisor, so both are already
+SMAP-clean — and that is the shape the other four would have to take.
+
+**4. THE ONE THAT CANNOT TAKE THAT SHAPE.** Sites 2, 3 and 4 are convertible: their pages are in
+`[0x10000000, 0x10200000)`, every frame behind them is below 128 MiB, and `vmProgLeaf` already does
+the VA→leaf walk. Ordinary work, page by page. **Site 1 is not convertible.** The M9 payload path does
+not use a separate window — `vmMapUser` flips the U/S bit **in place inside the 4 KiB identity map**,
+so for that page the user virtual address *is* the physical address and there is no supervisor alias
+to reach it by; `userOwns` bounds ring 3 to `< vmFineBytes`, which is that identity region. Site 1
+needs `stac`/`clac` (two new externs — eight harnesses assert the count), or a second supervisor
+mapping of the same frame, or the `user` command excluded from any `+smap` boot.
+
+**So SMAP is one design decision behind SMEP, not one instruction behind it.** `boot.S` does not even
+probe for it, because an answer nothing may act on is storage with no reader — which is what GAP-0152
+had just been.
+
+---
+
+## GAP-0154 — `allocFrame` does not zero, on purpose; the check that says so is source shape and cannot fail on QEMU
+
+**Domain:** kernel, memory (fix batch, ADR-0026)
+**Status:** OPEN — the decision is settled and recorded; the *verification* is the open half.
+
+**First, the correction.** `allocFrame()` returning an unzeroed frame is true and has been since M7.
+It was described as a live hazard. **It is not one today.** All nineteen `allocFrame()` call sites were
+classified: every frame that goes into a page table, a ring-3 mapping, a heap page or an ELF segment
+is zeroed before anything reads it — thirteen by a `vmZeroFrame` beside the allocation, one by
+`vmProgTableInstall`, one by `vmBuild`'s loop. The remaining five are `pmm.dart`'s own `alloc`,
+`frames self` and `frames drain`, which map nothing and hand nothing to ring 3. The motivating example
+— a UHCI frame list the controller reads as pointers at 1000 Hz — is a claim about work not yet done:
+this kernel has **no DMA at all**, ATA is PIO, there is no USB, NIC or GPU. Latent hazard, not
+reachable defect. The two deserve different fixes.
+
+**The decision: zeroing stays at the call site, and the reason is a measurement.**
+`shellFramesDrain` calls `allocFrame()` until it returns 0 — **32768 frames** on the `-m 128M` boot
+`m7-frames` runs four times under `timeout`. An allocator that zeroed would make that command write
+**128 MiB**, a page at a time, from a DCDart loop under TCG. The same harness already records that
+draining first-fit "takes visible seconds under emulation", which is why `allocFrame` has a cursor at
+all. Zeroing inside the allocator makes the allocator's own conformance test slower by two orders of
+magnitude, in the one operation that test exists to measure, to protect frames nothing ever maps.
+
+**What was added.** `m7-frames` check 2i: all nineteen sites found by regex, each required to name its
+frame to `vmZeroFrame` in the same file or to sit in an exemption table with a reason — where the two
+delegating exemptions are themselves re-checked, and a stale exemption or an unaccounted twentieth
+site is a failure. Before this, `m10-elf` asserted the property for `elf.dart`'s five sites and
+nothing asserted it for the other fourteen.
+
+**WHAT THIS CHECK DOES NOT DO, said plainly.** It is a **source-shape assertion**. It proves nothing
+about a running machine. QEMU hands out zeroed guest RAM (GAP-0094, GAP-0109), so on a *first*
+allocation an unzeroed frame and a zeroed one hold the same 4096 bytes: **deleting every
+`vmZeroFrame` in this kernel leaves every behavioural check in this repo passing.** Three units have
+now failed to falsify frame-zeroing behaviourally and none of them failed for lack of trying.
+
+**The behavioural test that WOULD work, and is not written.** A *recycled* frame is distinguishable,
+because its previous contents were written by the guest rather than by QEMU. `m12-heap` already does
+this for the heap: its program reads every byte of every page before writing one and reports what it
+found. The same idea applied to the ELF loader — program A fills every page of its image and stack
+with a signature and exits; program B, loaded into the frames A just freed, reads its own `.bss` and
+stack before writing and reports — is a test that would really fail if `elfLoadSegment`'s
+`vmZeroFrame` were removed. It needs a new program pair and a fourth boot in `m10-elf`. That is the
+next real piece of work in this area and it is deliberately not in this fix batch.
+
+**What would change the decision.** The first DMA structure. When a device reads a frame's bytes as
+pointers, "the call site zeroes it" becomes a rule enforced by whoever writes the driver. The answer
+then is probably still not to make `allocFrame` zero, but to give the DMA path an `allocDmaFrame()`
+that does — so `frames drain` keeps costing what it costs. Recorded here so that is a decision rather
+than an accident.

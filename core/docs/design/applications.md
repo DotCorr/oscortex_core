@@ -3,7 +3,9 @@
 **Status: DESIGN. Not an ADR, not numbered, nothing implemented.** Written 2026-08-23 against
 `core/user/libc/oslibc.h`, `core/kernel/file.dart`, `core/kernel/shell.dart`, `core/kernel/elf.dart`,
 `core/kernel/user.dart`, `core/kernel/heap.dart`, `core/kernel/args.dart` and `core/kernel/vm.dart` at
-M19, and against the thirteen sibling documents indexed by `core/docs/design/README.md`.
+M19, and against the sibling documents indexed by `core/docs/design/README.md` — the fourteen that
+existed when this was started, plus `arm64-port.md`, `security.md` and `peripherals.md`, which landed
+in that directory while it was being written.
 
 `README.md`'s own table lists **applications** among the things the corpus does not cover. This is that
 document. It is the answer to one question — *what would a person actually run on this machine, and
@@ -1012,8 +1014,13 @@ form for this one.
   (§3 tier 2) and the shell's echo (§2.3) all need to put a byte on the screen without `USER WRITE `
   and without a forced newline. It is small, it moves whatever goldens print `USER WRITE`, and it
   should be assigned rather than discovered three times.
-* **The count in `README.md` moves.** This document adds **10** specified milestones (APP1–APP10) across a
-  thirteenth ladder, and **three of them are identities with milestones already counted** (APP6 ≡ D2;
-  APP2 ≡ `libc-roadmap.md` §8's `_fstat` item, which is not itself in that document's L-ladder; APP8's
-  prerequisite is D3 ≡ B1). The honest increment to "97 milestones across 12 ladders" is **+9 across a
-  13th**, and `applications` should come out of the "not yet specified" column.
+* **The count in `README.md` moves, and it must be recounted rather than incremented.** This document
+  adds **10** specified milestones (APP1–APP10) on a new ladder, of which **two are identities with
+  milestones already counted elsewhere** and must not be counted twice: **APP6 ≡ `display-protocol.md`
+  D2**, and **APP2 ≡ `libc-roadmap.md` §8's `_fstat` item** (which is not itself in that document's
+  L-ladder, so it may or may not be inside the 97). APP8's *prerequisite* is D3 ≡ B1, which is already
+  counted; APP8 itself is new. So this document's honest increment is **+8 or +9**, not +10.
+  **And the base number has moved underneath it**: `arm64-port.md`, `security.md` and `peripherals.md`
+  all appeared in this directory during this session, so "97 milestones across 12 ladders" is stale
+  and the recount should be done once, over the whole directory, rather than by adding my number to
+  the old one. `applications` should come out of the "not yet specified" column.

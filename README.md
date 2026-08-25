@@ -290,7 +290,9 @@ GDT stays read-only.
 
 **What this is, and is not:** a privilege level with two pages, not a process. One PML4, still the
 kernel's. No scheduler, no preemption, no `fork`, no `exec`, no SMEP/SMAP, and `user hold` cannot be
-stopped once started. See `core/docs/decisions/0013-ring-3-and-the-syscall-boundary.md` and
+stopped once started. (SMEP was added later, outside any milestone — see **Fixes after M19** at the
+end of this file and `docs/known-gaps.md` GAP-0153. SMAP is still not enabled, and the four lines of
+kernel that stop it are named there.) See `core/docs/decisions/0013-ring-3-and-the-syscall-boundary.md` and
 `docs/known-gaps.md` GAP-0085.
 
 **M10 — done. The kernel runs something it did not compile.** Every line of code this machine had
@@ -408,3 +410,41 @@ GAP-0096 through GAP-0103.
 command that faulted is gone — not repaired, not retried, not resumed. Resuming a failed computation
 after fixing its cause is a condition system, and that needs language support neither this kernel nor
 DCDart has. See `core/docs/decisions/0007-fault-recovery-and-cpuid.md`.
+
+---
+
+## Fixes after M19 — a batch, not a milestone
+
+Three changes that are not a milestone and have no exit criterion of their own. Each is recorded by an
+ADR, a `docs/known-gaps.md` entry, and a check added to **the harness that already owns the area**
+rather than a new harness.
+
+**1. `open(name, O_WRITE)` truncated a read-only file.** Reachable from ring 3, and it destroyed data.
+`fatAttrReadOnly` had been declared in `fat.dart` since M14 and was read by nothing. There is now a
+`fatErrReadOnly` with its own sentence and a `fileRetReadOnly` ring 3 can see, checked **before**
+`fatTruncate` — and `m16-filewrite` proves the file survives three ways: the program's `create` is
+refused, the same program reads all 1024 bytes back and hashes them, and the harness mounts the image
+with macOS's own `msdos` driver afterwards and compares byte-for-byte. The refusal alone would have
+been satisfied by a guard placed one line too low. **ADR-0024, GAP-0152.**
+
+**2. SMEP is enabled when the CPU has it.** Seventeen lines in `boot.S`: a CPUID leaf-7 probe and one
+`orl` folded into the existing single `CR4` write. No DCDart change, no new extern, no new `.bss`.
+`CR4` stays `0x620` on every existing boot because `qemu64` reports `smep=false` — but **"moves zero
+goldens" was the audit's claim and it is wrong**: 48 bytes of `.text` move the `VM SECT` line that
+`m8-paging`, `m9-ring3` and `m10-elf` each print, so three goldens move. The read-only fix moves the
+same three, independently. Measured by linking four kernels, not assumed.
+`m11-proc` adds two CPU models: `+smep` gives `CR4 0x100620`, and `+smep,+smap` gives `0x100620`
+**still** — because SMAP is deliberately not set. **What is NOT shown is SMEP refusing a fetch**;
+GAP-0153 §2 says so plainly and gives the recipe and the obstacle. SMAP is refused because this
+kernel dereferences a ring-3 *virtual* address at CPL=0 in four places, and one of them — the M9
+payload's `write` — has no supervisor alias to be converted to. **ADR-0025, GAP-0153.**
+
+**3. `allocFrame` still does not zero, and now that is a decision.** It was reported as a live hazard;
+it is not one — all nineteen call sites were classified and every frame that reaches a page table, a
+mapping, a heap page or an ELF segment is already zeroed. Zeroing inside the allocator would make
+`frames drain` write **128 MiB** under emulation, in the one command whose cost `m7-frames` exists to
+measure. So the zeroing stays at the call site and `m7-frames` now checks all nineteen sites instead
+of `m10-elf` checking five. **That check is source shape and proves nothing about a running machine** —
+QEMU hands out zeroed RAM, so deleting every `vmZeroFrame` leaves every behavioural check in this repo
+passing. The behavioural test that *would* work needs recycled frames and is written up, not written.
+**ADR-0026, GAP-0154.**

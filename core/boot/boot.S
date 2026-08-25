@@ -504,6 +504,60 @@ zero_tss:
     movl $1, sse_flag
 no_sse:
 
+    /* --- GAP-0153: DOES THIS CPU HAVE SMEP? --------------------------
+     * CPUID leaf 7, SUBLEAF 0, EBX bit 7. The answer is left in ESI and
+     * consumed by the single CR4 write twelve instructions below; it is NOT
+     * written to `.bss`.
+     *
+     * WHY A REGISTER AND NOT A FLAG BESIDE `nx_flag` AND `sse_flag`. Those
+     * two are stored because DCDart READS them -- `vm.dart` must know whether
+     * bit 63 of a page-table entry is NX or a reserved-bit violation, and
+     * `proc.dart` must know whether `fxsave` is a #UD. Nothing in this kernel
+     * needs to know whether SMEP is on: SMEP changes no code path, it only
+     * makes one impossible. Storing the answer would have meant an eight-byte
+     * `.bss` symbol and an `smep_enabled()` accessor -- a new extern, which
+     * eight harnesses assert the count of -- for a fact with no reader. A
+     * declared constant with no reader is exactly the defect GAP-0152 was, and
+     * it is not worth repeating it here to make a probe look symmetrical.
+     * `cr4_read()` already exists and reports the bit as the CPU holds it,
+     * which is a better answer than a copy of what we intended.
+     *
+     * SUBLEAF 0 IS NOT OPTIONAL. Leaf 7 is subleaf-selected through ECX, and
+     * `cpuid` reads whatever ECX happens to hold. The leaf-0 call above left
+     * ECX zero, and it is zeroed again anyway rather than inherited -- the
+     * cost is one instruction and the failure mode is reading a subleaf that
+     * reports different bits entirely.
+     *
+     * THE MAXIMUM-LEAF CHECK IS THE M8 TRAP. CR4 bit 20 is RESERVED on a CPU
+     * without SMEP, and writing a reserved CR4 bit is a #GP -- here, before
+     * any IDT exists, a triple fault and a silently rebooting VM with no
+     * output at all. That is what `EFER.NXE` would have done at M8 had it
+     * been set unconditionally, and what CR4 bits 9/10 would do without
+     * `sse_flag`. `cpuid` leaf 7 does not exist below Ivy Bridge, and asking
+     * for a leaf above the maximum returns the HIGHEST leaf's data rather
+     * than zeroes -- so the maximum is read first and compared, exactly as
+     * the NX probe compares 0x80000001 against the maximum extended leaf.
+     *
+     * SMAP (EBX bit 20, CR4 bit 21) IS DELIBERATELY NOT PROBED HERE, because
+     * nothing may act on the answer yet: this kernel dereferences a ring-3
+     * VIRTUAL address at CPL=0 in four places (user.dart:1393,
+     * file.dart:1398, file.dart:975, file.dart:811) and every one of them
+     * would #PF with SMAP on. See docs/decisions/0025-smep.md §3 and
+     * GAP-0153. */
+    xorl %esi, %esi                /* assume no SMEP, until proven otherwise */
+    xorl %eax, %eax
+    xorl %ecx, %ecx
+    cpuid
+    cmpl $7, %eax                  /* EAX = highest standard leaf */
+    jb no_smep                     /* leaf 7 does not exist on this CPU */
+    movl $7, %eax
+    xorl %ecx, %ecx                /* SUBLEAF 0 */
+    cpuid
+    testl $(1 << 7), %ebx          /* EBX[7] = SMEP */
+    jz no_smep
+    movl $1, %esi
+no_smep:
+
     /* --- Enable PAE (CR4 bit 5), and OSFXSR|OSXMMEXCPT if we may -----
      * ONE CR4 write, not two, for the reason the EFER write below is one
      * rdmsr/wrmsr pair: a second read-modify-write of the same control
@@ -518,13 +572,24 @@ no_sse:
      *                        masks everything in MXCSR, so it changes no
      *                        behaviour today; it is set because the
      *                        alternative is a #UD whose cause names the wrong
-     *                        thing entirely if a program ever unmasks one. */
+     *                        thing entirely if a program ever unmasks one.
+     * bit 20 SMEP        -- GAP-0153. A supervisor INSTRUCTION FETCH from a
+     *                        page whose U/S bit is set is a #PF instead of a
+     *                        jump. It is set only if the probe above found
+     *                        the feature, and it is folded into THIS write
+     *                        rather than added in a second one, because the
+     *                        "one CR4 write" rule above is the whole reason
+     *                        this register is not a source of accidents. */
     movl %cr4, %eax
     orl $0x20, %eax
     cmpl $0, sse_flag
     je skip_osfxsr
     orl $0x600, %eax               /* bit 9 OSFXSR, bit 10 OSXMMEXCPT */
 skip_osfxsr:
+    testl %esi, %esi               /* ESI = the SMEP probe's answer */
+    jz skip_smep
+    orl $0x100000, %eax            /* bit 20 SMEP */
+skip_smep:
     movl %eax, %cr4
 
     /* --- Load PML4 physical address into CR3 -------------------------- */

@@ -17,6 +17,7 @@ core/scripts/demo.sh --headless      # -display none; the PNGs are still taken
 core/scripts/demo.sh --status        # is one running, and which commit
 core/scripts/demo.sh --kill          # stop it
 core/scripts/demo.sh --clean         # stop it and delete every worktree it made
+core/scripts/demo.sh --watch 60      # never stop: re-demo whenever the commit moves
 ```
 
 ---
@@ -191,11 +192,11 @@ an old commit gets that commit's image builder and that commit's programs:
 | `m14-fat` | 2 named ELF programs | **read**: `cat hello.txt`, run a program by name |
 | none | no `-drive` at all | **memory**: `frames`, `frames test`, `vm`, `user`, `user gp` |
 
-At HEAD (M18) the tour is:
+At HEAD (M19) the tour is:
 
 ```
 help · cpu · mem · pci · disk id · fs · ls · frames · run prog.elf · ls · cat empty.txt
-· frames · crash div · proc
+· frames · crash div · proc · fb · pci
 ```
 
 `frames` brackets `run prog.elf` on purpose: the frame allocator's free count printed before and after
@@ -203,6 +204,15 @@ is the leak check for everything the ELF loader and the file syscalls touched. `
 decoration either — `EMPTY.TXT` is a **zero-length** file that was on the volume before the boot, the
 C program opened it for writing and gave it 40 bytes, and the `cat` is the kernel reading those bytes
 back **by name, through a cluster chain it built itself**.
+
+**The tour ends on `fb`, and that is the point of the last two commands.** `fb` finds the display
+controller by PCI class, reads BAR0 — `FB BAR FD000000 MODE 0320x0258x20 OK`, an address the kernel
+*discovered* rather than one anybody hardcoded — sets an 800×600×32 mode through the Bochs VBE
+registers, and blits 8×16 glyphs from a `.rodata` font. Something has to be printed *after* the mode
+change or the new console is an empty screen, which is why `pci` follows it; `m5-pci`'s own session
+does the same for the same reason. The window you are left looking at is therefore the graphical
+console, not VGA text — **the only pixels this operating system currently has.** The VGA text dump is
+taken before the mode change so the text artefact and the final PNG describe the same screen.
 
 ---
 
@@ -231,6 +241,19 @@ The volume gets one extra, independent statement:
   kernel, must call the result clean.
 * **read tours** — the image must be **byte-for-byte identical** afterwards. At M14/M15 nothing was
   able to write, and the sha256 says so.
+
+---
+
+## 6a. `--watch`: a window that is always current
+
+`--watch [secs]` polls the ref (default 60 s) and re-runs the whole demo every time it moves —
+build, boot, tour, and a fresh window, with the previous one killed as usual. It **re-invokes this
+script** rather than looping around its body, so one demo is still exactly one process and a commit
+that fails to build is one failed child rather than a wedged loop; a failed commit is recorded as
+seen so the loop does not spin on it, and the previous window is left up.
+
+This is the mode the harness exists for. M19 landed *during* the session in which this document was
+written, and a watching demo picks that up on its own within a minute.
 
 ---
 

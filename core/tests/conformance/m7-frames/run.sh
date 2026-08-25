@@ -445,6 +445,104 @@ check_table pmmCmdAlloc 5
 check_table pmmCmdFree 5
 echo "STRUCTURAL: pass  all 52 M7 @rodata tables plus shellStrHelp (621 -> 1028) are exactly the sizes their call sites pass"
 
+# 2i. EVERY FRAME `allocFrame()` HANDS OUT IS ZEROED BEFORE IT IS USED —
+#     ACROSS THE WHOLE KERNEL, NOT JUST THE ELF LOADER. GAP-0154.
+#
+# WHAT THIS CHECK IS AND, MORE IMPORTANTLY, WHAT IT IS NOT.
+#
+# `allocFrame()` does not zero. It hands back whatever the frame last held, and
+# this kernel recycles frames between processes, so a frame that is mapped into
+# ring 3 without being zeroed first is a page of some previous program's data,
+# user-readable, at an address the new program is guaranteed to look at.
+#
+# THIS CHECK CANNOT PROVE THAT DOES NOT HAPPEN. It is a SOURCE-SHAPE assertion
+# and nothing more: it reads core/kernel/*.dart and requires that every frame
+# taken from the allocator is named to `vmZeroFrame` in the same function, or is
+# on the exemption list below with a reason. A behavioural test is not available
+# — GAP-0094 and GAP-0109 are the accounting: QEMU hands out zeroed guest RAM,
+# so on a FIRST allocation the unzeroed frame and the zeroed one are the same
+# 4096 bytes and no boot can tell them apart. m12-heap's program reads every
+# byte of every heap page before it writes one, which is the one behavioural
+# check that is possible here, and it is not this one.
+#
+# What it DOES buy, and the reason it is worth having anyway: m10-elf has
+# asserted this for elf.dart alone since M10, and elf.dart is now five of the
+# NINETEEN allocFrame() call sites in this kernel. proc.dart's three page-table
+# frames, user.dart's two ring-3 pages and heap.dart's page are all outside it.
+# This is the check that fails when the twentieth call site is added without a
+# zeroing beside it — which is exactly how a frame reaches ring 3 dirty.
+python3 - "$CORE_DIR/kernel" <<'PYEOF' || fail "a frame from allocFrame() is not zeroed before it is used, or a new call site has appeared with no accounting (GAP-0154)"
+import glob, os, re, sys
+kdir = sys.argv[1]
+
+# name -> (file, why). Each of these takes a frame and does NOT name it to
+# vmZeroFrame in its own function. Every one is here with a reason, and a
+# reason that is checkable by reading the function named.
+EXEMPT = {
+    ("elf.dart", "pt"): "vmProgTableInstall zeroes the page-table frame itself, "
+                        "and vm.dart is required below to still do so",
+    ("vm.dart", "f"): "vmInit's six frames are zeroed by vmBuild's own loop, "
+                      "`vmZeroFrame(vmFrame(i))`, before a single entry is written",
+    ("pmm.dart", "a"): "the allocator's own `alloc`, `frames self` and `frames "
+                       "drain` shell commands. Nothing is mapped, nothing reaches "
+                       "ring 3, and the drain writes one word of its own by hand",
+    ("pmm.dart", "next"): "the allocation `frames drain` attempts AFTER exhaustion. "
+                          "It is required to be 0 and there is no frame to zero",
+}
+
+bad = []
+sites = 0
+for path in sorted(glob.glob(os.path.join(kdir, "*.dart"))):
+    base = os.path.basename(path)
+    src = open(path).read()
+    # `final u64 x =`, `u64 x =` and a bare re-assignment `x =` all count:
+    # the drain loop's second allocFrame() has no declaration in front of it and
+    # is still a frame this kernel took.
+    for m in re.finditer(r"^\s*(?:final )?(?:u64 )?(\w+) = allocFrame\(\);", src, re.M):
+        sites += 1
+        name = m.group(1)
+        if (base, name) in EXEMPT:
+            continue
+        if not re.search(r"vmZeroFrame\(%s\);" % re.escape(name), src):
+            line = src[:m.start()].count("\n") + 1
+            bad.append("%s:%d takes a frame into `%s` and no vmZeroFrame(%s) "
+                       "appears anywhere in the file. allocFrame() returns "
+                       "whatever the frame last held (GAP-0154); if this frame "
+                       "genuinely does not need zeroing, say so in this check's "
+                       "exemption table rather than leaving it silent."
+                       % (base, line, name, name))
+
+# The exemptions must still be REAL. An entry naming a site that no longer
+# exists would silently excuse a future site that happened to reuse the name.
+for (base, name) in EXEMPT:
+    src = open(os.path.join(kdir, base)).read()
+    if not re.search(r"^\s*(?:final )?(?:u64 )?%s = allocFrame\(\);" % re.escape(name),
+                     src, re.M):
+        bad.append("the exemption for %s's `%s` names a call site that is no "
+                   "longer there" % (base, name))
+
+# The two exemptions that delegate must still delegate.
+vmsrc = open(os.path.join(kdir, "vm.dart")).read()
+if "  vmZeroFrame(ptFrame);" not in vmsrc:
+    bad.append("vmProgTableInstall no longer zeroes the page-table frame, and "
+               "elf.dart's `pt` is exempted here on the grounds that it does")
+if "vmZeroFrame(vmFrame(i));" not in vmsrc:
+    bad.append("vmBuild no longer zeroes vmInit's six frames, and vm.dart's `f` "
+               "is exempted here on the grounds that it does")
+
+if sites != 19:
+    bad.append("there are %d allocFrame() call sites and this check was written "
+               "against 19. A new one is not a failure -- an unaccounted one is. "
+               "Add it, or its exemption, and move this number." % sites)
+
+for b in bad:
+    print("    - " + b, file=sys.stderr)
+print("    (%d allocFrame() call sites; %d exempted with a reason)"
+      % (sites, len(EXEMPT)))
+sys.exit(1 if bad else 0)
+PYEOF
+echo "STRUCTURAL: pass  all 19 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
+
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).
 #

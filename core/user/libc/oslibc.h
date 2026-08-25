@@ -141,6 +141,11 @@ typedef unsigned long uintptr_t;
 #define FILE_EBADMODE 0xFFFFFFFFFFFFFFF3UL  /* wrong mode for this descriptor */
 #define FILE_ENOSPACE 0xFFFFFFFFFFFFFFF2UL  /* the volume, or the root dir, is full */
 
+/* GAP-0152. `fileRetReadOnly`. The volume marks the file read-only, so
+ * open(name, O_WRITE) is refused AND THE FILE STILL HAS ITS BYTES. Before this
+ * existed the same call truncated it. */
+#define FILE_EREADONLY 0xFFFFFFFFFFFFFFF1UL /* the file is marked read-only */
+
 /* M16. The two values open()'s mode may take. Anything else is FILE_EBADMODE.
  * `core/kernel/file.dart`'s `fileOpenRead` and `fileOpenWrite`.
  *

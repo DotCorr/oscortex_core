@@ -319,6 +319,18 @@ const int fatErrFull = 29;
 const int fatErrNoDirSlot = 30;
 const int fatErrDiskWrite = 31;
 
+/// The fourth write refusal, and the only one of the four that is about
+/// PERMISSION rather than about the drive or the volume running out.
+///
+/// [fatAttrReadOnly] has been defined in this file since M14 and, until this
+/// code existed, was **read by nothing**. `open(name, O_WRITE)` truncated a
+/// file the volume marks read-only, from ring 3, with no refusal — see
+/// docs/decisions/0024-the-read-only-attribute.md and GAP-0152. It is here in
+/// `fat.dart` rather than in `file.dart` because the attribute byte is this
+/// file's vocabulary: `file.dart` is not entitled to know that bit 0 of
+/// `DIR_Attr` means anything.
+const int fatErrReadOnly = 32;
+
 // ---------------------------------------------------------------------------
 // Fixed message text -- `@rodata` byte tables (DCDart ADR-0040).
 //
@@ -858,6 +870,16 @@ final List<u8> fatStrE31 = const [
   u8(0x6C), u8(0x64), u8(0x20), u8(0x6E), u8(0x6F), u8(0x74), u8(0x20), u8(0x62), u8(0x65), u8(0x20), u8(0x77), u8(0x72),
   u8(0x69), u8(0x74), u8(0x74), u8(0x65), u8(0x6E), u8(0x20), u8(0x74), u8(0x6F), u8(0x20), u8(0x74), u8(0x68), u8(0x65),
   u8(0x20), u8(0x64), u8(0x72), u8(0x69), u8(0x76), u8(0x65), u8(0x0A),
+];
+
+/// `'the file is marked read-only and may not be emptied\n'` -- 52 bytes.
+@rodata
+final List<u8> fatStrE32 = const [
+  u8(0x74), u8(0x68), u8(0x65), u8(0x20), u8(0x66), u8(0x69), u8(0x6C), u8(0x65), u8(0x20), u8(0x69), u8(0x73), u8(0x20),
+  u8(0x6D), u8(0x61), u8(0x72), u8(0x6B), u8(0x65), u8(0x64), u8(0x20), u8(0x72), u8(0x65), u8(0x61), u8(0x64), u8(0x2D),
+  u8(0x6F), u8(0x6E), u8(0x6C), u8(0x79), u8(0x20), u8(0x61), u8(0x6E), u8(0x64), u8(0x20), u8(0x6D), u8(0x61), u8(0x79),
+  u8(0x20), u8(0x6E), u8(0x6F), u8(0x74), u8(0x20), u8(0x62), u8(0x65), u8(0x20), u8(0x65), u8(0x6D), u8(0x70), u8(0x74),
+  u8(0x69), u8(0x65), u8(0x64), u8(0x0A),
 ];
 
 // ===========================  THE STORAGE SEAM  ============================
@@ -1564,6 +1586,29 @@ u64 fatLookup() {
     }
   }
   return u64(fatErrNotFound);
+}
+
+/// [fatErrReadOnly] if the entry the last [fatLookup] found is marked
+/// read-only, [fatErrOk] otherwise.
+///
+/// **Only meaningful straight after a lookup that HIT.** [fatMetaFileAttr] is
+/// written by [fatLookup] the moment a name matches and is not cleared on a
+/// miss, so a caller must have established that the entry exists before asking
+/// this. `fileMakeEmpty` does: every path that can reach the call has already
+/// returned for [fatErrNotFound] and for every code that means the lookup
+/// itself failed.
+///
+/// **This is a question about permission, and it is the only one this
+/// filesystem can answer.** FAT has no owner, no group and no mode; bit 0 of
+/// `DIR_Attr` is the entire access-control vocabulary of the volume format. So
+/// this function is short because the format is poor, not because the check is
+/// partial — see docs/decisions/0024-the-read-only-attribute.md.
+@bare
+u64 fatWritable() {
+  if ((fatMeta(u64(fatMetaFileAttr)) & u64(fatAttrReadOnly)) > u64(0)) {
+    return u64(fatErrReadOnly);
+  }
+  return u64(fatErrOk);
 }
 
 /// Parses [from]'s name out of the typed line and looks it up. Returns a
@@ -2358,16 +2403,21 @@ void fatReportError(u64 code) {
     uartWrite(Rodata.addressOf(fatStrE31), u64(43));
     return;
   }
+  if (code == u64(fatErrReadOnly)) {
+    uartWrite(Rodata.addressOf(fatStrE32), u64(52));
+    return;
+  }
   if (code == u64(fatErrBadName)) {
     uartWrite(Rodata.addressOf(fatStrE28), u64(66));
     return;
   }
-  // THE FALL-THROUGH IS UNREACHABLE AND IS HERE ANYWAY. Every code 1..31 has
+  // THE FALL-THROUGH IS UNREACHABLE AND IS HERE ANYWAY. Every code 1..32 has
   // its own branch above; a value outside that range is not a `fatErr*` and
   // nothing in this kernel produces one. Until M16, [fatErrBadName] was the
   // last code and this line was its branch — M16 added three codes above it and
   // gave it one of its own, so that "the highest-numbered code is the one
-  // without a branch" stopped being a rule the reporting depended on.
+  // without a branch" stopped being a rule the reporting depended on. GAP-0152
+  // added a fourth above those and kept that property.
   uartWrite(Rodata.addressOf(fatStrE28), u64(66));
 }
 

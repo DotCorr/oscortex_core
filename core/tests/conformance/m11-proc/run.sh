@@ -778,6 +778,35 @@ drive_session "$WORKDIR/nosse" "$NOSSE_KEYS" "$WORKDIR/nosse/shot.png" "no-SSE" 
 NOMEM_KEYS="$(typekeys "frames drain"),ret,wait:2500,$(typekeys "proc run $LBA_A $LBA_B"),ret,wait:1500"
 drive_session "$WORKDIR/nomem" "$NOMEM_KEYS" "$WORKDIR/nomem/shot.png" "drained" 100 128M qemu64
 
+# BOOT E and BOOT F — A CPU THAT HAS SMEP, AND ONE THAT HAS SMEP AND SMAP.
+# GAP-0153 / docs/decisions/0025-smep.md.
+#
+# THIS HARNESS OWNS THE CR4 LINE, which is why the two boots are here and not in
+# m8-paging: `procSseLine` is what prints CR4, and BOOT C above is already the
+# negative control for a guarded CR4 write. Every other boot in this repo runs
+# plain `qemu64`, which reports `smep=false`, so the probe finds nothing and CR4
+# stays 0x620.
+#
+# THAT IS NOT THE SAME AS "NO GOLDEN MOVES", and the difference matters. The CR4
+# VALUE does not move. The 48 bytes of `.text` the probe costs DO move
+# `.text_end`, and m8-paging, m9-ring3 and m10-elf each print a `VM SECT` line
+# carrying it, so all three goldens moved and were regenerated. Any change that
+# adds an instruction to this kernel moves them.
+#
+# The two boots are a PAIR and the second is the one that is easy to leave out.
+# BOOT E says the probe works and the bit reaches CR4. BOOT F says that on a CPU
+# which has SMAP as well, CR4 comes back with SMEP and WITHOUT SMAP — so the
+# decision not to enable SMAP (ADR-0025 §3: four sites dereference a ring-3
+# VIRTUAL address at CPL=0 and every one would #PF) is a mechanically checked
+# property of this kernel rather than a sentence in a document. Without BOOT F,
+# a probe that quietly set both bits would pass everything here.
+#
+# Both run `proc run`, not just `proc`: a ring-3 program has to still work with
+# the bit on, and the two processes' whole session is the check that it does.
+SMEP_KEYS="p,r,o,c,ret,wait:800,$(typekeys "proc run $LBA_A $LBA_B"),ret,wait:2500"
+drive_session "$WORKDIR/smep" "$SMEP_KEYS" "$WORKDIR/smep/shot.png" "smep" 110 128M "qemu64,+smep"
+drive_session "$WORKDIR/smepsmap" "$SMEP_KEYS" "$WORKDIR/smepsmap/shot.png" "smep+smap" 120 128M "qemu64,+smep,+smap"
+
 # ---------------------------------------------------------------------------
 # Step 6 — assert.
 # ---------------------------------------------------------------------------
@@ -1190,6 +1219,108 @@ then
 fi
 echo "ASSERT: pass  with every frame allocated, proc run refuses by name and leaves no half-built address space in the table"
 
+# 6f-smep. SMEP IS SET WHEN THE CPU HAS IT, AND SMAP IS NOT SET EVEN WHEN IT DOES.
+#          GAP-0153, docs/decisions/0025-smep.md.
+if ! python3 - "$WORKDIR/smep/serial.txt" "$WORKDIR/smepsmap/serial.txt" \
+              "$SERIAL_CAPTURE" "$M1_EXPECTED" <<'PY'
+import re, sys
+smep = open(sys.argv[1], "rb").read()
+both = open(sys.argv[2], "rb").read()
+plain = open(sys.argv[3], "rb").read().decode("latin-1")
+m1 = open(sys.argv[4], "rb").read()
+fails = []
+
+CR4_SMEP = 1 << 20
+CR4_SMAP = 1 << 21
+BASE = 0x620          # PAE | OSFXSR | OSXMMEXCPT, this kernel on a qemu64
+
+
+def cr4_of(cap, label):
+    if not cap.startswith(m1):
+        fails.append("the %s boot did not reach the end of M1's output. An "
+                     "unguarded CR4 write is a reserved-bit #GP with no IDT, "
+                     "which is a triple fault and NO OUTPUT AT ALL." % label)
+        return None
+    m = re.search(r"^PROC SSE (\d) CR4 ([0-9A-F]{16}) CR0 [0-9A-F]{16}\n",
+                  cap.decode("latin-1"), re.M)
+    if not m:
+        fails.append("no `PROC SSE` line in the %s capture" % label)
+        return None
+    if int(m.group(1)) != 1:
+        fails.append("the %s boot reported SSE 0; it was launched with SSE" % label)
+    return int(m.group(2), 16)
+
+
+# The control: the ordinary boot, on plain qemu64, must have NEITHER bit. This
+# is the line that makes the two below mean something -- without it, "CR4 has
+# bit 20 on a +smep machine" is equally consistent with "this kernel always
+# sets bit 20", which would be a reserved-bit #GP on most of the world's CPUs.
+m = re.search(r"^PROC SSE 1 CR4 ([0-9A-F]{16}) CR0 [0-9A-F]{16}\n", plain, re.M)
+if not m:
+    fails.append("no `PROC SSE` line in the main capture")
+else:
+    cr4 = int(m.group(1), 16)
+    if cr4 != BASE:
+        fails.append("CR4 is 0x%X on plain -cpu qemu64 and must be exactly 0x%X. "
+                     "qemu64 reports smep=false and smap=false, so a kernel that "
+                     "probes CPUID before writing CR4 sets NEITHER bit here -- and "
+                     "every golden in this repo was recorded with this value."
+                     % (cr4, BASE))
+
+cr4_smep = cr4_of(smep, "+smep")
+if cr4_smep is not None:
+    if not (cr4_smep & CR4_SMEP):
+        fails.append("CR4 is 0x%X on -cpu qemu64,+smep: bit 20 (SMEP) is NOT set, so "
+                     "the CPUID leaf-7 probe in boot.S found nothing on a CPU that "
+                     "has the feature." % cr4_smep)
+    if cr4_smep & CR4_SMAP:
+        fails.append("CR4 is 0x%X on -cpu qemu64,+smep: bit 21 (SMAP) is set on a CPU "
+                     "that does not have SMAP. That is a reserved bit." % cr4_smep)
+    if cr4_smep != BASE | CR4_SMEP:
+        fails.append("CR4 is 0x%X on -cpu qemu64,+smep, expected exactly 0x%X"
+                     % (cr4_smep, BASE | CR4_SMEP))
+
+cr4_both = cr4_of(both, "+smep,+smap")
+if cr4_both is not None:
+    # THE ASSERTION THAT IS EASY TO LEAVE OUT AND IS THE POINT OF THIS BOOT.
+    # SMAP is deliberately NOT enabled: this kernel dereferences a ring-3
+    # VIRTUAL address at CPL=0 in four places (user.dart:1393, file.dart:1398,
+    # file.dart:975, file.dart:811) and every one of them would #PF with SMAP
+    # on. Without this line, "we chose not to" is a sentence in an ADR and a
+    # probe that quietly set both bits would pass everything else here.
+    if cr4_both & CR4_SMAP:
+        fails.append("CR4 is 0x%X on -cpu qemu64,+smep,+smap: bit 21 (SMAP) is SET. "
+                     "It must not be. Four sites in this kernel read or write a "
+                     "ring-3 virtual address at CPL=0 and every one of them faults "
+                     "with SMAP on -- open() would #PF inside the kernel on the "
+                     "first syscall m15-fileio makes. See ADR-0025 section 3."
+                     % cr4_both)
+    if cr4_both != BASE | CR4_SMEP:
+        fails.append("CR4 is 0x%X on -cpu qemu64,+smep,+smap, expected exactly 0x%X"
+                     % (cr4_both, BASE | CR4_SMEP))
+
+# AND RING 3 STILL WORKS WITH THE BIT ON. A CR4 bit that is set and breaks the
+# machine would satisfy every assertion above.
+for cap, label in ((smep, "+smep"), (both, "+smep,+smap")):
+    text = cap.decode("latin-1")
+    if "PROC START SLOT" not in text:
+        fails.append("no process started on the %s boot" % label)
+    if not re.search(r"^PROC END SWITCHES", text, re.M):
+        fails.append("the %s boot's session did not end" % label)
+
+if fails:
+    for f in fails:
+        print("    - " + f, file=sys.stderr)
+    sys.exit(1)
+print("    (plain qemu64 CR4 0x%X; +smep CR4 0x%X; +smep,+smap CR4 0x%X -- SMAP "
+      "refused on a CPU that has it; two ring-3 processes ran on both)"
+      % (BASE, cr4_smep, cr4_both))
+PY
+then
+  fail "SMEP is not enabled from the CPUID probe, or SMAP was enabled when it must not be (GAP-0153)"
+fi
+echo "ASSERT: pass  CR4 is 0x620 on plain qemu64 (so no golden in this repo moves), 0x100620 on -cpu qemu64,+smep, and STILL 0x100620 on -cpu qemu64,+smep,+smap - SMEP comes from the leaf-7 probe and SMAP is deliberately refused, with ring 3 running on both. THIS DOES NOT SHOW SMEP BLOCKING A FETCH: see GAP-0153 section 2."
+
 # 6g. THE ALLOCATOR IS BACK WHERE IT STARTED.
 #
 # Four processes were created across the session -- two that ran to completion
@@ -1217,5 +1348,5 @@ head -c 8 "$SHOT_PNG" | cmp -s - <(printf '\211PNG\r\n\032\n') \
   || fail "$SHOT_PNG is not a PNG"
 echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -d ' ') bytes, PNG)"
 
-echo "M11-proc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs AT -O2 WITHOUT -mgeneral-regs-only -> make-image.py writes three program slots onto a disk -> 11 structural checks (donated .bss 5496 -> 9664 in ONE symbol with proc_store 16-byte aligned in the LINKED image and all four FXSAVE areas with it, the table's geometry multiplied out against itself and against derive.py, the storage seam exactly 3 call sites in one file, 42 @rodata sizes plus shellStrHelp 1658 -> 1871, 9 refusal codes each reachable from a return and each with its own sentence, boot.S probing CPUID leaf 1 before writing CR4 with all three writes guarded, fxsave/fxrstor present and ZERO %xmm instructions anywhere else in the linked kernel, and the 22-word frame derived from user.dart's offsets) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 53 + 5, kdata.o still clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; TWO DIFFERENT PROGRAMS, compiled with SSE and running SSE, interleaved by a cooperative \`yield\` syscall, each printing its own message from its own \`msg\` symbol and exiting with a status derived from its own \`.rodata\`, its own \`.data\` and the checksum of the 64 bytes its own compiler-emitted \`movups\` moved; each one's XMM0 and XMM7 surviving three round trips through the other process; BOTH address spaces walked out of guest physical memory from two different PML4 frames with both processes alive and the CPU at CPL 3, showing A's private pages absent from B's, every shared virtual address on a different physical frame, and the kernel the same frame and supervisor-only in both; process A's suspended FPU state read out of its 512-byte FXSAVE area holding its own signature in all four lanes; the kernel computing an address A has and B has not and B taking a NOTPRES READ USER page fault on it and being torn down with the shell surviving; a CPU with no SSE where the kernel still boots, reports CR4 0x20, and refuses to create a process by name; a drained allocator where \`proc run\` refuses instead of pretending; and the allocator's free count identical before and after four address spaces. Screenshot at $SHOT_PNG"
+echo "M11-proc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs AT -O2 WITHOUT -mgeneral-regs-only -> make-image.py writes three program slots onto a disk -> 11 structural checks (donated .bss 5496 -> 9664 in ONE symbol with proc_store 16-byte aligned in the LINKED image and all four FXSAVE areas with it, the table's geometry multiplied out against itself and against derive.py, the storage seam exactly 3 call sites in one file, 42 @rodata sizes plus shellStrHelp 1658 -> 1871, 9 refusal codes each reachable from a return and each with its own sentence, boot.S probing CPUID leaf 1 before writing CR4 with all three writes guarded, fxsave/fxrstor present and ZERO %xmm instructions anywhere else in the linked kernel, and the 22-word frame derived from user.dart's offsets) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 53 + 5, kdata.o still clean standalone) -> SIX real QEMU boots (GAP-0153 added two CPU models). A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; TWO DIFFERENT PROGRAMS, compiled with SSE and running SSE, interleaved by a cooperative \`yield\` syscall, each printing its own message from its own \`msg\` symbol and exiting with a status derived from its own \`.rodata\`, its own \`.data\` and the checksum of the 64 bytes its own compiler-emitted \`movups\` moved; each one's XMM0 and XMM7 surviving three round trips through the other process; BOTH address spaces walked out of guest physical memory from two different PML4 frames with both processes alive and the CPU at CPL 3, showing A's private pages absent from B's, every shared virtual address on a different physical frame, and the kernel the same frame and supervisor-only in both; process A's suspended FPU state read out of its 512-byte FXSAVE area holding its own signature in all four lanes; the kernel computing an address A has and B has not and B taking a NOTPRES READ USER page fault on it and being torn down with the shell surviving; a CPU with no SSE where the kernel still boots, reports CR4 0x20, and refuses to create a process by name; a drained allocator where \`proc run\` refuses instead of pretending; the allocator's free count identical before and after four address spaces; and CR4 read back on THREE CPU models -- 0x620 on plain qemu64 so no golden in this repo moves, 0x100620 on +smep, and STILL 0x100620 on +smep,+smap because SMAP is deliberately refused, which GAP-0153 explains and does NOT claim as a demonstration that SMEP blocks a fetch. Screenshot at $SHOT_PNG"
 exit 0

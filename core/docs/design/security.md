@@ -4,11 +4,11 @@
 specialist document in `core/docs/design/`, and `README.md` names its subject as one of the seven
 things the corpus does not cover: *"a security model beyond W^X and ring separation"*. This is that
 gap, written by an agent that read `user.dart`, `vm.dart`, `proc.dart`, `heap.dart`, `file.dart`,
-`elf.dart`, `args.dart`, ADR-0013, and the thirteen sibling designs.
+`elf.dart`, `args.dart`, ADR-0013, and the seventeen sibling designs the index lists.
 
 Where a sibling document already measured something, this one **cites it rather than re-deriving
-it**. Where nothing had measured something this document needs — and there were three such places,
-all about CPUID leaf 7 — it was measured here and is marked `measured:`.
+it**. Where nothing had measured something this document needs — and every such place was about the
+pinned CPU model's feature bits — it was measured here and is marked `measured:`.
 
 ---
 
@@ -25,13 +25,18 @@ privileged, and the only thing the boundary distinguishes is *ring 3* from *ring
 
 **Today that is the correct design.** One user, no network, no untrusted code: the entire threat
 model is *bugs*, not *adversaries*, and the highest-value work is therefore the work that catches
-kernel bugs mechanically. That is why §3's recommendation is SMEP — **one CR4 bit, zero code changes,
+kernel bugs mechanically. That is why §5's recommendation is SMEP — **one CR4 bit, zero code changes,
 zero new externs, and it converts the single most dangerous class of kernel bug on this machine from
-silent memory corruption into a loud fault at the exact instruction** — and why ASLR, canaries,
-signed executables and a capability model are all correctly deferred.
+silent memory corruption into a loud fault at the exact instruction** — and why KASLR, ASLR and
+signed executables are correctly deferred, two of them permanently. The one model this OS should
+commit to, it already has without naming it: authority in a handle, never in an identity (§6).
 
 **`net-stack.md` is the event that changes the model, and it changes it completely.** Everything in
 this document is ordered around being ready for that day and not before it.
+
+**Where the answers are.** §1 what is already right · §2 the threat model, today and after
+`net-stack.md` · §3 the eleven-syscall audit · §4 the nine absences and what each costs · §5 SMEP and
+SMAP, measured · §6 capabilities · §7 the ladder · §8 disagreements and findings.
 
 ---
 
@@ -62,7 +67,7 @@ zeros and one value in RDI.
 
 ### 1.2 W^X is enforced inside `vmProgMap`, not by its callers
 
-`vm.dart:2196`:
+`vm.dart:2236-2240`:
 
 ```dart
 if (write > u64(0)) {
@@ -124,8 +129,8 @@ on an argument is a validator somebody will eventually call with the wrong one"*
 |---|---|---|---|
 | `userOwns` | `user.dart:1328` | is this inside an M9 payload's two pages? (dispatches to `elfOwns` if a process or a loaded program is live) | 128 (`userWriteMax`) |
 | `elfOwns` | `elf.dart:1548` | **may ring 3 read this** — every page of the range present and USER | 128 (`userWriteMax`) |
-| `fileOwnsWrite` | `file.dart:751` | **may ring 3 write this** — every page USER **and WRITABLE** | 512 (`fileReadMax`) |
-| `fileOwnsRead` | `file.dart:917` | may ring 3 read this, at file-write length | 512 (`fileWriteMax`) |
+| `fileOwnsWrite` | `file.dart:752` | **may ring 3 write this** — every page USER **and WRITABLE** | 512 (`fileReadMax`) |
+| `fileOwnsRead` | `file.dart:916` | may ring 3 read this, at file-write length | 512 (`fileWriteMax`) |
 
 Every one of them puts the bound on `ptr` **first, before any arithmetic on it**, and the reason is
 specific to this toolchain and is documented at all four sites:
@@ -354,13 +359,13 @@ supplied.
 | 1 | `write(ptr,len)` | `user.dart:1385` | R=ptr, S=len | **yes, read** (`uartWrite(ptr,len)`) | `userOwns` → page-walk; `1 ≤ len ≤ 128` | **validated** |
 | 2 | `whoami()` | `user.dart:1299` | none | no | reads the CS/SS/RFLAGS the **CPU** pushed | **validated** |
 | 3 | `yield()` | `proc.dart` `procYield` | none | no | refused unless `procLive()` | **validated** |
-| 4 | `sbrk(inc)` | `heap.dart:heapSysSbrk` | R=inc | no | `inc ≤ heapMaxInc` (2 MiB) **before** the round-up; `want ≤ heapRoom(s)` **before** the first `allocFrame` | **validated** |
+| 4 | `sbrk(inc)` | `heap.dart:429` — `heapSysSbrk` | R=inc | no | `inc ≤ heapMaxInc` (2 MiB) **before** the round-up; `want ≤ heapRoom(s)` **before** the first `allocFrame` | **validated** |
 | 5 | `open(ptr,len,mode)` | `file.dart:1328` | R=ptr, S=len, D=mode | **yes, read** (copy loop) | `mode ≤ 1`; `1 ≤ len ≤ 12`; `elfOwns`; **copy into `fileBufBase()` before `fatParseAt`** | **validated** |
 | 6 | `read(fd,dst,len)` | `file.dart:1429` | R=fd, S=dst, D=len | **yes, written** (`fileCopyOut`) | `fd < 4` **then** state, then `state == fileFdOpen`; `1 ≤ len ≤ 512`; `fileOwnsWrite` (USER **and** WRITABLE) | **validated** |
 | 7 | `close(fd)` | `file.dart:1516` | R=fd | no | `fd < 4` then state | **validated** |
 | 8 | `seek(fd,to)` | `file.dart:1558` | R=fd, S=to | no | `fd < 4`, state, `state == fileFdOpen`, `to ≤ size` | **validated** |
 | 9 | `fdwrite(fd,src,len)` | `file.dart:1186` | R=fd, S=src, D=len | **yes, read** (`fileCopyIn`) | `fd < 4` then state, then `state == fileFdWrite`; `1 ≤ len ≤ 512`; `fileOwnsRead` (USER, **not** WRITABLE) | **validated** |
-| 10 | `preempts()` | `user.dart:1573` | none | no | refused unless `procLive()`; reads `procGet(procCurrent(), …)` | **validated** |
+| 10 | `preempts()` | `user.dart:1573-1580` | none | no | refused unless `procLive()`; reads `procGet(procCurrent(), …)` | **validated** |
 
 **The audit found no unvalidated pointer and no unvalidated index in the eleven.** Every index is
 compared against its table's bound *before* it is used to index, every length is bounded before it is
@@ -378,9 +383,9 @@ address in exactly **four** places:
 | site | direction | preceded by |
 |---|---|---|
 | `user.dart:1393` — `uartWrite(ptr, len)` | read | `userOwns` |
-| `file.dart:1353-1358` — `open`'s name copy loop | read | `elfOwns` |
-| `file.dart:fileCopyIn` | read | `fileOwnsRead` |
-| `file.dart:fileCopyOut` | write | `fileOwnsWrite` |
+| `file.dart:1354-1358` — `open`'s name copy loop | read | `elfOwns` |
+| `file.dart:953` — `fileCopyIn` | read | `fileOwnsRead` |
+| `file.dart:792` — `fileCopyOut` | write | `fileOwnsWrite` |
 
 Everything else that looks like it should be a fifth site is not, because **this kernel already
 prefers the physical alias**:
@@ -829,3 +834,324 @@ uses for `nx=off`, and it is why NX's claim in this tree is believable.
 The SMAP pair is the same shape one layer down: a `Pointer<u64>` read from a user-accessible page,
 with `vmtest rw`'s supervisor read as the control, faulting `#PF ERR 0x01` — present, **read**,
 supervisor — only on the `+smap` boot.
+
+---
+
+## 6. Capabilities — the model this OS already has, without calling it that
+
+### 6.1 `display-protocol.md` §5.3's argument, and what it is really saying
+
+`display-protocol.md:599-613` asks for four words in the verb-batch header, defined as "must be
+zero", and justifies it on capability grounds:
+
+> `SCM_RIGHTS` is the hardest item in §5.2 to retrofit and everything rides on it. With an in-band
+> handle slot a future shim is a copy of an array; without one, the shim must invent a global handle
+> namespace that outlives the message and leaks on every client crash. **Native justification, which
+> is the real one:** capability-style handle passing is strictly better than a global name registry,
+> because a compositor can never be tricked into mapping memory a client did not actually own.
+
+§2.5 keeps the ask alive after §2's transport was rewritten: *"reserve four words in the verb-batch
+header for out-of-band handles, defined as 'must be zero'. Nothing fills them today."*
+
+The argument is correct, and the reason it is correct is broader than the display protocol.
+
+### 6.2 The file descriptor is already a capability, and it is the only namespace this OS has
+
+Look at what `file.dart` actually built at M15:
+
+* a descriptor is a **small integer that indexes a per-owner table** — `fileMaxFds = 4` rows of four
+  slots, `fileRows = 5` (four process slots plus `fileRunRow = 4` for a `run` program);
+* **ring 3 cannot manufacture one.** `fd` is bounds-checked against `fileMaxFds` and then against the
+  slot's *state* before anything is read from it; the only way to obtain a live one is `open`, which
+  runs the policy check once, at acquisition;
+* `fileOwnerRow()` (`file.dart:648`) is a "whose authority is this" function, and its doc comment is
+  explicit that it is *"the only function that decides whose descriptors a syscall sees"*;
+* **revocation is already total and already runs on the fault path.** `fileReleaseOwner(row)` closes
+  every descriptor a row holds, and it is called from `elfTeardown` and `procCleanup`, not from
+  `exit` — deliberately, *"so that a program which faults with three files open leaks nothing
+  either"*.
+
+That is a capability system. Unforgeable handle, held by a subject, acquired only through a checked
+operation, revoked wholesale when the subject dies. Nobody set out to build one; it fell out of
+building a descriptor table correctly.
+
+`display-protocol.md` then made the same choice again without naming it — `open("WSYS")`, and
+*"the fd IS the session. No handshake, no connect, no registry"* — and so did `net-stack.md`, whose
+sessions are `open("/net")` with *"one descriptor is one session; a connection is a 16-bit channel id
+**inside** it"*. Three subsystems, three times the same shape: **authority lives in a handle scoped
+to a process, never in a global name.**
+
+### 6.3 So: is a capability model right for this OS? Yes — and the question is what it replaces
+
+**Yes**, and the reason is not that capabilities are elegant. It is that this OS has no other
+candidate. An ACL needs identities and there are none (§4.1). A permission bit needs a filesystem
+that has one and FAT does not (§4.2). A `root` flag needs something to be privileged *about*, and the
+things that will actually need gating here are not files — they are the keyboard, the framebuffer,
+and the NIC, none of which a uid model has ever been good at.
+
+**What it replaces, concretely, item by item:**
+
+| today | under handles |
+|---|---|
+| uids, file modes, ownership (§4.1–4.3) | "does this process hold a write handle to F", checked once at `open` — where the check already happens |
+| `net-stack.md` §1.3's open problem: *"There is no uid, no capability, no privilege bit and no `root` on this OS to gate it with, and inventing one is a larger decision than this document's"* | the shell opens `/net` once and **hands the descriptor to the program it starts**. Nothing needs inventing |
+| every ring-3 program being able to call all eleven syscalls, gated only by liveness | `open` becomes an operation *on a handle*, and a program that was given no directory handle cannot name a file at all |
+| a global surface/window/channel registry | already avoided by all three designs, for their own reasons |
+| the compositor's total access to every keystroke (`display-protocol.md` §4.3), which the doc never discusses | **stated**: the compositor is the process that holds the keyboard capability. Still total, but now it is a decision on the page instead of an emergent property |
+
+### 6.4 The cheapest thing that makes it real, and it is not a new syscall
+
+`display-protocol.md` §5.3 is arguing about **delegation between running processes** — real
+`SCM_RIGHTS`, a handle travelling inside a message. That is the expensive end, and nothing on this
+machine needs it yet: the doc itself notes at line 168 that the adopted server-side-drawing design
+means *"no frame is ever mapped into two address spaces"*, which is what the handle slot was
+originally for.
+
+**The cheap end is inheritance, and this OS is four lines away from it.** `procCreate` already builds
+a process's descriptor row; `argv` is already the only thing passed in, through `args.dart`'s
+128-byte block. The primitive to build is:
+
+> **the shell (later, an init) may place an already-open descriptor into slot *n* of a new process's
+> row before that process is entered.**
+
+That is a kernel-side `dup2` at creation time. It needs no new syscall, no wire format, no handle
+table beyond the one that exists, and it is **sufficient for both cases anyone has actually named**:
+a compositor started with `:WSYS` already in fd 0, and a network program started with `/net` already
+in fd 0. Delegation between two *running* processes should wait until something needs it, which is
+this repo's rule for everything else.
+
+### 6.5 Three corrections to `display-protocol.md` §5.3 that are worth making now
+
+1. **"MUST BE ZERO" has to mean *refused if not zero*, and the display doc does not say so.**
+   `net-stack.md:369-371` reuses §5.3's argument and commits to the enforcement — *"two bytes, defined
+   as zero, **refused if not**"* — while `display-protocol.md` never states what happens when a client
+   sends a non-zero handle word. **A reserved field that is ignored rather than refused is not
+   reserved.** Every version-1 client is then free to put junk there, and the version-2 that gives the
+   field meaning inherits every one of them. Refuse the batch with a named refusal code; it is one
+   `if` in the parser and it is the difference between a reservation and a comment.
+2. **Define "word".** The doc says "four words" (`:308`) and elsewhere uses "word" for a `u64`
+   (`:331`, `:425`, `:748`). Four `u64` is **32 bytes of a 512-byte batch** — 6.25% of a transport
+   whose whole design problem is that `fileWriteMax` is 512 bytes and *"a `d` verb is about 36 bytes,
+   so one 512-byte `fdwrite` carries roughly fourteen drawing operations"*. **Recommend four `u32` =
+   16 bytes.** A handle on this OS is a descriptor index bounded by `fileMaxFds = 4`; 32 bits is
+   already ten orders of magnitude more room than the model can use, and 16 bytes is the difference
+   between fourteen verbs per batch and thirteen.
+3. **The verb list contradicts the policy.** `display-protocol.md:157` lists `'t'` **restack** among
+   the client-sendable verbs, while `:536` lists "no stacking commands from clients" among the
+   deliberate omissions and `:541` says *"window management is compositor policy and is not part of
+   the protocol at all."* This is a security question and not only a tidiness one: a client that can
+   restack is a client that can cover another client's window, which is the oldest UI-redress attack
+   there is. **Resolve it in favour of §5's policy — remove `'t'` from the client verb set** — or say
+   explicitly that it means "restack my own surfaces relative to each other".
+
+### 6.6 What a capability model does *not* buy, said plainly
+
+It does not stop a program from doing anything with the authority it was given. A compositor holding
+the keyboard capability sees every keystroke; a network program holding `/net` can talk to anything
+routable. Capabilities bound *reach*, not *behaviour*. On a machine with one user and programs the
+user built, that is the entire useful notion of security, and it is why this is the right model here
+rather than a compromise.
+
+---
+
+## 7. The ladder
+
+**Prefix `SEC-`, deliberately.** `README.md` records that `namespace.md`, `net-e1000.md` and
+`net-stack.md` all use `N`, so "N1" already names three milestones; `S` would collide with nothing
+today but `smp.md` is unprefixed and a future editor would reach for it. `SEC-` is unambiguous.
+
+Ordered by value per line, not by dependency. Where an item is gated, the gate is named.
+
+| | milestone | ~lines | gated on | why here |
+|---|---|---|---|---|
+| **SEC-0** | The FAT read-only attribute is honoured | ~6 | nothing | it is a defect, not a feature |
+| **SEC-1** | **SMEP** | ~12 asm | nothing | one bit, zero goldens, backstops all four validators |
+| **SEC-2** | A hostile-frame injector | ~150 harness | **must precede `net-stack.md` N2** | ten frames written before the parser is cheaper than ten retrofitted into eight goldens |
+| **SEC-3** | SMAP, via the physical-alias conversion | ~60 | SEC-1 | ends ring-3 pointer dereference in the kernel entirely |
+| **SEC-4** | Handle inheritance at `procCreate` | ~40 | nothing | unblocks the compositor and `/net` without inventing a privilege model |
+| **SEC-5** | NIC descriptor discipline | ~30 | `net-e1000.md` N1 | the DMA use-after-free has no diagnostic at any level |
+| **SEC-6** | Stack canaries in `libc` | ~20 | a `libc-roadmap.md` tier | attribution for the bug class this OS actually has |
+| **SEC-7** | Reserved words refused, both wire formats | ~10 | the first wire format | a reserved field that is ignored is not reserved |
+| **SEC-8** | An image hash in the `ELF` report | ~40 | nothing | verification, not security; here for ordering only |
+
+### SEC-0 — The read-only attribute is honoured
+
+`fileMakeEmpty` (`file.dart:1042`) truncates without consulting `fatAttrReadOnly` (`fat.dart:154`).
+Add one test against `fatMetaFileAttr`, one refusal code `fileRetReadOnly` with its own sentence
+(nine refusal codes today, each *"reachable from a return and each with its own sentence"* per
+`m11-proc`'s structural check — this makes ten).
+
+**Exit criteria.** All four, on one boot:
+1. a program calls `open("RO.TXT", O_WRITE)` on a file whose directory entry has attribute bit 0 set
+   and receives `fileRetReadOnly`;
+2. **the disk image is byte-identical before and after that boot** — `m16-filewrite/derive.py`
+   already compares images byte-exactly, so this is an existing mechanism, not a new one;
+3. on the same boot the program opens a file *without* the attribute for writing, writes, closes, and
+   the image changes in exactly the derived way (the control — without it, criterion 2 is satisfied by
+   a kernel whose `open` for writing is broken outright);
+4. **negative control:** with the new test deleted, criterion 2 fails and the diff names the truncated
+   file.
+
+### SEC-1 — SMEP
+
+Third inline CPUID probe in `boot.S` (leaf 0, then leaf 7 subleaf 0, EBX bit 7) into a `smep_flag`
+beside `sse_flag`/`nx_flag`; one `cmpl`/`je`/`orl $0x100000` inside the existing single CR4 write;
+`vmMapUser`/`vm_exec_probe`/`vmClearUser` composed into a `vmtest smep` shell command.
+**Zero new externs, zero new `@rodata` message tables, zero DCDart changes.**
+
+**Exit criteria.** Two boots, and the pair is the point:
+1. **`-cpu qemu64`** — `proc` reports `CR4 0000000000000620`, unchanged. **Every existing golden in
+   the suite is byte-identical**, asserted by running all twenty harnesses, not by inspection.
+   `vmtest smep` prints `SURVIVED`.
+2. **`-cpu qemu64,+smep`** — `proc` reports `CR4 0000000000100620`.
+3. On boot 2, `vmtest x` returns and prints `OK`, and `vmtest smep` takes **`#PF ERR 0000000000000011`**
+   — present, read, supervisor, **fetch** — with the faulting RIP equal to `vm_exec_ok`'s address.
+   The two commands differ in one bit of one page-table entry and in nothing else.
+4. After boot 2's `vmtest smep`, the U/S bit of that page is read back **out of guest physical
+   memory** and is 0, and `vmCountUser` reports the same number of user pages as before the command.
+5. `verify-freestanding.sh` clean; the declared-extern count is **unchanged at 58**; donated `.bss`
+   is unchanged (`smep_flag` is in `boot.S`'s `.bss`, not `kdata.S`'s).
+6. **Negative control:** delete the `orl $0x100000`. Boot 2's criterion 2 fails on the CR4 value
+   *and* criterion 3 fails because `vmtest smep` survives. Both must fail — one alone would be
+   consistent with a reporting bug.
+
+### SEC-2 — A hostile-frame injector, before N2
+
+The gap §2.3 names: every negative control in both network ladders is a kernel mutation, and no test
+in either feeds the machine bytes a peer would not send.
+
+**Mechanism.** SLIRP cannot inject arbitrary layer-2 frames. `-netdev socket` can: the harness
+listens, QEMU connects, and each frame crosses the socket with a length prefix. **First step, before
+any of the below: measure the framing.** This document has not verified it, and
+`net-e1000.md`'s own register block is already flagged as *"the one block in this document that was
+not measured"* — one unverified block per project is enough. `romfile=` is mandatory, per
+`net-stack.md:975-978`.
+
+**The ten frames.** Nine hostile, one good:
+
+1. a 14-byte runt — header and nothing else;
+2. ethertype `0x0800` with zero bytes of IPv4 behind it;
+3. IPv4 with `IHL = 15` and total length 20 — the header claims to be longer than the packet;
+4. IPv4 with total length `0xFFFF` in a 60-byte frame;
+5. IPv4 with total length 0;
+6. ICMP echo request truncated mid-header;
+7. ARP with `hlen`/`plen` other than 6/4;
+8. a frame whose descriptor length exceeds `RCTL.BSIZE`;
+9. an IPv4 fragment with MF set (`net-stack.md:729` says these are dropped and counted — this is that
+   counter's only test);
+10. **a correct ARP reply.**
+
+**Exit criteria.**
+1. all ten are sent; the kernel's counters account for **all ten**, by name, with no residue;
+2. **exactly one is answered** — frame 10 — and the reply is captured and decoded by the harness;
+3. the machine is at a shell prompt afterwards and a subsequent command produces its normal output;
+4. the serial capture matches a golden;
+5. **the positive control is what makes this non-vacuous**: a kernel that drops all ten silently
+   satisfies criteria 1 and 3 and fails 2. State that in the harness, because it is the exact shape
+   of `net-e1000.md`'s option-ROM trap.
+6. **negative control:** remove any one bound from the parser and the corresponding counter goes to
+   zero *or* the machine leaves the shell. Both are failures; either is sufficient.
+
+### SEC-3 — SMAP, via the physical-alias conversion
+
+Convert the four sites of §3.3 to reach the frame rather than the address, then set CR4 bit 21.
+
+**Exit criteria.**
+1. **A structural check counts zero dereferences of a ring-3 virtual address in `core/kernel/`.** The
+   four sites are named in the check by file and function, in the shape `m18-preempt/run.sh:281`
+   already uses for its five-site count — *exactly* zero, not "at most", so a fifth site added later
+   fails the build rather than the boot.
+2. **`-cpu qemu64,+smep,+smap`** — `proc` reports `CR4 0000000000300620`, and **`m15-fileio` and
+   `m16-filewrite` pass unchanged on that boot**. That is the real test: any site missed by the
+   conversion is a #PF inside a syscall, and those two harnesses exercise all four.
+3. `vmtest smap` takes **`#PF ERR 0000000000000001`** — present, read, supervisor — on the `+smap`
+   boot and returns normally on plain `qemu64`; `vmtest rw` returns on both.
+4. **A straddling copy is derived, not assumed**: a `read` whose destination range crosses a page
+   boundary into a *different physical frame* delivers the correct bytes, and the two frames are
+   asserted distinct out of guest memory. This is §1.5's mutation in the copy path rather than the
+   validator, and it is the one thing Option B can get wrong that Option A cannot.
+5. `verify-freestanding.sh` clean; extern count still 58 (Option B adds none).
+
+### SEC-4 — Handle inheritance at `procCreate`
+
+The kernel places an already-open descriptor into slot *n* of a new process's row before entry
+(§6.4). No new syscall.
+
+**Exit criteria.**
+1. the shell opens a file, starts a program with that descriptor at fd 0, and the program `read`s
+   from fd 0 **without ever calling `open`**, exiting with a status derived from the file's bytes;
+2. the same program started **without** the placement receives `fileRetBadFd` from the identical
+   `read` and exits with a different, also derived, status — the control;
+3. the inherited descriptor is closed by `procCleanup` **on the fault path**: a variant that faults
+   before closing leaves `FILE … LIVE 0` and prints the orphan line with count 1;
+4. `FILE OPENS`/`CLOSES` balance across the boot.
+
+### SEC-5 — NIC descriptor discipline
+
+**Exit criteria.**
+1. a structural check that **every** call site that frees an RX or TX buffer frame is inside the one
+   function that clears `RCTL.EN` and `TCTL.EN` first — exact site count, `m18-preempt`'s shape;
+2. the RX length is clamped to `RCTL.BSIZE` and the clamp has its own counter, which is **non-zero on
+   the SEC-2 injector boot** (frame 8) and zero on a clean boot;
+3. the RX descriptor `errors` byte is read and counted rather than ignored;
+4. `RCTL` is **read back out of the device** and reported, and the assertion is that `UPE` is
+   **clear** — §2.4's contradiction, closed by measurement rather than by a comment.
+
+### SEC-6 — Stack canaries in `libc`
+
+**Exit criteria.**
+1. a program that deliberately overruns a local array exits with the distinguished
+   `__stack_chk_fail` status;
+2. the identical source built **without** `-fstack-protector-strong` faults instead, with a different
+   captured line — the control that makes 1 attributable to the canary;
+3. `nm` on the linked program shows both `__stack_chk_guard` and `__stack_chk_fail`;
+4. **no existing harness program is rebuilt with the flag**, and every existing golden is
+   byte-identical.
+
+### SEC-7 — Reserved words refused
+
+**Exit criteria.** For each wire format that has one: a client sends a message with a non-zero
+reserved word and receives a named refusal; the refusal counter increments; a message identical
+except for the zeroed word succeeds on the same boot.
+
+### SEC-8 — An image hash in the `ELF` report
+
+**Exit criteria.** `ELF … HASH <h>` equals a hash `make-image.py` computed independently from the
+same file; a mutation that maps a page and omits the copy into it changes `<h>`; the hash covers the
+bytes *as mapped*, not the bytes as read, so a loader that reads correctly and maps the wrong frame
+is caught.
+
+---
+
+## 8. What this document does not cover, and where it disagrees with its siblings
+
+**Not covered.** Anything cryptographic. Anything about a multi-user system. Side channels of every
+kind — Spectre, Meltdown, cache timing — which are not worth a paragraph on a machine with one
+address space per program, no shared secrets, no JIT and no attacker. Secure boot, measured boot and
+the TPM. Auditing and logging as a subsystem (this kernel's serial capture is already a complete
+transcript, which is a stronger property than most audit logs). Anything about the DCDart compiler's
+own trustworthiness, which is that repo's question.
+
+**Two things this document asserts against the corpus, recorded rather than resolved silently:**
+
+| claim | this document's position |
+|---|---|
+| GAP-0085 item 6 and ADR-0013 §10 list **SMEP, SMAP, PCID and KPTI** together as "not enabled" | They should be split. **SMEP and SMAP are available** on TCG (`max` reports both true) and cost one CR4 bit plus a `+smep,+smap` boot. **PCID is not available at all** — `max` reports `pcid: false`, so PCID and KPTI are unbuildable here regardless of effort, and listing them beside SMEP makes an easy item look like a hard one. `measured:` QEMU 11.0.0. |
+| `net-stack.md` §7.2's *"ring 3 never sees a frame it did not earn"* | True of the stack design and **not true of the driver as specified**: `net-e1000.md:453` step 11 sets `UPE`. §2.4. Fix the driver, not the sentence. |
+
+**Three things this document found that nothing records:**
+
+1. **`fileMakeEmpty` ignores `fatAttrReadOnly`**, so `open(name, O_WRITE)` truncates a read-only file
+   from ring 3. §4.2, SEC-0.
+2. **The kernel dereferences a ring-3 virtual address in exactly four places**, and every other path
+   into a program's memory already goes through the frame's identity alias. §3.3. That is the fact
+   that makes SMAP cheap, and it is currently an accident rather than a rule.
+3. **All four validators' soundness rests on three properties that other designs are scheduled to
+   change** — interrupt gate, one CPU, no preemption inside a syscall. §3.4 item 3. Any ADR that
+   touches one of the three owes this document a paragraph.
+
+**And one thing that is not this document's to decide.** `README.md`'s fix list item 2 — *"create a
+syscall-number registry"* — is a correctness problem that is also a security problem: two agents both
+writing `= 11` merge clean and mis-dispatch silently, and a silently mis-dispatched syscall takes its
+arguments through the wrong validator. It is already on the list; this document only notes that the
+security cost of getting it wrong is larger than the merge cost.
