@@ -786,33 +786,43 @@ head -c "$M1_BYTES" "$SERIAL" | cmp -s - "$M1_EXPECTED" \
   || fail "the first $M1_BYTES bytes of this boot are not m1-interrupts' golden — M20 moved a byte it does not own"
 echo "CHECK 12: pass  the first $M1_BYTES bytes are m1-interrupts' golden, byte for byte"
 
-# ---- BOOT 2: THE NEGATIVE CONTROL — THE SAME BINARY, NOT A PROCESS ---------
+# ---- CHECK 13: THE CHAN_NOPROC GUARD, NOW STRUCTURAL AND WHY --------------
 #
-# `run <lba>` loads the SAME BYTES as an M10-style program: ring 3, its own
-# address space, a heap, file descriptors -- and no process slot. An endpoint is
-# owned by a PROCESS ID, so all three syscalls must refuse it BY NAME.
-NP_KEYS="$(typekeys "run $LBA_A"),ret,wait:8000"
-drive_session "$WORKDIR/noproc" "$NP_KEYS" "$WORKDIR/noproc/shot.png" "no-process control"
-NP_SERIAL="$WORKDIR/noproc/serial.txt"
-nphave() { grep -qF -- "$1" "$NP_SERIAL" || { sed -n '/M1 END/,$p' "$NP_SERIAL" >&2; fail "the control transcript does not contain: $1"; }; }
-nphavent() { grep -qF -- "$1" "$NP_SERIAL" && { sed -n '/M1 END/,$p' "$NP_SERIAL" >&2; fail "the control transcript contains what it must not: $1"; }; }
-
-nphave "IPC OPEN R FFFFFFFFFFFFFFFD"
-nphave "CHAN REFUSE C 0D EP 0000000000000000 R FFFFFFFFFFFFFFFD"
-nphave "CHAN REFUSE C 0E EP 0000000000000000 R FFFFFFFFFFFFFFFD"
-nphave "CHAN REFUSE C 0F EP 0000000000000000 R FFFFFFFFFFFFFFFD"
-nphave "IPC CHK NPSEND GOT FFFFFFFFFFFFFFFD WANT FFFFFFFFFFFFFFFD"
-nphave "IPC CHK NPRECV GOT FFFFFFFFFFFFFFFD WANT FFFFFFFFFFFFFFFD"
-nphave "IPC NOPROC BAD 0000"
-nphave "USER EXIT CODE 00004E4F50524F43"
-# NOTHING WAS OPENED, so the exit report says nothing at all.
-nphavent "CHAN TOTAL"
-nphavent "CHAN OPEN P"
-nphavent "CHAN REL P"
-echo "CHECK 13: pass  NEGATIVE CONTROL — the SAME BINARY started with \`run 0x$LBA_A\` is in ring 3 with no process slot, and all three syscalls refuse it with CHAN_NOPROC; no channel was opened, so chanExitReport printed NOTHING (which is what keeps every golden from M1 to M19 where it is)"
+# THIS USED TO BE A SECOND BOOT AND IT CANNOT BE ONE ANY MORE. The control ran
+# the SAME BINARY with `run <lba>`, which at M20 gave a program ring 3, its own
+# address space, a heap and file descriptors AND NO PROCESS SLOT, so all three
+# channel syscalls refused it with CHAN_NOPROC and the transcript proved it.
+#
+# ADR-0034 -- the launch unification, merged alongside this milestone -- routed
+# `run` through `procCreate` (elf.dart). Every ring-3 program now HAS a slot,
+# `chanCallerId()` returns 0 only when `procLive() < 1`, and nothing reachable
+# from the shell produces that state. The boot did not start failing because the
+# kernel got worse; the condition it depended on stopped existing.
+#
+# THE GUARD IS LIVE, NOT DEAD, AND THE DIFFERENCE MATTERS. `chanRetCorrupt`
+# (GAP-0206) is unreachable BY CONSTRUCTION -- there is no state that produces
+# it. This is not that: an M9-style payload runs with no process slot and would
+# reach these three lines today. What is missing is a payload that issues
+# `chanopen`, and adding one is not a merge's work -- `shellStrHelp` enumerates
+# every `user` mode, three harnesses pin it at 2224 bytes, and GAP-0105 and
+# GAP-0115 both record that moving it moves m3-m6's goldens by substitution.
+# GAP-0214 carries that, worded so the next person knows it is a live guard
+# waiting for a test rather than dead code filed away.
+#
+# So the behavioural proof is gone and is recorded as gone. What is asserted
+# here instead is that the guard still EXISTS -- all three syscalls still ask
+# chanCallerId() first and still refuse with chanRetNoProc. That is a weaker
+# claim than the boot made, it is stated as weaker, and it is the strongest one
+# available until the payload exists.
+NOPROC_GUARDS=$(grep -c 'chanRefuse(frame, u64(chanSys[A-Za-z]*No), [a-z]*, u64(chanRetNoProc));' "$CORE_DIR/kernel/chan.dart")
+[[ "$NOPROC_GUARDS" -eq 3 ]] || fail "chan.dart has $NOPROC_GUARDS chanRetNoProc refusals, expected 3 -- one in each of chanSysOpen, chanSysSend and chanSysRecv. The behavioural control for this path was removed when ADR-0034 made every ring-3 program a process (GAP-0214); if the guard itself goes too, nothing is left."
+CALLER_ID=$(grep -c 'final u64 id = chanCallerId();' "$CORE_DIR/kernel/chan.dart")
+[[ "$CALLER_ID" -eq 3 ]] || fail "chan.dart calls chanCallerId() from $CALLER_ID syscalls, expected 3 -- the identity check that precedes every chanRetNoProc refusal"
+grep -q 'if (procLive() < u64(1)) {' "$CORE_DIR/kernel/chan.dart" || fail "chanCallerId no longer returns 0 when no process is live, which is the condition chanRetNoProc exists to answer"
+echo "STRUCTURAL: pass  all three channel syscalls still ask chanCallerId() and still refuse with chanRetNoProc, and chanCallerId still answers 0 when procLive() is 0 — asserted STRUCTURALLY, because ADR-0034 removed the only way the shell could reach this path. The guard is live and untested, not dead: an M9-style payload with no process slot would still hit it (GAP-0214)"
 
 # ---- The exit criterion, stated once more against what actually happened. --
 SERIAL_BYTES=$(wc -c <"$SERIAL" | tr -d ' ')
 echo
-echo "M20-ipc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build ONE freestanding static ELF64 program which make-image.py writes to TWO BYTE-IDENTICAL disk slots (it refuses to build an image where they differ) -> 8 structural checks (chanStore 2624 bytes and the second-to-last block in .bss, immediately before S0's ioctlStore with its regions tiling exactly and the ring depth a power of two, chanMsgBytes HARD-CAPPED at 64 in the kernel with both validators bounding the length before touching the pointer and only the WRITE one requiring the W bit, the single-producer discipline and the publication order read out of chanSysSend/chanSysRecv, a 3-call-site storage seam named nowhere else with exactly one release site which is procCleanup, $CODE_COUNT distinct refusal-and-status codes all above one floor (12 of them provoked from ring 3 in this run) and three syscall numbers colliding with nothing, 17 @rodata tables against their call sites, shellStrHelp UNCHANGED at 2224, and chanInit/chanExitReport both silent on a boot that opens no channel) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M20 added no assembly) -> TWO real QEMU boots, M1's ${M1_BYTES}-byte golden a byte-exact prefix of both. ${SERIAL_BYTES} bytes of transcript in which TWO RING-3 PROCESSES IN TWO DIFFERENT ADDRESS SPACES EXCHANGED SIXTEEN MESSAGES: the SAME BINARY took the requester role and the responder role because \`chanopen\` told it which it was, four requests of four different lengths ($(d req_lens)) crossed one way and four replies of four more ($(d rep_lens)) came back DERIVED FROM THE BYTES THAT ARRIVED, and each process EXITED WITH A 64-BIT FNV-1a HASH OF EVERY PAYLOAD BYTE IT RECEIVED — $(d a_hash) and $(d b_hash), both computed on the host from the protocol's formulas BEFORE the machine booted, both reproduced exactly by a SECOND session on the same port number with a new generation and two new process ids; the ring filled to exactly $(d burst) messages and refused the ninth; EIGHT MESSAGES SENT BY A PROCESS THAT THEN EXITED WERE DELIVERED IN FULL to a survivor whose peer no longer existed, in that order, with CHAN_PEERGONE arriving only once the last of them was drained; nineteen refusal outcomes observed from ring 3 as return values, among them a receive into the program's own read-only page and a send with a pointer of 0xFFFFFFFFFFFFFFFF; the frame allocator's free count identical to the frame across both sessions because a channel is @bss and costs it nothing; and the SAME BINARY run as an M10-style program with no process slot refused by all three syscalls with CHAN_NOPROC. Screenshot at $SHOT_PNG"
+echo "M20-ipc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build ONE freestanding static ELF64 program which make-image.py writes to TWO BYTE-IDENTICAL disk slots (it refuses to build an image where they differ) -> 8 structural checks (chanStore 2624 bytes and the second-to-last block in .bss, immediately before S0's ioctlStore with its regions tiling exactly and the ring depth a power of two, chanMsgBytes HARD-CAPPED at 64 in the kernel with both validators bounding the length before touching the pointer and only the WRITE one requiring the W bit, the single-producer discipline and the publication order read out of chanSysSend/chanSysRecv, a 3-call-site storage seam named nowhere else with exactly one release site which is procCleanup, $CODE_COUNT distinct refusal-and-status codes all above one floor (12 of them provoked from ring 3 in this run) and three syscall numbers colliding with nothing, 17 @rodata tables against their call sites, shellStrHelp UNCHANGED at 2224, and chanInit/chanExitReport both silent on a boot that opens no channel) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M20 added no assembly) -> ONE real QEMU boot, M1's ${M1_BYTES}-byte golden a byte-exact prefix of it. ${SERIAL_BYTES} bytes of transcript in which TWO RING-3 PROCESSES IN TWO DIFFERENT ADDRESS SPACES EXCHANGED SIXTEEN MESSAGES: the SAME BINARY took the requester role and the responder role because \`chanopen\` told it which it was, four requests of four different lengths ($(d req_lens)) crossed one way and four replies of four more ($(d rep_lens)) came back DERIVED FROM THE BYTES THAT ARRIVED, and each process EXITED WITH A 64-BIT FNV-1a HASH OF EVERY PAYLOAD BYTE IT RECEIVED — $(d a_hash) and $(d b_hash), both computed on the host from the protocol's formulas BEFORE the machine booted, both reproduced exactly by a SECOND session on the same port number with a new generation and two new process ids; the ring filled to exactly $(d burst) messages and refused the ninth; EIGHT MESSAGES SENT BY A PROCESS THAT THEN EXITED WERE DELIVERED IN FULL to a survivor whose peer no longer existed, in that order, with CHAN_PEERGONE arriving only once the last of them was drained; nineteen refusal outcomes observed from ring 3 as return values, among them a receive into the program's own read-only page and a send with a pointer of 0xFFFFFFFFFFFFFFFF; the frame allocator's free count identical to the frame across both sessions because a channel is @bss and costs it nothing. The no-process control is GONE and is not quietly missing: ADR-0034 made every ring-3 program a process, so the shell can no longer produce a caller without a slot, and the CHAN_NOPROC guard is now asserted STRUCTURALLY ONLY -- live, reachable by an M9-style payload, and untested until one exists (GAP-0214). Screenshot at $SHOT_PNG"
 exit 0

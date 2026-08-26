@@ -7469,3 +7469,49 @@ could not have: 11 and 12 were *reserved* in a document, not *declared* in the k
 no second constant for it to collide with. A check that reads only code cannot see a reservation that
 lives only in prose. The registry verifier is the one that reads both, which is the argument for
 running it on every merge and not only when `drm-abi` happens to be in the set.
+
+---
+
+## GAP-0214 — `chanRetNoProc` is a LIVE guard that nothing tests, because ADR-0034 removed the only way the shell could reach it
+
+**Domain:** kernel IPC, conformance (surfaced by integration: ADR-0027 meeting ADR-0034)
+**Status:** **OPEN — live but unreachable from the shell; needs a no-slot payload to test.**
+
+`chanSysOpen`, `chanSysSend` and `chanSysRecv` each begin by asking `chanCallerId()`, which returns 0
+when `procLive() < 1`, and each refuses such a caller with `chanRetNoProc`. At M20 that path was
+covered behaviourally: `m20-ipc`'s CHECK 13 booted the same binary with `run <lba>`, which gave a
+program ring 3, its own address space, a heap and file descriptors **and no process slot**, and the
+transcript showed all three syscalls refusing it by name.
+
+**ADR-0034 abolished the premise, not the guard.** Unifying the launch path routed `run` through
+`procCreate`, so every ring-3 program now has a slot and nothing reachable from the shell produces
+`procLive() < 1` while ring-3 code runs. Thirteen assertions and one whole QEMU boot went with it.
+
+**THIS IS NOT GAP-0206's CATEGORY AND MUST NOT BE FILED AS THOUGH IT WERE.** `chanRetCorrupt` is
+unreachable **by construction** — no state this kernel can enter produces it, which is why recording
+it as structurally-asserted-only is the honest end of that story. This one is different in the way
+that matters: **the path still exists and is still reachable.** An M9-style payload runs with no
+process slot and would hit these three lines today; what is missing is a payload that issues
+`chanopen`. A live defence with nothing proving it works is a **worse** state than dead-and-known,
+and flattening the two into one entry would put a working guard in the drawer marked "can't happen".
+
+**What is asserted now, stated as the weaker claim it is.** `m20-ipc` CHECK 13 is structural: all
+three syscalls still call `chanCallerId()`, all three still refuse with `chanRetNoProc`, and
+`chanCallerId` still returns 0 when `procLive()` is 0. That proves the guard has not been deleted. It
+does not prove it works.
+
+**Why the payload was not simply added during the merge, measured rather than asserted.** A payload
+is a fixed byte sequence in kernel `.rodata` and would itself be about fourteen bytes. The cost is
+everything around it: `shellStrHelp` **enumerates every `user` mode, one line each**, so a new mode
+grows it; three harnesses (`m10-elf`, `m12-heap`, `m13-libc`) pin it at exactly **2224** bytes; and
+GAP-0105 and GAP-0115 both record that moving `shellStrHelp` moves **m3-m6's goldens by
+substitution**, because the help text is in their transcripts. Add `userCodeSizes` going 6 → 7 bytes,
+`userModeCount`, the mode-name parsing, and `m9-ring3`'s "six payload tables" checks and goldens, and
+one fourteen-byte payload reaches eight harnesses' goldens and three pinned constants. That is a unit
+of its own, not a line in a merge.
+
+**What closing it takes.** A `user chanopen` payload — `mov $13,%rax; xor %rdi,%rdi; int $0x80` and
+an exit — plus its mode wiring, and then the golden churn above taken deliberately in one commit. The
+kernel prints `CHAN REFUSE C 0D EP 0000000000000000 R FFFFFFFFFFFFFFFD` itself when it refuses, so
+the payload needs to report nothing: the existing transcript assertion works unchanged the moment
+something can reach the path.
