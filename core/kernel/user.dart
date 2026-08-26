@@ -1476,6 +1476,13 @@ void userSysExit(u64 frame) {
   // before M16 boots a kernel that never writes, so on every one of them this
   // prints nothing and no golden moves.
   fileWriteReport();
+  // M20: a THIRD line, and only if this boot ever opened a channel. Every
+  // harness before M20 boots a kernel on which nothing does, so on every one of
+  // them this prints nothing and no golden moves. Printed here, beside the two
+  // file reports, because this is the one place both things that can be in ring
+  // 3 pass through on the way out, and BEFORE the process branch below because
+  // that branch does not come back.
+  chanExitReport();
   // M11: a process's exit is a different event. It may not be the end of
   // anything -- another process can be READY -- so [procSysExit] RETURNS
   // NORMALLY when it switched to somebody else, and never returns when this was
@@ -1619,6 +1626,24 @@ void userSyscall(u64 frame) {
   // five. What is different is entirely inside [fileSysWrite].
   if (no == u64(fileSysWriteNo)) {
     fileSysWrite(frame);
+    return;
+  }
+  // M20: `chanopen`, `chansend` and `chanrecv` (syscalls 11..13). Refused
+  // unless a PROCESS is live, for `yield`'s reason and one more: an endpoint is
+  // owned by a process ID, and there is no ID without a slot. The refusal is
+  // NOT made here, though -- each of the three makes it itself, through
+  // [chanCallerId], so that "the caller is not a process" arrives at ring 3 as
+  // [chanRetNoProc] with a name rather than as M9's opaque all-ones.
+  if (no == u64(chanSysOpenNo)) {
+    chanSysOpen(frame);
+    return;
+  }
+  if (no == u64(chanSysSendNo)) {
+    chanSysSend(frame);
+    return;
+  }
+  if (no == u64(chanSysRecvNo)) {
+    chanSysRecv(frame);
     return;
   }
   if (no == u64(userSysWhoNo)) {

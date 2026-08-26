@@ -37,6 +37,15 @@ part 'heap.dart';
 part 'fat.dart';
 part 'file.dart';
 part 'args.dart';
+// M20 (ADR-0027): LAST, and the position is load-bearing. This file declares a
+// `@bss` block, and every harness from M2 onward measures "the donated bytes
+// from MY block to the end of `.bss`" -- a new block anywhere but the end would
+// move every one of those numbers at once. At the end, each older harness
+// subtracts this one first, exactly as M14, M15, M16 and M19 each did in turn.
+// (The block's NAME is deliberately not written here: `m20-ipc/run.sh` greps
+// core/kernel/ for it and requires chan.dart to be the only file that says it,
+// which is ADR-0011 §0's seam discipline made mechanical.)
+part 'chan.dart';
 
 /// Kernel entry point.
 ///
@@ -214,6 +223,20 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   fileInit();
+
+  // M20: the channel table, and the same argument for the ninth time. The
+  // endpoint-release path is reached from [procCleanup] on EVERY process
+  // teardown this kernel performs -- including those of m11's, m18's and m19's
+  // programs, none of which has ever opened a channel. A garbage owner word
+  // would make the first of those print a release line into the middle of a
+  // byte-exact golden, and a garbage state word would make it wipe a port record
+  // while a live process was using it. [chanExitReport] reads the "has anything
+  // ever opened a channel" word on every exit from ring 3 for the same reason.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  chanInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)
