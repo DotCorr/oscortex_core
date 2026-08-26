@@ -394,7 +394,17 @@ const int fileFdLast = 5;
 /// cluster.** [fileWriteChunk] says why the obvious test — "is the offset on a
 /// cluster boundary" — is not the same question.
 const int fileFdAlloc = 6;
-const int fileFdSpare7 = 7;
+
+/// S0 (ADR-0033). Which DEVICE this descriptor names, when its state is
+/// [fileFdDevice]. Meaningless — and zero, because [fileClearFd] zeroes the
+/// row — for every other state.
+///
+/// **This was `fileFdSpare7` and it is now spoken for**, which is what the
+/// spares were declared for (see the note above: this file has no word nothing
+/// reads). A device descriptor has no cluster chain, no size and no position,
+/// so words 1..6 stay zero for one and the only thing that distinguishes
+/// `/dev/dri/card0` from `/dev/dri/renderD128` lives here.
+const int fileFdDevIndex = 7;
 
 /// A descriptor slot nobody has opened.
 const int fileFdFree = 0;
@@ -407,6 +417,24 @@ const int fileFdOpen = 1;
 /// file keeps meaning "there is a file here" and every operation that cares
 /// which kind compares for equality.
 const int fileFdWrite = 2;
+
+/// S0 (ADR-0033) — a descriptor slot holding a DEVICE, not a file.
+///
+/// **Above [fileFdWrite] on purpose, so that every existing test in this file
+/// does the right thing with one without being told about devices.**
+/// `state >= fileFdOpen` still means "there is something here", so
+/// [fileFreeFd], [fileReleaseOwner] and [fileSysClose] handle a device
+/// descriptor correctly with no change at all. And `read`, `seek` and
+/// `fdwrite` all compare for EQUALITY against the state they need
+/// ([fileFdOpen] or [fileFdWrite]), so all three refuse a device descriptor
+/// with [fileRetBadMode] — which is the right answer and was already written.
+/// [fileFlushFd]'s first line is `!= fileFdWrite`, so closing a device writes
+/// no directory entry.
+///
+/// The only thing that had to be added is the branch in [fileSysOpen] that
+/// creates one, and `ioctl.dart`'s check that a descriptor it is handed IS
+/// one.
+const int fileFdDevice = 3;
 
 /// The two values `open`'s third argument may take. Anything else is
 /// [fileRetBadMode], refused before the name is even parsed.
@@ -618,7 +646,7 @@ void fileClearFd(u64 row, u64 fd) {
   fileSetFd(row, fd, u64(fileFdEntry), u64(0));
   fileSetFd(row, fd, u64(fileFdLast), u64(0));
   fileSetFd(row, fd, u64(fileFdAlloc), u64(0));
-  fileSetFd(row, fd, u64(fileFdSpare7), u64(0));
+  fileSetFd(row, fd, u64(fileFdDevIndex), u64(0));
 }
 
 /// Zeroes every metadata word and every descriptor word.
@@ -1383,7 +1411,14 @@ void fileSysOpen(u64 frame) {
     fileRefuse(frame, u64(fileRetBadLen));
     return;
   }
-  if (len > u64(fileNameMax)) {
+  // S0 (ADR-0033): the OUTER bound is now the DEVICE name length, not
+  // [fileNameMax]. `/dev/dri/card0` is fourteen characters and
+  // `/dev/dri/renderD128` is nineteen, so bounding by [fileNameMax] here —
+  // which is what this line did until S0 — refused every device name before
+  // its bytes were ever copied. The FAT bound has not been relaxed: it moved
+  // down into the non-device arm below, and `fatParseAt` is reached only
+  // through that arm.
+  if (len > u64(ioctlDevNameMax)) {
     fileRefuse(frame, u64(fileRetBadLen));
     return;
   }
@@ -1397,6 +1432,64 @@ void fileSysOpen(u64 frame) {
     Pointer<u8>.fromAddress(buf + i).value =
         Pointer<u8>.fromAddress(ptr + i).value;
     i = i + u64(1);
+  }
+  // ---------------------------------------------------------------------
+  // S0 — THE DEVICE NAMESPACE. ADR-0031 §6, GAP-0174.
+  //
+  // **HERE, AND NOT IN `fatLookup`.** That placement is the whole of the
+  // safety argument and design/display-protocol.md §2.1 recorded why: this
+  // point is AFTER the pointer-validated bounce-buffer copy — so the bytes
+  // being examined are the kernel's own — and BEFORE `fatParseAt`, so a
+  // device name never becomes a FAT name. A device branch inside `fatLookup`
+  // would also be reached by `fileMakeEmpty`, which would treat the device
+  // name as a real directory entry and truncate and rewrite it. **That is a
+  // ring-3-reachable volume corruption**, and it is avoided by where this
+  // block sits rather than by anything inside it.
+  //
+  // The two namespaces are disjoint BY CONSTRUCTION: `fatNameByteBad`
+  // forbids `/` in an 8.3 name, so nothing that reaches this branch could
+  // ever have named a file, and nothing on the volume can ever reach
+  // [ioctlDevLookup]. A `/`-name that is not a device this kernel serves is
+  // [fileRetNotFound] and is NEVER retried as a FAT name — falling through
+  // would turn a missing device into a plausible 8.3 parse failure.
+  if (ioctlIsDevName(buf, len) > u64(0)) {
+    // A device is opened for READING. [fileOpenWrite] means create + truncate
+    // + append-only on this OS (ADR-0020 §0), and none of those three verbs
+    // means anything to a device node; `ioctl` is how a device is written to.
+    // Refused rather than silently accepted, so a program asking for
+    // something this kernel does not have finds out at `open`.
+    if (mode != u64(fileOpenRead)) {
+      fileRefuse(frame, u64(fileRetBadMode));
+      return;
+    }
+    final u64 dev = ioctlDevLookup(buf, len);
+    if (dev >= u64(ioctlDevCount)) {
+      fileRefuse(frame, u64(fileRetNotFound));
+      return;
+    }
+    final u64 dfd = fileFreeFd(row);
+    if (dfd >= u64(fileMaxFds)) {
+      fileRefuse(frame, u64(fileRetNoSlot));
+      return;
+    }
+    fileClearFd(row, dfd);
+    fileSetFd(row, dfd, u64(fileFdDevIndex), dev);
+    fileSetFd(row, dfd, u64(fileFdState), u64(fileFdDevice));
+    fileBump(u64(fileMetaOpens));
+    ioctlNoteOpen();
+    fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) + u64(1));
+    if (fileMeta(u64(fileMetaPeak)) < fileMeta(u64(fileMetaLive))) {
+      fileSetMeta(u64(fileMetaPeak), fileMeta(u64(fileMetaLive)));
+    }
+    userSetFrame(frame, u64(userFrameRax), dfd);
+    return;
+  }
+  // Not a device name, so it must be an 8.3 name — and [fileNameMax] is
+  // enforced HERE, on the arm that reaches `fatParseAt`, exactly as it was
+  // enforced above before S0 widened the outer bound.
+  if (len > u64(fileNameMax)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
   }
   final u64 pn = fatParseAt(buf, len);
   if (pn > u64(fatErrOk)) {

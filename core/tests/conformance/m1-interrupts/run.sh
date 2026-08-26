@@ -56,35 +56,49 @@ setup_error() {
   exit 2
 }
 
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=23
+
+
+ck; if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
   setup_error "qemu-system-x86_64 not found on PATH, see docs/known-gaps.md"
 fi
 
 EXPECTED="$SCRIPT_DIR/expected.txt"
-[[ -f "$EXPECTED" ]] || setup_error "golden file not found at $EXPECTED"
+ck; [[ -f "$EXPECTED" ]] || setup_error "golden file not found at $EXPECTED"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m1.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m1.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Step 1 — build (dcc build + assemble boot.S and isr.S + link)
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-if [[ $BUILD_STATUS -ne 0 ]]; then
+ck; if [[ $BUILD_STATUS -ne 0 ]]; then
   fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 fi
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — structural checks that need no QEMU (CLAUDE.md's testing rules say
 # anything verifiable without booting should be).
 # ---------------------------------------------------------------------------
-if ! command -v x86_64-elf-objdump >/dev/null 2>&1; then
+ck; if ! command -v x86_64-elf-objdump >/dev/null 2>&1; then
   setup_error "x86_64-elf-objdump not found on PATH (brew install x86_64-elf-binutils)"
 fi
 
@@ -94,7 +108,7 @@ fi
 # silent data damage rather than a crash. Assert it here rather than trusting
 # the toolchain to keep its promise.
 RED_ZONE_HITS=$(x86_64-elf-objdump -d "$CORE_DIR/build/kmain.o" | grep -cE '\-0x[0-9a-f]+\(%rsp\)')
-if [[ "$RED_ZONE_HITS" -ne 0 ]]; then
+ck; if [[ "$RED_ZONE_HITS" -ne 0 ]]; then
   x86_64-elf-objdump -d "$CORE_DIR/build/kmain.o" | grep -nE '\-0x[0-9a-f]+\(%rsp\)' >&2
   fail "kmain.o contains $RED_ZONE_HITS negative-%rsp access(es) — the red zone is back (DCDart ADR-0039 regressed). An interrupt would corrupt the interrupted function's locals."
 fi
@@ -105,7 +119,7 @@ echo "STRUCTURAL: pass  no red-zone (negative %rsp) accesses in kmain.o"
 # replaced by `unreachable` and deleted — either way `M1 FAULT 06` would stop
 # being evidence of a real trap. A `ud2` reached only by a conditional branch
 # is what makes it real.
-if ! x86_64-elf-objdump -d --disassemble=kmain "$CORE_DIR/build/kmain.o" | grep -q 'ud2'; then
+ck; if ! x86_64-elf-objdump -d --disassemble=kmain "$CORE_DIR/build/kmain.o" | grep -q 'ud2'; then
   fail "kmain contains no ud2 — the deliberate overflow trap was optimized away, so M1's fault test would prove nothing"
 fi
 echo "STRUCTURAL: pass  kmain contains a ud2 (deliberate overflow trap survives codegen)"
@@ -114,9 +128,9 @@ echo "STRUCTURAL: pass  kmain contains a ud2 (deliberate overflow trap survives 
 # Size column is hex; converted with bash arithmetic rather than awk's
 # strtonum(), which is a gawk extension and absent from macOS's awk.
 STUB_TABLE_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/isr.o" | awk '$2 == ".rodata" {print $3; exit}')
-[[ -n "$STUB_TABLE_HEX" ]] || fail "isr.o has no .rodata section — the stub-address table is missing"
+ck; [[ -n "$STUB_TABLE_HEX" ]] || fail "isr.o has no .rodata section — the stub-address table is missing"
 STUB_TABLE_BYTES=$((16#$STUB_TABLE_HEX))
-if [[ "$STUB_TABLE_BYTES" -ne 2048 ]]; then
+ck; if [[ "$STUB_TABLE_BYTES" -ne 2048 ]]; then
   fail "isr.o .rodata is $STUB_TABLE_BYTES bytes, expected 2048 (256 stub addresses x 8)"
 fi
 echo "STRUCTURAL: pass  isr.o stub-address table is 2048 bytes (256 entries)"
@@ -129,7 +143,7 @@ echo "STRUCTURAL: pass  isr.o stub-address table is 2048 bytes (256 entries)"
 # .got.plt explicitly; a GOT appearing would mean the toolchain decided this
 # freestanding image needed position-independent indirection, which for a
 # kernel linked at a fixed 1MiB is both wrong and silent.
-if x86_64-elf-objdump -h "$KERNEL_ELF" | grep -qE '\.got(\.plt)?[[:space:]]'; then
+ck; if x86_64-elf-objdump -h "$KERNEL_ELF" | grep -qE '\.got(\.plt)?[[:space:]]'; then
   x86_64-elf-objdump -h "$KERNEL_ELF" | grep -E '\.got' >&2
   fail "kernel.elf has a .got/.got.plt section — something started emitting position-independent indirection into a fixed-address kernel image"
 fi
@@ -161,26 +175,26 @@ echo "STRUCTURAL: pass  kernel.elf has no .got/.got.plt"
 #     exactly the failure this catches).
 # ---------------------------------------------------------------------------
 RODATA_IDX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.rodata[[:space:]].*/\1/p')
-[[ -n "$RODATA_IDX" ]] || fail "kmain.o has no .rodata section — the @rodata message tables are missing entirely"
+ck; [[ -n "$RODATA_IDX" ]] || fail "kmain.o has no .rodata section — the @rodata message tables are missing entirely"
 BSS_IDX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.bss[[:space:]].*/\1/p')
-[[ -n "$BSS_IDX" ]] || fail "kmain.o has no .bss section — the @bss mutable statics (ADR-0021) are missing entirely"
+ck; [[ -n "$BSS_IDX" ]] || fail "kmain.o has no .bss section — the @bss mutable statics (ADR-0021) are missing entirely"
 
 TABLE_COUNT=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v ix="$RODATA_IDX" '$4=="OBJECT" && $7==ix' | wc -l | tr -d ' ')
 STRAY=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
   | awk -v r="$RODATA_IDX" -v b="$BSS_IDX" '$4=="OBJECT" && $7!=r && $7!=b {print $8" (section "$7")"}')
-if [[ -n "$STRAY" ]]; then
+ck; if [[ -n "$STRAY" ]]; then
   echo "$STRAY" >&2
   fail "an OBJECT symbol landed outside both .rodata and .bss — a @rodata table there would be writable or unloaded, a @bss block there would not be zeroed"
 fi
-[[ "$TABLE_COUNT" -ge 16 ]] || fail "only $TABLE_COUNT @rodata table(s) found in kmain.o .rodata, expected at least 16 (one per fixed message)"
+ck; [[ "$TABLE_COUNT" -ge 16 ]] || fail "only $TABLE_COUNT @rodata table(s) found in kmain.o .rodata, expected at least 16 (one per fixed message)"
 
 # The @bss set, from the image and from the source, compared name for name.
 BSS_IN_IMAGE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
   | awk -v b="$BSS_IDX" '$4=="OBJECT" && $7==b {print $8}' | sort)
 BSS_IN_SOURCE=$(grep -h -A1 '^@bss$' "$CORE_DIR"/kernel/*.dart \
   | sed -n 's/^final Bss \([A-Za-z0-9_]*\) = .*/\1/p' | sort)
-[[ -n "$BSS_IN_SOURCE" ]] || fail "no @bss declaration found in core/kernel/*.dart — the mutable statics ADR-0021 migrated to are gone"
-if [[ "$BSS_IN_IMAGE" != "$BSS_IN_SOURCE" ]]; then
+ck; [[ -n "$BSS_IN_SOURCE" ]] || fail "no @bss declaration found in core/kernel/*.dart — the mutable statics ADR-0021 migrated to are gone"
+ck; if [[ "$BSS_IN_IMAGE" != "$BSS_IN_SOURCE" ]]; then
   diff <(echo "$BSS_IN_SOURCE") <(echo "$BSS_IN_IMAGE") >&2 || true
   fail "the @bss blocks declared in core/kernel/*.dart and the ones in kmain.o's .bss are not the same set (< source, > image). An unreferenced @bss block is dropped silently by LLVM."
 fi
@@ -224,7 +238,7 @@ echo "STRUCTURAL: pass  all $TABLE_COUNT @rodata message tables are in .rodata, 
 # (GAP-0050, one RWX segment) — not a new hazard, since `.text` is writable
 # too, but recorded in GAP-0079.
 # ---------------------------------------------------------------------------
-if ! python3 - "$CORE_DIR/build/kmain.o" "$RODATA_IDX" <<'PY'
+ck; if ! python3 - "$CORE_DIR/build/kmain.o" "$RODATA_IDX" <<'PY'
 import re, subprocess, sys
 
 obj, idx = sys.argv[1], sys.argv[2]
@@ -305,17 +319,15 @@ echo "STRUCTURAL: pass  .rodata's $TABLE_COUNT table symbols abut exactly with n
 # `isrDispatch` respectively). They are assembly, so there is no dcc to write
 # them a manifest. kernel.elf covers them — nothing may be left dangling there.
 # ---------------------------------------------------------------------------
-if ! command -v llvm-nm >/dev/null 2>&1; then
+ck; if ! command -v llvm-nm >/dev/null 2>&1; then
   fail "llvm-nm not found on PATH, see docs/known-gaps.md"
 fi
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
 
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
-  "$CORE_DIR/build/kmain.o" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 
@@ -339,20 +351,13 @@ fi
 SERIAL_CAPTURE="$WORKDIR/serial.txt"
 : >"$SERIAL_CAPTURE"
 
-timeout 10 qemu-system-x86_64 \
-  -kernel "$KERNEL_ELF" \
-  -m 128M \
-  -serial "file:$SERIAL_CAPTURE" \
-  -display none \
-  -no-reboot \
-  >"$WORKDIR/qemu.log" 2>&1
-QEMU_STATUS=$?
-if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
+capture_log "$WORKDIR/qemu.log" QEMU_STATUS -- timeout 10 qemu-system-x86_64 -kernel "$KERNEL_ELF" -m 128M -serial "file:$SERIAL_CAPTURE" -display none -no-reboot
+ck; if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
   cat "$WORKDIR/qemu.log" >&2
   fail "qemu-system-x86_64 exited $QEMU_STATUS unexpectedly (log above)"
 fi
 
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED"; then
+ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED"; then
   echo "--- captured serial output ---" >&2
   cat "$SERIAL_CAPTURE" >&2
   echo "--- expected ---" >&2
@@ -363,5 +368,9 @@ if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED"; then
 fi
 
 CAPTURED_BYTES=$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M1-interrupts: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S) -> link -> structural checks -> verify-freestanding pass -> real QEMU boot (-m 128M) -> exact ${CAPTURED_BYTES}-byte serial match: 256 IDT gates installed, int3 delivered to a DCDart handler and resumed, timer IRQ observed on remapped vector 0x20, 100 PIT ticks with working EOI, and a deliberate #UD caught and diagnosed instead of triple-faulting"
 exit 0

@@ -36,7 +36,7 @@ unsigned long sys_call(unsigned long n, unsigned long a, unsigned long b) {
   return sys_call3(n, a, b, 0);
 }
 
-unsigned long write(const void *buf, size_t len) {
+unsigned long os_write(const void *buf, size_t len) {
   return sys_call(SYS_WRITE, (unsigned long)buf, len);
 }
 
@@ -87,13 +87,13 @@ unsigned long sbrk_last_error(void) { return sbrkErr; }
  * for through a ring-3 pointer -- so this is where the two conventions meet.
  * ------------------------------------------------------------------------- */
 
-unsigned long open(const char *name) { return openmode(name, O_READ); }
+unsigned long os_open(const char *name) { return openmode(name, O_READ); }
 
-unsigned long read(unsigned long fd, void *buf, size_t len) {
+unsigned long os_read(unsigned long fd, void *buf, size_t len) {
   return sys_call3(SYS_READ, fd, (unsigned long)buf, len);
 }
 
-unsigned long close(unsigned long fd) { return sys_call(SYS_CLOSE, fd, 0); }
+unsigned long os_close(unsigned long fd) { return sys_call(SYS_CLOSE, fd, 0); }
 
 unsigned long seek(unsigned long fd, unsigned long off) {
   return sys_call(SYS_SEEK, fd, off);
@@ -118,4 +118,25 @@ unsigned long create(const char *name) { return openmode(name, O_WRITE); }
 
 unsigned long fdwrite(unsigned long fd, const void *buf, size_t len) {
   return sys_call3(SYS_FDWRITE, fd, (unsigned long)buf, len);
+}
+
+/* ---------------------------------------------------------------------------
+ * S0 (ADR-0033) — `ioctl`, syscall 12.
+ *
+ * ONE LINE, AND IT ADDS NO `int $0x80` TO THIS LIBRARY. `sys_call3` already
+ * exists and already carries three arguments, so the whole of `ioctl` on the
+ * userland side is the argument order -- ADR-0031 §4.1 pointed that out as a
+ * property of the design rather than a happy accident, and m13-libc's "exactly
+ * one `int $0x80` in the whole library" assertion is what would have caught it
+ * being otherwise.
+ *
+ * The kernel's value is returned UNCHANGED, refusals included, for the reason
+ * the other seven raw syscalls return theirs unchanged: IOCTL_ERR_FLOOR
+ * separates an answer from a refusal with one comparison, and there are eleven
+ * distinct refusals to tell apart. `-1` is built in posix.c, by the port that
+ * asked for it, and nowhere else.
+ * ------------------------------------------------------------------------- */
+
+unsigned long os_ioctl(unsigned long fd, unsigned long request, void *argp) {
+  return sys_call3(SYS_IOCTL, fd, request, (unsigned long)argp);
 }

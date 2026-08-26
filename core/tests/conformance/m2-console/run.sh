@@ -78,39 +78,53 @@ setup_error() {
   exit 2
 }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=33
+
+
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 DRIVER="$SCRIPT_DIR/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
-[[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
-[[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
+ck; [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
+ck; [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER"
 
 # The M1 golden, reused as a prefix check. Keeping the RELATIONSHIP mechanical
 # rather than documented is the point: if someone regenerates M2's golden after
 # a serial change, this still fails and names M1.
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
-[[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m2.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m2.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Step 1 — build.
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — structural checks (CLAUDE.md: anything checkable without booting
@@ -131,7 +145,7 @@ KERNEL_ELF="$CORE_DIR/build/kernel.elf"
 # period the bug was live.
 CLEAR_STORES=$(x86_64-elf-objdump -d --disassemble=vgaClear "$CORE_DIR/build/kmain.o" \
   | grep -cE 'movw[[:space:]]+\$0xf20')
-if [[ "$CLEAR_STORES" -lt 1 ]]; then
+ck; if [[ "$CLEAR_STORES" -lt 1 ]]; then
   x86_64-elf-objdump -d --disassemble=vgaClear "$CORE_DIR/build/kmain.o" >&2
   fail "vgaClear contains no 16-bit store of the blank cell 0x0f20 — the MMIO writes were optimized away (DCDart ADR-0041's volatile Pointer<T> access regressed, or -O is on without it)"
 fi
@@ -141,7 +155,7 @@ echo "STRUCTURAL: pass  vgaClear keeps $CLEAR_STORES volatile 16-bit MMIO store(
 # accesses, so a `movdqa`/`movups` appearing here would mean the stores stopped
 # being volatile — the same defect as 2a, caught before it becomes total
 # deletion. A real check, not a restatement: this fires while 2a still passes.
-if x86_64-elf-objdump -d --disassemble=vgaClear "$CORE_DIR/build/kmain.o" \
+ck; if x86_64-elf-objdump -d --disassemble=vgaClear "$CORE_DIR/build/kmain.o" \
    | grep -qE '\b(movdqa|movdqu|movaps|movups)\b'; then
   fail "vgaClear contains vector stores — volatile semantics were lost, so the individual MMIO writes are being coalesced"
 fi
@@ -153,8 +167,8 @@ echo "STRUCTURAL: pass  vgaClear has no coalesced/vector stores (volatile semant
 # high scancodes index off the end).
 KBD_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
   | awk '$8=="kbdSet1Ascii" {print $3; exit}')
-[[ -n "$KBD_SIZE" ]] || fail "kbdSet1Ascii symbol not found in kmain.o — the scancode table was not emitted"
-if [[ "$KBD_SIZE" -ne 128 ]]; then
+ck; [[ -n "$KBD_SIZE" ]] || fail "kbdSet1Ascii symbol not found in kmain.o — the scancode table was not emitted"
+ck; if [[ "$KBD_SIZE" -ne 128 ]]; then
   fail "kbdSet1Ascii is $KBD_SIZE bytes, expected exactly 128 (one entry per make code) — a make code has bit 7 clear, so 128 entries is what makes every lookup in-range by construction"
 fi
 echo "STRUCTURAL: pass  kbdSet1Ascii is exactly 128 bytes in .rodata"
@@ -218,19 +232,19 @@ bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
 bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-if [[ "$KDATA_BSS" -lt 16 ]]; then
+ck; if [[ "$KDATA_BSS" -lt 16 ]]; then
   fail "the kernel's mutable static storage is $KDATA_BSS bytes, which is less than the 16 M2's console alone needs"
 fi
 for sym in vgaCursorWord m2PhaseWord; do
   SZ=$(bsssize "$sym")
-  [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — the console's mutable state changed shape"
+  ck; [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — the console's mutable state changed shape"
 done
 echo "STRUCTURAL: pass  the kernel holds $KDATA_BSS bytes of mutable static storage ($DART_BSS DCDart @bss + $ASM_BSS assembly-written), including vgaCursorWord and m2PhaseWord at 8 bytes each"
 
@@ -238,12 +252,10 @@ echo "STRUCTURAL: pass  the kernel holds $KDATA_BSS bytes of mutable static stor
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
-  "$CORE_DIR/build/kmain.o" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 
@@ -266,7 +278,7 @@ SERIAL_CAPTURE="$WORKDIR/serial.txt"
 # harness, with a re-run onto a recycled PID, and with this harness's own
 # previous boot still in TIME_WAIT. All three used to surface as QEMU
 # dying with "Address already in use".
-QMP_PORT=$(python3 "$PICKER") || setup_error "pick-port.py could not find a free TCP port"
+ck; QMP_PORT=$(python3 "$PICKER") || setup_error "pick-port.py could not find a free TCP port"
 SCREEN_TEXT="$WORKDIR/screen.txt"
 SHOT_DIR="$CORE_DIR/build"
 SHOT_PNG="$SHOT_DIR/screenshot.png"
@@ -299,19 +311,11 @@ timeout 90 qemu-system-x86_64 \
   >"$WORKDIR/qemu.log" 2>&1 &
 QEMU_PID=$!
 
-python3 "$DRIVER" \
-  --port "$QMP_PORT" \
-  --serial "$SERIAL_CAPTURE" \
-  --wait-for 'M1 END\n' \
-  --png "$SHOT_PNG" \
-  --screen-text "$SCREEN_TEXT" \
-  --keys "$KEYS"
-DRIVE_STATUS=$?
+run_status DRIVE_STATUS -- python3 "$DRIVER" --port "$QMP_PORT" --serial "$SERIAL_CAPTURE" --wait-for 'M1 END\n' --png "$SHOT_PNG" --screen-text "$SCREEN_TEXT" --keys "$KEYS"
 
-wait "$QEMU_PID" 2>/dev/null
-QEMU_STATUS=$?
+await QEMU_STATUS "$QEMU_PID"
 
-if [[ $DRIVE_STATUS -ne 0 ]]; then
+ck; if [[ $DRIVE_STATUS -ne 0 ]]; then
   cat "$WORKDIR/qemu.log" >&2
   echo "--- serial captured so far ---" >&2
   cat "$SERIAL_CAPTURE" >&2
@@ -321,7 +325,7 @@ fi
 # The driver ends with `quit`, so 0 is the expected exit. 124 (timeout) would
 # mean the driver never got that far, which DRIVE_STATUS would already have
 # caught; anything else is a real QEMU-level failure.
-if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
+ck; if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
   cat "$WORKDIR/qemu.log" >&2
   fail "qemu-system-x86_64 exited $QEMU_STATUS unexpectedly (log above)"
 fi
@@ -333,14 +337,14 @@ fi
 # 5a. M1's whole golden must still be a byte-exact PREFIX of this capture.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
-if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+ck; if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
   cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
   fail "the first $M1_BYTES bytes of this boot do not match m1-interrupts/expected.txt — adding the console changed M0/M1 serial output"
 fi
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
 
 # 5b. The whole serial capture, including the keyboard echo.
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
+ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
   echo "--- captured serial ---" >&2
   cat -v "$SERIAL_CAPTURE" >&2
   echo "--- expected ---" >&2
@@ -352,7 +356,7 @@ SERIAL_BYTES=$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')
 echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byte-for-byte (boot report + keyboard echo)"
 
 # 5c. The framebuffer.
-if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
+ck; if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
   echo "--- VGA text buffer as read from guest memory ---" >&2
   cat -n "$SCREEN_TEXT" >&2
   echo "--- expected ---" >&2
@@ -363,12 +367,16 @@ fi
 echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen.txt exactly"
 
 # 5d. The screenshot has to exist and has to be a PNG.
-[[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
-case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
+ck; [[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
+ck; case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
   89504e470d0a1a0a) ;;
   *) fail "$SHOT_PNG is not a PNG (QEMU's screendump format argument may be unsupported on this build)" ;;
 esac
 echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -d ' ') bytes, PNG)"
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M2-console: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S) -> link -> structural checks -> verify-freestanding pass -> real QEMU boot (-m 128M) with real QMP keystroke injection: M1's golden intact as a byte-exact prefix, ${SERIAL_BYTES}-byte serial match including the echo of every typed key, exact 80x25 framebuffer match read from guest memory (backspace edited the screen, five lines of scrolling), and a PNG screenshot at $SHOT_PNG"
 exit 0

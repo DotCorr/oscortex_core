@@ -221,3 +221,32 @@ void free(void *p) {
   }
   insertFree((Blk *)((char *)p - HDR));
 }
+
+/* ---------------------------------------------------------------------------
+ * S0 (ADR-0033) — how big is this block, really?
+ *
+ * ADDED FOR `realloc`, WHICH CANNOT BE WRITTEN CORRECTLY WITHOUT IT. A realloc
+ * built on malloc+copy+free has to copy the old contents into the new block,
+ * and the only length it can copy without reading past the end of the old
+ * allocation is the old allocation's own size. A realloc that copied the NEW
+ * size would over-read on every growing call -- which is the common case, and
+ * which would be a silent out-of-bounds read on a heap this OS has no
+ * guard pages in.
+ *
+ * IT LIVES HERE AND NOT IN port.c BECAUSE THE HEADER LAYOUT LIVES HERE. That
+ * is the whole reason for the function: `port.c` asks a question instead of
+ * knowing an answer, so `Blk` stays private and `HDR` is still named in
+ * exactly one file.
+ *
+ * RETURNS THE USABLE PAYLOAD, WHICH MAY BE MORE THAN WAS ASKED FOR -- the
+ * allocator rounds up to ALIGN and only splits a block when the remainder is
+ * at least MINSPLIT. That is C's `malloc_usable_size` contract and it is the
+ * safe direction to be wrong in: copying the usable size never reads past the
+ * block, and never copies less than the caller stored.
+ * ------------------------------------------------------------------------- */
+size_t malloc_usable(void *p) {
+  if (!p) {
+    return 0;
+  }
+  return ((Blk *)((char *)p - HDR))->size;
+}

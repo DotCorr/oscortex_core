@@ -79,15 +79,30 @@ LIBC_DIR="$CORE_DIR/user/libc"
 fail() { echo "M19-argv: FAIL — $1" >&2; exit 1; }
 setup_error() { echo "M19-argv: FAIL — $1" >&2; exit 2; }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=148
+
+
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
             x86_64-elf-readelf x86_64-elf-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 # GAP-0110: a sandbox under /tmp breaks `dcc` on macOS because /tmp is a symlink
 # and Dart resolves library identity through real paths. Resolved to a real path
 # here for the same reason m14-fat and m15-fileio do it.
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m19.XXXXXX")" || setup_error "mktemp failed"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m19.XXXXXX")" || setup_error "mktemp failed"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 cleanup() { [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"; }
 trap cleanup EXIT
@@ -101,19 +116,18 @@ EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$DRIVER" ]] || setup_error "qmp-drive.py not found at $DRIVER"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$M1_EXPECTED" ]] || setup_error "m1-interrupts/expected.txt not found"
-[[ -d "$LIBC_DIR" ]] || setup_error "no C library at $LIBC_DIR"
+ck; [[ -f "$DRIVER" ]] || setup_error "qmp-drive.py not found at $DRIVER"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "m1-interrupts/expected.txt not found"
+ck; [[ -d "$LIBC_DIR" ]] || setup_error "no C library at $LIBC_DIR"
 
 # ---------------------------------------------------------------------------
 # Step 1 — build the kernel.
 # ---------------------------------------------------------------------------
-BUILD_OUT="$(bash "$CORE_DIR/scripts/build-kernel.sh" 2>&1)"
-BUILD_STATUS=$?
+capture BUILD_OUT BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 echo "$BUILD_OUT"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
-[[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
 
 dartconst() {
   python3 - "$CORE_DIR/kernel/$2" "$1" <<'PY'
@@ -139,14 +153,21 @@ PY
 # first and its own number keeps meaning in 2026 what it meant when it was
 # written -- exactly what M14, M15 and M16 each did in turn.
 #
-# M20 (ADR-0027) IS NOW THE LAST BLOCK, and this harness gets the same treatment
-# it gave its predecessors: `chanStore` is subtracted FIRST, and what M19
-# asserts afterwards is unchanged -- its own 256 bytes, and that nothing has been
-# inserted BETWEEN args_store and the end of what M19 owned.
+# TWO blocks now sit after M19's. `chanStore` (M20, ADR-0027) landed first and
+# was the last block in `.bss`; `ioctlStore` (S0, ADR-0033) landed behind it and
+# is the last one now, because ADR-0031 s4.3 rule 5 requires the ioctl bounce
+# buffer to be last. So the kernel's grand total is 14368 + 2624 + 512 = 17504.
 #
-# So M19's total is still 14112 + 256 = 14368: 9728 through M13 plus M18's
-# scheduler header, plus fat_store's 1824, plus file_store's 2560, plus
-# args_store's 256. The kernel's grand total is that plus chanStore's 2624.
+# **THIS HARNESS'S CLAIM IS UNCHANGED IN SUBSTANCE AND THAT IS THE POINT.**
+# What M19 asserted was that its block sits at the END so that no earlier
+# harness's "bytes from my block to the end" number moves. Each later block kept
+# that discipline by going after this one and by giving every earlier harness a
+# subtraction step -- exactly as M14, M15, M16 and M19 each did in turn. So the
+# assertions below subtract `ioctlStore` FIRST, then `chanStore`, and then check
+# that `argsStore` is last among what remains. ADR-0033 s6.4 already recorded
+# why last is necessary but not sufficient: the previously-last block's own
+# to-the-end measurement is exactly what a new block behind it changes, and
+# `chanStore` is now that previously-last block.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
   local f="$1" n="$2" o v
   for o in kmain.o kdata.o; do
@@ -160,33 +181,45 @@ bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 16992 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 16992 — 14368 through M19 plus chanStore's 2624 (ADR-0027). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 17504 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 17504 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
-# M20's block, subtracted FIRST, exactly as M19's is by every harness before it.
+# The two later blocks, subtracted NEWEST FIRST, so that every assertion below
+# means what it meant when M19 wrote it.
+IOCTL_STORE_SIZE=$(bsssize ioctlStore)
+ck; [[ "$IOCTL_STORE_SIZE" == "512" ]] || fail "ioctlStore is ${IOCTL_STORE_SIZE:-missing} bytes, expected 512 (ADR-0033)"
+IOCTL_OFF=$(bssoff ioctlStore)
+ck; [[ -n "$IOCTL_OFF" ]] || fail "ioctlStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "ioctlStore ends at $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — S0's block is NOT the last one, and ADR-0031 §4.3 rule 5 requires the ioctl bounce buffer to be last"
+DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
+
 CHAN_STORE_SIZE=$(bsssize chanStore)
-[[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624 — M20's IPC channel block (ADR-0027)"
+ck; [[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624 — M20's IPC channel block (ADR-0027)"
 CHAN_OFF=$(bssoff chanStore)
-[[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
-[[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — M20's block is NOT the last one, so every earlier harness's 'bytes from my block to the end' number has silently moved"
-M19_TOTAL=$(( KDATA_BSS - CHAN_STORE_SIZE ))
-[[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore is $M19_TOTAL, not M19's 14368 — M20 moved storage it does not own"
+ck; [[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS bytes — M20's block is not immediately before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+DART_BSS=$(( DART_BSS - CHAN_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - CHAN_STORE_SIZE ))
+M19_TOTAL=$KDATA_BSS
+ck; [[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore and ioctlStore is $M19_TOTAL, not M19's 14368 — a later milestone moved storage it does not own"
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
-[[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"
+ck; [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"
 ARGS_OFF=$(bssoff argsStore)
-[[ -n "$ARGS_OFF" ]] || fail "argsStore has no .bss offset in kmain.o"
-[[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq $(( 16#$CHAN_OFF )) ]] \
+ck; [[ -n "$ARGS_OFF" ]] || fail "argsStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq $(( 16#$CHAN_OFF )) ]] \
   || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and chanStore begins at $(( 16#$CHAN_OFF )) — something was inserted BETWEEN M19's block and M20's, so M19's 'bytes from my block to the next' number has silently moved"
-[[ $(( M19_TOTAL - ARGS_STORE_SIZE )) -eq 14112 ]] \
-  || fail "the .bss outside args_store and chanStore is $(( M19_TOTAL - ARGS_STORE_SIZE )), not M18's 14112 — M19 moved storage it does not own"
+ck; [[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 14112 ]] \
+  || fail "the .bss outside args_store, chanStore and ioctlStore is $(( KDATA_BSS - ARGS_STORE_SIZE )), not M18's 14112 — M19 moved storage it does not own"
 
 # The three regions inside the block, multiplied out against the block's own
 # size. A region that ran past the end would corrupt whatever follows it in
@@ -199,21 +232,21 @@ A_META_WORDS=$(dartconst argsMetaWords args.dart)
 A_MAX_COUNT=$(dartconst argsMaxCount args.dart)
 A_MAX_BYTES=$(dartconst argsMaxBytes args.dart)
 A_MIN_STACK=$(dartconst argsMinStack args.dart)
-[[ "$A_STORE" -eq "$ARGS_STORE_SIZE" ]] || fail "args.dart says argsStoreBytes=$A_STORE and the image has $ARGS_STORE_SIZE"
-[[ "$A_META_OFF" -eq 0 ]] || fail "argsMetaOffset is $A_META_OFF, expected 0"
-[[ $(( A_META_OFF + A_META_WORDS * 8 )) -eq "$A_OFF_OFF" ]] \
+ck; [[ "$A_STORE" -eq "$ARGS_STORE_SIZE" ]] || fail "args.dart says argsStoreBytes=$A_STORE and the image has $ARGS_STORE_SIZE"
+ck; [[ "$A_META_OFF" -eq 0 ]] || fail "argsMetaOffset is $A_META_OFF, expected 0"
+ck; [[ $(( A_META_OFF + A_META_WORDS * 8 )) -eq "$A_OFF_OFF" ]] \
   || fail "the $A_META_WORDS metadata words at $A_META_OFF do not end where the offset array begins ($A_OFF_OFF)"
-[[ $(( A_OFF_OFF + A_MAX_COUNT * 8 )) -eq "$A_TEXT_OFF" ]] \
+ck; [[ $(( A_OFF_OFF + A_MAX_COUNT * 8 )) -eq "$A_TEXT_OFF" ]] \
   || fail "the $A_MAX_COUNT offsets at $A_OFF_OFF do not end where the text begins ($A_TEXT_OFF)"
-[[ $(( A_TEXT_OFF + A_MAX_BYTES )) -eq "$A_STORE" ]] \
+ck; [[ $(( A_TEXT_OFF + A_MAX_BYTES )) -eq "$A_STORE" ]] \
   || fail "the $A_MAX_BYTES bytes of text at $A_TEXT_OFF do not end at the block's end ($A_STORE)"
-echo "STRUCTURAL: pass  the kernel's mutable statics are $KDATA_BSS bytes, 2624 of them M20's chanStore which is the LAST block in .bss, leaving M19's own 14368 with 256 of them argsStore and NOTHING between argsStore and chanStore: $A_META_WORDS metadata words at $A_META_OFF, $A_MAX_COUNT offsets at $A_OFF_OFF, $A_MAX_BYTES bytes of argument text at $A_TEXT_OFF, ending exactly at $A_STORE"
+echo "STRUCTURAL: pass  the kernel's mutable statics are $(( KDATA_BSS + CHAN_STORE_SIZE + IOCTL_STORE_SIZE )) bytes, 512 of them S0's ioctlStore (the LAST block in .bss, ADR-0031 §4.3 rule 5) and 2624 of them M20's chanStore (the block immediately before it, ADR-0027), leaving M19's own $KDATA_BSS with 256 of them argsStore and NOTHING between argsStore and chanStore: $A_META_WORDS metadata words at $A_META_OFF, $A_MAX_COUNT offsets at $A_OFF_OFF, $A_MAX_BYTES bytes of argument text at $A_TEXT_OFF, ending exactly at $A_STORE"
 
 # 2b. THE STORAGE SEAM: ONE ACCESSOR PER REGION, THREE CALL SITES, ONE FILE.
 SEAM=$(grep -cE "^  return Bss[.]addressOf[(]argsStore[)]" "$CORE_DIR/kernel/args.dart")
-[[ "$SEAM" -eq 3 ]] || fail "args.dart has $SEAM \`return Bss.addressOf(argsStore)\` call sites, expected exactly 3 (ADR-0011 §0's seam discipline)"
+ck; [[ "$SEAM" -eq 3 ]] || fail "args.dart has $SEAM \`return Bss.addressOf(argsStore)\` call sites, expected exactly 3 (ADR-0011 §0's seam discipline)"
 OUTSIDE=$(grep -rlw "argsStore" "$CORE_DIR/kernel/" | grep -v "/args.dart$" | wc -l | tr -d ' ')
-[[ "$OUTSIDE" -eq 0 ]] || fail "$OUTSIDE file(s) outside args.dart name argsStore"
+ck; [[ "$OUTSIDE" -eq 0 ]] || fail "$OUTSIDE file(s) outside args.dart name argsStore"
 echo "STRUCTURAL: pass  argsStore is reached through exactly 3 accessors in one file and is named nowhere else in core/kernel/"
 
 # 2c. THE @rodata TABLES, EACH AGAINST ITS OWN CALL SITE.
@@ -223,9 +256,9 @@ echo "STRUCTURAL: pass  argsStore is reached through exactly 3 accessors in one 
 check_table() {
   local sym="$1" want="$2" got
   got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ -n "$got" ]] || fail "$sym not found in kmain.o"
-  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
-  grep -q "uartWrite(Rodata.addressOf($sym), u64($want));" "$CORE_DIR/kernel/args.dart" \
+  ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o"
+  ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
+  ck; grep -q "uartWrite(Rodata.addressOf($sym), u64($want));" "$CORE_DIR/kernel/args.dart" \
     || fail "no call site in args.dart passes u64($want) for $sym"
 }
 check_table argsStrArgs 11
@@ -247,7 +280,7 @@ echo "STRUCTURAL: pass  all 11 of M19's @rodata tables are exactly the sizes the
 # worthless, so the values are required to be distinct and so are the messages.
 # Two refusals that printed the same sentence would be one refusal wearing two
 # names, and a boot could not tell which one it got.
-python3 - "$CORE_DIR/kernel/args.dart" <<'PY' || fail "args.dart's refusal codes or their sentences are not distinct"
+ck; python3 - "$CORE_DIR/kernel/args.dart" <<'PY' || fail "args.dart's refusal codes or their sentences are not distinct"
 import re, sys
 src = open(sys.argv[1]).read()
 codes = dict(re.findall(r"^const int (argsErr[A-Za-z]+) = (\d+);", src, re.M))
@@ -284,30 +317,30 @@ echo "STRUCTURAL: pass  five distinct refusal values and four distinct sentences
 # line moved from elf.dart to proc.dart. It is still exactly one line, and the
 # mutation it guards against is still the same one: entering with
 # `vmProgStackTop` after building a perfectly good block.
-grep -q "procSet(s, u64(procSlotRsp), rsp);" "$CORE_DIR/kernel/proc.dart" \
+ck; grep -q "procSet(s, u64(procSlotRsp), rsp);" "$CORE_DIR/kernel/proc.dart" \
   || fail "procCreate does not record the RSP argsBuild computed — a process would start on an empty stack and _start's first instruction would fault"
-grep -q "procGet(s, u64(procSlotRsp))" "$CORE_DIR/kernel/proc.dart" \
+ck; grep -q "procGet(s, u64(procSlotRsp))" "$CORE_DIR/kernel/proc.dart" \
   || fail "proc.dart does not enter ring 3 with the RSP it recorded"
-grep -q "procSet(s, u64(procSlotRsp), u64(vmProgStackTop));" "$CORE_DIR/kernel/proc.dart" \
+ck; grep -q "procSet(s, u64(procSlotRsp), u64(vmProgStackTop));" "$CORE_DIR/kernel/proc.dart" \
   && fail "procCreate still sets a process's RSP to vmProgStackTop — the pre-M19 empty-stack entry is back"
-grep -q "enter_user(" "$CORE_DIR/kernel/elf.dart" \
+ck; grep -q "enter_user(" "$CORE_DIR/kernel/elf.dart" \
   && fail "elf.dart enters ring 3 again — ADR-0034 made procCreate/procStart the only launch path, and a program launched from elf.dart has no process slot and therefore no heap"
-grep -q "final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));" \
+ck; grep -q "final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));" \
   "$CORE_DIR/kernel/proc.dart" \
   || fail "procCreate does not build the initial stack in the frame the loader mapped at vmProgStackPage (ADR-0034 moved this line out of elf.dart; it must be in exactly one place)"
 # And the block is built in the program's own address space, never in the
 # kernel's: `argsPhys` is the ONE place the virtual-to-physical conversion is
 # written, and it is written once.
 PHYS=$(grep -c "argsPhys(" "$CORE_DIR/kernel/args.dart")
-[[ "$PHYS" -ge 4 ]] || fail "args.dart uses argsPhys $PHYS time(s); argsBuild writes four kinds of word through it"
+ck; [[ "$PHYS" -ge 4 ]] || fail "args.dart uses argsPhys $PHYS time(s); argsBuild writes four kinds of word through it"
 DEF=$(grep -c "^u64 argsPhys(u64 frame, u64 va) {" "$CORE_DIR/kernel/args.dart")
-[[ "$DEF" -eq 1 ]] || fail "argsPhys is defined $DEF times; the virtual-to-physical conversion must be written exactly once"
+ck; [[ "$DEF" -eq 1 ]] || fail "argsPhys is defined $DEF times; the virtual-to-physical conversion must be written exactly once"
 echo "STRUCTURAL: pass  ring 3 is entered with the RSP argsBuild computed, and the one virtual-to-physical conversion is written once"
 
 # 2f. shellStrHelp AND THE `run` USAGE LINE.
 HELP_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk '$8=="shellStrHelp"{print $3; exit}')
-[[ -n "$HELP_SIZE" ]] || fail "shellStrHelp not found in kmain.o"
-grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64($HELP_SIZE));" "$CORE_DIR/kernel/shell.dart" \
+ck; [[ -n "$HELP_SIZE" ]] || fail "shellStrHelp not found in kmain.o"
+ck; grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64($HELP_SIZE));" "$CORE_DIR/kernel/shell.dart" \
   || fail "shellHelp() does not pass $HELP_SIZE — the table and the literal disagree, which is GAP-0060"
 echo "STRUCTURAL: pass  shellStrHelp is $HELP_SIZE bytes and its call site agrees"
 
@@ -315,7 +348,7 @@ echo "STRUCTURAL: pass  shellStrHelp is $HELP_SIZE bytes and its call site agree
 # Step 3 — build the two programs, and check what was built.
 # ---------------------------------------------------------------------------
 PROGDIR="$WORKDIR/progs"
-bash "$SCRIPT_DIR/build-progs.sh" "$PROGDIR" || fail "build-progs.sh failed"
+ck; bash "$SCRIPT_DIR/build-progs.sh" "$PROGDIR" || fail "build-progs.sh failed"
 
 # ---------------------------------------------------------------------------
 # Step 3b — verify-freestanding.sh (CLAUDE.md rule 1), and the extern count.
@@ -326,20 +359,17 @@ bash "$SCRIPT_DIR/build-progs.sh" "$PROGDIR" || fail "build-progs.sh failed"
 # run the check against these same objects, so rule 1 was and is enforced -- but
 # it was false about THIS HARNESS, and a sentence a reader audits is not
 # contradicted by re-running the suite. Modelled on m18-preempt §3h.
-VERIFY_OUT=$( (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o \
-                                  && bash scripts/verify-freestanding.sh build/kdata.o \
-                                  && bash scripts/verify-freestanding.sh build/kernel.elf) 2>&1 )
-VERIFY_STATUS=$?
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o && bash scripts/verify-freestanding.sh build/kdata.o && bash scripts/verify-freestanding.sh build/kernel.elf'
 echo "$VERIFY_OUT"
-[[ $VERIFY_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed (output above)"
+ck; [[ $VERIFY_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed (output above)"
 # Belt and braces, as m8-paging and m13-libc do it: the status alone would be
 # satisfied by a script that printed nothing at all.
-grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT" \
+ck; grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT" \
   && fail "verify-freestanding.sh printed a FAIL line while exiting 0"
-grep -c "FREESTANDING: pass" <<<"$VERIFY_OUT" | grep -qx 3 \
+ck; grep -c "FREESTANDING: pass" <<<"$VERIFY_OUT" | grep -qx 3 \
   || fail "expected exactly 3 FREESTANDING: pass lines (kmain.o, kdata.o, kernel.elf)"
 EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern(s).*/\1/p' <<<"$VERIFY_OUT" | head -1)
-[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares ${EXTERN_COUNT:-no} externs, expected 44 — UNCHANGED from M18. M19 builds the initial process stack in Dart and enters ring 3 through the enter_user stub that already existed; a new assembly primitive would be a different design."
+ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares ${EXTERN_COUNT:-no} externs, expected 44 — UNCHANGED from M18. M19 builds the initial process stack in Dart and enters ring 3 through the enter_user stub that already existed; a new assembly primitive would be a different design."
 echo "FREESTANDING: pass  $EXTERN_COUNT declared externs, unchanged from M18 — M19 added no assembly"
 
 # ---------------------------------------------------------------------------
@@ -347,15 +377,14 @@ echo "FREESTANDING: pass  $EXTERN_COUNT declared externs, unchanged from M18 —
 # ---------------------------------------------------------------------------
 DISK_IMG="$WORKDIR/disk.img"
 LAYOUT="$WORKDIR/layout.json"
-python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/wc.elf" "$PROGDIR/wcn.elf" --json \
+ck; python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/wc.elf" "$PROGDIR/wcn.elf" --json \
   > "$LAYOUT" || fail "make-image.py could not write the volume"
-[[ -s "$DISK_IMG" ]] || fail "make-image.py produced no image"
+ck; [[ -s "$DISK_IMG" ]] || fail "make-image.py produced no image"
 
 IMG_VERDICT="not checked (fsck_msdos not on PATH)"
 if command -v fsck_msdos >/dev/null 2>&1; then
-  FSCK_OUT="$(fsck_msdos -n "$DISK_IMG" 2>&1)"
-  FSCK_STATUS=$?
-  if [[ $FSCK_STATUS -ne 0 ]]; then
+  capture FSCK_OUT FSCK_STATUS -- fsck_msdos -n "$DISK_IMG"
+  ck; if [[ $FSCK_STATUS -ne 0 ]]; then
     echo "$FSCK_OUT" >&2
     fail "fsck_msdos refuses the volume this harness built (exit $FSCK_STATUS)"
   fi
@@ -367,19 +396,19 @@ echo "IMAGE: pass  $IMG_VERDICT"
 # Step 5 — derive every expectation from the volume that was just built.
 # ---------------------------------------------------------------------------
 DERIVED="$WORKDIR/derived.txt"
-python3 "$SCRIPT_DIR/derive.py" "$DISK_IMG" "$PROGDIR/wc.elf" "$PROGDIR/wcn.elf" \
+ck; python3 "$SCRIPT_DIR/derive.py" "$DISK_IMG" "$PROGDIR/wc.elf" "$PROGDIR/wcn.elf" \
   "$CORE_DIR/kernel" "$LIBC_DIR" "$SCRIPT_DIR/prog.c" > "$DERIVED" \
   || fail "derive.py could not derive the expectations"
 d() { grep -m1 "^$1=" "$DERIVED" | cut -d= -f2-; }
-[[ -n "$(d alpha_chars)" ]] || fail "derive.py produced no counts"
+ck; [[ -n "$(d alpha_chars)" ]] || fail "derive.py produced no counts"
 
 # The two files must differ in every column, or "different argument, different
 # answer" is not a claim this volume can support.
 for col in lines words chars; do
-  [[ "$(d alpha_$col)" != "$(d beta_$col)" ]] \
+  ck; [[ "$(d alpha_$col)" != "$(d beta_$col)" ]] \
     || fail "ALPHA.TXT and BETA.TXT have the same $col count"
 done
-[[ "$(d alpha_status)" != "$(d beta_status)" ]] \
+ck; [[ "$(d alpha_status)" != "$(d beta_status)" ]] \
   || fail "the two files produce the same derived exit status"
 echo "DERIVED: ALPHA.TXT is $(d alpha_lines) lines / $(d alpha_words) words / $(d alpha_chars) bytes, status $(d alpha_status), read in $(d alpha_reads) pieces of $(d chunk)"
 echo "DERIVED: BETA.TXT is $(d beta_lines) / $(d beta_words) / $(d beta_chars), status $(d beta_status), in $(d beta_reads) pieces"
@@ -408,7 +437,7 @@ drive_session() {
   local attempt=0 port drive_status qemu_status qemu_pid
   while :; do
     attempt=$(( attempt + 1 ))
-    port=$(python3 "$PICKER") || fail "pick-port.py could not find a free port"
+    ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free port"
     : >"$ser"
     timeout 420 qemu-system-x86_64 \
       -kernel "$KERNEL_ELF" \
@@ -422,17 +451,8 @@ drive_session() {
       -qmp "tcp:127.0.0.1:$port,server,nowait" \
       >"$outdir/qemu.log" 2>&1 &
     qemu_pid=$!
-    python3 "$DRIVER" \
-      --port "$port" \
-      --serial "$ser" \
-      --wait-for 'M1 END\n' \
-      --png "$png" \
-      --screen-text "$outdir/screen.txt" \
-      --keys "$keys" \
-      "$@"
-    drive_status=$?
-    wait "$qemu_pid" 2>/dev/null
-    qemu_status=$?
+    run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys" "$@"
+    await qemu_status "$qemu_pid"
     if [[ $drive_status -ne 0 ]] && grep -q "Address already in use" "$outdir/qemu.log" \
        && [[ $attempt -lt 5 ]]; then
       echo "    (port $port was taken between the probe and the launch; retrying — attempt $attempt)"
@@ -440,13 +460,13 @@ drive_session() {
     fi
     break
   done
-  if [[ $drive_status -ne 0 ]]; then
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
     fail "qmp-drive.py exited $drive_status for the $label boot."
   fi
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -467,10 +487,10 @@ SHOT_PNG="$CORE_DIR/build/screenshot-argv.png"
 drive_session "$WORKDIR/main" "$SESSION_KEYS" "$SHOT_PNG" "main"
 SERIAL="$WORKDIR/main/serial.txt"
 SCREEN="$WORKDIR/main/screen.txt"
-[[ -s "$SERIAL" ]] || fail "the main boot captured no serial output at all"
+ck; [[ -s "$SERIAL" ]] || fail "the main boot captured no serial output at all"
 
-have() { grep -qF -- "$1" "$SERIAL" || { sed -n '/M1 END/,$p' "$SERIAL" >&2; fail "the transcript does not contain: $1"; }; }
-havent() { grep -qF -- "$1" "$SERIAL" && fail "the transcript contains what it must not: $1"; }
+have() { ck; grep -qF -- "$1" "$SERIAL" || { sed -n '/M1 END/,$p' "$SERIAL" >&2; fail "the transcript does not contain: $1"; }; }
+havent() { ck; grep -qF -- "$1" "$SERIAL" && fail "the transcript contains what it must not: $1"; }
 
 # 7a. THE PROGRAM COUNTED THE FILE IT WAS TOLD TO COUNT, TWICE, DIFFERENTLY.
 have "WC $(d alpha_lines) $(d alpha_words) $(d alpha_chars) alpha.txt"
@@ -502,7 +522,7 @@ have "WC ARGC 2"
 have "WC ARGC 4"
 for pair in "0 wc.elf" "1 alpha.txt"; do
   set -- $pair
-  grep -qE "WC ARGV $1 [0-9a-f]+ [0-9]+ $2\$" "$SERIAL" \
+  ck; grep -qE "WC ARGV $1 [0-9a-f]+ [0-9]+ $2\$" "$SERIAL" \
     || fail "the program never reported argv[$1] as $2"
 done
 echo "CHECK 4: pass  argv[0] is \`wc.elf\`, the name the shell was given, and argc is 2 and 4 for the two- and four-token command lines"
@@ -515,17 +535,17 @@ echo "CHECK 5: pass  the program reads NULL at argv[argc] and NULL at envp[0]"
 # 7f. THE FRAME ALLOCATOR RETURNS EXACTLY TO BASELINE.
 FREE_BEFORE=$(grep -m1 "PMM MANAGED" "$SERIAL" | sed -n 's/.*FREE \([0-9A-F]*\).*/\1/p')
 FREE_AFTER=$(grep "PMM MANAGED" "$SERIAL" | tail -1 | sed -n 's/.*FREE \([0-9A-F]*\).*/\1/p')
-[[ -n "$FREE_BEFORE" && -n "$FREE_AFTER" ]] || fail "the transcript has fewer than two \`PMM MANAGED\` lines"
-[[ "$FREE_BEFORE" == "$FREE_AFTER" ]] \
+ck; [[ -n "$FREE_BEFORE" && -n "$FREE_AFTER" ]] || fail "the transcript has fewer than two \`PMM MANAGED\` lines"
+ck; [[ "$FREE_BEFORE" == "$FREE_AFTER" ]] \
   || fail "the frame allocator's free count went $FREE_BEFORE -> $FREE_AFTER across a session that ran three programs WITH ARGUMENTS; M19 leaks"
 BASELINE=$(grep -m1 "PMM MANAGED" "$SERIAL" | sed -n 's/.*BASELINE \([0-9A-F]*\).*/\1/p')
-[[ "$FREE_AFTER" == "$BASELINE" ]] \
+ck; [[ "$FREE_AFTER" == "$BASELINE" ]] \
   || fail "the free count after the session is $FREE_AFTER and the allocator's own baseline is $BASELINE"
 echo "CHECK 6: pass  the frame allocator's free count is $FREE_AFTER before AND after three programs were loaded with arguments, run, and torn down — identical to the frame, and equal to its own baseline"
 
 # 7g. M1's GOLDEN IS INTACT AS A PREFIX.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
-head -c "$M1_BYTES" "$SERIAL" | cmp -s - "$M1_EXPECTED" \
+ck; head -c "$M1_BYTES" "$SERIAL" | cmp -s - "$M1_EXPECTED" \
   || fail "the first $M1_BYTES bytes of this boot are not m1-interrupts' golden — M19 moved a byte it does not own"
 echo "CHECK 7: pass  the first $M1_BYTES bytes are m1-interrupts' golden, byte for byte"
 
@@ -536,13 +556,13 @@ if [[ $REGEN -eq 1 ]]; then
   cp "$SCREEN" "$EXPECTED_SCREEN"
   echo "REGEN: wrote $EXPECTED_SERIAL ($SERIAL_BYTES bytes) and $EXPECTED_SCREEN"
 else
-  [[ -f "$EXPECTED_SERIAL" ]] || fail "no golden at $EXPECTED_SERIAL (run with --regen once, then read the diff)"
-  cmp -s "$SERIAL" "$EXPECTED_SERIAL" || {
+  ck; [[ -f "$EXPECTED_SERIAL" ]] || fail "no golden at $EXPECTED_SERIAL (run with --regen once, then read the diff)"
+  ck; cmp -s "$SERIAL" "$EXPECTED_SERIAL" || {
     diff <(cat "$EXPECTED_SERIAL") <(cat "$SERIAL") | head -60 >&2
     fail "the serial capture does not match $EXPECTED_SERIAL byte for byte"
   }
-  [[ -f "$EXPECTED_SCREEN" ]] || fail "no screen golden at $EXPECTED_SCREEN"
-  cmp -s "$SCREEN" "$EXPECTED_SCREEN" || {
+  ck; [[ -f "$EXPECTED_SCREEN" ]] || fail "no screen golden at $EXPECTED_SCREEN"
+  ck; cmp -s "$SCREEN" "$EXPECTED_SCREEN" || {
     diff "$EXPECTED_SCREEN" "$SCREEN" | head -40 >&2
     fail "the VGA text buffer does not match $EXPECTED_SCREEN"
   }
@@ -559,22 +579,22 @@ drive_session "$WORKDIR/stack" "$STACK_KEYS" "$WORKDIR/stack/shot.png" "stack" \
   --monitor-capture "$WORKDIR/stack/mon.txt" \
   --addr-from-serial 'ELF STACK [0-9A-F]{16} FRAME 0*([0-9A-F]+)'
 STACK_SERIAL="$WORKDIR/stack/serial.txt"
-grep -q "WC $(d alpha_words) alpha.txt" "$STACK_SERIAL" \
+ck; grep -q "WC $(d alpha_words) alpha.txt" "$STACK_SERIAL" \
   || { sed -n '/M1 END/,$p' "$STACK_SERIAL" >&2; fail "the -w boot did not print alpha.txt's word count"; }
 
 STACK_PAGE=$(dartconst vmProgStackPage vm.dart)
 STACK_TOP=$(dartconst vmProgStackTop vm.dart)
-python3 "$SCRIPT_DIR/check-stack.py" "$WORKDIR/stack/mon.txt" "$STACK_SERIAL" \
+ck; python3 "$SCRIPT_DIR/check-stack.py" "$WORKDIR/stack/mon.txt" "$STACK_SERIAL" \
   "$A_MIN_STACK" "$STACK_PAGE" "$STACK_TOP" "wc.elf" "-w" "alpha.txt" \
   || fail "the initial process stack in guest memory is not the System V ABI's"
 
 # AND THE CHECKER ITSELF HAS TEETH: given a command line that is NOT what was
 # typed, it must refuse. A checker that passes everything checks nothing.
-if python3 "$SCRIPT_DIR/check-stack.py" "$WORKDIR/stack/mon.txt" "$STACK_SERIAL" \
+ck; if python3 "$SCRIPT_DIR/check-stack.py" "$WORKDIR/stack/mon.txt" "$STACK_SERIAL" \
      "$A_MIN_STACK" "$STACK_PAGE" "$STACK_TOP" "wc.elf" "-w" "beta.txt" >/dev/null 2>&1; then
   fail "check-stack.py accepts a stack whose argv[2] is not what was typed — the memory check proves nothing"
 fi
-if python3 "$SCRIPT_DIR/check-stack.py" "$WORKDIR/stack/mon.txt" "$STACK_SERIAL" \
+ck; if python3 "$SCRIPT_DIR/check-stack.py" "$WORKDIR/stack/mon.txt" "$STACK_SERIAL" \
      "$A_MIN_STACK" "$STACK_PAGE" "$STACK_TOP" "wc.elf" "-w" >/dev/null 2>&1; then
   fail "check-stack.py accepts an argc that is not the number of tokens typed"
 fi
@@ -584,8 +604,8 @@ echo "CHECK 9: pass  and the checker refuses a wrong argv and a wrong argc, so i
 NEG_KEYS="$(typekeys "run wcn.elf beta.txt"),ret,wait:22000"
 drive_session "$WORKDIR/neg" "$NEG_KEYS" "$WORKDIR/neg/shot.png" "negative control"
 NEG_SERIAL="$WORKDIR/neg/serial.txt"
-nhave() { grep -qF -- "$1" "$NEG_SERIAL" || { sed -n '/M1 END/,$p' "$NEG_SERIAL" >&2; fail "the control transcript does not contain: $1"; }; }
-nhavent() { grep -qF -- "$1" "$NEG_SERIAL" && fail "the control transcript contains what it must not: $1"; }
+nhave() { ck; grep -qF -- "$1" "$NEG_SERIAL" || { sed -n '/M1 END/,$p' "$NEG_SERIAL" >&2; fail "the control transcript does not contain: $1"; }; }
+nhavent() { ck; grep -qF -- "$1" "$NEG_SERIAL" && fail "the control transcript contains what it must not: $1"; }
 
 # The control was GIVEN beta.txt -- the kernel built that argv and the control's
 # own argv report shows it -- and it counted the file compiled into it instead.
@@ -612,7 +632,7 @@ OKARG=$(python3 -c "import sys; print('x' * int(sys.argv[1]))" "$OKLEN")
 LONGARG=$(python3 -c "import sys; print('x' * (int(sys.argv[1]) + 1))" "$OKLEN")
 # argsMaxCount tokens exactly: the program name, a flag, and six file names.
 MAXARGS="wc.elf -c alpha.txt beta.txt alpha.txt beta.txt alpha.txt beta.txt"
-[[ $(echo $MAXARGS | wc -w | tr -d ' ') -eq "$A_MAX_COUNT" ]] \
+ck; [[ $(echo $MAXARGS | wc -w | tr -d ' ') -eq "$A_MAX_COUNT" ]] \
   || fail "the maximal command line has $(echo $MAXARGS | wc -w) tokens, not argsMaxCount ($A_MAX_COUNT)"
 REF_KEYS="$(typekeys "run wc.elf"),ret,wait:9000"
 REF_KEYS="$REF_KEYS,$(typekeys "run wc.elf nosuch.txt"),ret,wait:9000"
@@ -623,7 +643,7 @@ REF_KEYS="$REF_KEYS,$(typekeys "run wc.elf $LONGARG"),ret,wait:1200"
 REF_KEYS="$REF_KEYS,$(typekeys "run wc.elf beta.txt"),ret,wait:12000"
 drive_session "$WORKDIR/refuse" "$REF_KEYS" "$WORKDIR/refuse/shot.png" "refusals"
 REF_SERIAL="$WORKDIR/refuse/serial.txt"
-rhave() { grep -qF -- "$1" "$REF_SERIAL" || { sed -n '/M1 END/,$p' "$REF_SERIAL" >&2; fail "the refusal transcript does not contain: $1"; }; }
+rhave() { ck; grep -qF -- "$1" "$REF_SERIAL" || { sed -n '/M1 END/,$p' "$REF_SERIAL" >&2; fail "the refusal transcript does not contain: $1"; }; }
 
 # argc == 1: the program ran, was given ONLY its own name, and said so.
 rhave "ELF ARGS N 01"
@@ -658,7 +678,7 @@ rhave "$E01"
 rhave "$E02"
 # NOTHING WAS LOADED for either refusal: the refusal happens in the parse,
 # before a frame is taken, so no ELF line follows it.
-python3 - "$REF_SERIAL" "$E01" "$E02" <<'PY' || fail "a refused command line still reached the ELF loader"
+ck; python3 - "$REF_SERIAL" "$E01" "$E02" <<'PY' || fail "a refused command line still reached the ELF loader"
 import sys
 lines = open(sys.argv[1], encoding="latin-1").read().splitlines()
 for msg in sys.argv[2:]:
@@ -681,5 +701,9 @@ echo "CHECK 11: pass  argc 1 and a missing file are handled BY THE PROGRAM; BOTH
 
 # ---- The exit criterion, stated once more against what actually happened. --
 echo
-echo "M19-argv: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's SIX OBJECTS (M19's start.c among them, the only one that defines \`_start\`) AND ONE PROGRAM SOURCE TWICE, the second ignoring argv as a negative control -> make-image.py writes a FAT16 volume whose ALPHA.TXT and BETA.TXT differ in ALL THREE of lines, words and bytes and whose chains go backwards -> structural checks (the kernel's mutable statics 14112 -> 14368 with argsStore one 256-byte block that is the LAST in .bss so no earlier harness's accounting moves, its three regions tiling exactly, a 3-call-site storage seam in one file, 11 @rodata tables against their call sites, five distinct refusal values with four distinct sentences, and the entry path proven to use the computed RSP) -> build-progs checks (\`_start\` is the LIBRARY's, reads argc from (%rsp) and argv from 8(%rsp), and NEVER WRITES %rsp) -> verify-freestanding pass on kmain.o, kdata.o and kernel.elf (${EXTERN_COUNT} declared externs, unchanged from M18 — M19 added no assembly) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with m1-interrupts' ${M1_BYTES}-byte golden intact as a prefix; A C PROGRAM WRITTEN AS \`int main(int argc, char **argv)\` TOLD BY THE SHELL WHICH FILE TO COUNT, counting alpha.txt to $(d alpha_lines)/$(d alpha_words)/$(d alpha_chars) and then, THE SAME BINARY, beta.txt to $(d beta_lines)/$(d beta_words)/$(d beta_chars), every number computed on the host from the volume this harness wrote and each exit status derived from its own file; a flag argument selecting one column and two file arguments both counted and totalled; THE INITIAL PROCESS STACK READ OUT OF GUEST PHYSICAL MEMORY WITH QEMU'S OWN MONITOR and checked against the System V ABI -- RSP 16-byte aligned, argc at RSP, every argv pointer inside the program's own mapped user page and naming the exact bytes typed, NULL argv terminator, NULL envp, AT_NULL auxv and every padding byte zero -- with the checker itself required to reject a wrong argv and a wrong argc; a control build handed the same argv and ignoring it, printing $(d neg_file)'s counts for beta.txt and a different exit status; argc 1 and a name that is not on the volume both handled from ring 3; nine arguments and a 129-byte argument refused by the shell before a frame was taken, with the shell alive and correct afterwards; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
+echo "M19-argv: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's SIX OBJECTS (M19's start.c among them, the only one that defines \`_start\`) AND ONE PROGRAM SOURCE TWICE, the second ignoring argv as a negative control -> make-image.py writes a FAT16 volume whose ALPHA.TXT and BETA.TXT differ in ALL THREE of lines, words and bytes and whose chains go backwards -> structural checks (the kernel's mutable statics 14112 -> 14368 -> 14880 with argsStore one 256-byte block and S0's ioctlStore the 512-byte block after it that is the LAST in .bss, so no earlier harness's accounting moves, its three regions tiling exactly, a 3-call-site storage seam in one file, 11 @rodata tables against their call sites, five distinct refusal values with four distinct sentences, and the entry path proven to use the computed RSP) -> build-progs checks (\`_start\` is the LIBRARY's, reads argc from (%rsp) and argv from 8(%rsp), and NEVER WRITES %rsp) -> verify-freestanding pass on kmain.o, kdata.o and kernel.elf (${EXTERN_COUNT} declared externs, unchanged from M18 — M19 added no assembly) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with m1-interrupts' ${M1_BYTES}-byte golden intact as a prefix; A C PROGRAM WRITTEN AS \`int main(int argc, char **argv)\` TOLD BY THE SHELL WHICH FILE TO COUNT, counting alpha.txt to $(d alpha_lines)/$(d alpha_words)/$(d alpha_chars) and then, THE SAME BINARY, beta.txt to $(d beta_lines)/$(d beta_words)/$(d beta_chars), every number computed on the host from the volume this harness wrote and each exit status derived from its own file; a flag argument selecting one column and two file arguments both counted and totalled; THE INITIAL PROCESS STACK READ OUT OF GUEST PHYSICAL MEMORY WITH QEMU'S OWN MONITOR and checked against the System V ABI -- RSP 16-byte aligned, argc at RSP, every argv pointer inside the program's own mapped user page and naming the exact bytes typed, NULL argv terminator, NULL envp, AT_NULL auxv and every padding byte zero -- with the checker itself required to reject a wrong argv and a wrong argc; a control build handed the same argv and ignoring it, printing $(d neg_file)'s counts for beta.txt and a different exit status; argc 1 and a name that is not on the volume both handled from ring 3; nine arguments and a 129-byte argument refused by the shell before a frame was taken, with the shell alive and correct afterwards; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
 exit 0

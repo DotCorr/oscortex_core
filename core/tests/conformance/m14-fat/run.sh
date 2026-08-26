@@ -70,16 +70,31 @@ LIBC_DIR="$CORE_DIR/user/libc"
 fail() { echo "M14-fat: FAIL — $1" >&2; exit 1; }
 setup_error() { echo "M14-fat: FAIL — $1" >&2; exit 2; }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=199
+
+
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
             x86_64-elf-readelf x86_64-elf-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 # GAP-0110: a sandbox under /tmp breaks `dcc` on macOS because /tmp is a symlink
 # and Dart resolves library identity through real paths. The same hazard applies
 # to nothing in this harness -- no Dart runs out of WORKDIR -- but the workdir is
 # still resolved to a real path so that a future step that does is not surprised.
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m14.XXXXXX")" || setup_error "mktemp failed"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m14.XXXXXX")" || setup_error "mktemp failed"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 MOUNTPOINT="$WORKDIR/mnt"
 ATTACHED=""
@@ -98,19 +113,18 @@ EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$DRIVER" ]] || setup_error "qmp-drive.py not found at $DRIVER"
-[[ -f "$M1_EXPECTED" ]] || setup_error "m1-interrupts/expected.txt not found"
-[[ -d "$LIBC_DIR" ]] || setup_error "no C library at $LIBC_DIR"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$DRIVER" ]] || setup_error "qmp-drive.py not found at $DRIVER"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "m1-interrupts/expected.txt not found"
+ck; [[ -d "$LIBC_DIR" ]] || setup_error "no C library at $LIBC_DIR"
 
 # ---------------------------------------------------------------------------
 # Step 1 — build the kernel.
 # ---------------------------------------------------------------------------
-BUILD_OUT="$(bash "$CORE_DIR/scripts/build-kernel.sh" 2>&1)"
-BUILD_STATUS=$?
+capture BUILD_OUT BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 echo "$BUILD_OUT"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
-[[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
 
 dartconst() {
   python3 - "$CORE_DIR/kernel/$2" "$1" <<'PY'
@@ -183,13 +197,31 @@ bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
 bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$DART_BSS
+# S0 (ADR-0033) added a block AFTER M19's, and it is now the LAST one in .bss:
+# `ioctlStore`, 512 bytes -- 32 metadata words and the 256-byte `ioctl` bounce
+# buffer, which is the only memory a DRM payload is ever copied through.
+# Subtracted FIRST, before M19's, exactly as M14, M15, M16 and M19 each were in
+# turn, so that every earlier milestone's number continues to mean what it meant
+# when it was written.
+#
+# **ADR-0031 §4.3 rule 5 SAID PUTTING THE BLOCK LAST WOULD LEAVE "every existing
+# harness's 'bytes from my block to the end' arithmetic unchanged". THAT IS NOT
+# QUITE TRUE, AND THIS BLOCK IS THE PROOF.** Last is necessary but not
+# sufficient: the previously-last block's own to-the-end measurement is exactly
+# the one a new block after it changes. M19's number went 256 -> 768 and twelve
+# harnesses said so. ADR-0033 §6.4.
+S0_OFF_HEX=$(bssoff ioctlStore)
+ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
+S0_BSS=$(( KDATA_BSS - 16#$S0_OFF_HEX ))
+ck; [[ "$S0_BSS" -eq 512 ]] || fail "the bytes from S0's ioctlStore to the end of .bss are $S0_BSS, expected 512. If that block changed size, change it in ADR-0033, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - S0_BSS ))
 # M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
 # `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
 # 128 bytes of argument text, which is where a command line is staged before it
@@ -197,35 +229,36 @@ KDATA_BSS=$DART_BSS
 # earlier milestone's, so that this harness's own number continues to mean what
 # it meant when it was written. Exactly the accounting M14, M15 and M16 each got
 # in turn.
-# M20 (ADR-0027) added a block AFTER M19's, and it is now the LAST one in .bss:
+# M20 (ADR-0027) added a block AFTER M19's, and S0's `ioctlStore` later landed
+# behind it, so it is the SECOND-TO-LAST block in .bss and is subtracted second:
 # `chanStore`, 2624 bytes -- eight global counter words and two 1280-byte channel
 # port records, each of which is a 128-byte header, 128 bytes of per-slot lengths
-# and 1024 bytes of message ring. Subtracted FIRST, before every earlier
-# milestone's, so that this harness's own number continues to mean what it meant
+# and 1024 bytes of message ring. Subtracted after S0's block and before every
+# earlier milestone's, so that this harness's own number continues to mean what it meant
 # when it was written. Exactly the accounting M14, M15, M16 and M19 each got in
 # turn.
 M20_OFF_HEX=$(bssoff chanStore)
-[[ -n "$M20_OFF_HEX" ]] || fail "chanStore has no .bss offset in kmain.o -- M20's IPC channel block (ADR-0027) is missing"
+ck; [[ -n "$M20_OFF_HEX" ]] || fail "chanStore has no .bss offset in kmain.o -- M20's IPC channel block (ADR-0027) is missing"
 M20_BSS=$(( KDATA_BSS - 16#$M20_OFF_HEX ))
-[[ "$M20_BSS" -eq 2624 ]] || fail "the bytes from M20's chanStore to the end of .bss are $M20_BSS, expected 2624. If that block changed size, change it in ADR-0027, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M20_BSS" -eq 2624 ]] || fail "the bytes from M20's chanStore to S0's ioctlStore are $M20_BSS, expected 2624. If that block changed size, change it in ADR-0027, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M20_BSS ))
 M19_OFF_HEX=$(bssoff argsStore)
-[[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
+ck; [[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
 M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
-[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to M20's chanStore are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to M20's chanStore are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes. Subtracted
 # here so that M14's own number keeps meaning what it meant when it was written.
 M15_OFF_HEX=$(bssoff fileStore)
-[[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
+ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-[[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7)"
+ck; [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7)"
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-[[ "$KDATA_BSS" -eq 11552 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 11552 — 9728 through M13 (9664, plus M18's 64-byte scheduler header, ADR-0022) plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
+ck; [[ "$KDATA_BSS" -eq 11552 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 11552 — 9728 through M13 (9664, plus M18's 64-byte scheduler header, ADR-0022) plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."
 FAT_STORE_SIZE=$(bsssize fatStore)
-[[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824"
-[[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 9728 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 plus M18's 64 — M14 moved storage it does not own"
+ck; [[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824"
+ck; [[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 9728 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 plus M18's 64 — M14 moved storage it does not own"
 
 META_OFF=$(dartconst fatMetaOffset fat.dart)
 CHAIN_OFF=$(dartconst fatChainOffset fat.dart)
@@ -235,15 +268,15 @@ STORE_BYTES=$(dartconst fatStoreBytes fat.dart)
 META_WORDS=$(dartconst fatMetaWords fat.dart)
 CHAIN_MAX=$(dartconst fatChainMax fat.dart)
 NAME_BYTES=$(dartconst fatNameBytes fat.dart)
-[[ "$STORE_BYTES" -eq "$FAT_STORE_SIZE" ]] || fail "fat.dart's fatStoreBytes is $STORE_BYTES and kdata.S donates $FAT_STORE_SIZE"
-[[ "$META_OFF" -eq 0 ]] || fail "fatMetaOffset is $META_OFF, expected 0"
-[[ $(( META_OFF + META_WORDS * 8 )) -le "$CHAIN_OFF" ]] \
+ck; [[ "$STORE_BYTES" -eq "$FAT_STORE_SIZE" ]] || fail "fat.dart's fatStoreBytes is $STORE_BYTES and kdata.S donates $FAT_STORE_SIZE"
+ck; [[ "$META_OFF" -eq 0 ]] || fail "fatMetaOffset is $META_OFF, expected 0"
+ck; [[ $(( META_OFF + META_WORDS * 8 )) -le "$CHAIN_OFF" ]] \
   || fail "the $META_WORDS metadata words run from $META_OFF to $(( META_OFF + META_WORDS * 8 )) and the chain array starts at $CHAIN_OFF — they overlap"
-[[ $(( CHAIN_OFF + CHAIN_MAX * 4 )) -le "$SECTOR_OFF" ]] \
+ck; [[ $(( CHAIN_OFF + CHAIN_MAX * 4 )) -le "$SECTOR_OFF" ]] \
   || fail "the $CHAIN_MAX-entry chain array runs from $CHAIN_OFF to $(( CHAIN_OFF + CHAIN_MAX * 4 )) and the sector buffer starts at $SECTOR_OFF — they overlap"
-[[ $(( SECTOR_OFF + 512 )) -le "$NAME_OFF" ]] \
+ck; [[ $(( SECTOR_OFF + 512 )) -le "$NAME_OFF" ]] \
   || fail "the 512-byte sector buffer runs from $SECTOR_OFF to $(( SECTOR_OFF + 512 )) and the name buffer starts at $NAME_OFF — they overlap"
-[[ $(( NAME_OFF + NAME_BYTES )) -le "$STORE_BYTES" ]] \
+ck; [[ $(( NAME_OFF + NAME_BYTES )) -le "$STORE_BYTES" ]] \
   || fail "the $NAME_BYTES-byte name buffer ends at $(( NAME_OFF + NAME_BYTES )) and the block is only $STORE_BYTES bytes"
 echo "STRUCTURAL: pass  kdata.o donates $KDATA_BSS bytes of .bss — M13's 9728 plus fat_store's $FAT_STORE_SIZE — and fat.dart's four regions (meta $META_WORDS words at $META_OFF, chain $CHAIN_MAX entries at $CHAIN_OFF, sector 512 at $SECTOR_OFF, name $NAME_BYTES at $NAME_OFF) tile it without overlapping or overrunning"
 
@@ -259,12 +292,12 @@ echo "STRUCTURAL: pass  kdata.o donates $KDATA_BSS bytes of .bss — M13's 9728 
 CODE=$(grep -v '^[[:space:]]*//' "$CORE_DIR/kernel/fat.dart")
 SEAM=$(printf '%s\n' "$CODE" | grep -c "return Bss[.]addressOf(fatStore)")
 MENTIONS=$(printf '%s\n' "$CODE" | grep -cw "fatStore")
-[[ "$SEAM" -eq 4 ]] || fail "core/kernel/fat.dart has $SEAM call sites of Bss.addressOf(fatStore), expected exactly 4 (fatMetaBase, fatChainBase, fatSectorBase, fatNameBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
-[[ "$MENTIONS" -eq 5 ]] || fail "fat.dart names fatStore $MENTIONS times, expected 5: one @extern declaration and the four seam functions"
+ck; [[ "$SEAM" -eq 4 ]] || fail "core/kernel/fat.dart has $SEAM call sites of Bss.addressOf(fatStore), expected exactly 4 (fatMetaBase, fatChainBase, fatSectorBase, fatNameBase). A fifth turns the migration to DCDart mutable statics into an audit — ADR-0011 §0."
+ck; [[ "$MENTIONS" -eq 5 ]] || fail "fat.dart names fatStore $MENTIONS times, expected 5: one @extern declaration and the four seam functions"
 OUTSIDE=$(grep -rlw "fatStore" "$CORE_DIR/kernel/" | grep -v "/fat.dart$" | wc -l | tr -d ' ')
-[[ "$OUTSIDE" -eq 0 ]] || fail "fatStore is named outside core/kernel/fat.dart"
+ck; [[ "$OUTSIDE" -eq 0 ]] || fail "fatStore is named outside core/kernel/fat.dart"
 for f in fatMetaBase fatChainBase fatSectorBase fatNameBase; do
-  grep -q "u64 $f() {" "$CORE_DIR/kernel/fat.dart" || fail "core/kernel/fat.dart has no $f()"
+  ck; grep -q "u64 $f() {" "$CORE_DIR/kernel/fat.dart" || fail "core/kernel/fat.dart has no $f()"
 done
 echo "STRUCTURAL: pass  the storage seam is exactly 4 \`return Bss.addressOf(fatStore)\` in fat.dart and 0 anywhere else in core/kernel/"
 
@@ -276,7 +309,7 @@ echo "STRUCTURAL: pass  the storage seam is exactly 4 \`return Bss.addressOf(fat
 # sizes are not typed here -- they are read out of each table's own doc comment,
 # which states the string, so a table and its documentation cannot drift apart
 # either.
-python3 - "$CORE_DIR/kernel/fat.dart" "$CORE_DIR/kernel/elf.dart" "$CORE_DIR/build/kmain.o" <<'PY' || fail "a @rodata table in fat.dart or elf.dart does not match the string its doc comment records, or the length its call site passes"
+ck; python3 - "$CORE_DIR/kernel/fat.dart" "$CORE_DIR/kernel/elf.dart" "$CORE_DIR/build/kmain.o" <<'PY' || fail "a @rodata table in fat.dart or elf.dart does not match the string its doc comment records, or the length its call site passes"
 import re, subprocess, sys
 srcs = sys.argv[1:3]
 obj = sys.argv[3]
@@ -324,10 +357,10 @@ echo "STRUCTURAL: pass  every M14 @rodata table equals the string its doc commen
 
 # 2d. THE HELP TEXT GREW BY EXACTLY THE FOUR COMMANDS THIS MILESTONE ADDS.
 HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
-[[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2224 (1871 at M11-M13, plus 276 for \`run <name>\`, \`fs\`, \`ls\` and \`cat <name>\`). A command that is not in \`help\` is undiscoverable — docs/known-gaps.md GAP-0115."
-grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64(2224));" "$CORE_DIR/kernel/shell.dart" \
+ck; [[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2224 (1871 at M11-M13, plus 276 for \`run <name>\`, \`fs\`, \`ls\` and \`cat <name>\`). A command that is not in \`help\` is undiscoverable — docs/known-gaps.md GAP-0115."
+ck; grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64(2224));" "$CORE_DIR/kernel/shell.dart" \
   || fail "shellHelp() does not pass 2224 — the table and the literal disagree, which is GAP-0060 happening again"
-python3 - "$CORE_DIR/kernel/shell.dart" <<'PY' || fail "the help text does not list all four new commands, or a line is too wide for an 80-column screen"
+ck; python3 - "$CORE_DIR/kernel/shell.dart" <<'PY' || fail "the help text does not list all four new commands, or a line is too wide for an 80-column screen"
 import re, sys
 src = open(sys.argv[1]).read()
 m = re.search(r"final List<u8> shellStrHelp = const \[(.*?)\];", src, re.S)
@@ -355,7 +388,7 @@ echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, lists all four new commands,
 # A refusal code nothing returns is dead code that looks like a guard. A code
 # whose sentence is another code's is a diagnostic that names the wrong field.
 # Both are silent, so both are checked.
-python3 - "$CORE_DIR/kernel/fat.dart" <<'PY' || fail "a fatErr* code is unreachable, missing a sentence, or shares one"
+ck; python3 - "$CORE_DIR/kernel/fat.dart" <<'PY' || fail "a fatErr* code is unreachable, missing a sentence, or shares one"
 import re, sys
 src = open(sys.argv[1]).read()
 codes = dict((m.group(1), int(m.group(2)))
@@ -406,11 +439,11 @@ echo "STRUCTURAL: pass  all 32 filesystem refusal codes are reachable, dispatche
 # "FAT16   " string at offset 54 -- must NOT be read: a driver that trusted it
 # would read a FAT12 volume as FAT16 and every 12-bit chain entry would be a
 # plausible 16-bit cluster number.
-[[ "$(dartconst fatFat12Max fat.dart)" -eq 4085 ]] || fail "fat.dart's fatFat12Max is not 4085"
-[[ "$(dartconst fatFat16Max fat.dart)" -eq 65525 ]] || fail "fat.dart's fatFat16Max is not 65525"
-grep -q "final u64 clusters = (tot - dataStart) ~/ spc;" "$CORE_DIR/kernel/fat.dart" \
+ck; [[ "$(dartconst fatFat12Max fat.dart)" -eq 4085 ]] || fail "fat.dart's fatFat12Max is not 4085"
+ck; [[ "$(dartconst fatFat16Max fat.dart)" -eq 65525 ]] || fail "fat.dart's fatFat16Max is not 65525"
+ck; grep -q "final u64 clusters = (tot - dataStart) ~/ spc;" "$CORE_DIR/kernel/fat.dart" \
   || fail "fatMount no longer computes the cluster count as (totalSectors - dataStart) / sectorsPerCluster — that ONE quantity is what decides FAT12/FAT16/FAT32"
-grep -qE "const int fatBpb\w+ = 54;" "$CORE_DIR/kernel/fat.dart" \
+ck; grep -qE "const int fatBpb\w+ = 54;" "$CORE_DIR/kernel/fat.dart" \
   && fail "fat.dart names offset 54 (BS_FilSysType). That string is documentation, not a determinant; reading it would make a FAT12 volume look like FAT16."
 echo "STRUCTURAL: pass  the FAT12/FAT16/FAT32 boundaries are 4085 and 65525, the type is COMPUTED from the cluster count, and BS_FilSysType at offset 54 is never read"
 
@@ -435,7 +468,7 @@ echo "STRUCTURAL: pass  the FAT12/FAT16/FAT32 boundaries are 4085 and 65525, the
 #     to be BYTE-FOR-BYTE IDENTICAL afterwards, and the variant loop requires
 #     the same of all five broken volumes. A kernel that can write and does not
 #     still passes; a kernel that quietly wrote one sector does not.
-python3 - "$CORE_DIR/kernel" <<'WRITEPATH' || fail "the ATA write path is reachable from somewhere other than fatWriteSector, or a port_outw is aimed somewhere it should not be"
+ck; python3 - "$CORE_DIR/kernel" <<'WRITEPATH' || fail "the ATA write path is reachable from somewhere other than fatWriteSector, or a port_outw is aimed somewhere it should not be"
 import glob, os, re, sys
 kdir = sys.argv[1]
 code = {}
@@ -480,23 +513,22 @@ echo "STRUCTURAL: pass  the ATA write path M16 added is reachable from exactly o
 # source and then again by a boot against a fragmented volume. `fatFileSector`
 # must index the CHAIN ARRAY; a version that computed `first + i` would pass
 # every test on a contiguous volume.
-grep -q "final u64 c = fatChain(ci);" "$CORE_DIR/kernel/fat.dart" \
+ck; grep -q "final u64 c = fatChain(ci);" "$CORE_DIR/kernel/fat.dart" \
   || fail "fatFileSector no longer reads the chain array — it would be assuming contiguity"
-grep -q "fatChain(ci)" "$CORE_DIR/kernel/fat.dart" \
+ck; grep -q "fatChain(ci)" "$CORE_DIR/kernel/fat.dart" \
   || fail "nothing indexes the chain array by sector"
-grep -q "if (fatChainSeen(c, n) > u64(0))" "$CORE_DIR/kernel/fat.dart" \
+ck; grep -q "if (fatChainSeen(c, n) > u64(0))" "$CORE_DIR/kernel/fat.dart" \
   || fail "fatBuildChain no longer checks for a cluster it has already seen — a cyclic FAT would hang the kernel"
-grep -q "if (fatOpenActive() > u64(0)) {" "$CORE_DIR/kernel/elf.dart" \
+ck; grep -q "if (fatOpenActive() > u64(0)) {" "$CORE_DIR/kernel/elf.dart" \
   || fail "elfImageLba no longer consults fat.dart, so \`run <name>\` would read contiguous sectors"
 echo "STRUCTURAL: pass  fatFileSector indexes the chain array, fatBuildChain checks for a repeated cluster, and elfImageLba routes the loader's reads through the chain"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding, on every object.
 # ---------------------------------------------------------------------------
-VF_OUT="$(cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o 2>&1)"
-VF_STATUS=$?
+capture_sh VF_OUT VF_STATUS -- 'cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o'
 echo "$VF_OUT"
-[[ $VF_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed on kmain.o"
+ck; [[ $VF_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed on kmain.o"
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VF_OUT" | head -1 | grep -oE '[0-9]+')
 # M15 (ADR-0019) added exactly ONE: `fileStore`. Subtracted so that M14's
 # own count keeps meaning what it meant when it was written.
@@ -512,14 +544,14 @@ for gone in \
             pmm_store_addr vm_store_addr user_store_addr \
             elf_store_addr proc_store_addr fat_store_addr \
             file_store_addr; do
-  grep -q "\\b$gone\\b" <<<"$VF_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+  ck; grep -q "\\b$gone\\b" <<<"$VF_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
-[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — M13's 58 less the fourteen accessors ADR-0021 deleted at or before M13; M14's only extern was fat_store_addr, so M14 now adds NONE"
+ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — M13's 58 less the fourteen accessors ADR-0021 deleted at or before M13; M14's only extern was fat_store_addr, so M14 now adds NONE"
 # kdata.o and portio.o and nothing else: isr.o and boot.o are the assembly
 # stubs that CALL into DCDart by name, so they are undefined-by-construction and
 # every harness since M2 has left them out for that reason.
 for obj in kdata.o portio.o; do
-  (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh "build/$obj" >/dev/null 2>&1) \
+  ck; (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh "build/$obj" >/dev/null 2>&1) \
     || fail "verify-freestanding.sh failed on $obj"
 done
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o, M13's 58 less the fourteen accessors ADR-0021 deleted; M14's own fat_store_addr is gone too, so M14 adds NONE; kdata.o and portio.o clean standalone"
@@ -536,16 +568,15 @@ echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o, M13's 58 less the
 # same mistake.
 # ---------------------------------------------------------------------------
 PROGDIR="$WORKDIR/progs"
-BUILD_PROGS_OUT="$(bash "$SCRIPT_DIR/build-progs.sh" "$PROGDIR" 2>&1)"
-BP_STATUS=$?
+capture BUILD_PROGS_OUT BP_STATUS -- bash "$SCRIPT_DIR/build-progs.sh" "$PROGDIR"
 echo "$BUILD_PROGS_OUT"
-[[ $BP_STATUS -eq 0 ]] || fail "build-progs.sh exited $BP_STATUS"
+ck; [[ $BP_STATUS -eq 0 ]] || fail "build-progs.sh exited $BP_STATUS"
 
 DISK_IMG="$WORKDIR/m14.img"
 LAYOUT="$WORKDIR/layout.json"
-python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
+ck; python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
   || fail "make-image.py could not write the volume"
-python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" --json \
+ck; python3 "$SCRIPT_DIR/make-image.py" "$DISK_IMG" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" --json \
   > "$LAYOUT" || fail "make-image.py --json failed"
 
 # M16 replaced this harness's "no write opcode anywhere" grep with a
@@ -555,13 +586,12 @@ M14_SHA_BEFORE=$(shasum -a 256 "$DISK_IMG" | cut -d' ' -f1)
 
 command -v fsck_msdos >/dev/null 2>&1 || FSCK=/sbin/fsck_msdos
 FSCK="${FSCK:-fsck_msdos}"
-[[ -x "$FSCK" ]] || command -v "$FSCK" >/dev/null 2>&1 \
+ck; [[ -x "$FSCK" ]] || command -v "$FSCK" >/dev/null 2>&1 \
   || setup_error "fsck_msdos not found; this harness will not certify a FAT volume no independent tool has read"
-FSCK_OUT="$("$FSCK" -n "$DISK_IMG" 2>&1)"
-FSCK_STATUS=$?
-[[ $FSCK_STATUS -eq 0 ]] || { echo "$FSCK_OUT" >&2; fail "fsck_msdos rejected the image (exit $FSCK_STATUS) — it is not a valid FAT volume, whatever this kernel makes of it"; }
-grep -q "Phase 3" <<<"$FSCK_OUT" || { echo "$FSCK_OUT" >&2; fail "fsck_msdos did not get as far as phase 3"; }
-grep -qE "1 KiB bad \(1 clusters\)" <<<"$FSCK_OUT" \
+capture FSCK_OUT FSCK_STATUS -- "$FSCK" -n "$DISK_IMG"
+ck; [[ $FSCK_STATUS -eq 0 ]] || { echo "$FSCK_OUT" >&2; fail "fsck_msdos rejected the image (exit $FSCK_STATUS) — it is not a valid FAT volume, whatever this kernel makes of it"; }
+ck; grep -q "Phase 3" <<<"$FSCK_OUT" || { echo "$FSCK_OUT" >&2; fail "fsck_msdos did not get as far as phase 3"; }
+ck; grep -qE "1 KiB bad \(1 clusters\)" <<<"$FSCK_OUT" \
   || { echo "$FSCK_OUT" >&2; fail "fsck_msdos does not report the ONE cluster this image deliberately marks bad (FFF7) — either the marker is not the real one or fsck did not read the FAT"; }
 echo "IMAGE: pass  fsck_msdos accepts the volume and accounts for the one deliberately-bad cluster: $(grep -E '^Warning|files,' <<<"$FSCK_OUT" | tail -1)"
 
@@ -571,24 +601,24 @@ echo "IMAGE: pass  fsck_msdos accepts the volume and accounts for the one delibe
 MOUNT_VERIFIED="not attempted (no hdiutil)"
 if command -v hdiutil >/dev/null 2>&1; then
   mkdir -p "$MOUNTPOINT"
-  ATTACH_OUT="$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -readonly -nobrowse \
-                  -mountpoint "$MOUNTPOINT" "$DISK_IMG" 2>&1)"
-  if [[ $? -ne 0 ]]; then
+  capture ATTACH_OUT ATTACH_STATUS -- hdiutil attach -imagekey diskimage-class=CRawDiskImage \
+    -readonly -nobrowse -mountpoint "$MOUNTPOINT" "$DISK_IMG"
+  ck; if [[ $ATTACH_STATUS -ne 0 ]]; then
     echo "$ATTACH_OUT" >&2
     fail "hdiutil could not mount the image — macOS's own msdos driver does not think this is a FAT volume"
   fi
   ATTACHED="$(awk '/dev\/disk/ {print $1; exit}' <<<"$ATTACH_OUT")"
-  [[ -f "$MOUNTPOINT/PROGA.ELF" ]] || fail "the mounted volume has no PROGA.ELF"
-  cmp -s "$MOUNTPOINT/PROGA.ELF" "$PROGDIR/progA.elf" \
+  ck; [[ -f "$MOUNTPOINT/PROGA.ELF" ]] || fail "the mounted volume has no PROGA.ELF"
+  ck; cmp -s "$MOUNTPOINT/PROGA.ELF" "$PROGDIR/progA.elf" \
     || fail "macOS's msdos driver reads PROGA.ELF back DIFFERENTLY from what was written — the fragmented chain is wrong, and this kernel agreeing with the generator would prove nothing"
-  [[ -f "$MOUNTPOINT/HELLO.TXT" ]] || fail "the mounted volume has no HELLO.TXT"
-  [[ -d "$MOUNTPOINT/SUB" ]] || fail "the mounted volume's SUB is not a directory"
+  ck; [[ -f "$MOUNTPOINT/HELLO.TXT" ]] || fail "the mounted volume has no HELLO.TXT"
+  ck; [[ -d "$MOUNTPOINT/SUB" ]] || fail "the mounted volume's SUB is not a directory"
   # The long-filename entries are real ones: the host driver shows the LONG name
   # for PROGB.ELF, which is what this kernel deliberately does NOT do.
   LONGNAME=$(ls "$MOUNTPOINT" | grep -c 'program-b-with-a-long-name.elf')
-  [[ "$LONGNAME" -eq 1 ]] \
+  ck; [[ "$LONGNAME" -eq 1 ]] \
     || fail "macOS does not see PROGB.ELF's long filename — the LFN entries on this volume are not the real thing, so 'the kernel skips real LFN entries' would be untested"
-  cmp -s "$MOUNTPOINT/program-b-with-a-long-name.elf" "$PROGDIR/progB.elf" \
+  ck; cmp -s "$MOUNTPOINT/program-b-with-a-long-name.elf" "$PROGDIR/progB.elf" \
     || fail "macOS reads PROGB.ELF back differently from what was written"
   hdiutil detach "$ATTACHED" >/dev/null 2>&1
   ATTACHED=""
@@ -602,10 +632,10 @@ IMG_BYTES=$(wc -c <"$DISK_IMG" | tr -d ' ')
 # Step 5 — derive every expectation from the image that was just built.
 # ---------------------------------------------------------------------------
 DERIVED="$WORKDIR/derived.txt"
-python3 "$SCRIPT_DIR/derive.py" "$DISK_IMG" "$LAYOUT" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
+ck; python3 "$SCRIPT_DIR/derive.py" "$DISK_IMG" "$LAYOUT" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
   > "$DERIVED" || fail "derive.py could not derive the expectations (it re-reads the volume and cross-checks make-image.py against it)"
 d() { grep -m1 "^$1=" "$DERIVED" | cut -d= -f2-; }
-[[ -n "$(d proga_fnv)" ]] || fail "derive.py produced no proga_fnv"
+ck; [[ -n "$(d proga_fnv)" ]] || fail "derive.py produced no proga_fnv"
 echo "DERIVED: $(d clusters) clusters of $(( $(d spc) * $(d bps) ))B, data at LBA $(d data_start); PROGA.ELF at clusters $(d proga_chain); PROGB.ELF at $(d progb_chain); HELLO.TXT at $(d hello_chain)"
 echo "DERIVED: PROGA's own hash of its R+X segment must be $(d proga_fnv) — a contiguous read of the same file would hash $(d proga_fnv_contiguous), and that number must not appear anywhere"
 
@@ -629,7 +659,7 @@ drive_session() {
   # previous boot still in TIME_WAIT. All three used to surface as QEMU
   # dying with "Address already in use".
   local port
-  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
+  ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 420 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \
@@ -642,24 +672,17 @@ drive_session() {
     -qmp "tcp:127.0.0.1:$port,server,nowait" \
     >"$outdir/qemu.log" 2>&1 &
   local qemu_pid=$!
-  python3 "$DRIVER" \
-    --port "$port" \
-    --serial "$ser" \
-    --wait-for 'M1 END\n' \
-    --png "$png" \
-    --screen-text "$outdir/screen.txt" \
-    --keys "$keys" \
-    "$@"
-  local drive_status=$?
-  wait "$qemu_pid" 2>/dev/null
-  local qemu_status=$?
-  if [[ $drive_status -ne 0 ]]; then
+  local drive_status
+  run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys" "$@"
+  local qemu_status
+  await qemu_status "$qemu_pid"
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
     fail "qmp-drive.py exited $drive_status for the $label boot."
   fi
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -699,10 +722,10 @@ SHOT_PNG="$CORE_DIR/build/screenshot-fat.png"
 drive_session "$WORKDIR/main" "$SESSION_KEYS" "$SHOT_PNG" "main" 0 "$DISK_IMG"
 SERIAL="$WORKDIR/main/serial.txt"
 SCREEN="$WORKDIR/main/screen.txt"
-[[ -s "$SERIAL" ]] || fail "the main boot captured no serial output at all"
+ck; [[ -s "$SERIAL" ]] || fail "the main boot captured no serial output at all"
 
-have() { grep -qF -- "$1" "$SERIAL" || { sed -n '/M1 END/,$p' "$SERIAL" >&2; fail "the transcript does not contain: $1"; }; }
-havent() { grep -qF -- "$1" "$SERIAL" && fail "the transcript contains what it must not: $1"; }
+have() { ck; grep -qF -- "$1" "$SERIAL" || { sed -n '/M1 END/,$p' "$SERIAL" >&2; fail "the transcript does not contain: $1"; }; }
+havent() { ck; grep -qF -- "$1" "$SERIAL" && fail "the transcript contains what it must not: $1"; }
 
 # ---------------------------------------------------------------------------
 # Step 7 — the derived checks. Every number below came out of derive.py, which
@@ -726,9 +749,9 @@ while :; do
   have "$line"
   n=$(( n + 1 ))
 done
-[[ "$n" -eq "$(d dir_listed)" ]] || fail "derive.py produced $n listing lines and says $(d dir_listed) entries should be listed"
+ck; [[ "$n" -eq "$(d dir_listed)" ]] || fail "derive.py produced $n listing lines and says $(d dir_listed) entries should be listed"
 have "$(d ls_tail)"
-[[ "$(d dir_skipped)" -ge 5 ]] || fail "the volume does not carry the five entries a listing has to skip (a volume label, a deleted entry and three LFN entries); the skip logic would be untested"
+ck; [[ "$(d dir_skipped)" -ge 5 ]] || fail "the volume does not carry the five entries a listing has to skip (a volume label, a deleted entry and three LFN entries); the skip logic would be untested"
 # The three LFN entries hold the long name as UTF-16. A driver that printed them
 # as 8.3 names would put its first two characters on the screen.
 havent "FS ENT 04 NAME"
@@ -752,7 +775,7 @@ for tag in hello proga progb; do
     have "$line"
     k=$(( k + 1 ))
   done
-  [[ "$k" -ge 1 ]] || fail "derive.py produced no cluster lines for $tag"
+  ck; [[ "$k" -ge 1 ]] || fail "derive.py produced no cluster lines for $tag"
   # And a contiguous run of the same length must NOT appear.
   first=$(d ${tag}_first)
   cont=$(python3 -c "
@@ -764,7 +787,7 @@ done
 echo "CHECK 7c: pass  all three files' cluster chains appear exactly as allocated — HELLO.TXT $(d hello_chain), PROGA.ELF $(d proga_chain), PROGB.ELF $(d progb_chain) — and the consecutive run each would have produced does not appear"
 
 # 7d. THE FILE'S CONTENTS, ACROSS A 98-CLUSTER HOLE.
-python3 - "$SERIAL" "$DISK_IMG.hello" <<'PY' || fail "the bytes \`cat\` printed are not HELLO.TXT's bytes"
+ck; python3 - "$SERIAL" "$DISK_IMG.hello" <<'PY' || fail "the bytes \`cat\` printed are not HELLO.TXT's bytes"
 import sys
 cap = open(sys.argv[1], "rb").read()
 want = open(sys.argv[2], "rb").read()
@@ -811,7 +834,7 @@ have "   or: run <NAME.EXT> -- an 8.3 name in the root directory"
 # `cat ghost.elf` must be NOT FOUND and not a read of the deleted entry's
 # clusters -- which are PROGA.ELF's, and would have printed an ELF header.
 DELETED_HITS=$(grep -c "^FS OPEN GHOST" "$SERIAL")
-[[ "$DELETED_HITS" -eq 0 ]] || fail "the deleted entry GHOST.ELF was opened; its first cluster is PROGA.ELF's and a driver that read it would have run a file that does not exist"
+ck; [[ "$DELETED_HITS" -eq 0 ]] || fail "the deleted entry GHOST.ELF was opened; its first cluster is PROGA.ELF's and a driver that read it would have run a file that does not exist"
 echo "CHECK 7f: pass  a subdirectory, a deleted entry, a missing name and an over-long name are four DIFFERENT refusals, and \`cat\` and \`run\` each print a usage line naming the other form"
 
 # 7g. THE NUMERIC FORM STILL WORKS, AND ON THIS VOLUME IT CORRECTLY REFUSES.
@@ -826,8 +849,8 @@ echo "CHECK 7g: pass  \`run <lba>\` still takes the contiguous path — \`run 20
 # 7h. NOTHING LEAKED, TO THE FRAME.
 FREE_BEFORE=$(grep -m1 "^PMM MANAGED" "$SERIAL" | sed -E 's/.*FREE ([0-9A-F]+).*/\1/')
 FREE_AFTER=$(grep "^PMM MANAGED" "$SERIAL" | tail -1 | sed -E 's/.*FREE ([0-9A-F]+).*/\1/')
-[[ -n "$FREE_BEFORE" && -n "$FREE_AFTER" ]] || fail "the session did not bracket itself with two \`frames\` reports"
-[[ "$FREE_BEFORE" == "$FREE_AFTER" ]] \
+ck; [[ -n "$FREE_BEFORE" && -n "$FREE_AFTER" ]] || fail "the session did not bracket itself with two \`frames\` reports"
+ck; [[ "$FREE_BEFORE" == "$FREE_AFTER" ]] \
   || fail "the frame allocator had 0x$FREE_BEFORE free before the session and 0x$FREE_AFTER after; two programs were loaded and torn down and the count must be identical"
 havent "USER FAULT"
 havent "FAULT RECOVERED"
@@ -841,7 +864,7 @@ echo "CHECK 7h: pass  0x$FREE_BEFORE frames free before the session and 0x$FREE_
 # underneath is one that CAN write a sector; this says it did not write one
 # here, which is a claim about what ran rather than about what is spellable.
 M14_SHA_AFTER=$(shasum -a 256 "$DISK_IMG" | cut -d' ' -f1)
-[[ "$M14_SHA_BEFORE" == "$M14_SHA_AFTER" ]] \
+ck; [[ "$M14_SHA_BEFORE" == "$M14_SHA_AFTER" ]] \
   || fail "M14's boot CHANGED the volume (sha256 $M14_SHA_BEFORE -> $M14_SHA_AFTER). This kernel can write to a disk since M16; nothing M14 does is supposed to."
 echo "CHECK 7i: pass  the volume is byte-for-byte identical after the whole session — sha256 $M14_SHA_AFTER"
 
@@ -851,7 +874,7 @@ echo "CHECK 7i: pass  the volume is byte-for-byte identical after the whole sess
 variant_boot() {
   local name="$1" keys="$2" portoff="$3"
   local img="$WORKDIR/v-$name.img"
-  python3 "$SCRIPT_DIR/make-image.py" "$img" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
+  ck; python3 "$SCRIPT_DIR/make-image.py" "$img" "$PROGDIR/progA.elf" "$PROGDIR/progB.elf" \
     --variant="$name" >"$WORKDIR/v-$name.txt" || fail "make-image.py could not write the $name variant"
   cat "$WORKDIR/v-$name.txt"
   local vsha_before
@@ -861,10 +884,10 @@ variant_boot() {
   # M16: every one of these boots must leave its volume alone, including the
   # ones whose volume is already broken. A kernel that "repaired" something it
   # was only asked to read would be caught here.
-  [[ "$vsha_before" == "$(shasum -a 256 "$img" | cut -d' ' -f1)" ]] \
+  ck; [[ "$vsha_before" == "$(shasum -a 256 "$img" | cut -d' ' -f1)" ]] \
     || fail "the $name boot CHANGED its image; nothing M14 does writes to a disk"
 }
-vhave() { grep -qF -- "$1" "$VSER" || { echo "--- $VSER ---" >&2; sed -n '/M1 END/,$p' "$VSER" >&2; fail "the $2 boot's transcript does not contain: $1"; }; }
+vhave() { ck; grep -qF -- "$1" "$VSER" || { echo "--- $VSER ---" >&2; sed -n '/M1 END/,$p' "$VSER" >&2; fail "the $2 boot's transcript does not contain: $1"; }; }
 
 FS_KEYS="$(typekeys "fs"),ret,wait:900"
 variant_boot nosig "$FS_KEYS" 11
@@ -913,7 +936,7 @@ for want in "$(d proga_chainhdr)" "$(d hello_chainhdr)" "$(d proga_clusline_0)" 
             "M14 PROG A BYTES $(d proga_ro_bytes | xargs printf '%x') FNV $(d proga_fnv)" \
             "ELF DONE EXIT 00000000000000$(d proga_exit)" \
             "M14 PROG B TAG PROGB.ELF took the even clusters"; do
-  if grep -qF -- "$want" "$BADSER"; then
+  ck; if grep -qF -- "$want" "$BADSER"; then
     fail "the negative control FAILED to fail: \"$want\" appears in the badchains transcript too, so asserting it against the main transcript was measuring something that happens either way"
   fi
   CONTROL_FAILURES=$(( CONTROL_FAILURES + 1 ))
@@ -932,10 +955,10 @@ if [[ $REGEN -eq 1 ]]; then
   cp "$SCREEN" "$EXPECTED_SCREEN"
   echo "REGEN: wrote $(wc -c <"$EXPECTED_SERIAL" | tr -d ' ') bytes of serial golden and the 80x25 screen golden"
 fi
-[[ -f "$EXPECTED_SERIAL" ]] || fail "no golden at $EXPECTED_SERIAL — run once with --regen"
-[[ -f "$EXPECTED_SCREEN" ]] || fail "no screen golden at $EXPECTED_SCREEN — run once with --regen"
+ck; [[ -f "$EXPECTED_SERIAL" ]] || fail "no golden at $EXPECTED_SERIAL — run once with --regen"
+ck; [[ -f "$EXPECTED_SCREEN" ]] || fail "no screen golden at $EXPECTED_SCREEN — run once with --regen"
 
-if ! cmp -s "$SERIAL" "$EXPECTED_SERIAL"; then
+ck; if ! cmp -s "$SERIAL" "$EXPECTED_SERIAL"; then
   echo "--- first difference ---" >&2
   cmp "$SERIAL" "$EXPECTED_SERIAL" >&2
   diff <(cat -v "$EXPECTED_SERIAL") <(cat -v "$SERIAL") | head -40 >&2
@@ -943,7 +966,7 @@ if ! cmp -s "$SERIAL" "$EXPECTED_SERIAL"; then
 fi
 SERIAL_BYTES=$(wc -c <"$SERIAL" | tr -d ' ')
 
-if ! cmp -s "$SCREEN" "$EXPECTED_SCREEN"; then
+ck; if ! cmp -s "$SCREEN" "$EXPECTED_SCREEN"; then
   diff "$EXPECTED_SCREEN" "$SCREEN" | head -30 >&2
   fail "the 80x25 screen read out of guest memory does not match $EXPECTED_SCREEN"
 fi
@@ -953,11 +976,15 @@ fi
 # nothing: fatInit() prints nothing and must keep printing nothing.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL" > "$WORKDIR/prefix.bin"
-if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+ck; if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
   cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
   fail "the first $M1_BYTES bytes of this capture are not m1-interrupts' golden — M14 changed the boot path, and it must not"
 fi
 echo "GOLDEN: pass  ${SERIAL_BYTES}-byte serial match, 80x25 screen match, and m1-interrupts' ${M1_BYTES}-byte golden intact as a byte-exact prefix"
-[[ -f "$SHOT_PNG" ]] || fail "no screenshot at $SHOT_PNG"
+ck; [[ -f "$SHOT_PNG" ]] || fail "no screenshot at $SHOT_PNG"
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M14-fat: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs that HASH THEIR OWN R+X SEGMENT -> make-image.py writes a real FAT16 volume (${IMG_BYTES} bytes = $(( IMG_BYTES / 512 )) sectors, $(d clusters) clusters of $(( $(d spc) * $(d bps) ))B) on which NOTHING IS CONTIGUOUS -> fsck_msdos accepts it and macOS's own msdos driver mounts it and reads both programs back byte-for-byte -> 8 structural checks (donated .bss 9664 -> 11488 with fat_store's four regions tiling 1824 bytes without overlap, the storage seam exactly 4 call sites in one file, 68 @rodata tables (67 in fat.dart, one in elf.dart) each equal to the string its doc comment records and to every length literal passed to it, shellStrHelp 1871 -> 2147 with all four new commands and no line over 78 columns, 32 refusal codes each reachable and each distinctly worded (GAP-0152 added fatErrReadOnly), the FAT12/FAT16 boundary computed from the cluster count and BS_FilSysType never read, the ATA write path M16 added reachable from exactly one place with the only port_outw at 0x1F0 inside it, and fatFileSector indexing the chain array) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 58 + fatStore) -> SEVEN real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's ${M1_BYTES}-byte golden intact as a prefix; \`fs\` reproducing the BPB and four derived region offsets; \`ls\` printing 4 entries and skipping 5 (a volume label, a deleted entry and three real long-filename entries the host driver resolves); \`cat\` printing a file across a 98-cluster hole with not one byte of the pattern filling the gap; TWO PROGRAMS LOADED BY NAME whose clusters interleave with each other's, each hashing its own image to the value derive.py computes from the ELF and NEITHER printing the hash a contiguous read would have produced; four refusals for four kinds of bad name; \`run <lba>\` still taking the contiguous path; the allocator's free count identical before and after; THE VOLUME BYTE-FOR-BYTE IDENTICAL AFTER EVERY BOOT, which is what M16 replaced this harness's read-only greps with; four boots against four one-thing-wrong volumes producing four different refusals; one boot against a volume whose three files have three different broken chains producing a named cycle, a bad cluster and a short chain; one against a volume whose chain leaves the data region by exactly one cluster; and every load-bearing expectation REQUIRED to fail against the broken-chain transcript. Screenshot at $SHOT_PNG"

@@ -236,8 +236,14 @@ def load(elf, name):
     for want in ("progId", "exitBase", "dataWord", "reqSize", "coalReq",
                  "mallocHdrBytes", "mallocAlign", "mallocMinSplit", "printfMax",
                  "libcWriteMax", "libcFreeEnabled",
-                 "malloc", "free", "printf", "memcpy", "memset", "strlen",
-                 "strcmp", "strcpy", "sbrk", "write"):
+                 # S0 (ADR-0033): `printf` and `write` are `os_printf` and
+                 # `os_write` now. The functions are the same; the SYMBOLS were
+                 # renamed so that a port linking core/user/libc cannot bind to
+                 # them by name and get the wrong function (GAP-0170). The
+                 # short spellings still work in source, through oslibc.h's
+                 # #defines, which is why prog.c did not change.
+                 "malloc", "free", "os_printf", "memcpy", "memset", "strlen",
+                 "strcmp", "strcpy", "sbrk", "os_write"):
         if want not in syms:
             fails.append("%s: no symbol %s" % (name, want))
 

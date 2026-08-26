@@ -37,15 +37,31 @@ part 'heap.dart';
 part 'fat.dart';
 part 'file.dart';
 part 'args.dart';
-// M20 (ADR-0027): LAST, and the position is load-bearing. This file declares a
-// `@bss` block, and every harness from M2 onward measures "the donated bytes
-// from MY block to the end of `.bss`" -- a new block anywhere but the end would
-// move every one of those numbers at once. At the end, each older harness
-// subtracts this one first, exactly as M14, M15, M16 and M19 each did in turn.
+// M20 (ADR-0027): the IPC channel block. SECOND-TO-LAST in `.bss`, and it was
+// last until S0 landed after it. This file declares a `@bss` block, and every
+// harness from M2 onward measures "the donated bytes from MY block to the end of
+// `.bss`" -- so each older harness subtracts the newer blocks first, exactly as
+// M14, M15, M16 and M19 each were subtracted in turn.
 // (The block's NAME is deliberately not written here: `m20-ipc/run.sh` greps
 // core/kernel/ for it and requires chan.dart to be the only file that says it,
-// which is ADR-0011 §0's seam discipline made mechanical.)
+// which is ADR-0011 s0's seam discipline made mechanical.)
 part 'chan.dart';
+
+// S0 (ADR-0033) -- `ioctl`, syscall 12, and the device namespace.
+//
+// **LAST ON PURPOSE.** ADR-0031 s4.3 rule 5 requires the ioctl bounce buffer to
+// be the last thing in `.bss`, so that every existing harness's "bytes from my
+// block to the end" arithmetic (ADR-0021) is unchanged by this file existing.
+// `tests/conformance/drm-abi/run.sh` reads `core/build/kernel.map` and CHECKS
+// that ordering rather than trusting this comment.
+//
+// IT STAYS LAST ACROSS THIS MERGE, and M20's block above yields to it. ADR-0033
+// s6.4 already recorded why last is necessary but not sufficient -- the
+// previously-last block's own to-the-end measurement is exactly what a new block
+// after it changes -- and chan.dart is now that previously-last block: its
+// measured 2624 becomes 3136 once this block's 512 sits behind it, in every
+// harness that subtracts it.
+part 'ioctl.dart';
 
 /// Kernel entry point.
 ///

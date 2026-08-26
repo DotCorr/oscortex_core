@@ -586,12 +586,39 @@ M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, �
 **The total after M17 is a total of DCDart `@bss` rather than of donated bytes, and it keeps moving.**
 14048 + 64 (M18's scheduler header, ADR-0022) = **14112 at M18**, + 256 (`argsStore`, ADR-0023) =
 **14368 at M19**, + 2624 (`chanStore`, ADR-0027 — eight global counter words and two 1280-byte channel
-port records) = **16992 at M20**. `chanStore` is now the LAST block in `kmain.o`'s `.bss` and
-`m20-ipc` asserts that it ends exactly at the end of the section — the same convention M14, M15, M16
-and M19 each followed, so that every earlier harness's "the donated bytes from MY block to the end of
-`.bss`" keeps meaning what it meant when it was written, by subtracting each later milestone's block
-first. M20 edited twelve harnesses to subtract its block ahead of M19's, and `m19-argv` now asserts
-that nothing sits *between* `argsStore` and `chanStore` rather than that `argsStore` is last.
+port records) = **16992 at M20**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte
+`ioctl` bounce buffer) = **17504 at S0**. **`ioctlStore` is the LAST block** in `kmain.o`'s `.bss`,
+and `chanStore` is the one immediately before it. `m19-argv` asserts that `ioctlStore` ends exactly
+at the end of the section, that `chanStore` ends where `ioctlStore` begins, and that nothing sits
+between `argsStore` and `chanStore` — the same convention M14, M15, M16 and M19 each followed in
+turn, so that every earlier harness's "the donated bytes from MY block to the end of `.bss`" keeps
+meaning what it meant when it was written, by subtracting each later milestone's block first. Twelve
+harnesses subtract `ioctlStore` first and `chanStore` second.
+
+**14368 at M19**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte `ioctl` bounce
+buffer) = **14880 at S0**. **`ioctlStore` is now the LAST block** in `kmain.o`'s `.bss`, and
+`m19-argv` asserts that it ends exactly at the end of the section — the same convention M14, M15,
+M16 and M19 each followed in turn, so that every earlier harness's "the donated bytes from MY block
+to the end of `.bss`" keeps meaning what it meant when it was written, by subtracting each later
+milestone's block first.
+
+**And S0 is where that convention's wording turned out to be slightly wrong**, which is worth
+recording here because this is the running total everyone consults. ADR-0031 §4.3 rule 5 said that
+putting the new block LAST would leave *"every existing harness's 'bytes from my block to the end'
+arithmetic unchanged"*. **Last is necessary but not sufficient**: the block that WAS last has a
+to-the-end measurement of its own, and a new block after it changes exactly that one. `argsStore`'s
+number went **256 → 768** and twelve harnesses said so. The remedy is the one already in the repo —
+each new block adds its own subtraction step first — and the rule should read *"…so that every
+EARLIER block's arithmetic is unchanged, and the previously-last block gets a new subtraction
+step."* ADR-0033 §6.3(a).
+
+**M20 WAS ITSELF THE NEXT DEMONSTRATION OF THAT POINT, on the very next merge.** `chanStore` was the
+last block when M20 wrote the paragraph above, and `ioctlStore` landing behind it changed exactly the
+one number ADR-0033 §6.3(a) predicts: `chanStore`'s own raw to-the-end measurement went **2624 →
+3136**. The remedy was the one already in the repo — the twelve harnesses that subtract `chanStore`
+were given the `ioctlStore` subtraction ahead of it, so their asserted 2624 still means 2624, and its
+fail message now reads "to S0's ioctlStore" rather than "to the end of .bss". Two blocks in a row
+have now proved the same rule, which is a reason to state it as the rule rather than as an anecdote.
 
 **M20's 2624 bytes buy something specific and it is worth saying:** IPC allocates no frames at all. A
 channel is `@bss`, so `chanopen` cannot fail for want of memory, and `m20-ipc` brackets two whole
@@ -5775,6 +5802,26 @@ byte-identical old-vs-new differential across all five objects and `kernel.elf`.
 per-harness work list is at the bottom of this entry, and ADR-0030 argues that `set -e` is the wrong
 mechanism for this suite in any case. Superseding work is GAP-0168.
 
+**UPDATE 2026-08-26 (ADR-0032, GAP-0168's implementation). Two things changed here, and one of them
+is a correction to this entry's own numbers.**
+
+1. **The class-A total in the table below is wrong: it is 86, not 135.** The classifier counted BOTH
+   lines of the two-line idiom for some sites — `m0-boot` is listed as `A: 39, 40, 63, 83`, where 39
+   and 40 are the command and its `$?` while 63 and 83 are single lines of the identical two-line
+   shape. Three independent counts agree on 86: `grep -cE '^[[:space:]]*(local[[:space:]]+)?[A-Za-z_]
+   [A-Za-z0-9_]*=\$\?[[:space:]]*$'` over the suite, `grep -c '\$?'` (89 = 86 assignments + 3 direct
+   reads), and the number of helper calls after conversion. The **conclusion** the survey drew from
+   the number — class A is universal, 20/20, minimum four per harness — is unaffected and was
+   re-confirmed. Only the total was wrong, and it was quoted as the COST of the conversion in
+   ADR-0030 §3.3 and GAP-0168, which is how a 57%-too-high number gets work deferred.
+2. **All 86 are converted** (plus two more that read `$?` on the following line: 88 in total), to the
+   `capture` / `capture_log` / `capture_sh` / `run_status` / `await` helpers in
+   `core/tests/conformance/_lib/harness.sh`. **`set -e`'s prerequisite is therefore met**: every
+   wrapped command runs inside an `if` condition, where `set -e` is suppressed, so the helpers are
+   already safe under it. Whether to adopt `set -e` at all is still ADR-0030's "no", and classes C
+   and G below are still the reason. This entry stays OPEN for that question alone; it is no longer
+   blocked on class A.
+
 `declare -A` (bash 4+) appeared in `m13-libc:248`, `m8-paging:174` and `m9-ring3:158`. Under
 `/bin/bash` 3.2 the declaration fails and the subsequent `SYM[__kernel_start]=...` becomes an
 **indexed** assignment whose subscript is evaluated as **arithmetic**, so the harness aborts at exit
@@ -5848,7 +5895,11 @@ where the *good* case is grep returning 1.
 | `m18-preempt` | 6 | 1 | 1 | A: 103, 104, 285, 322, 323, 332 · C: 96 · G: 228 |
 | `m19-argv` | 7 | 3 | 1 | A: 112, 303, 329, 330, 398, 399, 408 · C: 119, 515, 520 · G: 311 |
 | `mb-info` | 4 | 1 | 0 | A: 63, 64, 93, 123 · C: 149 |
-| **totals** | **135** | **86** | **90** | **311 sites, 20/20 harnesses blocked, 0 convertible** |
+| **totals** | **~~135~~ 86** | **86** | **90** | **~~311~~ 262 sites, 20/20 harnesses blocked, 0 convertible** |
+
+*(The class-A column is per-LINE, not per-site — see the UPDATE at the top of this entry. The line
+numbers are still correct as pointers; there are just 86 distinct sites among them, and all 86 are
+now converted, so the column is a historical record rather than a work list.)*
 
 *(Line numbers are as of this commit — i.e. **after** GAP-0167's `Step 3b` was added to `m19-argv`.)*
 
@@ -5902,6 +5953,35 @@ The likely fix is for the harness to mask RF (and any other CPU-managed bit not 
 comparing, rather than pinning the whole word — M9's claim is about CPL, CS and SS, not about RF. Not
 done here: it changes what an existing golden asserts, which wants its own unit.
 
+**UPDATE 2026-08-26 (GAP-0168's unit): the `m12-heap` flake is THIS flake, not a separate one, and
+here is the measurement rather than the assertion.** `m12-heap` failed three times during that unit,
+every time on a line of exactly this shape:
+
+```
+< USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000246 CPL 3
+> USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000010246 CPL 3
+```
+
+Same bit 16, same `expected.txt`-pins-the-whole-word cause, different harness — and note the polarity
+is the reverse of M9's: here the golden has RF **set** and the flaky run has it clear, so whichever
+way the bit lands, a golden that pins the whole word is a coin toss.
+
+**Attribution, because a flake appearing during a unit that touched all twenty harnesses needs one.**
+`m12-heap` was run from the instrumented harness and from the **unmodified HEAD harness**, alternating,
+on the same loaded machine:
+
+| | runs | passed | failed, this exact diff |
+|---|---:|---:|---:|
+| HEAD, untouched by that unit | 4 | 3 | **1** |
+| instrumented (`ck` + `capture`) | 6 | 4 | 2 |
+
+**The unmodified harness reproduces it**, so the flake is not the instrumentation's. It correlates
+with machine load — all three instrumented failures were inside a full sweep with four or five other
+QEMUs running, and every standalone run passed — which fits an RF that depends on where a fault lands
+relative to the keystroke injection. Not diagnosed further, and still not fixed: the fix is the same
+one this entry already proposes (mask the CPU-managed bits before comparing) and it now has two
+harnesses' goldens to move rather than one.
+
 **UPDATE — same defect, and the remedy now exists next door.** GAP-0212 turned out to be this exact
 bug in `m12-heap`, and it is now closed there: `rflags_canon()` in `m12-heap/run.sh` clears bit 16 in
 both the capture and the golden before the `cmp`, with four guards that fail the harness if the
@@ -5919,8 +5999,32 @@ that ring 3 ran with interrupts enabled.
 ## GAP-0158 — There is no `ioctl` and no device namespace, and the DRM ABI is an ioctl ABI reached through a device node
 
 **Domain:** kernel, syscalls, ABI (design unit, ADR-0029)
-**Status:** OPEN — nothing implemented. This is the keystone item: every other gap opened by ADR-0029
-is downstream of it.
+**Status:** **CLOSED by ADR-0033.** `ioctl` is syscall 12 and is implemented in
+`core/kernel/ioctl.dart`; `/dev/dri/card0` and `/dev/dri/renderD128` are served from `fileSysOpen`.
+Both halves this entry called "separable" were built in one unit, because the second is four
+lines once the first exists.
+
+**What was built, against what this entry asked for:** the `_IOC` decode with all four fields; a
+dispatch on `_IOC_NR` that is never handed the request word; `_IOC_SIZE` checked against the
+descriptor's SET and **refused, not zero-extended**, on a mismatch; a size above `ioctlMaxPayload`
+(256) **refused, not truncated**; both of M16's pointer validators, read-side for `_IOC_WRITE` and
+write-side for `_IOC_READ` and **both before either copy** on an `_IOWR`; and a copy through a
+kernel `.bss` bounce buffer, so a driver is handed an offset and never a ring-3 pointer. The
+device branch went in `fileSysOpen` after the validated copy and before `fatParseAt`, **not** in
+`fatLookup` — exactly as this entry warned in bold.
+
+**The syscall registry this entry asked for in its third point was built by ADR-0031**, one unit
+ahead of `ioctl`, which is what it asked for.
+
+**What is NOT closed and is now GAP-0177:** there is no DRM driver behind the syscall and no DRM
+semantics at all. What works is the membrane. Also still open: `mmap` (GAP-0159) and
+`drmGetDevices2` (GAP-0171).
+
+**Verified by** `tests/conformance/drm-abi/run.sh` CHECKs 14–16, four mandatory negative controls,
+and four mutations, all killed.
+
+*The original entry follows, unchanged, because what it asked for is the specification that was
+implemented.*
 
 The kernel has **ten syscalls** — `exit`, `write`, `who`, `yield`, `sbrk`, `open`, `read`, `close`,
 `seek`, `fdwrite` (`core/user/libc/oslibc.h:66`–`80`). **`ioctl` is not among them and no equivalent
@@ -6330,7 +6434,10 @@ the extern count the new check pins is the value those harnesses were already as
 ## GAP-0168 — the conformance suite has no mechanism that a PASS line only prints if its assertions ran
 
 **Domain:** tooling, conformance harnesses (opened by ADR-0030, successor to GAP-0156)
-**Status:** OPEN — surveyed and designed, deliberately NOT implemented in the commit that opened it.
+**Status:** **CLOSED 2026-08-26 by ADR-0032.** Both mechanisms are built and both are shown failing
+on the inputs they exist to reject. What is left over is GAP-0176 (nothing runs the controls
+automatically) — see "What landed" at the end of this entry. The design discussion below is kept as
+written, because ADR-0032 corrects three parts of it and a correction needs its original.
 
 GAP-0156 asked for `set -e`. ADR-0030 surveyed all twenty harnesses, found **0 of 20** convertible
 (134 capture-then-`$?` sites, 86 bare predicates, 89 `grep -q ... && fail`), and concluded that `set
@@ -6366,7 +6473,71 @@ verifiable one harness at a time, and it strictly improves diagnostics whether o
 
 ---
 
+### What landed (2026-08-26, ADR-0032)
+
+`core/tests/conformance/_lib/harness.sh` — sourced by all twenty harnesses, bash-3.2 clean.
+
+| | |
+|---|---|
+| `ck` sites inserted | **1191**, across 20/20 harnesses |
+| checks actually executed, whole suite | **2783** — the counts are emergent, not static: `m5-pci` has 74 `ck` sites in its text and runs **133** checks |
+| pinned floors | 9 (`m0-boot`) … 268 (`m16-filewrite`) |
+| capture-then-`$?` sites converted | **88** — 17 `capture`, 17 `capture_log`, 20 `capture_sh`, 17 `run_status`, 17 `await` |
+| `$?` reads remaining | **1** (`m5-pci`, a heredoc-fed `python3`; ADR-0032 §6) |
+
+**Three corrections to the design above, all in ADR-0032:**
+
+1. **There are 86 class-A sites, not 134/135.** See the UPDATE at the top of GAP-0156.
+2. **One `capture()` was not enough.** 15 of the 86 subjects are compound commands (`cd X && bash y`)
+   or carry an assignment prefix (`OSCORTEX_ALLOWLIST=… bash …`), neither of which survives being
+   passed as argv words. A single mechanical `capture` would have run only the `cd` under capture, or
+   tried to exec a program named `OSCORTEX_ALLOWLIST=/path` — i.e. it would have turned
+   `verify-freestanding.sh` into a check that never ran, **reintroducing GAP-0167 as the fix for it**.
+   Five helpers, split so the eval path is a different word at the call site.
+3. **The instrumenter's first version manufactured the very defect this gap is about.** `ck` is a
+   command, so it sets `$?`; prefixing it to `if [[ $? -ne 0 ]]` made three real checks read `ck`'s
+   status instead of the command's — checks that could never fail, still passing, count still rising.
+   Caught by reading the generated diff, not by any test. The rule is now mechanical (the counter
+   never goes between a command and a read of `$?`) and ADR-0032 §4.2 records it rather than tidying
+   it away, because it is the sharpest available demonstration that a green run says nothing about
+   whether the check under it is real.
+
+**Observed behaviour of the controls** (`_lib/controls/run.sh`, 14 controls, ~1s, both interpreters —
+`bash` 5.3.15 and `/bin/bash` 3.2.57 — all as specified), plus three run against the REAL `m0-boot`:
+
+| Control | Observed |
+|---|---|
+| assertions deliberately skipped (a `for` over an empty list; no command fails) | `exit 1`, `only 2 of the 6 declared checks executed` |
+| floor exceeds what ran | `exit 1`, `only 3 of the 99 declared checks executed` |
+| a `capture`d command fails, `set -e` ON | `exit 1`, `the build exited 42: the compiler said no` — status named, stderr kept |
+| the same fixture with the OLD `OUT=$(cmd); STATUS=$?`, `set -e` ON | `exit 42`, **0 bytes of output**, no FAIL line — the contrast that makes the row above mean something |
+| zero floor / non-numeric floor / sourcing before `fail()` is defined | refused: `exit 1`, `1`, `2` |
+| **real `m0-boot`, floor 9 → 99** | `exit 1`, `only 9 of the 99 declared checks executed` |
+| **real `m0-boot`, Step 2's freestanding block wrapped in `if false`** | `exit 1`, `only 6 of the 9 declared checks executed` — this is GAP-0167's exact defect (the PASS line says `verify-freestanding pass` while the check does not run), caught |
+| **real `m0-boot`, unmodified** | `exit 0`, `ASSERTIONS: pass  9 checks executed, declared floor 9` |
+
+**What is left over:** GAP-0176 — nothing runs the controls automatically, so the guard on twenty
+harnesses is itself unguarded.
+
+---
+
 ## GAP-0169 — `libdrm` compiles for this OS and cannot be linked: 43 symbols, and here they are
+
+**Status: CLOSED by ADR-0033. The 43 are 0.** `libdrm`'s five core objects now link completely
+against `core/user/libc` plus the two files ADR-0033 added — `posix.c` (the opt-in POSIX face and
+the twenty tier-2 loud stubs) and `port.c` (the tier-1 C functions). **`main` is the only undefined
+symbol left**, which is what "a library" means.
+
+`expected-missing-core.txt` is now empty and the harness diffs against it on every run, so the
+anti-vacuity moved with it: CHECK 2b requires the LINK to succeed and requires `main` to be
+undefined, which an empty object set could not satisfy.
+
+**`modetest` went 76 → 32**, and the 32 that remain are exactly the expensive set
+`design/libdrm-port.md` §7.2 predicted: `pthread_create`/`pthread_join`, `poll`, `select`, libm
+(`fabs`, `roundf`), `getopt`, `strtod`/`strtof`, `gettimeofday`, `usleep`. **That prediction was
+made before any of this was built and it was exactly right.** GAP-0173 is unchanged.
+
+*The original entry follows.*
 
 **Domain:** userland, libc, ports (ADR-0031)
 **Status:** OPEN — **and it is now a list rather than an estimate.** The list is checked into the repo
@@ -6413,9 +6584,31 @@ linking, no C++ runtime, no libm. See GAP-0173 for what does.
 ## GAP-0170 — four libc symbols bind by name and are the wrong function, and the link is clean
 
 **Domain:** userland, libc (ADR-0031 §2.1)
-**Status:** OPEN — **asserted by `tests/conformance/drm-abi/run.sh` CHECK 2**, which fails if any of
-the four ever comes out *undefined* and fails if `oslibc.h`'s declarations change shape. So the day
-somebody adds a POSIX-shaped `open`, the harness makes them read this entry.
+**Status:** **CLOSED by ADR-0033**, and CHECK 2 now asserts the OPPOSITE of what it used to: linking
+libdrm against `core/user/libc`'s NATIVE objects alone must leave `open`, `read`, `close` and
+`printf` **undefined**, and the check fails if any of them ever binds again.
+
+**The fix.** The native surface exports `os_open`, `os_read`, `os_close`, `os_printf` and
+`os_write`; `oslibc.h` keeps the short spellings for its own callers as `#define`s stated in the
+header. A program that includes `oslibc.h` is unchanged to the character. A port — which includes
+`<fcntl.h>` and `<unistd.h>`, not `oslibc.h` — gets an undefined reference and cannot link. **A
+mismatch that used to link silently is now a link error.**
+
+**The `errno` question this entry called "a decision, not a patch" is decided:** `core/user/libc/
+posix.c` is a separate, opt-in translation unit, it is the only place `errno` exists on this
+operating system, and nothing in `core/kernel/` learned the word. `drmIoctl`'s retry loop is
+**provably one-shot** rather than emulated: no oscortex refusal maps to `EINTR` or `EAGAIN`,
+because there are no signals and nothing blocks. GAP-0179 records what makes that false later.
+ADR-0033 §2.5 states the four alternatives that were rejected.
+
+**A FIFTH SYMBOL, AND THE COMPILER FOUND IT.** This entry named four. When `posix.c` tried to define
+POSIX's `ssize_t write(int, const void *, size_t)`, clang refused it against oscortex's
+two-argument `unsigned long write(const void *, size_t)` — *"conflicting types for `write`"*. The
+clash was not merely latent, it **blocked the adapter**. `write` is `os_write` now. `exit` and
+`sbrk` are a sixth and seventh, are not reached by libdrm, and are measured in GAP-0178 rather than
+changed.
+
+*The original entry follows.*
 
 Of the 53 symbols libdrm needs, `core/user/libc` defines ten: `open close read printf malloc free
 memcpy memset strcmp strlen`. **Six are the right function. Four are not.**
@@ -6552,6 +6745,18 @@ cheaper one, and §4.2 should name it.
 
 ## GAP-0174 — the DRM device must be named `/dev/dri/card0`, not `:DRI0`, and `drm-abi.md` S1 says otherwise
 
+**Status: NARROWED by ADR-0033.** Both names are served, literally, from `fileSysOpen`, and the
+placement rule this entry carried over from `display-protocol.md` §2.1 was obeyed: the branch is
+after the pointer-validated bounce-buffer copy and before `fatParseAt`, never in `fatLookup`.
+
+**What remains open is the DOCUMENT, not the code:** `design/drm-abi.md` S1 still proposes `:DRI0`
+and still needs correcting. And `drmOpenByName` additionally `stat`s the node and compares
+`major()`/`minor()` against `DRM_MAJOR` 226 — `major`/`minor`/`makedev` are implemented in
+`posix.c` and compute Linux's encoding correctly, but **`stat` is a loud stub** (GAP-0180), so
+nothing can produce a `dev_t` for them to decode. That is the remaining half of this entry.
+
+*The original entry follows.*
+
 **Domain:** namespace, GPU (ADR-0031 §6)
 **Status:** OPEN — the device namespace does not exist at all (GAP-0158). This entry corrects the
 *design* before it is built.
@@ -6609,6 +6814,235 @@ kernel default nobody chose.
 **Nobody should open a DCDart escalation for this.** It is a build-time table generator in this repo —
 the same category as `derive.py` and `check-font.py` — and CLAUDE.md rule 3 applies in the negative.
 The DCDart-side question that *is* real is escalation 0004 §6's own, and GAP-0166 records it.
+
+---
+
+## GAP-0176 — nothing runs the harness-library controls, or ADR-0028's freestanding controls, automatically
+
+**Domain:** tooling, conformance harnesses (ADR-0032, sibling of the same complaint in GAP-0155)
+**Status:** OPEN — newly opened by the unit that built the controls, because the controls are exactly
+the kind of thing that rots unrun.
+
+`core/tests/conformance/_lib/controls/run.sh` proves that the assertion-count floor and the
+`capture()` family actually bite: 14 controls, ~1 second, no QEMU, no kernel build. ADR-0028's three
+freestanding controls prove the same thing about `verify-freestanding.sh` under `/bin/bash` 3.2.
+**Neither set is invoked by anything.** No sweep runs them, no harness sources them, and the twenty
+milestone harnesses will stay green if `require_assertions` is edited into a no-op tomorrow.
+
+This is the identical shape to the note already at the bottom of GAP-0155 — *"Nothing enforces the
+bash-3.2 rule. The three rules are documented in the script's header ... but no check fails if someone
+reintroduces `mapfile`"* — and it deserves the same standing rather than being folded in, because it
+is now about two independent control sets and about the mechanism that guards every other harness.
+
+**What would close it.** A `core/tests/conformance/run-all.sh` (which this repo does not have — every
+sweep so far has been an ad-hoc shell loop typed by an agent) whose FIRST step is:
+
+```sh
+/bin/bash core/tests/conformance/_lib/controls/run.sh   || exit 1   # 3.2.57, deliberately
+bash      core/tests/conformance/_lib/controls/run.sh   || exit 1   # brew's 5.x
+```
+
+Both interpreters, explicitly, for ADR-0028's reason: `env bash` finds brew's bash 5 and proves
+nothing about the bash macOS actually ships. Roughly two seconds on the front of a 28-minute sweep.
+
+**The cost of leaving it open, stated plainly.** The guard on twenty harnesses is itself unguarded.
+Someone can weaken `_lib/harness.sh` — lower a floor, make `ck` a no-op, make `capture` swallow a
+status — and every one of the twenty will still print PASS, which is precisely the defect family
+GAP-0168 was opened to end. The controls exist and are known-good as of this commit (all 14 observed
+passing under both interpreters); what is missing is anything that will notice when they stop being.
+
+**Why it was not closed in the same unit.** Writing `run-all.sh` means deciding the sweep's contract —
+ordering, `--regen`, whether a setup_error (exit 2) is a failure, what to do about `m12-heap`'s
+flakiness (GAP-0161) and `m9-ring3`'s (GAP-0157) — and that is a separate decision from "does the
+guard work", which is what this unit was asked to establish. Doing it here would have meant
+inheriting those choices silently, which is the thing ADR-0030 §4 explicitly warned the next author
+about.
+
+---
+
+## GAP-0177 — `ioctl` works and there is no DRM: the membrane is built, the driver behind it is a pattern generator, and the descriptor table is six hand-written rows
+
+**Domain:** kernel, ABI, GPU (ADR-0033 §5)
+**Status:** OPEN, and it is the honest boundary of what ADR-0033 claims.
+
+**`ioctl` is syscall 12 and it works. NO DRM SEMANTICS ARE IMPLEMENTED.** `ioctlDevServe` — the
+"driver" — fills the read-side payload with `(descIndex << 4 | devIndex) ^ byteIndex` and returns 0.
+That is a deterministic pattern the harness predicts from outside the kernel, and it is there to
+prove the bounce and the direction handling, not to be a GPU. `DRM_IOCTL_VERSION` does not return a
+driver name; `GEM_CLOSE` closes nothing; `SET_MASTER` masters nothing.
+
+**What genuinely works is the membrane**, and it is the rung `design/drm-abi.md` S0 asked for:
+decode, validate, bounce, dispatch on `_IOC_NR`, refuse on skew, out-copy only on success. Every
+future driver inherits that shape, including the signature that makes it impossible for one to hold
+a ring-3 pointer.
+
+**The descriptor table is SIX ROWS AND HAND-WRITTEN**, and this entry is also the argument for
+finally building `design/drm-abi.md` §4.2's generator (GAP-0175, still open). The six are `VERSION`,
+`GET_MAGIC`, `GEM_CLOSE`, `GET_CAP`, `SET_MASTER` and `SYNCOBJ_HANDLE_TO_FD` — chosen to exercise
+every direction, the no-payload case, and the two-legal-sizes case. There are **121** requests.
+
+**AND SIX ROWS PRODUCED ONE WRONG NUMBER.** `struct drm_auth` is **4** bytes on the branch `drm.h`
+takes here, so `DRM_IOCTL_GET_MAGIC` is `0x80046402`. This table said **8** — a plausible guess,
+because `drm_handle_t` genuinely IS `unsigned long` on that same branch (ADR-0031 §3), so "the BSD
+branch widens things" is a real pattern that does not apply to this struct. It was caught only
+because the value was read out of a compiled object before being trusted. **Six rows, one error, by
+an author who had just finished reading the encoding ADR. 121 rows by hand is not a plan.**
+
+**Cost of the workaround:** every request the kernel is asked to serve needs a row, and each row is
+a chance to transcribe a size wrongly in a way that is invisible until a client sends that request.
+
+---
+
+## GAP-0178 — `exit` and `sbrk` still collide with POSIX by name, and the collision class is now measured rather than guessed
+
+**Domain:** userland, libc (ADR-0033 §2.3)
+**Status:** OPEN, deliberately, and scoped rather than fixed.
+
+ADR-0033 renamed five symbols to `os_*` — the four of GAP-0170 plus `write`, which clang found by
+refusing to compile `posix.c` against it. **Two more collide and were left alone:**
+
+| symbol | ours | POSIX's | why it was left |
+|---|---|---|---|
+| `exit` | `void exit(unsigned long status)` | `void exit(int)` | A port's `exit(1)` converts and behaves correctly. The hazard is real but benign |
+| `sbrk` | `void *sbrk(size_t)`, **NULL** on failure | `void *sbrk(intptr_t)`, **`(void *)-1`** on failure | A port testing `== (void *)-1` **misses an out-of-memory and proceeds**. This is the sharper of the two |
+
+**Neither is reached by libdrm and neither blocks `posix.c`**, which is why this unit stopped here.
+`sbrk`'s is the one to fix first if a port ever calls it: NULL-instead-of-`MAP_FAILED` is the same
+shape of error as GAP-0170's, one layer down.
+
+**The general rule this suggests, which nothing enforces yet:** every symbol `core/user/libc`
+exports under a name that also exists in POSIX is a candidate for this failure, and the only two
+things standing between us and it are (a) that ports mostly do not call them and (b) that somebody
+looks. A check that enumerated `oslibc.h`'s exports against a list of POSIX names would be cheap and
+does not exist.
+
+---
+
+## GAP-0179 — `drmIoctl`'s retry loop is provably one-shot, and the proof expires the day this OS grows signals or non-blocking descriptors
+
+**Domain:** userland, libc, ABI (ADR-0033 §2.4)
+**Status:** OPEN as a **tripwire**, not as a defect. Nothing is wrong today.
+
+`drmIoctl`'s entire body is
+`do { ret = ioctl(...); } while (ret == -1 && (errno == EINTR || errno == EAGAIN));`.
+
+`posix_errno_for` maps **no** oscortex refusal onto `EINTR` or `EAGAIN`, and that is not an
+omission: there are no signals on this operating system (no delivery mechanism exists at all) and
+no descriptor is non-blocking (nothing blocks). So the `while` condition is false on its first
+evaluation, always, and the loop runs its body exactly once — the loop doing precisely what it was
+written to do on a platform where the conditions it retries on cannot arise.
+
+**WHAT MAKES THIS FALSE.** `fdwait` (syscall 11, GAP-0141) is the blocking primitive three designs
+name. The day it exists, or the day anything delivers a signal, a refusal that *should* map to
+`EAGAIN` will appear — and if `posix_errno_for` is not updated in the same unit, `drmIoctl` will
+return an error where it should have retried. If it IS updated but nothing sets the condition that
+ends the retry, `drmIoctl` spins forever.
+
+**A retry loop that silently starts spinning is worse than one that never did**, which is why this
+is a gap entry and not a comment. Whoever builds `fdwait` should read this one.
+
+---
+
+## GAP-0180 — three of the sixteen "must work" libdrm symbols are loud stubs, because the kernel has nothing behind them
+
+**Domain:** userland, libc, kernel (ADR-0033, `design/libdrm-port.md` §2)
+**Status:** OPEN, and this is the one place ADR-0033 does not meet libdrm-port.md §2's bar.
+
+`design/libdrm-port.md` §2 tiers sixteen symbols as **must WORK**. Thirteen do. **Three are stubs
+that refuse loudly**, and each is blocked on kernel work rather than on libc work:
+
+| symbol | reached from | what it needs |
+|---|---|---|
+| `stat` / `fstat` | `drmGetNodeTypeFromFd`, `drmGetDevice2` | **A `stat` syscall and a `dev_t` scheme.** Neither exists. `drmOpenByName` compares `major()`/`minor()` against `DRM_MAJOR` 226 — and `major`/`minor`/`makedev` ARE implemented and correct, so the arithmetic is ready and there is nothing to feed it |
+| `clock_gettime(CLOCK_MONOTONIC)` | `drmWaitVBlank` | **A time syscall.** `tick_count` is the kernel's and no syscall reads it. GAP-0164 |
+
+**They are stubbed rather than faked, and the distinction is the whole entry.** Inventing 226:0 in
+`fstat` would make `drmGetNodeTypeFromFd` return `DRM_NODE_PRIMARY` on the strength of a number this
+OS made up, and the first thing that number would do is be believed. A stub that refuses is a
+missing feature; a stub that returns a plausible value is a wrong answer, which is GAP-0170's whole
+lesson applied one layer up.
+
+**Every tier-2 stub is in `posix.c` and every one of them COUNTS ITSELF.** `posix_stub_calls()` and
+`posix_stub_last()` are exported so that *"nothing on the R0–R3 path called a stub"* is a claim a
+program can assert rather than one this repo makes. The twenty are: `mknod`, `chmod`, `chown`,
+`mkdir`, `remove`, `access`, `opendir`, `readdir`, `closedir`, `fopen`, `fclose`, `sscanf`,
+`fprintf`, `vfprintf`, `open_memstream`, `asprintf`, `strcasecmp`, `strncasecmp`, `mmap`, `munmap`.
+
+**Two things in that list are NOT stubs and are correct:** `geteuid` returns a non-zero uid (true —
+there are no users, so nobody is root — and it is also the answer that keeps libdrm off the
+device-node-creation path), and `getenv` returns NULL (true: GAP-0146, there is no environment, so
+every variable really is unset). Neither counts itself, because nothing went wrong.
+
+**Also a real difference from POSIX, recorded here so a port author meets it:** `posix.c`'s `open`
+honours the access mode and ignores every other flag. `O_CREAT`/`O_TRUNC`/`O_APPEND` are *subsumed*
+— oscortex's `O_WRITE` already means all three (ADR-0020 §0, GAP-0127) — so a caller who did not ask
+for truncation gets it anyway. `O_RDWR` on a **device** maps to `O_READ` and is honest, because
+`ioctl` is the write path; `O_RDWR` on a **file** is not serveable and is refused rather than
+silently downgraded.
+
+---
+
+## GAP-0181 — `O_CLOEXEC` is ignored, correctly, and will stop being correct the day `exec` exists
+
+**Domain:** userland, libc
+**Status:** OPEN as a tripwire. Nothing is wrong today.
+
+`posix.c`'s `open` ignores `O_CLOEXEC`. libdrm passes it on every device open
+(`open(path, O_RDWR | O_CLOEXEC)`). **Ignoring it is correct right now** because there is no `exec`
+on this operating system, so there is no descriptor-inheritance event for the flag to control.
+
+The day something like `exec` appears, this becomes a descriptor leak across it — and it will be
+silent, because the flag was accepted. Same shape as GAP-0179: a promise that is vacuously kept
+until the thing it promises about exists.
+
+---
+
+## GAP-0182 — `realloc` always copies and `qsort` is insertion sort, and both are stack-driven choices
+
+**Domain:** userland, libc (`core/user/libc/port.c`)
+**Status:** OPEN, with the complexity stated so that neither is a mystery later.
+
+**`realloc` cannot grow in place.** `malloc.c` is a first-fit free list, and even with
+`malloc_usable` (added by ADR-0033 so `realloc` could copy a safe length rather than over-reading
+the old block) there is no "is the next block free" query. So every `realloc` is
+malloc + copy + free. libdrm calls it from `drmModeAtomicAddProperty`, which grows by a page's worth
+of items at a time, so the copies are O(log n) in the number of properties — acceptable, and not a
+general guarantee.
+
+**AND ADDING `malloc_usable` GREW EVERY PROGRAM ON THE VOLUME BY 48 BYTES.** Worth recording
+because it is the kind of number that is baffling later: the function is **19 bytes of code**, and
+with 16-byte function alignment and its symbol-table entry each linked program grew **0x30**. That is
+not free — `m14-fat`'s test program crossed a cluster boundary because of it, so `FS CHAIN LEN` went
+`000A → 000B` and a third cluster appeared in `FS CLUS`. Nothing is wrong; it is what adding a
+function to `malloc.c` costs when the link has no `--gc-sections`. **The trade is clearly worth it:**
+without `malloc_usable`, `realloc` has no safe copy length and over-reads the old block on every
+growing call, silently, on a heap with no guard pages.
+
+**`qsort` is insertion sort, O(n²), and that is a deliberate trade against the stack.** Real qsort
+is quicksort with O(log n) recursion depth; **this OS gives a program ONE PAGE of stack** (ADR-0013)
+and there is no guard page below it, so a recursive sort on a pathological input overflows silently.
+libdrm's atomic property list is tens of items. **The day something sorts a large array this is the
+entry to read**, and the fix is heapsort — O(n log n) with O(1) stack — not quicksort.
+
+---
+
+## GAP-0183 — one `printf` is still one console line, so a POSIX `printf` cannot honour `\n`, and no userland change can fix it
+
+**Domain:** userland, libc, kernel console
+**Status:** OPEN. It is a kernel-interface property, not a libc bug.
+
+`posix.c` provides a real POSIX `printf` — port.c's full conversion set, C's return value, and no
+120-byte cap, because the output is chunked across as many `write` syscalls as it takes.
+
+**What it cannot do is line semantics.** `userSysWrite` prints `USER WRITE `, the caller's bytes,
+**and a newline of its own**. So every chunk becomes its own console line, an embedded `\n` produces
+nothing where a newline should be and a line break where one should not, and a program that builds
+output incrementally cannot.
+
+**No userland change fixes this**, which is why it is recorded rather than worked around: the
+newline and the `USER WRITE ` prefix are the kernel's, added inside syscall 1. Fixing it means a
+console syscall that does not frame what it is given — which is a real interface change, affects
+every golden in the repo, and was correctly out of scope for a unit about `ioctl`.
 
 ---
 

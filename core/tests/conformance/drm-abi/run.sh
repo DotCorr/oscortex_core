@@ -11,12 +11,16 @@
 #      core/user/libc plus a shim header set that declares names and implements
 #      nothing. Five objects, 7,801 lines of somebody else's C.
 #   2. The set of symbols it then needs that this OS does not have is EXACTLY
-#      the 43 in core/user/ports/libdrm/expected-missing-core.txt (76 with
-#      modetest). That list is the deliverable. It is checked, not estimated.
-#   3. TEN symbols resolve against core/user/libc BY NAME, and FOUR of those
-#      have incompatible signatures or return conventions. THE LINK IS CLEAN
-#      AND THE PROGRAM WOULD BE WRONG. This harness asserts that hazard exists
-#      rather than leaving it to be found at run time.
+#      the list in core/user/ports/libdrm/expected-missing-core.txt. After
+#      ADR-0033 that list is EMPTY: libdrm's five objects LINK, and `main` is
+#      the only undefined symbol left. It was 43 before. (32 with modetest, and
+#      those are pthreads, poll, select and libm -- GAP-0173.)
+#   3. `open`, `read`, `close` and `printf` used to resolve against
+#      core/user/libc BY NAME and were the WRONG FUNCTIONS -- a clean link and a
+#      wrong program (GAP-0170). CHECK 2 now asserts the OPPOSITE of what it
+#      used to: linking libdrm against the NATIVE objects alone must leave all
+#      four UNDEFINED, because the native surface is `os_*` now. CHECK 2b
+#      asserts that the opt-in adapter (posix.c, port.c) makes it link.
 #   4. A program compiled against Linux's UNMODIFIED DRM uAPI headers RUNS on
 #      this kernel, in ring 3, and the DRM_IOCTL_* request numbers its compiler
 #      computed are the ones Linux computes -- 119 of 121 identical to Linux
@@ -28,11 +32,27 @@
 #      DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER and DRM_IOCTL_DROP_MASTER.
 #      That is the negative control and it runs on the same volume.
 #
-# WHAT IT DOES NOT CLAIM, AND WILL NOT UNTIL `ioctl` EXISTS
-#   Nothing here calls an ioctl. There is no `ioctl` syscall (GAP-0158) and no
-#   device node (GAP-0158) and no `mmap` (GAP-0159). libdrm cannot be LINKED
-#   into a program, only compiled: 43 symbols short. ADR-0031 §4 designs the
-#   syscall; this harness is what will still be true after it is built.
+#   6. S0 (ADR-0033): `ioctl` IS SYSCALL 12 AND IT IS ISSUED HERE. A ring-3
+#      program opens /dev/dri/card0, issues an _IOWR('d',0x00,struct
+#      drm_version), and the kernel's decode of dir/size/type/nr is required to
+#      equal the ORACLE's -- computed on the host from Linux's own
+#      asm-generic/ioctl.h, not read back out of the kernel. CHECKs 14-16.
+#
+# THE NEGATIVE CONTROLS ARE THE POINT OF CHECK 15, AND EACH REPORTS WHAT IT
+# OBSERVED. An oversized payload must be REFUSED, not truncated. A wrong-size
+# request must be REFUSED, not zero-extended. An `argp` outside the process must
+# be refused -- both a kernel address and a range straddling an unmapped page. A
+# write-side violation on an `_IOC_READ` must be refused, with a positive
+# control beside it so the refusal is not explained by a kernel that refuses
+# everything. Every expected value is read out of core/kernel/ioctl.dart.
+#
+# WHAT IT STILL DOES NOT CLAIM
+#   THERE IS NO DRM. No driver, no GPU, no DRM semantics whatsoever -- the
+#   "driver" behind the syscall fills a payload with a predictable pattern
+#   (GAP-0177). What is proved is the MEMBRANE: decode, validate, bounce,
+#   dispatch on _IOC_NR, refuse on skew, out-copy only on success. There is
+#   still no `mmap` (GAP-0159), drmGetDevices2 still cannot work (GAP-0171),
+#   and modetest still needs threads (GAP-0173).
 #
 # Usage:
 #   run.sh [--regen]
@@ -94,9 +114,15 @@ REG_OUT="$(bash "$CORE_DIR/scripts/verify-syscall-registry.sh" 2>&1)"
 REG_STATUS=$?
 echo "$REG_OUT"
 [[ $REG_STATUS -eq 0 ]] || fail "verify-syscall-registry.sh exited $REG_STATUS"
-grep -q '2 reserved' <<<"$REG_OUT"   || fail "the registry no longer reserves two numbers; ADR-0031 reserves 12 for ioctl and confirms 11 for fdwait"
-grep -q '12=ioctl' <<<"$REG_OUT"   || fail "the registry does not reserve 12 for ioctl"
-echo "CHECK 0: pass  the syscall registry, the kernel and oslibc.h agree; ioctl is reserved at 12 and fdwait keeps 11"
+# S0 (ADR-0033): 12 is ALLOCATED now, not reserved. What must remain true is
+# that `fdwait` still holds 11 and that `ioctl` is 12 -- the two facts the
+# registry was built to protect. Asserting "2 reserved" would have been
+# asserting that ioctl stays unimplemented forever.
+grep -q '12 allocated' <<<"$REG_OUT" || fail "the registry no longer allocates twelve syscalls; ADR-0033 implements ioctl as 12"
+grep -q '11=fdwait' <<<"$REG_OUT"    || fail "the registry no longer reserves 11 for fdwait; three designs name it and ADR-0031 §5 is why ioctl took 12 instead"
+grep -qE '^\| 12 \| .ioctl. \| .ioctlSysNo.' "$CORE_DIR/docs/syscall-registry.md" \
+  || fail "the registry's row for syscall 12 is not ioctl/ioctlSysNo"
+echo "CHECK 0: pass  the syscall registry, the kernel and oslibc.h agree; ioctl is ALLOCATED at 12 and implemented, and fdwait keeps 11"
 
 # ---------------------------------------------------------------------------
 # Step 1 — THE SOURCE. Fetched at a pinned commit, never vendored.
@@ -158,40 +184,82 @@ echo "CHECK 1: pass  unmodified libdrm compiles for x86_64-unknown-none-elf. $N_
 # `read`, `close` and `printf` are in BOTH sets: libdrm needs them and
 # core/user/libc has them. They are not the same functions.
 # ---------------------------------------------------------------------------
-for s in open read close printf malloc free memcpy memset strcmp strlen; do
+# The six that were ALWAYS the right function still are.
+for s in malloc free memcpy memset strcmp strlen; do
   grep -qx "$s" "$WORKDIR/port/provided.txt" \
     || fail "\`$s\` is not in the provided set; this harness's central claim assumed it was"
 done
 
-# 3a. The link really does bind them, silently. Linking libdrm's objects
-#     against core/user/libc's leaves the 43 undefined and `main` -- and NOT
-#     `open`, `read`, `close` or `printf`.
-LINKLOG="$WORKDIR/link.txt"
-x86_64-elf-ld -o "$WORKDIR/link.elf" "$WORKDIR"/port/obj/*.o "$WORKDIR"/port/libcobj/*.o \
-  >"$LINKLOG" 2>&1
+# 3a. THE HAZARD IS CLOSED, AND THIS PROVES IT THE ONLY WAY THAT COUNTS:
+#     BY LINKING AGAINST THE NATIVE SURFACE ALONE AND SHOWING THE FOUR COME
+#     OUT UNDEFINED.
+#
+# Until ADR-0033 this check asserted the OPPOSITE -- that `open`, `read`,
+# `close` and `printf` bound silently to core/user/libc's, which are not the
+# same functions (GAP-0170). They now export `os_open`/`os_read`/`os_close`/
+# `os_printf`, so a port that does not include oslibc.h cannot resolve them.
+#
+# **THE NATIVE OBJECTS ONLY.** posix.o and port.o are deliberately EXCLUDED
+# from this link: they are the opt-in adapter, and including them is what a
+# port does on purpose. The question this link asks is "what happens to a port
+# that links the native libc and nothing else", and the required answer is
+# "it fails to link", not "it links to the wrong thing".
+NATIVE_OBJS=()
+for o in syscall string malloc printf rfile start; do
+  [[ -f "$WORKDIR/port/libcobj/$o.o" ]] || fail "no $o.o in the libc build"
+  NATIVE_OBJS+=("$WORKDIR/port/libcobj/$o.o")
+done
+LINKLOG="$WORKDIR/link-native.txt"
+x86_64-elf-ld -o "$WORKDIR/link-native.elf" "$WORKDIR"/port/obj/*.o \
+  "${NATIVE_OBJS[@]}" >"$LINKLOG" 2>&1
 UNDEF=$(sed -n 's/.*undefined reference to `\([^'"'"']*\)'"'"'.*/\1/p' "$LINKLOG" | sort -u)
-[[ -n "$UNDEF" ]] || fail "the link produced no undefined references at all; libdrm cannot already be complete"
+[[ -n "$UNDEF" ]] || fail "linking libdrm against the NATIVE libc alone produced no undefined references at all; the four-symbol clash cannot have been closed"
+# The FOUR of GAP-0170. libdrm references all four, so each must now appear as
+# an undefined reference in this link.
 for s in open read close printf; do
   echo "$UNDEF" | grep -qx "$s" \
-    && fail "\`$s\` came out UNDEFINED; this harness's claim is that it binds silently, and it did not"
+    || fail "\`$s\` still RESOLVES against core/user/libc's native objects. GAP-0170's hazard is that it binds by name and is the wrong function; ADR-0033 closed it by exporting os_$s instead, and something has re-opened it"
 done
-comm -23 <(echo "$UNDEF" | grep -v '^main$') "$PORT_DIR/expected-missing-core.txt" > "$WORKDIR/extra.txt"
-[[ -s "$WORKDIR/extra.txt" ]] \
-  && fail "the link needs symbols the object-level measurement did not list: $(tr '\n' ' ' < "$WORKDIR/extra.txt")"
+# `write` is the FIFTH -- the one clang found when posix.c tried to declare
+# POSIX's three-argument version against oscortex's two-argument one. It is
+# checked DIFFERENTLY and deliberately so: libdrm never references `write`, so
+# it can never appear as an undefined reference, and asserting that it does
+# would be asserting something no link can show. What must be true is that the
+# native objects do not DEFINE the symbol.
+# nm's output is captured ONCE rather than piped into `grep -q` per symbol.
+# `grep -q` closes the pipe on its first match, nm dies of SIGPIPE, and with
+# `set -o pipefail` the pipeline's status is nm's failure -- so a SUCCESSFUL
+# match reported as a failed command. That cost a real debugging round here and
+# it is the kind of thing that would otherwise come back.
+NM_NATIVE="$(x86_64-elf-nm --defined-only "${NATIVE_OBJS[@]}")"
+for s in open read close printf write; do
+  grep -qE "[TtDdBb] $s\$" <<<"$NM_NATIVE" \
+    && fail "core/user/libc's native objects still DEFINE \`$s\`; ADR-0033 renamed it to os_$s so that a port cannot bind to it"
+done
+# And the native objects really do still provide the function, under its own
+# name -- otherwise the check above would pass because the libc is empty.
+for s in os_open os_read os_close os_printf os_write; do
+  grep -qE "[TtDd] $s\$" <<<"$NM_NATIVE" \
+    || fail "core/user/libc does not define \`$s\`; the rename removed the function instead of renaming it"
+done
+echo "CHECK 2: pass  linking libdrm against core/user/libc's NATIVE objects alone now leaves open/read/close/printf/write UNDEFINED — the clean-link-to-the-wrong-function hazard of GAP-0170 is closed, and the five functions are still there under os_*"
 
-# 3b. AND THEY ARE NOT THE SAME FUNCTIONS. Read out of the two sources, not
-#     asserted: oslibc.h's `open` takes ONE argument and returns an unsigned
-#     refusal at or above a floor; libdrm calls it with two or three and tests
-#     the result for being negative.
-grep -qE '^unsigned long open\(const char \*name\);' "$LIBC_DIR/oslibc.h" \
-  || fail "oslibc.h no longer declares \`unsigned long open(const char *name)\`; the signature-clash finding needs rechecking"
-grep -qE '^#define FILE_ERR_FLOOR' "$LIBC_DIR/oslibc.h" \
-  || fail "oslibc.h no longer has FILE_ERR_FLOOR; the return-convention clash needs rechecking"
-grep -qE 'open\(buf, *O_RDWR' "$LIBDRM_SRC/xf86drm.c" \
-  || fail "libdrm no longer calls open() with a mode argument; recheck the clash"
-grep -qE '^unsigned long read\(unsigned long fd, void \*buf, size_t len\);' "$LIBC_DIR/oslibc.h" \
-  || fail "oslibc.h no longer declares read() returning unsigned long; recheck the clash"
-echo "CHECK 2: pass  ten symbols bind against core/user/libc and FOUR of them are the wrong function — oslibc.h's open() takes one argument where libdrm passes two or three, and returns a refusal at or above FILE_ERR_FLOOR where libdrm tests for a negative int. The link is CLEAN. GAP-0170."
+# 3b. AND THE OPT-IN ADAPTER MAKES IT LINK. posix.o + port.o are what a port
+#     adds, and with them libdrm's five objects resolve COMPLETELY: `main` is
+#     the only undefined symbol left, which is what "a library" means.
+LINKLOG2="$WORKDIR/link-full.txt"
+x86_64-elf-ld -o "$WORKDIR/link-full.elf" "$WORKDIR"/port/obj/*.o \
+  "$WORKDIR"/port/libcobj/*.o >"$LINKLOG2" 2>&1
+UNDEF2=$(sed -n 's/.*undefined reference to `\([^'"'"']*\)'"'"'.*/\1/p' "$LINKLOG2" | sort -u)
+LEFT=$(echo "$UNDEF2" | grep -v '^main$' | grep -v '^$' | tr '\n' ' ')
+[[ -z "$LEFT" ]] \
+  || fail "libdrm does not link against core/user/libc + the adapter; still undefined: $LEFT"
+echo "$UNDEF2" | grep -qx main \
+  || fail "the link has no undefined \`main\`; libdrm is a library and something has supplied one"
+# Anti-vacuity: an empty object set would also produce "only main".
+NOBJ=$(ls "$WORKDIR"/port/obj/*.o | wc -l | tr -d ' ')
+[[ "$NOBJ" -eq 5 ]] || fail "expected libdrm's five core objects, found $NOBJ"
+echo "CHECK 2b: pass  with core/user/libc/posix.c and port.c -- the OPT-IN POSIX face and the tier-1 C functions -- libdrm's five objects link COMPLETELY. \`main\` is the only undefined symbol left. That is 43 short before this unit and 0 after it"
 
 # 3c. libdrm's own device enumeration is compiled out on this platform, and
 #     says so eight times. drmGetDevices2() -- which is how Mesa finds a GPU --
@@ -470,6 +538,239 @@ head -c "$M1_BYTES" "$SERIAL" | cmp -s - "$M1_EXPECTED" \
   || fail "the first $M1_BYTES bytes of this boot are not m1-interrupts' golden — this unit moved a byte it does not own"
 echo "CHECK 13: pass  the first $M1_BYTES bytes are m1-interrupts' golden, byte for byte"
 
+# ---------------------------------------------------------------------------
+# 8i. S0 (ADR-0033) — THE IOCTL, AND THE FOUR NEGATIVE CONTROLS.
+#
+# **EVERY EXPECTED VALUE BELOW IS READ OUT OF core/kernel/ioctl.dart**, not
+# typed here and not read back off the transcript. A harness whose expectation
+# is a copy of the thing it is checking proves nothing, and eleven refusal
+# codes are eleven chances to make exactly that mistake.
+#
+# The decode line's four fields are checked against oracle.py's, which computes
+# them from Linux's own asm-generic/ioctl.h -- so the kernel's decode, the
+# guest program's headers and Linux's macros are three independent computations
+# and the harness requires all three to agree.
+# ---------------------------------------------------------------------------
+# **PYTHON, NOT sed, AND ADR-0028 IS WHY.** The obvious spelling of this is
+# one `sed -n "s/^const int $1 = \(0x...\|[0-9]*\);/\1/p"`, and BSD sed --
+# which is the sed macOS ships and therefore the sed every run of this harness
+# uses -- HAS NO `\|` ALTERNATION IN A BASIC REGEX. It matches nothing, the
+# variable comes out empty, and every comparison below becomes a comparison
+# against "". That is the same class of failure ADR-0028 found in
+# verify-freestanding.sh, where BSD sed read `\s` as a literal `s`.
+kconst() {   # kconst <name> -> its value in lowercase hex, no 0x
+  python3 - "$CORE_DIR/kernel/ioctl.dart" "$1" <<'PYEOF'
+import re, sys
+src, name = open(sys.argv[1]).read(), sys.argv[2]
+m = re.search(r"^const int %s = (0[xX][0-9A-Fa-f]+|\d+);" % re.escape(name), src, re.M)
+if not m:
+    sys.exit("no `const int %s` in core/kernel/ioctl.dart" % name)
+print("%x" % int(m.group(1), 0))
+PYEOF
+}
+
+IOC_BADSIZE=$(kconst ioctlRetBadSize)
+IOC_SKEW=$(kconst ioctlRetSizeSkew)
+IOC_BADPTR=$(kconst ioctlRetBadPtr)
+IOC_BADTYPE=$(kconst ioctlRetBadType)
+IOC_BADNR=$(kconst ioctlRetBadNr)
+IOC_NOTDEV=$(kconst ioctlRetNotDev)
+IOC_BADFD=$(kconst ioctlRetBadFd)
+IOC_MAXPAY=$(kconst ioctlMaxPayload)
+IOC_CEIL=$(kconst ioctlEncMaxSize)
+
+# The program prints a 32-bit `%x` of a 64-bit refusal, so the low eight hex
+# digits are what appears. Derive that form rather than assuming it.
+low8() { python3 -c "print('%x' % (int('$1',16) & 0xFFFFFFFF))"; }
+
+# Every refusal this unit's constants can produce must be DISTINCT from every
+# one of file.dart's fourteen. ADR-0031 §4.3 rule 7 says an ioctl on a file is
+# a distinct refusal, and a band that overlapped would make that false.
+python3 - "$CORE_DIR/kernel/ioctl.dart" "$CORE_DIR/kernel/file.dart" <<'PYEOF' \
+  || fail "an ioctl refusal collides with a file.dart refusal; ADR-0031 §4.3 rule 7 requires them to be distinct"
+import re, sys
+def codes(path, pat):
+    return {m.group(1): int(m.group(2), 0)
+            for m in re.finditer(pat, open(path).read(), re.M)}
+i = codes(sys.argv[1], r"^const int (ioctlRet[A-Za-z]+) = (0x[0-9A-Fa-f]+);")
+f = codes(sys.argv[2], r"^const int (fileRet[A-Za-z]+) = (0x[0-9A-Fa-f]+);")
+i.pop("ioctlRetFloor", None); f.pop("fileRetFloor", None)
+if len(i) < 10: sys.exit("only %d ioctl refusals found" % len(i))
+if len(f) < 14: sys.exit("only %d file refusals found" % len(f))
+clash = set(i.values()) & set(f.values())
+if clash: sys.exit("collide: %s" % sorted(hex(c) for c in clash))
+print("    (%d ioctl refusals, %d file refusals, no value in both)" % (len(i), len(f)))
+PYEOF
+
+# --- the device, and the namespace being disjoint from FAT's --------------
+grep -q '^USER WRITE DRMABI DEVOPEN fd=0$' "$SERIAL" \
+  || fail "the program did not get descriptor 0 from open(\"/dev/dri/card0\")"
+FILE_NOTFOUND=$(low8 "$(sed -n 's/^const int fileRetNotFound = \(0x[0-9A-Fa-f]*\);.*/\1/p' "$CORE_DIR/kernel/file.dart")")
+grep -q "^USER WRITE DRMABI DEVMISS $FILE_NOTFOUND\$" "$SERIAL" \
+  || fail "open(\"/dev/dri/card9\") is not fileRetNotFound — a /-name that is not a served device must NOT fall through to fatParseAt, where it would be EBADNAME"
+
+# --- the decode, against oracle.py's independent computation --------------
+# DRM_IOCTL_VERSION is _IOWR('d', 0x00, struct drm_version): dir 3, size 64,
+# type 0x64, nr 0x00. The oracle already produced the request word; this pulls
+# the four fields out of THAT rather than out of the kernel.
+O_VERSION=$(python3 -c "
+import sys
+for l in open('$WORKDIR/oracle.txt'):
+    if l.split()[0:1] == ['DRM_IOCTL_VERSION']: print(l.split()[1]); break
+" 2>/dev/null || true)
+if [[ -n "$O_VERSION" ]]; then
+  read -r ODIR OSIZE OTYPE ONR < <(python3 -c "
+r = int('$O_VERSION', 16)
+print((r>>30)&3, (r>>16)&0x3fff, (r>>8)&0xff, r&0xff)")
+  printf -v WANT 'IOCTL REQ %08X DIR %X SIZE %04X TYPE %02X NR %02X' \
+    "$((16#${O_VERSION}))" "$ODIR" "$OSIZE" "$OTYPE" "$ONR"
+  grep -qF "$WANT" "$SERIAL" \
+    || fail "the kernel's decode of DRM_IOCTL_VERSION is not the oracle's: expected \"$WANT\""
+  echo "    (kernel decode == oracle: $WANT)"
+fi
+
+# --- the call succeeded, and the out-copy really happened -----------------
+grep -q '^USER WRITE DRMABI IOCTL VERSION ret=0 b0=0 b63=3f$' "$SERIAL" \
+  || fail "the _IOWR('d',0x00,64) against /dev/dri/card0 did not return 0 with the kernel's pattern in the payload"
+grep -q '^IOCTL OK IN 0040 OUT 0040$' "$SERIAL" \
+  || fail "the VERSION ioctl did not copy 64 bytes in and 64 bytes out"
+
+# --- ANTI-VACUITY: the IN and OUT counts must DIFFER on a _IOC_WRITE-only
+#     call. ADR-0031 §4.4 asks for exactly this. A kernel that ignored
+#     _IOC_DIR and copied both ways would print the same number twice.
+grep -q '^IOCTL OK IN 0008 OUT 0000$' "$SERIAL" \
+  || fail "DRM_IOCTL_GEM_CLOSE is _IOC_WRITE-only and must copy 8 bytes IN and 0 OUT; the kernel is not honouring _IOC_DIR"
+
+# --- THE DISPATCH RULE: one nr, TWO sizes, both served ---------------------
+# ADR-0031 §3.2's finding, made into a test. These two requests differ ONLY in
+# _IOC_SIZE. A kernel written as `switch (request)` serves exactly one.
+grep -q '^IOCTL REQ C01864C1 DIR 3 SIZE 0018 TYPE 64 NR C1$' "$SERIAL" \
+  || fail "libdrm 2.4.134's SYNCOBJ_HANDLE_TO_FD (24-byte struct) was not decoded"
+grep -q '^IOCTL REQ C01064C1 DIR 3 SIZE 0010 TYPE 64 NR C1$' "$SERIAL" \
+  || fail "Linux 6.12's SYNCOBJ_HANDLE_TO_FD (16-byte struct) was not decoded"
+grep -q '^USER WRITE DRMABI IOCTL SYNCOBJ24 ret=0$' "$SERIAL" \
+  || fail "the 24-byte SYNCOBJ_HANDLE_TO_FD was not served"
+grep -q '^USER WRITE DRMABI IOCTL SYNCOBJ16 ret=0$' "$SERIAL" \
+  || fail "the 16-byte SYNCOBJ_HANDLE_TO_FD was not served — the kernel is dispatching on the request word, not on _IOC_NR"
+echo "CHECK 14: pass  ioctl is syscall 12 and it works: an _IOWR('d',0x00,struct drm_version) issued from ring 3 against /dev/dri/card0 was decoded to the oracle's dir/size/type/nr, bounced 64 bytes each way, and returned 0. A _IOC_WRITE-only request copied 8 bytes IN and 0 OUT. And BOTH sizes of SYNCOBJ_HANDLE_TO_FD — libdrm's 24-byte struct and Linux 6.12's 16-byte one, the same _IOC_NR — were served, which a \`switch (request)\` kernel could not do"
+
+# ---------------------------------------------------------------------------
+# 8j. THE FOUR NEGATIVE CONTROLS. **THESE ARE THE POINT OF THE UNIT.**
+#
+# Each asserts the OBSERVED refusal equals the kernel constant it should be,
+# AND that no success line was produced for it. The second half matters: a
+# kernel that truncated an oversize payload would return 0, and a test that
+# only checked "not zero" would pass on a kernel that refused for the wrong
+# reason.
+# ---------------------------------------------------------------------------
+neg() {   # neg <label> <expected-64-bit-hex-const> <why>
+  local label="$1" want; want=$(low8 "$2")
+  grep -q "^USER WRITE DRMABI NEG $label ret=$want\$" "$SERIAL" \
+    || fail "negative control $label: expected refusal $want ($3); transcript says: $(grep -m1 "DRMABI NEG $label" "$SERIAL" || echo '<the line is missing entirely>')"
+}
+
+# 1. AN OVERSIZED PAYLOAD IS REFUSED, NOT TRUNCATED.
+neg OVERSIZE "$IOC_BADSIZE" "ioctlRetBadSize — refused, never truncated"
+grep -q '^IOCTL REQ D0006400 DIR 3 SIZE 1000 TYPE 64 NR 00$' "$SERIAL" \
+  || fail "the oversize control did not carry _IOC_SIZE 4096"
+# NOT a pipe into `grep -q`. `grep -q` exits on its first match, the upstream
+# grep dies of SIGPIPE, and with `set -o pipefail` the pipeline reports THAT --
+# so a successful match would look like a failed command and `&& fail` would
+# never fire. The check would pass vacuously, which for a negative control is
+# the worst possible failure mode. Same hazard as CHECK 2's nm capture.
+OVERSIZE_CTX="$(grep -A1 '^IOCTL REQ D0006400 ' "$SERIAL")"
+grep -q '^IOCTL OK' <<<"$OVERSIZE_CTX" \
+  && fail "the oversize request produced an IOCTL OK line — it was TRUNCATED and served, not refused"
+
+# 2. A WRONG-SIZE REQUEST IS REFUSED, NOT ZERO-EXTENDED.
+neg WRONGSIZE "$IOC_SKEW" "ioctlRetSizeSkew — refused, never zero-extended"
+WRONGSIZE_CTX="$(grep -A1 '^IOCTL REQ C0306400 ' "$SERIAL")"
+grep -q '^IOCTL OK' <<<"$WRONGSIZE_CTX" \
+  && fail "the 48-byte VERSION request produced an IOCTL OK line — it was ZERO-EXTENDED to 64 and served"
+
+# 3. AN `argp` OUTSIDE THE PROCESS IS REFUSED. Both a kernel address and a
+#    range that runs off the end of a mapped page (GAP-0124's case).
+neg BADPTR "$IOC_BADPTR" "ioctlRetBadPtr — a kernel address"
+neg FARPTR "$IOC_BADPTR" "ioctlRetBadPtr — a range straddling unmapped pages"
+
+# 4. A WRITE-SIDE VIOLATION ON `_IOC_READ` IS REFUSED.
+#    **AND THE POSITIVE CONTROL BESIDE IT IS WHAT MAKES THAT MEAN ANYTHING**:
+#    the same request aimed at writable memory MUST succeed, or the refusal
+#    above would be explained by a kernel that refuses every _IOC_READ.
+neg RODATA "$IOC_BADPTR" "ioctlRetBadPtr — _IOC_READ aimed at .rodata, which ring 3 may read and may not write"
+# **AND THE _IOWR CASE, WHICH IS THE ONE THAT PROVES BOTH VALIDATORS RUN.**
+# The two argp controls above aim at memory that fails the READ-side validator
+# as well, so a kernel running only the read side refuses them too and looks
+# correct. This one aims an _IOWR at .rodata: the read side PASSES and the
+# write side must refuse. Deleting the write-side call from the _IOWR arm left
+# the entire suite green until this control existed -- found by mutation.
+neg IOWRRO "$IOC_BADPTR" "ioctlRetBadPtr — _IOWR aimed at .rodata: the read-side validator passes, so only the write-side one can refuse it"
+# The expected first byte is DERIVED from the kernel's own descriptor constant,
+# not typed. `ioctlDevServe` fills the read-side payload with
+# `((desc << 4) | dev) ^ byteIndex`, so byte 0 of a GET_MAGIC reply on device 0
+# is `ioctlDescGetMagic << 4`. Deriving it is what caught this line going stale
+# when the descriptor index changed from a dense 0..5 to the `_IOC_NR` itself
+# (ADR-0033 §6.4): the constant moved from 1 to 0x02 and this byte with it.
+POS_B0=$(python3 -c "print('%x' % ((0x$(kconst ioctlDescGetMagic) << 4) & 0xFF))")
+grep -q "^USER WRITE DRMABI POS RODATACTL ret=0 b0=$POS_B0\$" "$SERIAL" \
+  || fail "the _IOC_READ POSITIVE control failed: the same request aimed at writable memory must succeed, otherwise the .rodata refusal proves nothing"
+
+# And the ordering rule: TYPE is checked before NR, so a bad type on a served
+# nr must be EBADTYPE and not EBADNR.
+neg BADTYPE "$IOC_BADTYPE" "ioctlRetBadType — checked FIRST, before any other field"
+neg BADNR "$IOC_BADNR" "ioctlRetBadNr"
+neg NOTDEV "$IOC_NOTDEV" "ioctlRetNotDev — ENOTTY's equivalent, on a FAT16 file"
+neg BADFD "$IOC_BADFD" "ioctlRetBadFd"
+echo "CHECK 15: pass  all four mandatory negative controls REFUSED, each with the kernel constant it should be and with no IOCTL OK line beside it: oversize payload -> ioctlRetBadSize (refused, not truncated); wrong-size request -> ioctlRetSizeSkew (refused, not zero-extended); argp outside the process -> ioctlRetBadPtr, both for a kernel address and for a range straddling an unmapped page; _IOC_READ aimed at .rodata -> ioctlRetBadPtr, with the writable-memory positive control succeeding beside it; and an _IOWR aimed at .rodata -> ioctlRetBadPtr, which is the only one of them that can only be refused by the WRITE-side validator. Plus: bad type before bad nr, ioctl on a FAT16 file, and a closed descriptor"
+
+# ---------------------------------------------------------------------------
+# 8k. THE BOUND IS WELL UNDER THE ENCODING'S CEILING, AND THE BOUNCE BUFFER IS
+#     LAST IN .bss.
+# ---------------------------------------------------------------------------
+printf -v MAXLINE 'IOCTL MAXPAYLOAD %04X CEIL %04X' "$((16#$IOC_MAXPAY))" "$((16#$IOC_CEIL))"
+grep -qF "$MAXLINE" "$SERIAL" \
+  || fail "the kernel does not report ioctlMaxPayload/ioctlEncMaxSize as $MAXLINE"
+[[ $((16#$IOC_MAXPAY)) -lt $((16#$IOC_CEIL)) ]] \
+  || fail "ioctlMaxPayload ($((16#$IOC_MAXPAY))) is not below the _IOC 14-bit ceiling ($((16#$IOC_CEIL))); ADR-0031 §4.3 requires it to be WELL under"
+[[ $((16#$IOC_MAXPAY)) -ge 248 ]] \
+  || fail "ioctlMaxPayload ($((16#$IOC_MAXPAY))) is below the measured largest DRM payload of 248 bytes"
+
+# ADR-0031 §4.3 rule 5 / ADR-0021: the bounce buffer goes LAST in .bss, so no
+# existing harness's "bytes from my block to the end" arithmetic moves.
+python3 - "$CORE_DIR/build/kmain.o" <<'PYEOF' || fail "ioctlStore is not the last @bss block; ADR-0031 §4.3 rule 5 requires the bounce buffer to be last so that ADR-0021's block arithmetic is unchanged"
+import re, subprocess, sys
+out = subprocess.run(["llvm-nm", "--format=posix", sys.argv[1]],
+                     capture_output=True, text=True).stdout
+blocks = []
+for line in out.splitlines():
+    f = line.split()
+    if len(f) >= 3 and f[1] in ("b", "B"):
+        blocks.append((int(f[2], 16), f[0]))
+if len(blocks) < 5:
+    sys.exit("only %d @bss blocks found in kmain.o" % len(blocks))
+blocks.sort()
+if blocks[-1][1] != "ioctlStore":
+    sys.exit("the last @bss block is %s at 0x%x, not ioctlStore" % (blocks[-1][1], blocks[-1][0]))
+print("    (%d @bss blocks; ioctlStore is last, at 0x%x)" % (len(blocks), blocks[-1][0]))
+PYEOF
+# The three counters, read out of the kernel's own totals line, so that the
+# PASS line below states what THIS RUN did rather than what some earlier run
+# did. A hardcoded count goes stale the moment a control is added -- which
+# happened once already in this unit, when the _IOWR/.rodata control took the
+# call count from 15 to 16.
+IOCTL_TOTALS="$(grep -m1 '^IOCTL CALLS ' "$SERIAL")"
+[[ -n "$IOCTL_TOTALS" ]] || fail "the kernel printed no IOCTL CALLS totals line"
+IOCTL_CALLS=$(( 16#$(awk '{print $3}' <<<"$IOCTL_TOTALS") ))
+IOCTL_SERVED=$(( 16#$(awk '{print $5}' <<<"$IOCTL_TOTALS") ))
+IOCTL_REFUSED=$(( 16#$(awk '{print $7}' <<<"$IOCTL_TOTALS") ))
+[[ $(( IOCTL_SERVED + IOCTL_REFUSED )) -eq "$IOCTL_CALLS" ]] \
+  || fail "the kernel's ioctl totals do not add up: $IOCTL_SERVED served + $IOCTL_REFUSED refused != $IOCTL_CALLS calls"
+[[ "$IOCTL_REFUSED" -ge 8 ]] \
+  || fail "only $IOCTL_REFUSED ioctl refusals were recorded; this unit's negative controls alone are more than that, so some of them did not run"
+[[ "$IOCTL_SERVED" -ge 5 ]] \
+  || fail "only $IOCTL_SERVED ioctl calls were served; if the positive path is never exercised the refusals prove nothing"
+echo "CHECK 16: pass  ioctlMaxPayload is $((16#$IOC_MAXPAY)) bytes — at least the 248-byte measured maximum DRM payload and well under _IOC_SIZE's 14-bit ceiling of $((16#$IOC_CEIL)) — and the bounce buffer is the LAST @bss block in the kernel, so no existing harness's block arithmetic moved"
+
 # 8h. THE WHOLE TRANSCRIPT, BYTE FOR BYTE.
 if [[ $REGEN -eq 1 ]]; then
   cp "$SERIAL" "$EXPECTED_SERIAL"
@@ -479,9 +780,9 @@ else
   cmp -s "$SERIAL" "$EXPECTED_SERIAL" \
     || { diff <(cat "$EXPECTED_SERIAL") <(cat "$SERIAL") | head -40 >&2
          fail "the captured serial output does not match $EXPECTED_SERIAL (first differences above)"; }
-  echo "CHECK 14: pass  the whole $(wc -c <"$SERIAL" | tr -d ' ')-byte transcript matches the golden byte for byte"
+  echo "CHECK 17: pass  the whole $(wc -c <"$SERIAL" | tr -d ' ')-byte transcript matches the golden byte for byte"
 fi
 
 echo
-echo "drm-abi: PASS — unmodified libdrm compiles for this OS ($N_MISS symbols short, $N_MISS_MT with modetest); a program built against Linux's unmodified DRM uAPI runs in ring 3 and agrees with Linux 6.12 on 119 of $O_COUNT request numbers; the BSD-encoding control disagrees on 29 and is rejected. No ioctl was issued, because there is no ioctl (GAP-0158)."
+echo "drm-abi: PASS — unmodified libdrm compiles for this OS ($N_MISS symbols short, $N_MISS_MT with modetest); a program built against Linux's unmodified DRM uAPI runs in ring 3 and agrees with Linux 6.12 on 119 of $O_COUNT request numbers; the BSD-encoding control disagrees on 29 and is rejected. AND ioctl IS SYSCALL 12 AND IT WORKS: $IOCTL_CALLS calls from ring 3 against /dev/dri/card0, $IOCTL_SERVED served and $IOCTL_REFUSED refused, with all four mandatory negative controls refusing for the right reason and each checked against the kernel constant it should be (ADR-0033)."
 exit 0

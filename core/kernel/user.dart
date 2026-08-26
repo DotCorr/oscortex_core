@@ -1483,6 +1483,11 @@ void userSysExit(u64 frame) {
   // 3 pass through on the way out, and BEFORE the process branch below because
   // that branch does not come back.
   chanExitReport();
+  // S0 (ADR-0033): a THIRD block, and only if this boot opened a device or
+  // issued an `ioctl`. Same discipline as the two above and for the same
+  // reason: twenty-one harnesses boot a kernel that never does either, and on
+  // every one of them this prints nothing and no golden moves.
+  ioctlReport();
   // M11: a process's exit is a different event. It may not be the end of
   // anything -- another process can be READY -- so [procSysExit] RETURNS
   // NORMALLY when it switched to somebody else, and never returns when this was
@@ -1643,7 +1648,9 @@ void userSyscall(u64 frame) {
     fileSysWrite(frame);
     return;
   }
-  // M20: `chanopen`, `chansend` and `chanrecv` (syscalls 11..13). Refused
+  // M20: `chanopen`, `chansend` and `chanrecv` (syscalls 13..15 -- 11 is
+  // reserved for `fdwait` and 12 is `ioctl`, see docs/syscall-registry.md and
+  // GAP-0213). Refused
   // unless a PROCESS is live, for `yield`'s reason and one more: an endpoint is
   // owned by a process ID, and there is no ID without a slot. The refusal is
   // NOT made here, though -- each of the three makes it itself, through
@@ -1659,6 +1666,20 @@ void userSyscall(u64 frame) {
   }
   if (no == u64(chanSysRecvNo)) {
     chanSysRecv(frame);
+    return;
+  }
+
+  // S0 (ADR-0033): `ioctl` (syscall 12). It sits with the file syscalls and
+  // not with `sbrk` and `yield`, because it needs what THEY need: a descriptor
+  // table, which `run <name>` produces without a process slot. [fileOwnerRow]
+  // decides that inside [ioctlSysIoctl], once, exactly as the other six do.
+  //
+  // **11 is skipped and that is the registry working.** `fdwait` was named as
+  // 11 by three separate designs before `ioctl` existed, so `ioctl` took 12 —
+  // see docs/syscall-registry.md, which this dispatcher is checked against by
+  // `core/scripts/verify-syscall-registry.sh`.
+  if (no == u64(ioctlSysNo)) {
+    ioctlSysIoctl(frame);
     return;
   }
   if (no == u64(userSysWhoNo)) {
