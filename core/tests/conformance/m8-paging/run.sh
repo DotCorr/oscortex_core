@@ -171,25 +171,36 @@ echo "STRUCTURAL: pass  .text is alone with .multiboot on the executable segment
 # `.rodata` shared one, that page would need the union of what each needs —
 # writable AND executable, in the one place it matters most. All six symbols are
 # read out of the ELF, never out of the source.
-declare -A SYM
+# bash 3.2 COMPATIBILITY (ADR-0028). `declare -A` is bash 4+, and macOS ships
+# /bin/bash 3.2.57 -- under it, `declare -A SYM` fails and `SYM[$s]=...` then
+# treats `__kernel_start` as an ARITHMETIC subscript, aborting on `set -u`
+# BEFORE any of the assertions below run. This harness has `set -uo pipefail`
+# and no `set -e`, so `set -u` was the only thing keeping that loud.
+#
+# The six keys are fixed, known at authoring time, and are valid identifier
+# names, so the map is six ordinary variables named SYM_<key>, read through
+# sym(). Deliberately NO `:-` default in sym(): a mistyped key must stay an
+# unbound-variable abort, exactly as an associative array under `set -u` would.
+sym() { eval "printf '%s' \"\$SYM_$1\""; }
 for s in __kernel_start __text_end __rodata_start __rodata_end __data_start __kernel_end; do
   v=$(x86_64-elf-readelf -sW "$KERNEL_ELF" | awk -v n="$s" '$8==n{print $2; exit}')
   [[ -n "$v" ]] || fail "$s is not in kernel.elf — core/link/kernel.ld did not export the section boundaries the page-table builder maps against"
-  SYM[$s]=$(hexnum "$v")
+  hv=$(hexnum "$v")
+  eval "SYM_$s=\$hv"   # value referenced, never re-parsed, by the eval
 done
-[[ "${SYM[__kernel_start]}" -eq $((1024*1024)) ]] || fail "__kernel_start is ${SYM[__kernel_start]}, expected 0x100000 (the Multiboot load address). vm.dart refuses to build a map if it is anything else."
+[[ "$(sym __kernel_start)" -eq $((1024*1024)) ]] || fail "__kernel_start is $(sym __kernel_start), expected 0x100000 (the Multiboot load address). vm.dart refuses to build a map if it is anything else."
 for s in __rodata_start __data_start; do
-  (( SYM[$s] % 4096 == 0 )) || fail "$s (0x$(printf %X "${SYM[$s]}")) is not 4KiB-aligned — two sections would share a page and could not have different permissions"
+  (( $(sym "$s") % 4096 == 0 )) || fail "$s (0x$(printf %X "$(sym "$s")")) is not 4KiB-aligned — two sections would share a page and could not have different permissions"
 done
-(( SYM[__kernel_start] < SYM[__text_end] )) || fail "__text_end is not above __kernel_start"
-(( SYM[__text_end] <= SYM[__rodata_start] )) || fail "__text_end (0x$(printf %X "${SYM[__text_end]}")) is above __rodata_start — .text spills onto a read-only page"
-(( SYM[__rodata_end] <= SYM[__data_start] )) || fail "__rodata_end is above __data_start — .rodata spills onto a writable page"
-(( SYM[__data_start] < SYM[__kernel_end] )) || fail "__kernel_end is not above __data_start"
+(( $(sym __kernel_start) < $(sym __text_end) )) || fail "__text_end is not above __kernel_start"
+(( $(sym __text_end) <= $(sym __rodata_start) )) || fail "__text_end (0x$(printf %X "$(sym __text_end)")) is above __rodata_start — .text spills onto a read-only page"
+(( $(sym __rodata_end) <= $(sym __data_start) )) || fail "__rodata_end is above __data_start — .rodata spills onto a writable page"
+(( $(sym __data_start) < $(sym __kernel_end) )) || fail "__kernel_end is not above __data_start"
 # vm.dart's 4KiB window is 4MiB and it REFUSES to switch if the image outgrows
 # it. Checked here so the refusal is a build-time diagnostic rather than a
 # silent `READY 0` discovered three boots later.
-(( SYM[__kernel_end] <= 4*1024*1024 )) || fail "the kernel image ends at 0x$(printf %X "${SYM[__kernel_end]}"), past vm.dart's 4MiB 4KiB-page window (vmFineBytes). vmInit would refuse to install a map. Raise vmFineBytes and vmFrameCount together."
-echo "STRUCTURAL: pass  the six section boundaries from kernel.ld are ordered, page-aligned where permissions change, and the image (0x$(printf %X "${SYM[__kernel_start]}")..0x$(printf %X "${SYM[__kernel_end]}")) fits vm.dart's 4MiB window"
+(( $(sym __kernel_end) <= 4*1024*1024 )) || fail "the kernel image ends at 0x$(printf %X "$(sym __kernel_end)"), past vm.dart's 4MiB 4KiB-page window (vmFineBytes). vmInit would refuse to install a map. Raise vmFineBytes and vmFrameCount together."
+echo "STRUCTURAL: pass  the six section boundaries from kernel.ld are ordered, page-aligned where permissions change, and the image (0x$(printf %X "$(sym __kernel_start)")..0x$(printf %X "$(sym __kernel_end)")) fits vm.dart's 4MiB window"
 
 # 2c. DONATED `.bss` GREW FROM 5096 TO 5224, AND THIS HARNESS NOW OWNS THE
 #     NUMBER.
@@ -732,8 +743,8 @@ echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byt
 # the CR3 QEMU says is installed, and walked here by derive.py's independent
 # implementation of the x86-64 4-level walk.
 if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$WORKDIR/session/monitor.txt" \
-     "${SYM[__kernel_start]}" "${SYM[__text_end]}" "${SYM[__rodata_start]}" \
-     "${SYM[__rodata_end]}" "${SYM[__data_start]}" "${SYM[__kernel_end]}" <<'PY'
+     "$(sym __kernel_start)" "$(sym __text_end)" "$(sym __rodata_start)" \
+     "$(sym __rodata_end)" "$(sym __data_start)" "$(sym __kernel_end)" <<'PY'
 import importlib.util, re, sys
 
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
@@ -885,8 +896,8 @@ echo "ASSERT: pass  the LIVE page tables, read out of guest physical memory at Q
 # GAP-0050's whole point was that a write to `.rodata` succeeded SILENTLY. This
 # is where that stops being true, and the controls are checked first so a kernel
 # in which everything faults cannot look like a pass.
-if ! python3 - "$SERIAL_CAPTURE" "${SYM[__rodata_start]}" "${SYM[__rodata_end]}" \
-     "${SYM[__kernel_start]}" "${SYM[__text_end]}" "${SYM[__data_start]}" "${SYM[__kernel_end]}" <<'PY'
+if ! python3 - "$SERIAL_CAPTURE" "$(sym __rodata_start)" "$(sym __rodata_end)" \
+     "$(sym __kernel_start)" "$(sym __text_end)" "$(sym __data_start)" "$(sym __kernel_end)" <<'PY'
 import re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 rostart, roend, kstart, textend, datastart, kend = (int(x) for x in sys.argv[2:8])
@@ -1072,7 +1083,7 @@ drive_session "$WORKDIR/nonx" \
   --monitor-capture "$WORKDIR/nonx/monitor.txt"
 
 if ! python3 - "$WORKDIR/nonx/serial.txt" "$DERIVE" "$WORKDIR/nonx/monitor.txt" \
-     "${SYM[__rodata_start]}" "${SYM[__rodata_end]}" <<'PY'
+     "$(sym __rodata_start)" "$(sym __rodata_end)" <<'PY'
 import importlib.util, re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 spec = importlib.util.spec_from_file_location("derive", sys.argv[2])
@@ -1159,8 +1170,8 @@ drive_session "$WORKDIR/small" "v,m,ret,wait:1500,v,m,t,e,s,t,spc,r,o,ret,wait:1
   --monitor-capture "$WORKDIR/small/monitor.txt"
 
 if ! python3 - "$WORKDIR/small/serial.txt" "$DERIVE" "$WORKDIR/small/monitor.txt" \
-     "${SYM[__kernel_start]}" "${SYM[__text_end]}" "${SYM[__rodata_start]}" \
-     "${SYM[__rodata_end]}" "${SYM[__data_start]}" "${SYM[__kernel_end]}" <<'PY'
+     "$(sym __kernel_start)" "$(sym __text_end)" "$(sym __rodata_start)" \
+     "$(sym __rodata_end)" "$(sym __data_start)" "$(sym __kernel_end)" <<'PY'
 import importlib.util, re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 spec = importlib.util.spec_from_file_location("derive", sys.argv[2])
@@ -1248,9 +1259,9 @@ drive_session "$WORKDIR/drain" \
   --monitor-capture "$WORKDIR/drain/monitor.txt"
 
 if ! python3 - "$WORKDIR/drain/serial.txt" "$DERIVE" "$WORKDIR/drain/monitor.txt" \
-     "$PML4_HEX" "${SYM[__kernel_start]}" "${SYM[__text_end]}" \
-     "${SYM[__rodata_start]}" "${SYM[__rodata_end]}" "${SYM[__data_start]}" \
-     "${SYM[__kernel_end]}" <<'PY'
+     "$PML4_HEX" "$(sym __kernel_start)" "$(sym __text_end)" \
+     "$(sym __rodata_start)" "$(sym __rodata_end)" "$(sym __data_start)" \
+     "$(sym __kernel_end)" <<'PY'
 import importlib.util, re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 spec = importlib.util.spec_from_file_location("derive", sys.argv[2])

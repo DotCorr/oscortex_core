@@ -5673,6 +5673,118 @@ than an accident.
 
 ---
 
+## GAP-0155 — the rule-1 check was broken on the bash macOS ships, and `set -e` was the only thing between that and a vacuous pass
+
+**Domain:** tooling, freestanding check (fix batch, ADR-0028)
+**Status:** CLOSED for the defect; two residual items below are OPEN.
+
+`core/scripts/verify-freestanding.sh` used `mapfile` (bash 4+) at three sites. macOS ships `/bin/bash`
+3.2.57, so under it the script died at exit 127. It had **never** been run on that bash: `env.sh`
+prepends `/opt/homebrew/bin`, which supplies bash 5, and sourcing `env.sh` is mandatory setup — so the
+shebang `#!/usr/bin/env bash` found bash 5 on every sweep this repo has ever done. The environment
+that made the project usable is the same thing that hid the state of the check.
+
+It failed **closed** only because of `set -euo pipefail`. Without `set -e`, `mapfile` failing leaves
+the undefined-symbol array unset, the loop examines nothing, and the script prints `FREESTANDING:
+pass` **having checked zero symbols.**
+
+Three further defects were found and fixed in the same pass, each independently able to produce a
+vacuous pass:
+
+1. **`nm`'s exit status was swallowed.** `mapfile -t undef < <("$NM" ... 2>/dev/null | awk ... )` — a
+   pipeline reports `awk`'s status, and a process substitution's status is never examined at all.
+   Measured: `NM=/bin/false` gave **status 0, empty output**, identical to a genuinely clean object.
+   Since every conclusion here is drawn from the **absence** of a symbol, a broken `nm` was reported
+   as a pass. Now captured explicitly and **FATAL, exit 2**.
+2. **`"${arr[@]}"` on an empty array aborts under bash 3.2 with `set -u`.** `ALLOWED` is empty **by
+   design**, so this was certain to fire. All expansions that can be empty now use
+   `${arr[@]+"${arr[@]}"}`.
+3. **`sed 's/\s*$//'` was actively wrong, not merely non-portable.** BSD `sed` reads `\s` as a literal
+   `s`, so it never stripped trailing whitespace and it **truncated symbol names ending in `s`** —
+   turning the allowlist glob `__aeabi_*s` into `__aeabi_*`, which **permits more than its author
+   wrote**. Now `[[:space:]]`. (`/usr/bin/grep -E` does accept `\s`; changed anyway.)
+
+**Deliberately NOT done: no non-vacuity guard on the allowlist.** The allowlist is empty by design —
+the freestanding baseline genuinely permits zero symbols. A sibling repo added such a guard and it was
+wrong: it made the correct configuration a hard FATAL. Asserting the non-emptiness of something
+designed to be empty is the same defect as a vacuous pass, pointed the other way. A vacuity guard is
+correct only where the empty case is genuinely impossible — which is why `nm`'s path has one and the
+allowlist's does not. See ADR-0028 §3.
+
+**Verified** by three negative controls under `/bin/bash` explicitly (clean → 0; leaked `dc_alloc` →
+1; `NM=/bin/false` → FATAL 2), two more covering the empty-`ALLOWED` loop and the manifest path, and a
+byte-identical old-vs-new differential across all five objects and `kernel.elf`.
+
+**OPEN residuals:**
+
+* **Leading whitespace on an allowlist or manifest entry is still retained**, so `"  foo"` never
+  matches the symbol `foo`. That is pre-existing behaviour, preserved deliberately — trimming it would
+  change *what the allowlist permits*, a semantic change to rule 1's spine that wants its own
+  decision. Harmless while the allowlist is empty; a trap the first time an entry is added with a
+  stray indent.
+* **Nothing enforces the bash-3.2 rule.** The three rules are documented in the script's header and
+  the harnesses' comments, but no check fails if someone reintroduces `mapfile`, `declare -A` or an
+  unguarded `"${arr[@]}"`. A CI step running the freestanding controls under `/bin/bash` would close
+  this; it is not written.
+
+---
+
+## GAP-0156 — no conformance harness has `set -e`, so `set -u` is load-bearing by accident
+
+**Domain:** tooling, conformance harnesses (fix batch, ADR-0028)
+**Status:** OPEN — the three known instances are fixed; the structural weakness is not.
+
+`declare -A` (bash 4+) appeared in `m13-libc:248`, `m8-paging:174` and `m9-ring3:158`. Under
+`/bin/bash` 3.2 the declaration fails and the subsequent `SYM[__kernel_start]=...` becomes an
+**indexed** assignment whose subscript is evaluated as **arithmetic**, so the harness aborts at exit
+127 — **after** printing several `STRUCTURAL: pass` lines and before reaching most of its own
+assertions. All three are now bash-3.2-compatible and all three pass under `/bin/bash` 3.2, with every
+assertion and message unchanged (ADR-0028 §6).
+
+**The structural point, which is not fixed.** All twenty harnesses use `set -uo pipefail`; **none has
+`set -e`.** They rely on explicit `fail()` calls. So the only reason the `declare -A` breakage was
+loud is that `set -u` happened to catch the arithmetic subscript — and that is luck, not design: had
+the subscript been a *defined* numeric variable, bash 3.2 would have silently collapsed every key to
+index 0 and the harness would have continued with a corrupt map and reported PASS. **A harness that
+aborts before reaching its own assertions while still reporting success is the same vacuous-pass
+defect** as GAP-0155, and nothing in the current `set` flags rules it out in general.
+
+Adding `set -e` to twenty harnesses is not a safe drive-by — these scripts use `cmd || fail ...`,
+`grep -q` as a predicate and `(( ... ))` in conditions, several of which legitimately return non-zero
+— so it wants its own unit, harness by harness, with each one re-run.
+
+**Method note, recorded because it generalises.** Grepping for `declare -A` found the three
+declarations and **missed five further `${SYM[...]}` expansions** further down `m8-paging`, which only
+surfaced when the harness was actually executed under `/bin/bash`. A portability claim is worth what
+its execution under the target interpreter is worth, not what a grep says.
+
+---
+
+## GAP-0157 — `m9-ring3` is flaky: an intermittent RFLAGS.RF bit in the ring-3 register dump
+
+**Domain:** conformance, ring 3 (observed during the ADR-0028 fix batch)
+**Status:** OPEN — newly observed, not diagnosed.
+
+`m9-ring3` failed once during this unit with a one-line serial diff:
+
+```
+< USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000202 CPL 3
+> USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000010202 CPL 3
+```
+
+Bit 16 is **RF (Resume Flag)**. `expected.txt` pins the full RFLAGS word, so an RF that is sometimes
+set makes the byte-exact serial comparison non-deterministic. The same harness then passed on retry
+under **both** `/bin/bash` 3.2 and bash 5, and the pristine pre-change harness also passed — so this is
+**not** caused by the ADR-0028 changes, which touch only a selector comparison performed before QEMU
+is started.
+
+This is a **second, distinct flake** from the known `m12-heap` one and had not been recorded before.
+The likely fix is for the harness to mask RF (and any other CPU-managed bit not under test) before
+comparing, rather than pinning the whole word — M9's claim is about CPL, CS and SS, not about RF. Not
+done here: it changes what an existing golden asserts, which wants its own unit.
+
+---
+
 ## GAP-0158 — There is no `ioctl` and no device namespace, and the DRM ABI is an ioctl ABI reached through a device node
 
 **Domain:** kernel, syscalls, ABI (design unit, ADR-0029)
@@ -6016,3 +6128,39 @@ landed since, as ADR-0040/0051).
 *what crosses it*. Mesa's internal state, threads, heap and shader IR stay opaque, and ADR-0029 §7(d)
 says so. The architectural half of the answer — Mesa quarantined in its own address space behind
 oscortex's own protocol for the display path — is this repo's and is recorded in `drm-abi.md` §4.3.
+
+---
+
+## GAP-0167 — `m19-argv`'s PASS line claims `verify-freestanding` ran. It never invokes it.
+
+**Domain:** conformance, rule 1 (found during the ADR-0028 fix batch)
+**Status:** OPEN — found and recorded, deliberately NOT fixed here (see below).
+
+`core/tests/conformance/m19-argv/run.sh` ends with a PASS message reading
+`... -> build-progs checks (...) -> verify-freestanding -> FOUR real QEMU boots`. **The only mention
+of `verify-freestanding` anywhere in that harness is that sentence.** There is no invocation:
+
+```
+$ grep -cE 'verify-freestanding\.sh' core/tests/conformance/m19-argv/run.sh
+0          # vs 4 in m8-paging, m13-libc, m14-fat, m16-filewrite, m18-preempt; 5 in m15-fileio
+$ grep -c 'FREESTANDING: pass' <m19-argv run log>
+0          # vs 1-4 for every other harness
+```
+
+Every other harness runs it **and checks its status** — `VERIFY_STATUS`/`FS_STATUS` captured, plus a
+`grep -q "FREESTANDING: FAIL"` belt-and-braces in `m8-paging` and `m13-libc`. M19's does neither.
+
+**This is the same defect as the rest of this batch, in its purest form: a PASS message asserting a
+check that did not run.** It is not a vacuous *check* — it is a vacuous *claim*, which is worse,
+because the claim is what a reader audits and no amount of re-running the harness will contradict it.
+
+**Severity, honestly stated.** Rule 1 is not currently unenforced: `m18-preempt` and six other
+harnesses run `verify-freestanding` against the same `build/kmain.o`, `kdata.o`, `portio.o` and
+`kernel.elf` that M19 builds, so a leaked runtime symbol would still be caught by the suite. What is
+missing is M19's *own* assertion of it, and what is wrong is the sentence saying it has one.
+
+**Why not fixed in this commit.** The unit that found it was scoped to
+`core/scripts/verify-freestanding.sh` and the three `declare -A` harnesses, and was explicitly told to
+touch only those. `m19-argv` belongs to the milestone that just landed. The fix is small — copy
+`m18-preempt`'s five-line block and re-run the harness (~290 s) — but it is another agent's harness
+and another milestone's exit criterion, so it is escalated rather than taken.

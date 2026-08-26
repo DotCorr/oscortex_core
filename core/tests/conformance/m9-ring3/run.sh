@@ -155,17 +155,25 @@ sel_from_dart() {
   awk -F'= *' -v n="$1" '$0 ~ ("^const int " n " =") { gsub(/;.*/,"",$2); print $2; exit }' \
     "$CORE_DIR/kernel/user.dart"
 }
-declare -A SEL
+# bash 3.2 COMPATIBILITY (ADR-0028). `declare -A` is bash 4+ and macOS ships
+# /bin/bash 3.2.57; under it `SEL[$2]=$D` treats `userCodeSel` as an ARITHMETIC
+# subscript and aborts on `set -u` before either assertion below runs. This
+# harness has `set -uo pipefail` and no `set -e`, so `set -u` was the only
+# thing keeping that loud. The three keys are fixed and are valid identifier
+# names, so the map is three ordinary variables named SEL_<key>, read through
+# sel(). No `:-` default on purpose: a mistyped key must stay a loud
+# unbound-variable abort.
+sel() { eval "printf '%s' \"\$SEL_$1\""; }
 for pair in "SEL_UCODE userCodeSel" "SEL_UDATA userDataSel" "SEL_TSS userTssSel"; do
   set -- $pair
   A=$(python3 -c "print(eval('$(sel_from_asm "$1")'))")
   D=$(hexnum "$(sel_from_dart "$2" | sed 's/^0x//')")
   [[ -n "$A" && -n "$D" ]] || fail "could not read $1 out of boot.S or $2 out of user.dart"
   [[ "$A" -eq "$D" ]] || fail "boot.S's $1 is $A but user.dart's $2 is $D — the GDT and the code that loads it disagree about which descriptor is which"
-  SEL[$2]=$D
+  eval "SEL_$2=\$D"
 done
-[[ "${SEL[userCodeSel]}" -eq $(( 0x20 | 3 )) ]] || fail "the user code selector is ${SEL[userCodeSel]}, expected 0x23 (GDT entry 4 with RPL 3)"
-[[ "${SEL[userDataSel]}" -eq $(( 0x18 | 3 )) ]] || fail "the user data selector is ${SEL[userDataSel]}, expected 0x1B"
+[[ "$(sel userCodeSel)" -eq $(( 0x20 | 3 )) ]] || fail "the user code selector is $(sel userCodeSel), expected 0x23 (GDT entry 4 with RPL 3)"
+[[ "$(sel userDataSel)" -eq $(( 0x18 | 3 )) ]] || fail "the user data selector is $(sel userDataSel), expected 0x1B"
 echo "STRUCTURAL: pass  boot.S's SEL_UCODE/SEL_UDATA/SEL_TSS and user.dart's userCodeSel/userDataSel/userTssSel are the same three numbers (0x23, 0x1B, 0x28)"
 
 # 2b. THE ACCESSED BIT IS PRE-SET ON ALL FOUR SEGMENT DESCRIPTORS, AND `ltr` IS

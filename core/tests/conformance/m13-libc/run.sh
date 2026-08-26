@@ -245,16 +245,27 @@ echo "STRUCTURAL: pass  kdata.o donates 9728 bytes of .bss outside M14's fat_sto
 # numbers. Three copies is three chances for one to drift, and the drift shows
 # up as a program that faults rather than as a build error. There is one copy
 # now, in oslibc.h, and this is the check that it is the right one.
-declare -A WANT_SYS=( [SYS_EXIT]="userSysExitNo user.dart" [SYS_WRITE]="userSysWriteNo user.dart" \
-                      [SYS_WHO]="userSysWhoNo user.dart" [SYS_YIELD]="procSysYieldNo proc.dart" \
-                      [SYS_SBRK]="heapSysSbrkNo heap.dart" )
-for name in SYS_EXIT SYS_WRITE SYS_WHO SYS_YIELD SYS_SBRK; do
-  set -- ${WANT_SYS[$name]}
-  k=$(dartconst "$1" "$2")
-  c=$(cdefine "$name")
-  [[ -n "$k" ]] || fail "could not read $1 out of core/kernel/$2"
-  [[ -n "$c" ]] || fail "oslibc.h does not define $name"
-  [[ "$k" -eq "$c" ]] || fail "oslibc.h has $name = $c and core/kernel/$2 says $1 = $k"
+#
+# bash 3.2 COMPATIBILITY (ADR-0028). This was a `declare -A WANT_SYS=(...)`
+# literal. `declare -A` is bash 4+ and macOS ships /bin/bash 3.2.57; under it
+# the compound assignment treats `[SYS_EXIT]` as an ARITHMETIC subscript and
+# aborts on `set -u` before any of the five numbers is compared. This harness
+# has `set -uo pipefail` and no `set -e`, so `set -u` was the only thing
+# keeping that loud.
+#
+# Rewritten as the "name const file" triple list that section 2c immediately
+# below already uses -- same idiom, same five assertions, same messages, and
+# no associative array. The triple order matches 2c's: $1 is the C name, $2
+# the DCDart constant, $3 the kernel source file.
+for triple in "SYS_EXIT userSysExitNo user.dart" "SYS_WRITE userSysWriteNo user.dart" \
+              "SYS_WHO userSysWhoNo user.dart" "SYS_YIELD procSysYieldNo proc.dart" \
+              "SYS_SBRK heapSysSbrkNo heap.dart"; do
+  set -- $triple
+  k=$(dartconst "$2" "$3")
+  c=$(cdefine "$1")
+  [[ -n "$k" ]] || fail "could not read $2 out of core/kernel/$3"
+  [[ -n "$c" ]] || fail "oslibc.h does not define $1"
+  [[ "$k" -eq "$c" ]] || fail "oslibc.h has $1 = $c and core/kernel/$3 says $2 = $k"
 done
 echo "STRUCTURAL: pass  all five syscall numbers in oslibc.h are the kernel's own ($(cdefine SYS_EXIT)/$(cdefine SYS_WRITE)/$(cdefine SYS_WHO)/$(cdefine SYS_YIELD)/$(cdefine SYS_SBRK)), read back out of user.dart, proc.dart and heap.dart"
 
