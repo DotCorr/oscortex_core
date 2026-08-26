@@ -78,8 +78,23 @@ setup_error() {
   exit 2
 }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=61
+
+
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
@@ -87,28 +102,27 @@ EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 # Deliberately the M2 harness's driver, not a copy of it.
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
-[[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
-[[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m3-shell reuses m2-console's)"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
+ck; [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
+ck; [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m3-shell reuses m2-console's)"
 
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
-[[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m3.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m3.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Step 1 — build.
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — structural checks (CLAUDE.md: anything checkable without booting
@@ -180,19 +194,19 @@ bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
 bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-if [[ "$KDATA_BSS" -lt 304 ]]; then
+ck; if [[ "$KDATA_BSS" -lt 304 ]]; then
   fail "the kernel's mutable static storage is $KDATA_BSS bytes, which is less than the 304 M2's console and M3's shell need between them (known-gaps GAP-0053)"
 fi
 for sym in shellLenWord shellStateWord shellMbinfoWord kbdPrefixWord; do
   SZ=$(bsssize "$sym")
-  [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — the shell's mutable state changed shape"
+  ck; [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — the shell's mutable state changed shape"
 done
 echo "STRUCTURAL: pass  the kernel holds $KDATA_BSS bytes of mutable static storage ($DART_BSS DCDart @bss + $ASM_BSS assembly-written), including all four of M3's shell state words at 8 bytes each"
 
@@ -200,17 +214,17 @@ echo "STRUCTURAL: pass  the kernel holds $KDATA_BSS bytes of mutable static stor
 # the same. A buffer shorter than the constant is a silent overflow of donated
 # .bss — it would write over kbd_prefix and whatever came next.
 LINE_SIZE=$(bsssize shellLineBuf)
-[[ -n "$LINE_SIZE" ]] || fail "shellLineBuf symbol not found in kmain.o or kdata.o"
-if [[ "$LINE_SIZE" -ne 256 ]]; then
+ck; [[ -n "$LINE_SIZE" ]] || fail "shellLineBuf symbol not found in kmain.o or kdata.o"
+ck; if [[ "$LINE_SIZE" -ne 256 ]]; then
   fail "shellLineBuf is $LINE_SIZE bytes, expected 256"
 fi
-if ! grep -q 'const int shellLineMax = 256;' "$CORE_DIR/kernel/shell.dart"; then
+ck; if ! grep -q 'const int shellLineMax = 256;' "$CORE_DIR/kernel/shell.dart"; then
   fail "core/kernel/shell.dart's shellLineMax no longer says 256 — the DCDart bound and the buffer would disagree, and the editor would write past the end of .bss"
 fi
 # M17: the buffer is now declared FROM that constant, so the two cannot drift at
 # all. Asserted as a literal because the linked size above is what the CPU sees
 # and this is what the source says; both, or neither.
-grep -q 'const Bss(bytes: shellLineMax)' "$CORE_DIR/kernel/shell.dart" \
+ck; grep -q 'const Bss(bytes: shellLineMax)' "$CORE_DIR/kernel/shell.dart" \
   || fail "shell.dart's line buffer is no longer declared as const Bss(bytes: shellLineMax) — the bound and the buffer can drift again"
 echo "STRUCTURAL: pass  shellLineBuf is 256 bytes, declared from shell.dart's own shellLineMax"
 
@@ -225,8 +239,8 @@ check_table() {
   local sym="$1" want="$2"
   local got
   got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table the shell dispatches on was not emitted"
-  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes, expected $want (the dispatcher compares exactly $want bytes)"
+  ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table the shell dispatches on was not emitted"
+  ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes, expected $want (the dispatcher compares exactly $want bytes)"
 }
 check_table shellCmdHelp 4
 check_table shellCmdClear 5
@@ -254,7 +268,7 @@ echo "STRUCTURAL: pass  all 8 shell @rodata tables are exactly the sizes the dis
 # that only shows up as "it stopped responding after a keystroke", occasionally.
 IDLE_ONCE_OPS=$(x86_64-elf-objdump -d --disassemble=idle_once "$CORE_DIR/build/isr.o" \
   | awk '/^ +[0-9a-f]+:/ {print $NF}' | tr '\n' ' ')
-case "$IDLE_ONCE_OPS" in
+ck; case "$IDLE_ONCE_OPS" in
   "sti hlt ret "*) ;;
   *)
     x86_64-elf-objdump -d --disassemble=idle_once "$CORE_DIR/build/isr.o" >&2
@@ -267,7 +281,7 @@ echo "STRUCTURAL: pass  idle_once is exactly 'sti; hlt; ret' — the wake-up rac
 # m2-console because M3 changed kbdHandle, and a make code is only in range by
 # construction while the table has one entry per possible make code.
 KBD_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk '$8=="kbdSet1Ascii" {print $3; exit}')
-[[ "$KBD_SIZE" == "128" ]] || fail "kbdSet1Ascii is ${KBD_SIZE:-missing} bytes, expected exactly 128"
+ck; [[ "$KBD_SIZE" == "128" ]] || fail "kbdSet1Ascii is ${KBD_SIZE:-missing} bytes, expected exactly 128"
 echo "STRUCTURAL: pass  kbdSet1Ascii is still exactly 128 bytes in .rodata"
 
 # ---------------------------------------------------------------------------
@@ -280,12 +294,10 @@ echo "STRUCTURAL: pass  kbdSet1Ascii is still exactly 128 bytes in .rodata"
 # kernel.elf covers them.
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
-  "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
@@ -364,7 +376,7 @@ drive_session() {
   # previous boot still in TIME_WAIT. All three used to surface as QEMU
   # dying with "Address already in use".
   local port
-  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
+  ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 120 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \
@@ -374,17 +386,11 @@ drive_session() {
     -qmp "tcp:127.0.0.1:$port,server,nowait" \
     >"$outdir/qemu.log" 2>&1 &
   local qemu_pid=$!
-  python3 "$DRIVER" \
-    --port "$port" \
-    --serial "$ser" \
-    --wait-for 'M1 END\n' \
-    --png "$png" \
-    --screen-text "$outdir/screen.txt" \
-    --keys "$keys"
-  local drive_status=$?
-  wait "$qemu_pid" 2>/dev/null
-  local qemu_status=$?
-  if [[ $drive_status -ne 0 ]]; then
+  local drive_status
+  run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys"
+  local qemu_status
+  await qemu_status "$qemu_pid"
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
@@ -392,7 +398,7 @@ drive_session() {
   fi
   # The driver ends with `quit`, so 0 is expected; 124 would be the timeout,
   # which drive_status would already have caught.
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -409,14 +415,14 @@ SCREEN_TEXT="$WORKDIR/session/screen.txt"
 # 5a. M1's whole golden must still be a byte-exact PREFIX of this capture.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
-if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+ck; if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
   cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
   fail "the first $M1_BYTES bytes of this boot do not match m1-interrupts/expected.txt — the shell changed M0/M1 serial output"
 fi
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
 
 # 5b. The whole serial capture.
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
+ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
   echo "--- captured serial ---" >&2
   cat -v "$SERIAL_CAPTURE" >&2
   echo "--- expected ---" >&2
@@ -434,7 +440,7 @@ echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byt
 # backspace could erase the prompt there would be 0x08 bytes here; if the 0xE0
 # prefix were still mishandled there would be `8`, `2`, `4` and `6`. The
 # expected byte sequence is the prompt and then `ticks`, with nothing between.
-if ! python3 - "$SERIAL_CAPTURE" <<'PY'
+ck; if ! python3 - "$SERIAL_CAPTURE" <<'PY'
 import sys
 data = open(sys.argv[1], "rb").read()
 want = b"clear\noscortex> ticks\n"
@@ -473,7 +479,7 @@ for b in blocks:
     print(b)
 PY
 DUMP_COUNT=$(head -1 "$WORKDIR/dumps.txt")
-[[ "$DUMP_COUNT" == "2" ]] || fail "expected exactly 2 'MB FLAGS ... MB END' blocks in the capture (one at boot, one from the mem command), found $DUMP_COUNT"
+ck; [[ "$DUMP_COUNT" == "2" ]] || fail "expected exactly 2 'MB FLAGS ... MB END' blocks in the capture (one at boot, one from the mem command), found $DUMP_COUNT"
 awk '/^----$/{n++; next} n==1' "$WORKDIR/dumps.txt" >"$WORKDIR/dump-boot.txt"
 awk '/^----$/{n++; next} n==2' "$WORKDIR/dumps.txt" >"$WORKDIR/dump-shell.txt"
 if ! cmp -s "$WORKDIR/dump-boot.txt" "$WORKDIR/dump-shell.txt"; then
@@ -483,7 +489,7 @@ fi
 echo 'ASSERT: pass  the mem command re-walk is line-for-line identical to the boot-time dump'
 
 # 5e. The framebuffer.
-if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
+ck; if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
   echo "--- VGA text buffer as read from guest memory ---" >&2
   cat -n "$SCREEN_TEXT" >&2
   echo "--- expected ---" >&2
@@ -494,8 +500,8 @@ fi
 echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen.txt exactly"
 
 # 5f. The screenshot.
-[[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
-case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
+ck; [[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
+ck; case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
   89504e470d0a1a0a) ;;
   *) fail "$SHOT_PNG is not a PNG (QEMU's screendump format argument may be unsupported on this build)" ;;
 esac
@@ -514,18 +520,22 @@ echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -
 NEG_KEYS="e,c,h,o,spc,n,o,p,e,ret"
 drive_session "$WORKDIR/negative" "$NEG_KEYS" "$WORKDIR/negative/shot.png" "negative-control" 1
 
-if cmp -s "$WORKDIR/negative/serial.txt" "$EXPECTED_SERIAL"; then
+ck; if cmp -s "$WORKDIR/negative/serial.txt" "$EXPECTED_SERIAL"; then
   fail "NEGATIVE CONTROL FAILED: a different key sequence produced the same serial capture. The serial golden is not actually sensitive to what was typed."
 fi
-if cmp -s "$WORKDIR/negative/screen.txt" "$EXPECTED_SCREEN"; then
+ck; if cmp -s "$WORKDIR/negative/screen.txt" "$EXPECTED_SCREEN"; then
   fail "NEGATIVE CONTROL FAILED: a different key sequence produced the same framebuffer. The screen golden is not actually sensitive to what was typed."
 fi
 NEG_DIVERGE=$(cmp "$WORKDIR/negative/serial.txt" "$EXPECTED_SERIAL" 2>&1 | grep -oE 'byte [0-9]+' | grep -oE '[0-9]+' | head -1)
 [[ -n "$NEG_DIVERGE" ]] || NEG_DIVERGE=$(( M1_BYTES + 1 ))
-if [[ "$NEG_DIVERGE" -le "$M1_BYTES" ]]; then
+ck; if [[ "$NEG_DIVERGE" -le "$M1_BYTES" ]]; then
   fail "NEGATIVE CONTROL FAILED: the divergence starts at byte $NEG_DIVERGE, which is inside M1's ${M1_BYTES}-byte golden — the goldens are failing for a reason unrelated to what was typed."
 fi
 echo "ASSERT: pass  negative control — a different key sequence fails BOTH goldens, serial diverging at byte $NEG_DIVERGE (M1's golden is $M1_BYTES bytes, so the divergence is entirely in the shell session)"
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M3-shell: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S) -> link -> 5 structural checks -> verify-freestanding pass ($EXTERN_COUNT declared externs) -> a real QEMU boot (-m 128M) driving a real shell session over QMP: ${SERIAL_BYTES}-byte serial match with M1's golden intact as a prefix, an uneraseable prompt, arrow keys emitting nothing, a memory-map re-walk identical to the boot dump, an exact 80x25 framebuffer match read from guest memory, a PNG at $SHOT_PNG, and a negative control that fails both goldens"
 exit 0

@@ -26,26 +26,40 @@ setup_error() {
   exit 2
 }
 
-if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=9
+
+
+ck; if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
   setup_error "qemu-system-x86_64 not found on PATH, see docs/known-gaps.md"
 fi
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m0-boot.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m0-boot.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Step 1 — build the kernel (dcc build + assemble boot.S + link)
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-if [[ $BUILD_STATUS -ne 0 ]]; then
+ck; if [[ $BUILD_STATUS -ne 0 ]]; then
   fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 fi
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — verify-freestanding.sh against the linked kernel. kmain.o alone
@@ -54,16 +68,15 @@ KERNEL_ELF="$CORE_DIR/build/kernel.elf"
 # symbol either (boot.S's own symbols, plus kmain.o's, resolved against
 # each other with nothing left dangling).
 # ---------------------------------------------------------------------------
-if ! command -v llvm-nm >/dev/null 2>&1; then
+ck; if ! command -v llvm-nm >/dev/null 2>&1; then
   fail "llvm-nm not found on PATH, see docs/known-gaps.md"
 fi
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
 
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || ! grep -q "FREESTANDING: pass" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || ! grep -q "FREESTANDING: pass" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass for $KERNEL_ELF"
 fi
 
@@ -80,17 +93,11 @@ fi
 SERIAL_CAPTURE="$WORKDIR/serial.txt"
 : >"$SERIAL_CAPTURE"
 
-timeout 5 qemu-system-x86_64 \
-  -kernel "$KERNEL_ELF" \
-  -serial "file:$SERIAL_CAPTURE" \
-  -display none \
-  -no-reboot \
-  >"$WORKDIR/qemu.log" 2>&1
-QEMU_STATUS=$?
+capture_log "$WORKDIR/qemu.log" QEMU_STATUS -- timeout 5 qemu-system-x86_64 -kernel "$KERNEL_ELF" -serial "file:$SERIAL_CAPTURE" -display none -no-reboot
 # 124 = timeout had to kill it (expected: the hlt loop never exits on its
 # own). Any OTHER nonzero status is a real QEMU-level failure (e.g. it
 # refused to even start) worth surfacing.
-if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
+ck; if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
   cat "$WORKDIR/qemu.log" >&2
   fail "qemu-system-x86_64 exited $QEMU_STATUS unexpectedly (log above)"
 fi
@@ -122,7 +129,7 @@ EXPECTED_BYTES=$(wc -c <"$EXPECTED" | tr -d ' ')
 FIRST_LINE="$WORKDIR/first_line.txt"
 head -c "$EXPECTED_BYTES" "$SERIAL_CAPTURE" >"$FIRST_LINE"
 
-if ! cmp -s "$FIRST_LINE" "$EXPECTED"; then
+ck; if ! cmp -s "$FIRST_LINE" "$EXPECTED"; then
   echo "--- captured serial output, first $EXPECTED_BYTES bytes (hex) ---" >&2
   xxd "$FIRST_LINE" >&2 2>/dev/null || od -An -tx1 "$FIRST_LINE" >&2
   echo "--- expected (hex) ---" >&2
@@ -132,5 +139,9 @@ if ! cmp -s "$FIRST_LINE" "$EXPECTED"; then
   fail "the first $EXPECTED_BYTES captured serial bytes did not exactly match the expected proof-of-life message"
 fi
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M0-boot: PASS — dcc build -> assemble -> link -> verify-freestanding pass -> real QEMU boot -> exact serial byte match ('OSCORTEX M0 OK')"
 exit 0

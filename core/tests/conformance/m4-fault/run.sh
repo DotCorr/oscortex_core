@@ -80,36 +80,50 @@ setup_error() {
   exit 2
 }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=86
+
+
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
 EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
-[[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
-[[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m4-fault reuses m2-console's)"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL"
+ck; [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
+ck; [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m4-fault reuses m2-console's)"
 
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
-[[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m4.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m4.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Step 1 — build.
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — structural checks (CLAUDE.md: anything checkable without booting
@@ -188,14 +202,14 @@ bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
 bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -ge 392 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, which is less than the 392 M4 itself needs — something M4 owned has been deleted"
+ck; [[ "$KDATA_BSS" -ge 392 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, which is less than the 392 M4 itself needs — something M4 owned has been deleted"
 # M17 SPLIT M4's THREE WORDS, and the split is the point. `faultCountWord` is
 # ordinary kernel state and became a DCDart `@bss`; `shell_resume_rsp` and
 # `shell_resume_ok` are written by `shell_run_forever` and read by
@@ -204,9 +218,9 @@ KDATA_BSS=$(( DART_BSS + ASM_BSS ))
 # `bsssize` finds each in whichever object now defines it.
 for sym in faultCountWord shell_resume_rsp shell_resume_ok; do
   SZ=$(bsssize "$sym")
-  [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — a word M4's fault recovery depends on"
+  ck; [[ "$SZ" == "8" ]] || fail "$sym is ${SZ:-missing} bytes, expected 8 — a word M4's fault recovery depends on"
 done
-x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8=="shell_resume_rsp"' | grep -q . \
+ck; x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8=="shell_resume_rsp"' | grep -q . \
   || fail "shell_resume_rsp is no longer defined in kdata.o — isr.S writes it by name and a DCDart @bss symbol is local, so it cannot live in kmain.o"
 echo "STRUCTURAL: pass  M4's own three words are 8 bytes each (faultCountWord a DCDart @bss, the two resume words still assembly-owned) and the kernel's mutable static storage is $KDATA_BSS ($DART_BSS + $ASM_BSS; the exact total is owned by m5-pci/run.sh as of M5)"
 
@@ -216,7 +230,7 @@ echo "STRUCTURAL: pass  M4's own three words are 8 bytes each (faultCountWord a 
 # by fixed offset, so a block shorter than 64 would have `cpu_probe` writing
 # past the end of its own object and over whatever kdata.S put next.
 CPU_INFO_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$8=="cpu_info" {print $3; exit}')  # still kdata.o: isr.S's cpu_probe writes it by name
-[[ "$CPU_INFO_SIZE" == "64" ]] || fail "kdata.o's cpu_info is ${CPU_INFO_SIZE:-missing} bytes, expected 64 (12-byte vendor at +0, 48-byte brand at +16)"
+ck; [[ "$CPU_INFO_SIZE" == "64" ]] || fail "kdata.o's cpu_info is ${CPU_INFO_SIZE:-missing} bytes, expected 64 (12-byte vendor at +0, 48-byte brand at +16)"
 echo "STRUCTURAL: pass  cpu_info is exactly 64 bytes, the size CPUID's two strings need"
 
 # 2c. `divide_by_zero` MUST REALLY DIVIDE BY ZERO.
@@ -229,12 +243,12 @@ echo "STRUCTURAL: pass  cpu_info is exactly 64 bytes, the size CPUID's two strin
 # diagnostic's ` OP 48F7` a stable golden value instead of a hostage to
 # whichever register an assembler picked.
 DIV_DIS=$(x86_64-elf-objdump -d --disassemble=divide_by_zero "$CORE_DIR/build/isr.o")
-if ! grep -qE '48 f7 f1' <<<"$DIV_DIS"; then
+ck; if ! grep -qE '48 f7 f1' <<<"$DIV_DIS"; then
   echo "$DIV_DIS" >&2
   fail "divide_by_zero does not contain the exact encoding 48 f7 f1 (div %rcx) -- 'crash div' would not raise a #DE, or the OP field's golden value would move"
 fi
 DIV_OPS=$(mnemonics <<<"$DIV_DIS")
-case "$DIV_OPS" in
+ck; case "$DIV_OPS" in
   "xor xor mov div ret"*) ;;
   *)
     echo "$DIV_DIS" >&2
@@ -268,14 +282,14 @@ echo "STRUCTURAL: pass  divide_by_zero is exactly 'xor; xor; mov \$1; div %rcx (
 # switch, in that order, so neither the guard nor the switch can move.
 FR_DIS=$(x86_64-elf-objdump -d --disassemble=fault_resume "$CORE_DIR/build/isr.o")
 FR_OPS=$(mnemonics <<<"$FR_DIS")
-case "$FR_OPS" in
+ck; case "$FR_OPS" in
   "cli cmpq jne mov mov mov mov mov mov mov and call call jmp"*) ;;
   *)
     echo "$FR_DIS" >&2
     fail "fault_resume is not 'cli; cmpq; jne; 6x mov->segment; mov->rsp; and; call; call; jmp' (got: $FR_OPS) — the stack switch, its guard, or the interrupt disable around it has moved"
     ;;
 esac
-if ! grep -qE 'mov +0x[0-9a-f]*\(%rip\),%rsp' <<<"$FR_DIS"; then
+ck; if ! grep -qE 'mov +0x[0-9a-f]*\(%rip\),%rsp' <<<"$FR_DIS"; then
   echo "$FR_DIS" >&2
   fail "fault_resume's mov does not load %rsp from memory — it is not restoring the recorded resume point"
 fi
@@ -288,11 +302,11 @@ echo "STRUCTURAL: pass  fault_resume is 'cli; guard; restore the kernel's six se
 # the kernel would stop instead of recovering — with a passing diagnostic. That
 # failure would look almost exactly like success in a serial log.
 SRF_DIS=$(x86_64-elf-objdump -d --disassemble=shell_run_forever "$CORE_DIR/build/isr.o")
-grep -qE 'mov +%rsp,0x[0-9a-f]*\(%rip\)' <<<"$SRF_DIS" || {
+ck; grep -qE 'mov +%rsp,0x[0-9a-f]*\(%rip\)' <<<"$SRF_DIS" || {
   echo "$SRF_DIS" >&2
   fail "shell_run_forever does not store %rsp — there would be no resume point for fault_resume to restore"
 }
-grep -qE 'movq +\$0x1,' <<<"$SRF_DIS" || {
+ck; grep -qE 'movq +\$0x1,' <<<"$SRF_DIS" || {
   echo "$SRF_DIS" >&2
   fail "shell_run_forever does not set the resume-point guard to 1 — fault_resume would refuse to recover and halt instead"
 }
@@ -306,7 +320,7 @@ echo "STRUCTURAL: pass  shell_run_forever records %rsp and arms the resume-point
 # the extended leaves would otherwise have 48 bytes of uninitialised .bss
 # printed to a screen as its name.
 CPUID_COUNT=$(x86_64-elf-objdump -d --disassemble=cpu_probe "$CORE_DIR/build/isr.o" | grep -c 'cpuid')
-if [[ "$CPUID_COUNT" -ne 5 ]]; then
+ck; if [[ "$CPUID_COUNT" -ne 5 ]]; then
   fail "cpu_probe contains $CPUID_COUNT cpuid instruction(s), expected 5 (leaf 0, leaf 0x80000000, and the three brand leaves)"
 fi
 echo "STRUCTURAL: pass  cpu_probe issues exactly 5 real cpuid instructions"
@@ -320,11 +334,11 @@ echo "STRUCTURAL: pass  cpu_probe issues exactly 5 real cpuid instructions"
 # only through a conditional branch is what makes it real — the same property
 # m1-interrupts asserts about kmain's own deliberate overflow.
 UD_DIS=$(x86_64-elf-objdump -d --disassemble=shellCrashUd "$CORE_DIR/build/kmain.o")
-grep -q 'ud2' <<<"$UD_DIS" || {
+ck; grep -q 'ud2' <<<"$UD_DIS" || {
   echo "$UD_DIS" >&2
   fail "shellCrashUd contains no ud2 -- DCDart's overflow trap was optimized away and 'crash ud' would not fault"
 }
-grep -qE '\bj(ne|e|a|b|ae|be)\b' <<<"$UD_DIS" || {
+ck; grep -qE '\bj(ne|e|a|b|ae|be)\b' <<<"$UD_DIS" || {
   echo "$UD_DIS" >&2
   fail "shellCrashUd's ud2 is not reached through a conditional branch — the overflow was constant-folded, so the trap proves nothing about runtime arithmetic"
 }
@@ -341,8 +355,8 @@ check_table() {
   local sym="$1" want="$2"
   local got
   got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M4 depends on was not emitted"
-  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
+  ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M4 depends on was not emitted"
+  ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
 check_table shellStrHelp 2224  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table shellCmdCpu 3
@@ -379,12 +393,10 @@ echo "STRUCTURAL: pass  all 18 M4 @rodata tables are exactly the sizes their cal
 # boot.o and isr.o fail, and this is the check that keeps it true.
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
-  "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
@@ -447,7 +459,7 @@ drive_session() {
   # previous boot still in TIME_WAIT. All three used to surface as QEMU
   # dying with "Address already in use".
   local port
-  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
+  ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   # -cpu qemu64 is PINNED: the `CPU VENDOR`/`CPU BRAND`/`CPU LEAF` lines report
   # what CPUID says, so the golden is only meaningful against a fixed CPU
   # model. Same reasoning as -m 128M for the memory map. It is also the TCG
@@ -462,23 +474,17 @@ drive_session() {
     -qmp "tcp:127.0.0.1:$port,server,nowait" \
     >"$outdir/qemu.log" 2>&1 &
   local qemu_pid=$!
-  python3 "$DRIVER" \
-    --port "$port" \
-    --serial "$ser" \
-    --wait-for 'M1 END\n' \
-    --png "$png" \
-    --screen-text "$outdir/screen.txt" \
-    --keys "$keys"
-  local drive_status=$?
-  wait "$qemu_pid" 2>/dev/null
-  local qemu_status=$?
-  if [[ $drive_status -ne 0 ]]; then
+  local drive_status
+  run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys"
+  local qemu_status
+  await qemu_status "$qemu_pid"
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
     fail "qmp-drive.py exited $drive_status for the $label boot. This is a FAILURE, not a skip: if the kernel stopped recovering, it would hang here rather than print wrong bytes."
   fi
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -499,14 +505,14 @@ SCREEN_TEXT="$WORKDIR/session/screen.txt"
 # reported with the same bytes and still walks into the console.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
-if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+ck; if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
   cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
   fail "the first $M1_BYTES bytes of this boot do not match m1-interrupts/expected.txt — fault recovery changed M0/M1 serial output"
 fi
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
 
 # 5b. The whole serial capture.
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
+ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
   echo "--- captured serial ---" >&2
   cat -v "$SERIAL_CAPTURE" >&2
   echo "--- expected ---" >&2
@@ -532,7 +538,7 @@ echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byt
 #     after the stack it would have run on was thrown away;
 #   * after the SECOND fault, `ticks` prints ` LIVE`, which is only reachable
 #     through a loop that exits when a timer interrupt has been delivered.
-if ! python3 - "$SERIAL_CAPTURE" <<'PY'
+ck; if ! python3 - "$SERIAL_CAPTURE" <<'PY'
 import sys
 d = open(sys.argv[1], "rb").read()
 fails = []
@@ -610,7 +616,7 @@ for b in blocks:
     print(b)
 PY
 DUMP_COUNT=$(head -1 "$WORKDIR/dumps.txt")
-[[ "$DUMP_COUNT" == "2" ]] || fail "expected exactly 2 'MB FLAGS ... MB END' blocks in the capture (one at boot, one from the mem command), found $DUMP_COUNT"
+ck; [[ "$DUMP_COUNT" == "2" ]] || fail "expected exactly 2 'MB FLAGS ... MB END' blocks in the capture (one at boot, one from the mem command), found $DUMP_COUNT"
 awk '/^----$/{n++; next} n==1' "$WORKDIR/dumps.txt" >"$WORKDIR/dump-boot.txt"
 awk '/^----$/{n++; next} n==2' "$WORKDIR/dumps.txt" >"$WORKDIR/dump-shell.txt"
 if ! cmp -s "$WORKDIR/dump-boot.txt" "$WORKDIR/dump-shell.txt"; then
@@ -620,7 +626,7 @@ fi
 echo 'ASSERT: pass  the mem re-walk after two faults is line-for-line identical to the boot-time dump'
 
 # 5e. The framebuffer, read from guest physical memory.
-if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
+ck; if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
   echo "--- VGA text buffer as read from guest memory ---" >&2
   cat -n "$SCREEN_TEXT" >&2
   echo "--- expected ---" >&2
@@ -631,8 +637,8 @@ fi
 echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen.txt exactly"
 
 # 5f. The screenshot.
-[[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
-case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
+ck; [[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
+ck; case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
   89504e470d0a1a0a) ;;
   *) fail "$SHOT_PNG is not a PNG (QEMU's screendump format argument may be unsupported on this build)" ;;
 esac
@@ -653,22 +659,26 @@ echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -
 NEG_KEYS="c,r,a,s,h,spc,d,i,v,ret,c,p,u,ret"
 drive_session "$WORKDIR/negative" "$NEG_KEYS" "$WORKDIR/negative/shot.png" "negative-control" 1
 
-if cmp -s "$WORKDIR/negative/serial.txt" "$EXPECTED_SERIAL"; then
+ck; if cmp -s "$WORKDIR/negative/serial.txt" "$EXPECTED_SERIAL"; then
   fail "NEGATIVE CONTROL FAILED: a different key sequence produced the same serial capture. The serial golden is not actually sensitive to what was typed."
 fi
-if cmp -s "$WORKDIR/negative/screen.txt" "$EXPECTED_SCREEN"; then
+ck; if cmp -s "$WORKDIR/negative/screen.txt" "$EXPECTED_SCREEN"; then
   fail "NEGATIVE CONTROL FAILED: a different key sequence produced the same framebuffer. The screen golden is not actually sensitive to what was typed."
 fi
 # It must still have recovered — a control that fails by crashing would prove
 # nothing about the goldens.
-grep -q "FAULT RECOVERED 0001" "$WORKDIR/negative/serial.txt" || \
+ck; grep -q "FAULT RECOVERED 0001" "$WORKDIR/negative/serial.txt" || \
   fail "NEGATIVE CONTROL FAILED: the control boot did not recover from its own fault, so its divergence says nothing about the goldens"
 NEG_DIVERGE=$(cmp "$WORKDIR/negative/serial.txt" "$EXPECTED_SERIAL" 2>&1 | grep -oE 'byte [0-9]+' | grep -oE '[0-9]+' | head -1)
 [[ -n "$NEG_DIVERGE" ]] || NEG_DIVERGE=$(( M1_BYTES + 1 ))
-if [[ "$NEG_DIVERGE" -le "$M1_BYTES" ]]; then
+ck; if [[ "$NEG_DIVERGE" -le "$M1_BYTES" ]]; then
   fail "NEGATIVE CONTROL FAILED: the divergence starts at byte $NEG_DIVERGE, which is inside M1's ${M1_BYTES}-byte golden — the goldens are failing for a reason unrelated to what was typed."
 fi
 echo "ASSERT: pass  negative control — a different key sequence (which also faults, and also recovers) fails BOTH goldens, serial diverging at byte $NEG_DIVERGE (M1's golden is $M1_BYTES bytes, so the divergence is entirely in the shell session)"
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M4-fault: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S) -> link -> 8 structural checks -> verify-freestanding pass ($EXTERN_COUNT declared externs) -> a real QEMU boot (-m 128M -cpu qemu64) driving a real session over QMP: ${SERIAL_BYTES}-byte serial match with M1's golden intact as a prefix, a #UD and a #DE both diagnosed from the pushed RIP and both recovered from, three recoveries counted, commands running after every one of them, a memory-map re-walk identical to the boot dump, CPUID vendor and brand read out of the hardware, an exact 80x25 framebuffer match read from guest memory, a PNG at $SHOT_PNG, and a negative control that fails both goldens"
 exit 0

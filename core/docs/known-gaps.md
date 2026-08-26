@@ -5737,6 +5737,26 @@ byte-identical old-vs-new differential across all five objects and `kernel.elf`.
 per-harness work list is at the bottom of this entry, and ADR-0030 argues that `set -e` is the wrong
 mechanism for this suite in any case. Superseding work is GAP-0168.
 
+**UPDATE 2026-08-26 (ADR-0032, GAP-0168's implementation). Two things changed here, and one of them
+is a correction to this entry's own numbers.**
+
+1. **The class-A total in the table below is wrong: it is 86, not 135.** The classifier counted BOTH
+   lines of the two-line idiom for some sites — `m0-boot` is listed as `A: 39, 40, 63, 83`, where 39
+   and 40 are the command and its `$?` while 63 and 83 are single lines of the identical two-line
+   shape. Three independent counts agree on 86: `grep -cE '^[[:space:]]*(local[[:space:]]+)?[A-Za-z_]
+   [A-Za-z0-9_]*=\$\?[[:space:]]*$'` over the suite, `grep -c '\$?'` (89 = 86 assignments + 3 direct
+   reads), and the number of helper calls after conversion. The **conclusion** the survey drew from
+   the number — class A is universal, 20/20, minimum four per harness — is unaffected and was
+   re-confirmed. Only the total was wrong, and it was quoted as the COST of the conversion in
+   ADR-0030 §3.3 and GAP-0168, which is how a 57%-too-high number gets work deferred.
+2. **All 86 are converted** (plus two more that read `$?` on the following line: 88 in total), to the
+   `capture` / `capture_log` / `capture_sh` / `run_status` / `await` helpers in
+   `core/tests/conformance/_lib/harness.sh`. **`set -e`'s prerequisite is therefore met**: every
+   wrapped command runs inside an `if` condition, where `set -e` is suppressed, so the helpers are
+   already safe under it. Whether to adopt `set -e` at all is still ADR-0030's "no", and classes C
+   and G below are still the reason. This entry stays OPEN for that question alone; it is no longer
+   blocked on class A.
+
 `declare -A` (bash 4+) appeared in `m13-libc:248`, `m8-paging:174` and `m9-ring3:158`. Under
 `/bin/bash` 3.2 the declaration fails and the subsequent `SYM[__kernel_start]=...` becomes an
 **indexed** assignment whose subscript is evaluated as **arithmetic**, so the harness aborts at exit
@@ -5810,7 +5830,11 @@ where the *good* case is grep returning 1.
 | `m18-preempt` | 6 | 1 | 1 | A: 103, 104, 285, 322, 323, 332 · C: 96 · G: 228 |
 | `m19-argv` | 7 | 3 | 1 | A: 112, 303, 329, 330, 398, 399, 408 · C: 119, 515, 520 · G: 311 |
 | `mb-info` | 4 | 1 | 0 | A: 63, 64, 93, 123 · C: 149 |
-| **totals** | **135** | **86** | **90** | **311 sites, 20/20 harnesses blocked, 0 convertible** |
+| **totals** | **~~135~~ 86** | **86** | **90** | **~~311~~ 262 sites, 20/20 harnesses blocked, 0 convertible** |
+
+*(The class-A column is per-LINE, not per-site — see the UPDATE at the top of this entry. The line
+numbers are still correct as pointers; there are just 86 distinct sites among them, and all 86 are
+now converted, so the column is a historical record rather than a work list.)*
 
 *(Line numbers are as of this commit — i.e. **after** GAP-0167's `Step 3b` was added to `m19-argv`.)*
 
@@ -5863,6 +5887,36 @@ This is a **second, distinct flake** from the known `m12-heap` one and had not b
 The likely fix is for the harness to mask RF (and any other CPU-managed bit not under test) before
 comparing, rather than pinning the whole word — M9's claim is about CPL, CS and SS, not about RF. Not
 done here: it changes what an existing golden asserts, which wants its own unit.
+
+**UPDATE 2026-08-26 (GAP-0168's unit): the `m12-heap` flake is THIS flake, not a separate one, and
+here is the measurement rather than the assertion.** `m12-heap` failed three times during that unit,
+every time on a line of exactly this shape:
+
+```
+< USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000246 CPL 3
+> USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000010246 CPL 3
+```
+
+Same bit 16, same `expected.txt`-pins-the-whole-word cause, different harness — and note the polarity
+is the reverse of M9's: here the golden has RF **set** and the flaky run has it clear, so whichever
+way the bit lands, a golden that pins the whole word is a coin toss.
+
+**Attribution, because a flake appearing during a unit that touched all twenty harnesses needs one.**
+`m12-heap` was run from the instrumented harness and from the **unmodified HEAD harness**, alternating,
+on the same loaded machine:
+
+| | runs | passed | failed, this exact diff |
+|---|---:|---:|---:|
+| HEAD, untouched by that unit | 4 | 3 | **1** |
+| instrumented (`ck` + `capture`) | 6 | 4 | 2 |
+
+**The unmodified harness reproduces it**, so the flake is not the instrumentation's. It correlates
+with machine load — all three instrumented failures were inside a full sweep with four or five other
+QEMUs running, and every standalone run passed — which fits an RF that depends on where a fault lands
+relative to the keystroke injection. Not diagnosed further, and still not fixed: the fix is the same
+one this entry already proposes (mask the CPU-managed bits before comparing) and it now has two
+harnesses' goldens to move rather than one.
+
 
 ---
 
@@ -6280,7 +6334,10 @@ the extern count the new check pins is the value those harnesses were already as
 ## GAP-0168 — the conformance suite has no mechanism that a PASS line only prints if its assertions ran
 
 **Domain:** tooling, conformance harnesses (opened by ADR-0030, successor to GAP-0156)
-**Status:** OPEN — surveyed and designed, deliberately NOT implemented in the commit that opened it.
+**Status:** **CLOSED 2026-08-26 by ADR-0032.** Both mechanisms are built and both are shown failing
+on the inputs they exist to reject. What is left over is GAP-0176 (nothing runs the controls
+automatically) — see "What landed" at the end of this entry. The design discussion below is kept as
+written, because ADR-0032 corrects three parts of it and a correction needs its original.
 
 GAP-0156 asked for `set -e`. ADR-0030 surveyed all twenty harnesses, found **0 of 20** convertible
 (134 capture-then-`$?` sites, 86 bare predicates, 89 `grep -q ... && fail`), and concluded that `set
@@ -6313,6 +6370,56 @@ GAP-0167's fix and the executable-bit change.
 **Ordering note for whoever takes it.** Do (2) first and independently — it is mechanical, it is
 verifiable one harness at a time, and it strictly improves diagnostics whether or not (1) ever lands.
 (1) needs a decision about where N comes from before any code is written.
+
+---
+
+### What landed (2026-08-26, ADR-0032)
+
+`core/tests/conformance/_lib/harness.sh` — sourced by all twenty harnesses, bash-3.2 clean.
+
+| | |
+|---|---|
+| `ck` sites inserted | **1191**, across 20/20 harnesses |
+| checks actually executed, whole suite | **2783** — the counts are emergent, not static: `m5-pci` has 74 `ck` sites in its text and runs **133** checks |
+| pinned floors | 9 (`m0-boot`) … 268 (`m16-filewrite`) |
+| capture-then-`$?` sites converted | **88** — 17 `capture`, 17 `capture_log`, 20 `capture_sh`, 17 `run_status`, 17 `await` |
+| `$?` reads remaining | **1** (`m5-pci`, a heredoc-fed `python3`; ADR-0032 §6) |
+
+**Three corrections to the design above, all in ADR-0032:**
+
+1. **There are 86 class-A sites, not 134/135.** See the UPDATE at the top of GAP-0156.
+2. **One `capture()` was not enough.** 15 of the 86 subjects are compound commands (`cd X && bash y`)
+   or carry an assignment prefix (`OSCORTEX_ALLOWLIST=… bash …`), neither of which survives being
+   passed as argv words. A single mechanical `capture` would have run only the `cd` under capture, or
+   tried to exec a program named `OSCORTEX_ALLOWLIST=/path` — i.e. it would have turned
+   `verify-freestanding.sh` into a check that never ran, **reintroducing GAP-0167 as the fix for it**.
+   Five helpers, split so the eval path is a different word at the call site.
+3. **The instrumenter's first version manufactured the very defect this gap is about.** `ck` is a
+   command, so it sets `$?`; prefixing it to `if [[ $? -ne 0 ]]` made three real checks read `ck`'s
+   status instead of the command's — checks that could never fail, still passing, count still rising.
+   Caught by reading the generated diff, not by any test. The rule is now mechanical (the counter
+   never goes between a command and a read of `$?`) and ADR-0032 §4.2 records it rather than tidying
+   it away, because it is the sharpest available demonstration that a green run says nothing about
+   whether the check under it is real.
+
+**Observed behaviour of the controls** (`_lib/controls/run.sh`, 14 controls, ~1s, both interpreters —
+`bash` 5.3.15 and `/bin/bash` 3.2.57 — all as specified), plus three run against the REAL `m0-boot`:
+
+| Control | Observed |
+|---|---|
+| assertions deliberately skipped (a `for` over an empty list; no command fails) | `exit 1`, `only 2 of the 6 declared checks executed` |
+| floor exceeds what ran | `exit 1`, `only 3 of the 99 declared checks executed` |
+| a `capture`d command fails, `set -e` ON | `exit 1`, `the build exited 42: the compiler said no` — status named, stderr kept |
+| the same fixture with the OLD `OUT=$(cmd); STATUS=$?`, `set -e` ON | `exit 42`, **0 bytes of output**, no FAIL line — the contrast that makes the row above mean something |
+| zero floor / non-numeric floor / sourcing before `fail()` is defined | refused: `exit 1`, `1`, `2` |
+| **real `m0-boot`, floor 9 → 99** | `exit 1`, `only 9 of the 99 declared checks executed` |
+| **real `m0-boot`, Step 2's freestanding block wrapped in `if false`** | `exit 1`, `only 6 of the 9 declared checks executed` — this is GAP-0167's exact defect (the PASS line says `verify-freestanding pass` while the check does not run), caught |
+| **real `m0-boot`, unmodified** | `exit 0`, `ASSERTIONS: pass  9 checks executed, declared floor 9` |
+
+**What is left over:** GAP-0176 — nothing runs the controls automatically, so the guard on twenty
+harnesses is itself unguarded.
+
+---
 
 ---
 
@@ -6559,3 +6666,46 @@ kernel default nobody chose.
 **Nobody should open a DCDart escalation for this.** It is a build-time table generator in this repo —
 the same category as `derive.py` and `check-font.py` — and CLAUDE.md rule 3 applies in the negative.
 The DCDart-side question that *is* real is escalation 0004 §6's own, and GAP-0166 records it.
+
+---
+
+## GAP-0176 — nothing runs the harness-library controls, or ADR-0028's freestanding controls, automatically
+
+**Domain:** tooling, conformance harnesses (ADR-0032, sibling of the same complaint in GAP-0155)
+**Status:** OPEN — newly opened by the unit that built the controls, because the controls are exactly
+the kind of thing that rots unrun.
+
+`core/tests/conformance/_lib/controls/run.sh` proves that the assertion-count floor and the
+`capture()` family actually bite: 14 controls, ~1 second, no QEMU, no kernel build. ADR-0028's three
+freestanding controls prove the same thing about `verify-freestanding.sh` under `/bin/bash` 3.2.
+**Neither set is invoked by anything.** No sweep runs them, no harness sources them, and the twenty
+milestone harnesses will stay green if `require_assertions` is edited into a no-op tomorrow.
+
+This is the identical shape to the note already at the bottom of GAP-0155 — *"Nothing enforces the
+bash-3.2 rule. The three rules are documented in the script's header ... but no check fails if someone
+reintroduces `mapfile`"* — and it deserves the same standing rather than being folded in, because it
+is now about two independent control sets and about the mechanism that guards every other harness.
+
+**What would close it.** A `core/tests/conformance/run-all.sh` (which this repo does not have — every
+sweep so far has been an ad-hoc shell loop typed by an agent) whose FIRST step is:
+
+```sh
+/bin/bash core/tests/conformance/_lib/controls/run.sh   || exit 1   # 3.2.57, deliberately
+bash      core/tests/conformance/_lib/controls/run.sh   || exit 1   # brew's 5.x
+```
+
+Both interpreters, explicitly, for ADR-0028's reason: `env bash` finds brew's bash 5 and proves
+nothing about the bash macOS actually ships. Roughly two seconds on the front of a 28-minute sweep.
+
+**The cost of leaving it open, stated plainly.** The guard on twenty harnesses is itself unguarded.
+Someone can weaken `_lib/harness.sh` — lower a floor, make `ck` a no-op, make `capture` swallow a
+status — and every one of the twenty will still print PASS, which is precisely the defect family
+GAP-0168 was opened to end. The controls exist and are known-good as of this commit (all 14 observed
+passing under both interpreters); what is missing is anything that will notice when they stop being.
+
+**Why it was not closed in the same unit.** Writing `run-all.sh` means deciding the sweep's contract —
+ordering, `--regen`, whether a setup_error (exit 2) is a failure, what to do about `m12-heap`'s
+flakiness (GAP-0161) and `m9-ring3`'s (GAP-0157) — and that is a separate decision from "does the
+guard work", which is what this unit was asked to establish. Doing it here would have meant
+inheriting those choices silently, which is the thing ADR-0030 §4 explicitly warned the next author
+about.

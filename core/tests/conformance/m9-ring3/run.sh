@@ -94,8 +94,23 @@ setup_error() {
   exit 2
 }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=221
+
+
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
@@ -103,14 +118,14 @@ EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 DERIVE="$SCRIPT_DIR/derive.py"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$DERIVE" ]] || setup_error "privilege-state decoder not found at $DERIVE"
-[[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m9-ring3 reuses m2-console's)"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$DERIVE" ]] || setup_error "privilege-state decoder not found at $DERIVE"
+ck; [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m9-ring3 reuses m2-console's)"
 
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
-[[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m9.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m9.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # `--regen` writes the two goldens from this run instead of asserting them. It is
@@ -125,13 +140,12 @@ hexnum() { python3 -c "import sys; print(int(sys.argv[1], 16))" "$1"; }
 # Step 1 — build.
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — structural checks (CLAUDE.md: anything checkable without booting
@@ -168,12 +182,12 @@ for pair in "SEL_UCODE userCodeSel" "SEL_UDATA userDataSel" "SEL_TSS userTssSel"
   set -- $pair
   A=$(python3 -c "print(eval('$(sel_from_asm "$1")'))")
   D=$(hexnum "$(sel_from_dart "$2" | sed 's/^0x//')")
-  [[ -n "$A" && -n "$D" ]] || fail "could not read $1 out of boot.S or $2 out of user.dart"
-  [[ "$A" -eq "$D" ]] || fail "boot.S's $1 is $A but user.dart's $2 is $D — the GDT and the code that loads it disagree about which descriptor is which"
+  ck; [[ -n "$A" && -n "$D" ]] || fail "could not read $1 out of boot.S or $2 out of user.dart"
+  ck; [[ "$A" -eq "$D" ]] || fail "boot.S's $1 is $A but user.dart's $2 is $D — the GDT and the code that loads it disagree about which descriptor is which"
   eval "SEL_$2=\$D"
 done
-[[ "$(sel userCodeSel)" -eq $(( 0x20 | 3 )) ]] || fail "the user code selector is $(sel userCodeSel), expected 0x23 (GDT entry 4 with RPL 3)"
-[[ "$(sel userDataSel)" -eq $(( 0x18 | 3 )) ]] || fail "the user data selector is $(sel userDataSel), expected 0x1B"
+ck; [[ "$(sel userCodeSel)" -eq $(( 0x20 | 3 )) ]] || fail "the user code selector is $(sel userCodeSel), expected 0x23 (GDT entry 4 with RPL 3)"
+ck; [[ "$(sel userDataSel)" -eq $(( 0x18 | 3 )) ]] || fail "the user data selector is $(sel userDataSel), expected 0x1B"
 echo "STRUCTURAL: pass  boot.S's SEL_UCODE/SEL_UDATA/SEL_TSS and user.dart's userCodeSel/userDataSel/userTssSel are the same three numbers (0x23, 0x1B, 0x28)"
 
 # 2b. THE ACCESSED BIT IS PRE-SET ON ALL FOUR SEGMENT DESCRIPTORS, AND `ltr` IS
@@ -187,11 +201,11 @@ echo "STRUCTURAL: pass  boot.S's SEL_UCODE/SEL_UDATA/SEL_TSS and user.dart's use
 # unnecessary" and "do it before the address space exists", NOT "make the GDT
 # writable", and this check is what stops the second one being reintroduced.
 for d in gdt64_code gdt64_data gdt64_user_data gdt64_user_code; do
-  grep -A1 "^$d:" "$CORE_DIR/boot/boot.S" | grep -q '(1<<40)' \
+  ck; grep -A1 "^$d:" "$CORE_DIR/boot/boot.S" | grep -q '(1<<40)' \
     || fail "$d in core/boot/boot.S no longer pre-sets bit 40 (the ACCESSED bit). The CPU will try to set it itself on the first segment load, which is a write into .rodata and a #PF — see boot.S's note beside the GDT."
 done
-grep -qE '^\s*ltr %ax' "$CORE_DIR/boot/boot.S" || fail "core/boot/boot.S no longer loads the task register. Without `ltr` the CPU has no TSS, RSP0 is unreachable, and the first interrupt taken in ring 3 has no stack to be delivered on — a triple fault with no diagnostic."
-grep -qE '^[[:space:]]*ltr ' "$CORE_DIR/boot/isr.S" && fail "core/boot/isr.S executes ltr. It belongs in boot.S, before vm.dart makes the GDT read-only: ltr WRITES the busy bit into the descriptor it loads."
+ck; grep -qE '^\s*ltr %ax' "$CORE_DIR/boot/boot.S" || fail "core/boot/boot.S no longer loads the task register. Without `ltr` the CPU has no TSS, RSP0 is unreachable, and the first interrupt taken in ring 3 has no stack to be delivered on — a triple fault with no diagnostic."
+ck; grep -qE '^[[:space:]]*ltr ' "$CORE_DIR/boot/isr.S" && fail "core/boot/isr.S executes ltr. It belongs in boot.S, before vm.dart makes the GDT read-only: ltr WRITES the busy bit into the descriptor it loads."
 
 echo "STRUCTURAL: pass  all four segment descriptors pre-set the accessed bit, and ltr is in the boot stub where the GDT is still writable"
 
@@ -251,12 +265,12 @@ bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
 bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$DART_BSS
 # M10 (ADR-0014) added a fourth block after M9's: `elf_store` (128 bytes, the
 # ELF loader's whole state, behind ONE accessor called from ONE function). It is
@@ -264,7 +278,7 @@ KDATA_BSS=$DART_BSS
 # harness keeps asserting ITS OWN claim exactly as it did before M10 existed --
 # the same discipline every earlier harness applies to every later block.
 M10_STORE=$(bsssize elfStore)
-[[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
+ck; [[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
 # M11 (ADR-0015) added a fifth block after M10's: `proc_store` (4160 bytes -- an
 # 8-word header, four 512-byte process slots, and four 512-byte FXSAVE areas).
 # Its `.align 16` is a CORRECTNESS requirement and not hygiene (`fxsave` on a
@@ -276,7 +290,25 @@ M10_STORE=$(bsssize elfStore)
 # milestone whose alignment made it necessary, and this harness's own number
 # comes out exactly as it did before M11 existed.
 M11_ELF_OFF_HEX=$(bssoff elfStore)
-[[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+# S0 (ADR-0033) added a block AFTER M19's, and it is now the LAST one in .bss:
+# `ioctlStore`, 512 bytes -- 32 metadata words and the 256-byte `ioctl` bounce
+# buffer, which is the only memory a DRM payload is ever copied through.
+# Subtracted FIRST, before M19's, exactly as M14, M15, M16 and M19 each were in
+# turn, so that every earlier milestone's number continues to mean what it meant
+# when it was written.
+#
+# **ADR-0031 §4.3 rule 5 SAID PUTTING THE BLOCK LAST WOULD LEAVE "every existing
+# harness's 'bytes from my block to the end' arithmetic unchanged". THAT IS NOT
+# QUITE TRUE, AND THIS BLOCK IS THE PROOF.** Last is necessary but not
+# sufficient: the previously-last block's own to-the-end measurement is exactly
+# the one a new block after it changes. M19's number went 256 -> 768 and twelve
+# harnesses said so. ADR-0033 §6.4.
+S0_OFF_HEX=$(bssoff ioctlStore)
+ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
+S0_BSS=$(( KDATA_BSS - 16#$S0_OFF_HEX ))
+ck; [[ "$S0_BSS" -eq 512 ]] || fail "the bytes from S0's ioctlStore to the end of .bss are $S0_BSS, expected 512. If that block changed size, change it in ADR-0033, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - S0_BSS ))
 # M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
 # `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
 # 128 bytes of argument text, which is where a command line is staged before it
@@ -285,18 +317,18 @@ M11_ELF_OFF_HEX=$(bssoff elfStore)
 # it meant when it was written. Exactly the accounting M14, M15 and M16 each got
 # in turn.
 M19_OFF_HEX=$(bssoff argsStore)
-[[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
+ck; [[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
 M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
-[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
 # metadata words, five rows of four file descriptors, and a one-sector bounce
 # buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
 # number continues to mean in 2026 what it meant when it was written.
 M15_OFF_HEX=$(bssoff fileStore)
-[[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
+ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-[[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added a SIXTH block after M11's: `fat_store` (1824 bytes -- 32
 # metadata words, a 256-entry cluster chain, one sector buffer and an 8.3 name
@@ -305,14 +337,14 @@ KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # `.bss` and subtracted out below, so that THIS harness's own number and M11's
 # both come out exactly as they did before M14 existed.
 M14_OFF_HEX=$(bssoff fatStore)
-[[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
+ck; [[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
-[[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
-[[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M10_STORE - M11_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 5368 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 5368 (5224 through M8, plus 128 for the ring-3 state and 16 for the resume words). If you meant to grow it, say so in GAP-0053."
+ck; [[ "$KDATA_BSS" -eq 5368 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 5368 (5224 through M8, plus 128 for the ring-3 state and 16 for the resume words). If you meant to grow it, say so in GAP-0053."
 # M17 (ADR-0021) SPLIT M9's three blocks and the split is the milestone's own
 # claim restated: `userStore` is ordinary kernel state and is now a DCDart @bss
 # in user.dart; the two resume words are written by `enter_user`/`user_return`
@@ -321,9 +353,9 @@ KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))
 for pair in "userStore 128" "user_resume_rsp 8" "user_resume_ok 8"; do
   set -- $pair
   SZ=$(bsssize "$1")
-  [[ "$SZ" == "$2" ]] || fail "$1 is ${SZ:-missing} bytes, expected $2"
+  ck; [[ "$SZ" == "$2" ]] || fail "$1 is ${SZ:-missing} bytes, expected $2"
 done
-x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8=="user_resume_rsp"' | grep -q . \
+ck; x86_64-elf-readelf -sW "$CORE_DIR/build/kdata.o" | awk '$4=="OBJECT" && $8=="user_resume_rsp"' | grep -q . \
   || fail "user_resume_rsp is no longer defined in kdata.o — isr.S writes it by name and a DCDart @bss symbol is local, so it cannot live in kmain.o"
 echo "STRUCTURAL: pass  exactly 5368 bytes of mutable static storage — 5224 inherited, 128 for the ring-3 state as a DCDart @bss, 16 for the assembly-owned resume words"
 
@@ -336,12 +368,12 @@ echo "STRUCTURAL: pass  exactly 5368 bytes of mutable static storage — 5224 in
 # function and nowhere else, and a second call site would be invisible in any
 # test that only looked at behaviour. ADR-0011 §0 is the pattern.
 SEAM_SITES=$(grep -c '^\s*return Bss[.]addressOf(userStore)' "$CORE_DIR/kernel/user.dart")
-[[ "$SEAM_SITES" -eq 1 ]] || fail "Bss.addressOf(userStore) is returned from $SEAM_SITES functions in user.dart, expected exactly 1 (userMetaBase). The storage seam is the whole mutable-statics migration plan — see user.dart's header."
+ck; [[ "$SEAM_SITES" -eq 1 ]] || fail "Bss.addressOf(userStore) is returned from $SEAM_SITES functions in user.dart, expected exactly 1 (userMetaBase). The storage seam is the whole mutable-statics migration plan — see user.dart's header."
 STRAY=$(grep -n 'Bss[.]addressOf(userStore)' "$CORE_DIR/kernel/user.dart" | grep -vE '^\s*[0-9]+:\s*(//|///|\*)' | grep -vE 'final Bss userStore = ' | grep -vc 'return Bss[.]addressOf(userStore)')
-[[ "$STRAY" -eq 0 ]] || fail "user.dart has $STRAY call(s) of Bss.addressOf(userStore) outside userMetaBase"
+ck; [[ "$STRAY" -eq 0 ]] || fail "user.dart has $STRAY call(s) of Bss.addressOf(userStore) outside userMetaBase"
 for f in "$CORE_DIR"/kernel/*.dart; do
   [[ "$(basename "$f")" == "user.dart" ]] && continue
-  grep -qw 'userStore' "$f" && fail "$(basename "$f") references userStore — the ring-3 subsystem's storage seam must not leak out of user.dart"
+  ck; grep -qw 'userStore' "$f" && fail "$(basename "$f") references userStore — the ring-3 subsystem's storage seam must not leak out of user.dart"
 done
 echo "STRUCTURAL: pass  Bss.addressOf(userStore) is called from exactly 1 function, in user.dart's storage seam, and from no other kernel source"
 
@@ -353,7 +385,7 @@ echo "STRUCTURAL: pass  Bss.addressOf(userStore) is called from exactly 1 functi
 # a reordered push list would make the syscall read the wrong register --
 # silently, with the wrong value, for a caller that cannot be trusted. So the
 # push order is read out of isr.S and the offsets are recomputed from it.
-python3 - "$CORE_DIR/boot/isr.S" "$CORE_DIR/kernel/user.dart" <<'PY' || fail "core/kernel/user.dart's saved-register frame offsets no longer match core/boot/isr.S's push order"
+ck; python3 - "$CORE_DIR/boot/isr.S" "$CORE_DIR/kernel/user.dart" <<'PY' || fail "core/kernel/user.dart's saved-register frame offsets no longer match core/boot/isr.S's push order"
 import re, sys
 asm = open(sys.argv[1]).read()
 body = asm.split("isr_common:", 1)[1].split("call isrDispatch", 1)[0]
@@ -394,8 +426,8 @@ echo "STRUCTURAL: pass  user.dart's frame offsets are exactly what isr_common's 
 # `idtInstallAll`; 0xEE is the same gate with DPL 3. The difference is 0x60, and
 # it is the difference between `int 0x80` being a syscall and being a #GP.
 GATE_ATTR=$(awk -F'= *' '/^const int userGateAttr/{gsub(/;.*/,"",$2); print $2; exit}' "$CORE_DIR/kernel/user.dart")
-[[ "$(hexnum "${GATE_ATTR#0x}")" -eq $(( 0x8E | 0x60 )) ]] || fail "userGateAttr is $GATE_ATTR, expected 0xEE (0x8E with DPL 3). Boot B reads the gate out of guest memory, but a wrong constant here should fail before a boot."
-grep -qE '^\s*idtSetUserGate\(\);' "$CORE_DIR/kernel/kmain.dart" || fail "kmain() no longer installs the DPL-3 syscall gate"
+ck; [[ "$(hexnum "${GATE_ATTR#0x}")" -eq $(( 0x8E | 0x60 )) ]] || fail "userGateAttr is $GATE_ATTR, expected 0xEE (0x8E with DPL 3). Boot B reads the gate out of guest memory, but a wrong constant here should fail before a boot."
+ck; grep -qE '^\s*idtSetUserGate\(\);' "$CORE_DIR/kernel/kmain.dart" || fail "kmain() no longer installs the DPL-3 syscall gate"
 echo "STRUCTURAL: pass  the syscall gate's attribute byte is 0xEE (0x8E plus DPL 3) and kmain() installs it"
 
 # ---------------------------------------------------------------------------
@@ -418,12 +450,10 @@ echo "STRUCTURAL: pass  the syscall gate's attribute byte is 0xEE (0x8E plus DPL
 # turned out to write the GDT. See 2b.
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
-  "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$CORE_DIR/build/portio.o" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$CORE_DIR/build/portio.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
@@ -434,27 +464,27 @@ EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 
 # DCDart `@bss` mutable static `elfStore`, so M10 now adds NO extern here and
 # there is nothing left to subtract. The check INVERTS rather than disappearing,
 # for the reason every other one on this page does.
-grep -q "\belf_store_addr\b" <<<"$VERIFY_OUT" && fail "elf_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static elfStore"
+ck; grep -q "\belf_store_addr\b" <<<"$VERIFY_OUT" && fail "elf_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static elfStore"
 # M11 (ADR-0015) added FIVE more -- `sse_enabled`, `cr4_read`, `fx_save`,
 # `fx_restore` and `procStore` -- subtracted BY NAME for the same reason.
 # M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\bproc_store_addr\b" <<<"$VERIFY_OUT" && fail "proc_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static procStore"
+ck; grep -q "\bproc_store_addr\b" <<<"$VERIFY_OUT" && fail "proc_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static procStore"
 M11_EXTERNS="sse_enabled cr4_read fx_save fx_restore"
 M11_PRESENT=0
 for sym in $M11_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
 done
-[[ "$M11_PRESENT" -eq 4 ]] || fail "only $M11_PRESENT of M11's 4 externs are in kmain.o's manifest ($M11_EXTERNS)"
+ck; [[ "$M11_PRESENT" -eq 4 ]] || fail "only $M11_PRESENT of M11's 4 externs are in kmain.o's manifest ($M11_EXTERNS)"
 # M15 (ADR-0019) added exactly ONE: `fileStore`, the file-descriptor
 # table's storage seam. Subtracted for the same reason every block above is.
 # M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && fail "file_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fileStore"
+ck; grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && fail "file_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fileStore"
 M15_PRESENT=0
 EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
 # M14 (ADR-0018) added exactly ONE: `fatStore`, the filesystem's storage
@@ -464,7 +494,7 @@ EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && fail "fat_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fatStore"
+ck; grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && fail "fat_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fatStore"
 M14_PRESENT=0
 EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M11_PRESENT ))
@@ -478,21 +508,21 @@ for gone in \
             shell_len_addr shell_state_addr shell_mbinfo_addr \
             kbd_prefix_addr fault_count_addr fb_state_addr \
             pmm_store_addr vm_store_addr user_store_addr; do
-  grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+  ck; grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
-[[ "$EXTERN_COUNT" -eq 40 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 40 (33 from M8 after ADR-0021, plus M9's seven)"
+ck; [[ "$EXTERN_COUNT" -eq 40 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 40 (33 from M8 after ADR-0021, plus M9's seven)"
 for sym in enter_user user_return tr_read tlb_invlpg tss_base gdt_base \
            user_resume_ok_addr; do
-  grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
+  ck; grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
 done
 # M9's eighth was `user_store_addr` (asserted absent above). What it addressed is
 # now `userStore`, a 128-byte @bss block in user.dart. The two resume words are
 # NOT migrated and never will be -- isr.S writes them by name -- which is why
 # `user_resume_ok_addr` is still in the list above.
-[[ "$(bsssize userStore)" == "128" ]] || fail "userStore is not a 128-byte object in kmain.o's .bss — M9's state did not survive the ADR-0021 migration"
-grep -q "tss_load" <<<"$VERIFY_OUT" && fail "kmain.o still declares tss_load - ltr moved into boot.S (see 2b) and the extern should have gone with it"
+ck; [[ "$(bsssize userStore)" == "128" ]] || fail "userStore is not a 128-byte object in kmain.o's .bss — M9's state did not survive the ADR-0021 migration"
+ck; grep -q "tss_load" <<<"$VERIFY_OUT" && fail "kmain.o still declares tss_load - ltr moved into boot.S (see 2b) and the extern should have gone with it"
 
-grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
+ck; grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 33 from M8 plus M9's remaining seven (its eighth, user_store_addr, is gone with ADR-0021), and kdata.o still passes standalone"
 
 # 2g. EVERY @rodata TABLE IS THE SIZE ITS CALL SITE PASSES.
@@ -504,8 +534,8 @@ echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 33 from M8 plu
 check_table() {
   local sym="$1" want="$2" got
   got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M9 depends on was not emitted (a table with no call site is dropped by the linker)"
-  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
+  ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M9 depends on was not emitted (a table with no call site is dropped by the linker)"
+  ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
 check_table shellStrHelp 2224
 check_table userStrTss 9
@@ -570,7 +600,7 @@ echo "STRUCTURAL: pass  all 47 M9 message/command tables are exactly the sizes t
 # The consequence is that the payload lengths are now DATA, and data can be
 # checked against the symbols it describes rather than against a literal in a
 # comment.
-python3 - "$CORE_DIR/build/kmain.o" <<'PY' || fail "userCodeSizes does not match the real sizes of the payload tables in kmain.o"
+ck; python3 - "$CORE_DIR/build/kmain.o" <<'PY' || fail "userCodeSizes does not match the real sizes of the payload tables in kmain.o"
 import re, subprocess, sys
 obj = sys.argv[1]
 out = subprocess.run(["x86_64-elf-readelf", "-sW", obj],
@@ -621,7 +651,7 @@ echo "STRUCTURAL: pass  userCodeSizes' six bytes are the real sizes of the six p
 # the check that would catch a payload edited to be harmless -- `user gp` with
 # the `mov %cr3` removed would still "pass" every behavioural test by faulting
 # for some other reason, or by not faulting at all.
-python3 - "$CORE_DIR/build/kmain.o" "$WORKDIR" <<'PY' || fail "a payload's machine code does not disassemble to the instructions user.dart documents"
+ck; python3 - "$CORE_DIR/build/kmain.o" "$WORKDIR" <<'PY' || fail "a payload's machine code does not disassemble to the instructions user.dart documents"
 import re, subprocess, sys
 obj, work = sys.argv[1], sys.argv[2]
 out = subprocess.run(["x86_64-elf-readelf", "-sW", obj],
@@ -721,7 +751,7 @@ drive_session() {
   # previous boot still in TIME_WAIT. All three used to surface as QEMU
   # dying with "Address already in use".
   local port
-  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
+  ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 300 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m "$mem" \
@@ -733,24 +763,17 @@ drive_session() {
     -qmp "tcp:127.0.0.1:$port,server,nowait" \
     >"$outdir/qemu.log" 2>&1 &
   local qemu_pid=$!
-  python3 "$DRIVER" \
-    --port "$port" \
-    --serial "$ser" \
-    --wait-for 'M1 END\n' \
-    --png "$png" \
-    --screen-text "$outdir/screen.txt" \
-    --keys "$keys" \
-    "$@"
-  local drive_status=$?
-  wait "$qemu_pid" 2>/dev/null
-  local qemu_status=$?
-  if [[ $drive_status -ne 0 ]]; then
+  local drive_status
+  run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys" "$@"
+  local qemu_status
+  await qemu_status "$qemu_pid"
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
     fail "qmp-drive.py exited $drive_status for the $label boot."
   fi
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -803,8 +826,8 @@ if [[ $REGEN -eq 1 ]]; then
   echo "REGEN: wrote $EXPECTED_SERIAL and $EXPECTED_SCREEN — the derived checks below still have to pass"
 fi
 
-[[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL (run with --regen once to create it)"
-[[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
+ck; [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL (run with --regen once to create it)"
+ck; [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
 
 # ---------------------------------------------------------------------------
 # Step 5 — assert.
@@ -818,14 +841,14 @@ fi
 # is visible from outside.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
-if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+ck; if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
   cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
   fail "the first $M1_BYTES bytes of this boot do not match m1-interrupts/expected.txt — M9 changed M0/M1 serial output"
 fi
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
 
 # 5b. The whole serial capture.
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
+ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
   echo "--- first difference ---" >&2
   cmp "$SERIAL_CAPTURE" "$EXPECTED_SERIAL" >&2
   diff <(cat -v "$EXPECTED_SERIAL") <(cat -v "$SERIAL_CAPTURE") | head -40 >&2
@@ -838,7 +861,7 @@ echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byt
 #
 # Every claim here is read out of the capture and cross-checked against another
 # line of it or against the ELF, never accepted because the kernel printed it.
-if ! python3 - "$SERIAL_CAPTURE" "$KERNEL_ELF" <<'PY'
+ck; if ! python3 - "$SERIAL_CAPTURE" "$KERNEL_ELF" <<'PY'
 import re, subprocess, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 elf = sys.argv[2]
@@ -1064,7 +1087,7 @@ echo "ASSERT: pass  ring 3 is ring 3 (CS 0023, CPL 3, read out of the frame the 
 # half of the claim; boot B below is the other half, and neither is worth much
 # without the other -- a kernel that never set the U bit at all would pass this
 # check perfectly.
-if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$WORKDIR/session/monitor.txt" \
+ck; if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$WORKDIR/session/monitor.txt" \
      "$KERNEL_ELF" <<'PY'
 import importlib.util, re, subprocess, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
@@ -1161,7 +1184,7 @@ fi
 echo "ASSERT: pass  the LIVE page tables, read out of guest physical memory at QEMU's own CR3, show ZERO user-accessible pages after five payloads (three of them killed by faults), and no page of .text, .rodata, .data/.bss or the first megabyte is user-accessible"
 
 # 5e. The framebuffer (the 80x25 text buffer, read out of guest memory).
-if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
+ck; if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
   echo "--- VGA text buffer as read from guest memory ---" >&2
   diff -u "$EXPECTED_SCREEN" "$SCREEN_TEXT" >&2
   fail "the VGA text buffer at 0xB8000 did not match $EXPECTED_SCREEN"
@@ -1169,8 +1192,8 @@ fi
 echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen.txt exactly"
 
 # 5f. The screenshot.
-[[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
-case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
+ck; [[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
+ck; case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
   89504e470d0a1a0a) ;;
   *) fail "$SHOT_PNG is not a PNG" ;;
 esac
@@ -1206,7 +1229,7 @@ CR3_HEX=$(grep -m1 -oE '^VM CR3 [0-9A-F]{16}' "$SERIAL_CAPTURE" | awk '{print $3
 GDT_HEX=$(grep -m1 -oE 'GDT [0-9A-F]{16}' "$SERIAL_CAPTURE" | awk '{print $2}')
 TSS_HEX=$(grep -m1 -oE '^USER TSS [0-9A-F]{16}' "$SERIAL_CAPTURE" | awk '{print $3}')
 IDT_HEX=$(grep -m1 -oE 'IDT [0-9A-F]{16}' "$SERIAL_CAPTURE" | awk '{print $2}')
-[[ -n "$CR3_HEX" && -n "$GDT_HEX" && -n "$TSS_HEX" && -n "$IDT_HEX" ]] || fail "could not read the CR3, GDT, TSS and IDT bases out of the session capture"
+ck; [[ -n "$CR3_HEX" && -n "$GDT_HEX" && -n "$TSS_HEX" && -n "$IDT_HEX" ]] || fail "could not read the CR3, GDT, TSS and IDT bases out of the session capture"
 
 # `user hold` is the LAST thing this boot can run: its payload never exits and
 # nothing in this kernel can stop it. The dumps below therefore happen with a
@@ -1220,7 +1243,7 @@ drive_session "$WORKDIR/hold" "u,s,e,r,spc,h,o,l,d,ret,wait:2500" \
   --monitor-command "xp/${IDT_QWORDS}gx 0x$IDT_HEX" \
   --monitor-capture "$WORKDIR/hold/monitor.txt"
 
-if ! python3 - "$WORKDIR/hold/serial.txt" "$DERIVE" "$WORKDIR/hold/monitor.txt" \
+ck; if ! python3 - "$WORKDIR/hold/serial.txt" "$DERIVE" "$WORKDIR/hold/monitor.txt" \
      "$KERNEL_ELF" "$GDT_HEX" "$TSS_HEX" "$IDT_HEX" "$GDT_QWORDS" "$TSS_QWORDS" "$IDT_QWORDS" \
      "$CR3_HEX" "$TABLE_QWORDS" <<'PY'
 import importlib.util, re, subprocess, sys
@@ -1478,7 +1501,7 @@ drive_session "$WORKDIR/small" \
   --monitor-command 'info registers' \
   --monitor-capture "$WORKDIR/small/monitor.txt"
 
-if ! python3 - "$WORKDIR/small/serial.txt" "$SERIAL_CAPTURE" <<'PY'
+ck; if ! python3 - "$WORKDIR/small/serial.txt" "$SERIAL_CAPTURE" <<'PY'
 import re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 big = open(sys.argv[2], "rb").read().decode("latin-1")
@@ -1518,12 +1541,12 @@ PY
 then
   fail "NEGATIVE CONTROL FAILED: ring 3 did not work correctly on a different machine"
 fi
-if cmp -s "$WORKDIR/small/serial.txt" "$EXPECTED_SERIAL"; then
+ck; if cmp -s "$WORKDIR/small/serial.txt" "$EXPECTED_SERIAL"; then
   fail "NEGATIVE CONTROL FAILED: a boot on a 32MiB machine produced the same serial capture as the 128MiB session"
 fi
 SMALL_DIFF=$(cmp "$WORKDIR/small/serial.txt" "$EXPECTED_SERIAL" 2>&1 | grep -oE '(byte|char) [0-9]+' | head -1)
 SMALL_OFFSET=${SMALL_DIFF##* }
-[[ "$SMALL_OFFSET" -le 544 ]] || fail "the 32MiB capture matches M1's entire 544-byte golden, so the boot-time memory-map report did not change with the machine"
+ck; [[ "$SMALL_OFFSET" -le 544 ]] || fail "the 32MiB capture matches M1's entire 544-byte golden, so the boot-time memory-map report did not change with the machine"
 echo "ASSERT: pass  negative control — on a 32MiB machine the memory map differs inside M1's own boot report, and ring 3 still enters, still faults with the USER bit set, and still leaves zero user-accessible pages"
 
 # ---------------------------------------------------------------------------
@@ -1543,7 +1566,7 @@ drive_session "$WORKDIR/nomem" \
   "f,r,a,m,e,s,spc,d,r,a,i,n,ret,wait:14000,u,s,e,r,ret,wait:1500,u,s,e,r,spc,p,a,g,e,s,ret,wait:800" \
   "$WORKDIR/nomem/shot.png" "no-frames" 53 128M qemu64
 
-if ! python3 - "$WORKDIR/nomem/serial.txt" <<'PY'
+ck; if ! python3 - "$WORKDIR/nomem/serial.txt" <<'PY'
 import re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 fails = []
@@ -1578,5 +1601,9 @@ then
 fi
 echo "ASSERT: pass  negative control — with every frame drained, 'user' refuses with a diagnostic instead of entering ring 3, maps nothing, and leaves the shell alive"
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M9-ring3: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S + portio.S) -> link -> 9 structural checks (the three selectors are one number in two files, the accessed bit pre-set on all four segment descriptors, ltr in the boot stub, donated .bss 5224 -> 5368, user_store one 128-byte symbol, the storage seam exactly 1 call site, the frame offsets recomputed from isr_common's push order, the syscall gate's DPL-3 attribute byte, 48 @rodata sizes, userCodeSizes against the payloads' real sizes, and all six payloads disassembled) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 44 + 8, kdata.o still clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; a payload running at CPL 3 with CS 0023 read out of the frame the CPU pushed; a privileged instruction, a store into kernel memory and a DPL-0 gate each faulting with the right vector and error code -- including #PF error 7 with the USER bit, which had never been observed set on this machine -- each reported, each recovered from, and the target word unchanged every time; a syscall refusing a kernel pointer and ring 3 observing the refusal; the LIVE page tables read out of guest physical memory with a payload still on the CPU, showing exactly two user-accessible pages of 1024 and no kernel page among them; the GDT's user descriptors at DPL 3, the TSS descriptor BUSY with a real RSP0 and no I/O bitmap, and exactly one of 256 IDT gates reachable from ring 3; a 32MiB machine where all of it still holds; and a drained allocator where 'user' refuses instead of pretending. Screenshot at $SHOT_PNG"
 exit 0

@@ -73,9 +73,24 @@ setup_error() {
   exit 2
 }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=100
+
+
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
             x86_64-elf-readelf llvm-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 DERIVE="$SCRIPT_DIR/derive.py"
@@ -83,13 +98,13 @@ BUILD_PROGS="$SCRIPT_DIR/build-progs.sh"
 MAKE_IMAGE="$SCRIPT_DIR/make-image.py"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
 for f in "$DERIVE" "$BUILD_PROGS" "$MAKE_IMAGE" "$DRIVER" "$M1_EXPECTED"; do
-  [[ -f "$f" ]] || setup_error "$f not found"
+  ck; [[ -f "$f" ]] || setup_error "$f not found"
 done
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m18.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m18.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 dartconst() {
@@ -101,23 +116,22 @@ dartconst() {
 # Step 1 — build the kernel.
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
 # Step 2 — build the two programs and the disk they live on.
 # ---------------------------------------------------------------------------
-bash "$BUILD_PROGS" "$WORKDIR" || fail "the test programs could not be built (see above)"
+ck; bash "$BUILD_PROGS" "$WORKDIR" || fail "the test programs could not be built (see above)"
 PROG_C="$WORKDIR/progC.elf"
 PROG_D="$WORKDIR/progD.elf"
 
 DISK_IMG="$WORKDIR/disk.img"
 LAYOUT_JSON="$WORKDIR/layout.json"
-python3 "$MAKE_IMAGE" "$DISK_IMG" "$PROG_C" "$PROG_D" --json >"$LAYOUT_JSON" \
+ck; python3 "$MAKE_IMAGE" "$DISK_IMG" "$PROG_C" "$PROG_D" --json >"$LAYOUT_JSON" \
   || fail "make-image.py could not produce a verified image"
 lba_of() { python3 -c "import json,sys; print('%X' % json.load(open(sys.argv[1]))[sys.argv[2]]['header_lba'])" "$LAYOUT_JSON" "$1"; }
 LBA_C=$(lba_of C)
@@ -134,9 +148,9 @@ echo "IMAGE: pass  $IMG_BYTES bytes = $(( IMG_BYTES / 512 )) sectors, 2 program 
 QUANTUM=$(dartconst procQuantumTicks proc.dart)
 POLICY_COOP=$(dartconst procPolicyCoop proc.dart)
 POLICY_PREEMPT=$(dartconst procPolicyPreempt proc.dart)
-[[ -n "$QUANTUM" ]] || fail "core/kernel/proc.dart has no \`const int procQuantumTicks\` — the quantum is a magic number somewhere instead of a named constant"
-[[ "$QUANTUM" -ge 2 ]] || fail "procQuantumTicks is $QUANTUM. A quantum of 1 makes preemption a coin flip inside m11-proc's microsecond-long slices, and its 4096-byte golden would flake; see proc.dart's note on why it is 8."
-[[ "$POLICY_COOP" == "0" && "$POLICY_PREEMPT" == "1" ]] \
+ck; [[ -n "$QUANTUM" ]] || fail "core/kernel/proc.dart has no \`const int procQuantumTicks\` — the quantum is a magic number somewhere instead of a named constant"
+ck; [[ "$QUANTUM" -ge 2 ]] || fail "procQuantumTicks is $QUANTUM. A quantum of 1 makes preemption a coin flip inside m11-proc's microsecond-long slices, and its 4096-byte golden would flake; see proc.dart's note on why it is 8."
+ck; [[ "$POLICY_COOP" == "0" && "$POLICY_PREEMPT" == "1" ]] \
   || fail "procPolicyCoop/procPolicyPreempt are $POLICY_COOP/$POLICY_PREEMPT, expected 0/1"
 echo "STRUCTURAL: pass  the quantum is a named constant, procQuantumTicks = $QUANTUM PIT ticks (100 Hz -> $(( QUANTUM * 10 )) ms of ring-3 time)"
 
@@ -148,7 +162,7 @@ echo "STRUCTURAL: pass  the quantum is a named constant, procQuantumTicks = $QUA
 # -- the process's heap break, read back as a scheduler statistic. proc.dart's
 # own comment says "slot words 0..31 are metadata" and does not say which of
 # them are spoken for, and two files were assigning them independently.
-python3 - "$CORE_DIR/kernel" <<'PY' || fail "two subsystems are using the same process-table slot word"
+ck; python3 - "$CORE_DIR/kernel" <<'PY' || fail "two subsystems are using the same process-table slot word"
 import os, re, sys
 root = sys.argv[1]
 seen = {}
@@ -193,7 +207,7 @@ echo "STRUCTURAL: pass  no two subsystems index the same process-table slot word
 # is absent. GAP-0143 says so out loud rather than leaving the impression that
 # the boot proves it.
 CS_TEST=$(grep -c 'userFrame(frame, u64(userFrameCs)) & u64(3)) < u64(3)' "$CORE_DIR/kernel/proc.dart")
-[[ "$CS_TEST" -eq 1 ]] || fail "proc.dart tests the interrupted CS's privilege bits at $CS_TEST site(s) in procTick, expected exactly 1. Removing that test lets a tick that interrupted RING 0 switch processes — which would switch stacks out from under the kernel — and NO BOOT IN THIS HARNESS CAN SEE IT, because a tick almost never lands at CPL 0 with a process live (procHeadKernTicks reads 1). See GAP-0143."
+ck; [[ "$CS_TEST" -eq 1 ]] || fail "proc.dart tests the interrupted CS's privilege bits at $CS_TEST site(s) in procTick, expected exactly 1. Removing that test lets a tick that interrupted RING 0 switch processes — which would switch stacks out from under the kernel — and NO BOOT IN THIS HARNESS CAN SEE IT, because a tick almost never lands at CPL 0 with a process live (procHeadKernTicks reads 1). See GAP-0143."
 echo "STRUCTURAL: pass  procTick tests the interrupted CS's privilege bits before it preempts anything — asserted from the source, because no boot can catch its absence"
 
 # 3c. THE HEADER GREW BY EXACTLY SIX WORDS AND THE BLOCK BY EXACTLY 64 BYTES.
@@ -204,14 +218,14 @@ FX_OFF=$(dartconst procFxOffset proc.dart)
 SLOT_BYTES=$(dartconst procSlotBytes proc.dart)
 PROC_MAX=$(dartconst procMax proc.dart)
 FX_BYTES=$(dartconst procFxBytes proc.dart)
-[[ "$STORE_BYTES" == "4224" ]] || fail "procStoreBytes is $STORE_BYTES, expected 4224 — M11's 4160 plus 64 bytes for M18's eight new header words"
-[[ "$HEAD_WORDS" == "16" ]] || fail "procHeadWords is $HEAD_WORDS, expected 16"
-[[ $(( HEAD_WORDS * 8 )) -eq "$TABLE_OFF" ]] || fail "procHeadWords $HEAD_WORDS * 8 != procTableOffset $TABLE_OFF"
-[[ $(( TABLE_OFF + PROC_MAX * SLOT_BYTES )) -eq "$FX_OFF" ]] || fail "the table does not end where the FXSAVE areas begin"
-[[ $(( FX_OFF + PROC_MAX * FX_BYTES )) -eq "$STORE_BYTES" ]] || fail "the FXSAVE areas do not end where procStore does"
-[[ $(( FX_OFF % 16 )) -eq 0 ]] || fail "procFxOffset $FX_OFF is not a multiple of 16 — fxsave would #GP"
+ck; [[ "$STORE_BYTES" == "4224" ]] || fail "procStoreBytes is $STORE_BYTES, expected 4224 — M11's 4160 plus 64 bytes for M18's eight new header words"
+ck; [[ "$HEAD_WORDS" == "16" ]] || fail "procHeadWords is $HEAD_WORDS, expected 16"
+ck; [[ $(( HEAD_WORDS * 8 )) -eq "$TABLE_OFF" ]] || fail "procHeadWords $HEAD_WORDS * 8 != procTableOffset $TABLE_OFF"
+ck; [[ $(( TABLE_OFF + PROC_MAX * SLOT_BYTES )) -eq "$FX_OFF" ]] || fail "the table does not end where the FXSAVE areas begin"
+ck; [[ $(( FX_OFF + PROC_MAX * FX_BYTES )) -eq "$STORE_BYTES" ]] || fail "the FXSAVE areas do not end where procStore does"
+ck; [[ $(( FX_OFF % 16 )) -eq 0 ]] || fail "procFxOffset $FX_OFF is not a multiple of 16 — fxsave would #GP"
 BSS_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk '$4=="OBJECT" && $8=="procStore" {print $3; exit}')
-[[ "$BSS_SIZE" == "$STORE_BYTES" ]] || fail "procStore is ${BSS_SIZE:-missing} bytes in kmain.o but procStoreBytes says $STORE_BYTES"
+ck; [[ "$BSS_SIZE" == "$STORE_BYTES" ]] || fail "procStore is ${BSS_SIZE:-missing} bytes in kmain.o but procStoreBytes says $STORE_BYTES"
 echo "STRUCTURAL: pass  procStore is $STORE_BYTES bytes: a ${TABLE_OFF}-byte header ($HEAD_WORDS words), $PROC_MAX x $SLOT_BYTES-byte slots, $PROC_MAX x $FX_BYTES-byte FXSAVE areas, and the FXSAVE base is 16-byte aligned inside it"
 
 # 3d. THE STORAGE SEAM IS STILL EXACTLY THREE CALL SITES.
@@ -222,10 +236,10 @@ echo "STRUCTURAL: pass  procStore is $STORE_BYTES bytes: a ${TABLE_OFF}-byte hea
 # about. `m11-proc/run.sh` asserts the same thing; it is repeated here because
 # M18 is the milestone that was tempted.
 SEAM_SITES=$(grep -c '^\s*return Bss[.]addressOf(procStore)' "$CORE_DIR/kernel/proc.dart")
-[[ "$SEAM_SITES" -eq 3 ]] || fail "Bss.addressOf(procStore) is returned from $SEAM_SITES functions in proc.dart, expected exactly 3"
+ck; [[ "$SEAM_SITES" -eq 3 ]] || fail "Bss.addressOf(procStore) is returned from $SEAM_SITES functions in proc.dart, expected exactly 3"
 for f in "$CORE_DIR"/kernel/*.dart; do
   [[ "$(basename "$f")" == "proc.dart" ]] && continue
-  grep -qw 'procStore' "$f" && fail "$(basename "$f") references procStore"
+  ck; grep -qw 'procStore' "$f" && fail "$(basename "$f") references procStore"
 done
 echo "STRUCTURAL: pass  M18 added no storage block: the seam is still 3 call sites in one file"
 
@@ -233,8 +247,8 @@ echo "STRUCTURAL: pass  M18 added no storage block: the seam is still 3 call sit
 check_table() {
   local sym="$1" want="$2" got
   got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M18 depends on was not emitted"
-  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
+  ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M18 depends on was not emitted"
+  ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
 check_table procStrPreempt 13
 check_table procStrN 3
@@ -263,7 +277,7 @@ echo "STRUCTURAL: pass  all 16 M18 message/command tables are exactly the sizes 
 # this number does not move. That is a real cost -- `help` does not mention
 # `proc spin` -- and ADR-0022 §7 records it.
 HELP_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk '$8=="shellStrHelp"{print $3; exit}')
-[[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M18 adds three commands and no help line; if that changed, five byte-exact goldens move with it."
+ck; [[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M18 adds three commands and no help line; if that changed, five byte-exact goldens move with it."
 echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged — M18 moves no earlier golden"
 
 # 3g. THE TIMER IS UNMASKED BY A PREEMPTIVE SESSION AND MASKED AGAIN ON EVERY
@@ -277,19 +291,16 @@ echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged — M18 moves no e
 # in the boot -- silently, because nothing prints.
 UNMASK_SITES=$(grep -c 'picUnmaskTimerAndKeyboard();' "$CORE_DIR/kernel/proc.dart")
 MASK_SITES=$(grep -c 'procSessionTimerOff();' "$CORE_DIR/kernel/proc.dart")
-[[ "$UNMASK_SITES" -eq 1 ]] || fail "proc.dart unmasks the timer at $UNMASK_SITES sites, expected exactly 1 (shellProcRun, guarded by the policy)"
-[[ "$MASK_SITES" -eq 5 ]] || fail "proc.dart calls procSessionTimerOff() at $MASK_SITES sites, expected exactly 5: shellProcRun's normal end, its two procCreate refusals, its cross-address refusal, and procOnFault's abandoned stack. EXACTLY, not at least: a mutation that deleted one and left four would otherwise pass, and the path it deleted would leave a 100 Hz interrupt running under every later command in the boot -- silently, because nothing prints."
+ck; [[ "$UNMASK_SITES" -eq 1 ]] || fail "proc.dart unmasks the timer at $UNMASK_SITES sites, expected exactly 1 (shellProcRun, guarded by the policy)"
+ck; [[ "$MASK_SITES" -eq 5 ]] || fail "proc.dart calls procSessionTimerOff() at $MASK_SITES sites, expected exactly 5: shellProcRun's normal end, its two procCreate refusals, its cross-address refusal, and procOnFault's abandoned stack. EXACTLY, not at least: a mutation that deleted one and left four would otherwise pass, and the path it deleted would leave a 100 Hz interrupt running under every later command in the boot -- silently, because nothing prints."
 echo "STRUCTURAL: pass  the timer is unmasked at exactly 1 site and re-masked at $MASK_SITES, one per exit from a session"
 
 # 3h. verify-freestanding, and the extern count.
-VERIFY_OUT=$( (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o \
-                                  && bash scripts/verify-freestanding.sh build/kdata.o \
-                                  && bash scripts/verify-freestanding.sh build/kernel.elf) 2>&1 )
-VERIFY_STATUS=$?
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o && bash scripts/verify-freestanding.sh build/kdata.o && bash scripts/verify-freestanding.sh build/kernel.elf'
 echo "$VERIFY_OUT"
-[[ $VERIFY_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed (output above)"
+ck; [[ $VERIFY_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed (output above)"
 EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern(s).*/\1/p' <<<"$VERIFY_OUT" | head -1)
-[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED from M17. M18 is a scheduler, and a scheduler that needed a new assembly primitive would be a different design: the interrupt frame `isr_common` already builds is the whole context block."
+ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED from M17. M18 is a scheduler, and a scheduler that needed a new assembly primitive would be a different design: the interrupt frame `isr_common` already builds is the whole context block."
 echo "FREESTANDING: pass  $EXTERN_COUNT declared externs, unchanged from M17 — M18 added no assembly"
 
 # ---------------------------------------------------------------------------
@@ -307,7 +318,7 @@ drive_session() {
   # previous boot still in TIME_WAIT. All three used to surface as QEMU
   # dying with "Address already in use".
   local port
-  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
+  ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 300 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m 128M \
@@ -320,24 +331,17 @@ drive_session() {
     -qmp "tcp:127.0.0.1:$port,server,nowait" \
     >"$outdir/qemu.log" 2>&1 &
   local qemu_pid=$!
-  python3 "$DRIVER" \
-    --port "$port" \
-    --serial "$ser" \
-    --wait-for 'M1 END\n' \
-    --png "$png" \
-    --screen-text "$outdir/screen.txt" \
-    --keys "$keys" \
-    "$@"
-  local drive_status=$?
-  wait "$qemu_pid" 2>/dev/null
-  local qemu_status=$?
-  if [[ $drive_status -ne 0 ]]; then
+  local drive_status
+  run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys" "$@"
+  local qemu_status
+  await qemu_status "$qemu_pid"
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
     fail "qmp-drive.py exited $drive_status for the $label boot."
   fi
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -391,7 +395,7 @@ COOP_SERIAL="$WORKDIR/coop/serial.txt"
 # 5a. M1's 544-byte golden is a byte-exact prefix of BOTH boots.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 for b in "$SPIN_SERIAL" "$COOP_SERIAL"; do
-  head -c "$M1_BYTES" "$b" | cmp -s - "$M1_EXPECTED" \
+  ck; head -c "$M1_BYTES" "$b" | cmp -s - "$M1_EXPECTED" \
     || fail "the first $M1_BYTES bytes of $(dirname "$b" | xargs basename) do not match m1-interrupts/expected.txt — M18 changed M0/M1 serial output. procTick() must print NOTHING with no process live, and moving the EOI must not move a byte."
 done
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is a byte-exact prefix of BOTH boots"
@@ -749,24 +753,28 @@ echo "ASSERT: pass  NEGATIVE CONTROL — the same two programs under \`proc coop
 # freed something twice, this is where it shows.
 FREE_FIRST=$(awk '/^PMM MANAGED /{print $5; exit}' "$SPIN_SERIAL")
 FREE_LAST=$(awk '/^PMM MANAGED /{v=$5} END{print v}' "$SPIN_SERIAL")
-[[ -n "$FREE_FIRST" && "$FREE_FIRST" == "$FREE_LAST" ]] \
+ck; [[ -n "$FREE_FIRST" && "$FREE_FIRST" == "$FREE_LAST" ]] \
   || fail "the allocator had $FREE_FIRST free frames before the session and $FREE_LAST after it — a session torn down from inside a timer interrupt leaked"
 ERRORS_LAST=$(awk '/^PMM ALLOCS /{v=$5} END{print v}' "$SPIN_SERIAL")
-[[ "$ERRORS_LAST" == "00000000" ]] || fail "the allocator reports $ERRORS_LAST free-errors after the session"
+ck; [[ "$ERRORS_LAST" == "00000000" ]] || fail "the allocator reports $ERRORS_LAST free-errors after the session"
 echo "ASSERT: pass  the allocator's free count is $FREE_FIRST before and after a session torn down from inside a timer interrupt (0 free-errors)"
 
 # 5e. THE SHELL SURVIVED. It answered two commands after the runaway was stopped.
-grep -q '^PROC SCHED POLICY' <<<"$(sed -n '/PROC END SWITCHES/,$p' "$SPIN_SERIAL")" \
+ck; grep -q '^PROC SCHED POLICY' <<<"$(sed -n '/PROC END SWITCHES/,$p' "$SPIN_SERIAL")" \
   || fail "the shell never answered `proc sched` after the session ended — the machine did not come back"
-grep -q '^PMM MANAGED' <<<"$(sed -n '/PROC END SWITCHES/,$p' "$SPIN_SERIAL")" \
+ck; grep -q '^PMM MANAGED' <<<"$(sed -n '/PROC END SWITCHES/,$p' "$SPIN_SERIAL")" \
   || fail "the shell never answered \`frames\` after the session ended"
 echo "ASSERT: pass  the shell answered TWO commands after a program that never yields was stopped — the machine was not hung"
 
 # 5f. The PNG.
-[[ -s "$SHOT_PNG" ]] || fail "no PNG screenshot was written to $SHOT_PNG"
-head -c 8 "$SHOT_PNG" | cmp -s - <(printf '\211PNG\r\n\032\n') || fail "$SHOT_PNG is not a PNG"
+ck; [[ -s "$SHOT_PNG" ]] || fail "no PNG screenshot was written to $SHOT_PNG"
+ck; head -c 8 "$SHOT_PNG" | cmp -s - <(printf '\211PNG\r\n\032\n') || fail "$SHOT_PNG is not a PNG"
 echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -d ' ') bytes, PNG)"
 
 PREEMPTS_SEEN=$(grep -c '^PROC PREEMPT ' "$SPIN_SERIAL")
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M18-preempt: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build TWO freestanding static ELF64 programs NEITHER OF WHICH CONTAINS A \`yield\`, one of which contains NO SYSTEM CALL AT ALL -> make-image.py writes two program slots onto a disk -> 8 structural checks (the quantum a named constant at $QUANTUM ticks, no two subsystems sharing a process-table slot word, procStore 4160 -> 4224 with its three regions multiplied out and the FXSAVE base still 16-byte aligned, the storage seam STILL exactly 3 call sites and no new @bss block, 16 new @rodata tables against their call sites, shellStrHelp UNCHANGED at 2147 so no earlier golden moves, the timer unmasked at exactly one site and re-masked at every exit from a session) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M18 added no assembly) -> TWO real QEMU boots, M1's 544-byte golden a byte-exact prefix of both. $PREEMPTS_SEEN INVOLUNTARY CONTEXT SWITCHES and ZERO yields; a program whose entire body is \`incq %r15; jmp .-3\` sharing the CPU with a program that reports on it; progD's XMM0 and XMM7 holding all four lanes of its own signature after THREE switches it never asked for, and exiting with a status derived from its own .rodata, its own .data and the checksum of the 64 bytes its own compiler-emitted movups moved; progC's saved R15, RIP and CS read out of the kernel's process table in guest physical memory at an address the kernel printed; the session ending at EXACTLY the $BUDGET quantum expiries typed at the shell rather than after any amount of wall clock; switches == yields + surviving exits + preemptions; the allocator's free count identical before and after a teardown performed from inside a timer interrupt; the shell answering two more commands afterwards; and the SAME TWO PROGRAMS under \`proc coop\` hanging the machine at CPL 3 inside progC with progD never once reaching the CPU. Screenshot at $SHOT_PNG"
 exit 0

@@ -82,8 +82,23 @@ setup_error() {
   exit 2
 }
 
+# GAP-0168 / ADR-0032: shared harness machinery -- the `ck` assertion counter,
+# the `require_assertions` floor checked immediately before the PASS line, and
+# the capture()/run_status()/await() replacements for capture-then-`$?`.
+# Sourced AFTER fail(), which every helper in it reports through.
+source "$SCRIPT_DIR/../_lib/harness.sh"
+
+# How many checks this harness must have executed before it is allowed to
+# print PASS. Derived from a run, not counted by hand: run the harness and
+# read the "ASSERTIONS: pass  <n> checks executed" line it prints just above
+# its PASS line. It moves when the harness legitimately gains or loses checks,
+# exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
+# below it is the failure this exists to catch.
+ASSERTIONS_REQUIRED=232
+
+
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
-  command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
+  ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
 
 EXPECTED_SERIAL="$SCRIPT_DIR/expected.txt"
@@ -91,14 +106,14 @@ EXPECTED_SCREEN="$SCRIPT_DIR/expected-screen.txt"
 DERIVE="$SCRIPT_DIR/derive.py"
 DRIVER="$CORE_DIR/tests/conformance/m2-console/qmp-drive.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
-[[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
-[[ -f "$DERIVE" ]] || setup_error "page-table walker not found at $DERIVE"
-[[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m8-paging reuses m2-console's)"
+ck; [[ -f "$PICKER" ]] || setup_error "pick-port.py not found at $PICKER"
+ck; [[ -f "$DERIVE" ]] || setup_error "page-table walker not found at $DERIVE"
+ck; [[ -f "$DRIVER" ]] || setup_error "QMP driver not found at $DRIVER (m8-paging reuses m2-console's)"
 
 M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
-[[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
+ck; [[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m8.XXXXXX")" || setup_error "could not create a temp workdir"
+ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m8.XXXXXX")" || setup_error "could not create a temp workdir"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # `--regen` writes the two goldens from this run instead of asserting them. It
@@ -111,18 +126,17 @@ REGEN=0
 # Step 1 — build.
 # ---------------------------------------------------------------------------
 BUILD_LOG="$WORKDIR/build.log"
-bash "$CORE_DIR/scripts/build-kernel.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
+capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
-[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
+ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-[[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # The link script no longer produces an RWX segment, so ld's warning about one
 # must be GONE. This is the cheapest possible statement of GAP-0050's closure
 # and it comes from the linker rather than from us.
-if grep -q "LOAD segment with RWX permissions" "$BUILD_LOG"; then
+ck; if grep -q "LOAD segment with RWX permissions" "$BUILD_LOG"; then
   fail "the linker still warns about an RWX LOAD segment — core/link/kernel.ld's split into three PT_LOADs did not take (GAP-0050)"
 fi
 echo "STRUCTURAL: pass  the linker no longer warns about an RWX LOAD segment"
@@ -153,16 +167,16 @@ for line in sys.stdin:
         rows.append(m.group(1).replace(" ", "") + "/" + m.group(2))
 print(" ".join(rows))')
 PHDR_COUNT=$(wc -w <<<"$PHDRS" | tr -d ' ')
-[[ "$PHDR_COUNT" -eq 3 ]] || fail "kernel.elf has $PHDR_COUNT PT_LOAD segments, expected 3 (.text R E, .rodata R, .data+.bss RW) — see core/link/kernel.ld"
-[[ "$PHDRS" == "RE/0x1000 R/0x1000 RW/0x1000" ]] || fail "the three PT_LOAD segments are '$PHDRS', expected 'RE/0x1000 R/0x1000 RW/0x1000' — they must be R E, R, RW, each 4KiB-aligned"
+ck; [[ "$PHDR_COUNT" -eq 3 ]] || fail "kernel.elf has $PHDR_COUNT PT_LOAD segments, expected 3 (.text R E, .rodata R, .data+.bss RW) — see core/link/kernel.ld"
+ck; [[ "$PHDRS" == "RE/0x1000 R/0x1000 RW/0x1000" ]] || fail "the three PT_LOAD segments are '$PHDRS', expected 'RE/0x1000 R/0x1000 RW/0x1000' — they must be R E, R, RW, each 4KiB-aligned"
 echo "STRUCTURAL: pass  kernel.elf has exactly three PT_LOAD segments: R E, R, RW, each 4KiB-aligned"
 
 # Which sections are in which segment. `.text` must not share a segment with
 # anything writable, and `.rodata` must be alone.
 SEGMAP=$(x86_64-elf-readelf -lW "$KERNEL_ELF" | sed -n '/Section to Segment/,$p')
-grep -qE '^ +00 +\.multiboot \.text *$' <<<"$SEGMAP" || fail "segment 0 is not exactly '.multiboot .text' — something else landed on the executable segment: $(grep -E '^ +00 ' <<<"$SEGMAP")"
-grep -qE '^ +01 +\.rodata *$' <<<"$SEGMAP" || fail "segment 1 is not exactly '.rodata' — the read-only segment has company: $(grep -E '^ +01 ' <<<"$SEGMAP")"
-grep -qE '^ +02 +\.data \.bss *$' <<<"$SEGMAP" || fail "segment 2 is not exactly '.data .bss': $(grep -E '^ +02 ' <<<"$SEGMAP")"
+ck; grep -qE '^ +00 +\.multiboot \.text *$' <<<"$SEGMAP" || fail "segment 0 is not exactly '.multiboot .text' — something else landed on the executable segment: $(grep -E '^ +00 ' <<<"$SEGMAP")"
+ck; grep -qE '^ +01 +\.rodata *$' <<<"$SEGMAP" || fail "segment 1 is not exactly '.rodata' — the read-only segment has company: $(grep -E '^ +01 ' <<<"$SEGMAP")"
+ck; grep -qE '^ +02 +\.data \.bss *$' <<<"$SEGMAP" || fail "segment 2 is not exactly '.data .bss': $(grep -E '^ +02 ' <<<"$SEGMAP")"
 echo "STRUCTURAL: pass  .text is alone with .multiboot on the executable segment, .rodata is alone on the read-only one, and only .data/.bss are writable"
 
 # 2b. THE SECTION BOUNDARIES ARE PAGE-ALIGNED AND DO NOT SHARE PAGES.
@@ -184,22 +198,22 @@ echo "STRUCTURAL: pass  .text is alone with .multiboot on the executable segment
 sym() { eval "printf '%s' \"\$SYM_$1\""; }
 for s in __kernel_start __text_end __rodata_start __rodata_end __data_start __kernel_end; do
   v=$(x86_64-elf-readelf -sW "$KERNEL_ELF" | awk -v n="$s" '$8==n{print $2; exit}')
-  [[ -n "$v" ]] || fail "$s is not in kernel.elf — core/link/kernel.ld did not export the section boundaries the page-table builder maps against"
+  ck; [[ -n "$v" ]] || fail "$s is not in kernel.elf — core/link/kernel.ld did not export the section boundaries the page-table builder maps against"
   hv=$(hexnum "$v")
   eval "SYM_$s=\$hv"   # value referenced, never re-parsed, by the eval
 done
-[[ "$(sym __kernel_start)" -eq $((1024*1024)) ]] || fail "__kernel_start is $(sym __kernel_start), expected 0x100000 (the Multiboot load address). vm.dart refuses to build a map if it is anything else."
+ck; [[ "$(sym __kernel_start)" -eq $((1024*1024)) ]] || fail "__kernel_start is $(sym __kernel_start), expected 0x100000 (the Multiboot load address). vm.dart refuses to build a map if it is anything else."
 for s in __rodata_start __data_start; do
-  (( $(sym "$s") % 4096 == 0 )) || fail "$s (0x$(printf %X "$(sym "$s")")) is not 4KiB-aligned — two sections would share a page and could not have different permissions"
+  ck; (( $(sym "$s") % 4096 == 0 )) || fail "$s (0x$(printf %X "$(sym "$s")")) is not 4KiB-aligned — two sections would share a page and could not have different permissions"
 done
-(( $(sym __kernel_start) < $(sym __text_end) )) || fail "__text_end is not above __kernel_start"
-(( $(sym __text_end) <= $(sym __rodata_start) )) || fail "__text_end (0x$(printf %X "$(sym __text_end)")) is above __rodata_start — .text spills onto a read-only page"
-(( $(sym __rodata_end) <= $(sym __data_start) )) || fail "__rodata_end is above __data_start — .rodata spills onto a writable page"
-(( $(sym __data_start) < $(sym __kernel_end) )) || fail "__kernel_end is not above __data_start"
+ck; (( $(sym __kernel_start) < $(sym __text_end) )) || fail "__text_end is not above __kernel_start"
+ck; (( $(sym __text_end) <= $(sym __rodata_start) )) || fail "__text_end (0x$(printf %X "$(sym __text_end)")) is above __rodata_start — .text spills onto a read-only page"
+ck; (( $(sym __rodata_end) <= $(sym __data_start) )) || fail "__rodata_end is above __data_start — .rodata spills onto a writable page"
+ck; (( $(sym __data_start) < $(sym __kernel_end) )) || fail "__kernel_end is not above __data_start"
 # vm.dart's 4KiB window is 4MiB and it REFUSES to switch if the image outgrows
 # it. Checked here so the refusal is a build-time diagnostic rather than a
 # silent `READY 0` discovered three boots later.
-(( $(sym __kernel_end) <= 4*1024*1024 )) || fail "the kernel image ends at 0x$(printf %X "$(sym __kernel_end)"), past vm.dart's 4MiB 4KiB-page window (vmFineBytes). vmInit would refuse to install a map. Raise vmFineBytes and vmFrameCount together."
+ck; (( $(sym __kernel_end) <= 4*1024*1024 )) || fail "the kernel image ends at 0x$(printf %X "$(sym __kernel_end)"), past vm.dart's 4MiB 4KiB-page window (vmFineBytes). vmInit would refuse to install a map. Raise vmFineBytes and vmFrameCount together."
 echo "STRUCTURAL: pass  the six section boundaries from kernel.ld are ordered, page-aligned where permissions change, and the image (0x$(printf %X "$(sym __kernel_start)")..0x$(printf %X "$(sym __kernel_end)")) fits vm.dart's 4MiB window"
 
 # 2c. DONATED `.bss` GREW FROM 5096 TO 5224, AND THIS HARNESS NOW OWNS THE
@@ -257,12 +271,12 @@ bssaddr() {    # bssaddr <symbol> -- the LINKED address of a @bss block.
 bsssize() { bssfield 3 "$1"; }
 bssoff()  { bssfield 2 "$1"; }
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
+ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section — the DCDart mutable statics (ADR-0021) are gone"
 DART_BSS=$((16#$DART_BSS_HEX))
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-[[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
+ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the five assembly-written words are gone"
 ASM_BSS=$((16#$ASM_BSS_HEX))
-[[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
+ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$DART_BSS
 # M9 (ADR-0013) added a third block after M8's: `user_store` (128 bytes, the
 # ring-3 subsystem's state) plus the two asm-owned resume words
@@ -273,7 +287,7 @@ KDATA_BSS=$DART_BSS
 M9_STORE=$(bsssize userStore)
 M9_RSP=$(bsssize user_resume_rsp)
 M9_OK=$(bsssize user_resume_ok)
-[[ -n "$M9_STORE" && -n "$M9_RSP" && -n "$M9_OK" ]] || fail "user_store / user_resume_rsp / user_resume_ok are not all in kdata.o — M9's ring-3 state block is missing"
+ck; [[ -n "$M9_STORE" && -n "$M9_RSP" && -n "$M9_OK" ]] || fail "user_store / user_resume_rsp / user_resume_ok are not all in kdata.o — M9's ring-3 state block is missing"
 M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
 # M10 (ADR-0014) added a fourth block after M9's: `elf_store` (128 bytes, the
 # ELF loader's whole state, behind ONE accessor called from ONE function). It is
@@ -281,7 +295,7 @@ M9_BSS=$(( M9_STORE + M9_RSP + M9_OK ))
 # harness keeps asserting ITS OWN claim exactly as it did before M10 existed --
 # the same discipline every earlier harness applies to every later block.
 M10_STORE=$(bsssize elfStore)
-[[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
+ck; [[ -n "$M10_STORE" ]] || fail "elf_store is not in kdata.o — M10's ELF-loader state block is missing"
 # M11 (ADR-0015) added a fifth block after M10's: `proc_store` (4160 bytes -- an
 # 8-word header, four 512-byte process slots, and four 512-byte FXSAVE areas).
 # Its `.align 16` is a CORRECTNESS requirement and not hygiene (`fxsave` on a
@@ -293,7 +307,25 @@ M10_STORE=$(bsssize elfStore)
 # milestone whose alignment made it necessary, and this harness's own number
 # comes out exactly as it did before M11 existed.
 M11_ELF_OFF_HEX=$(bssoff elfStore)
-[[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o"
+# S0 (ADR-0033) added a block AFTER M19's, and it is now the LAST one in .bss:
+# `ioctlStore`, 512 bytes -- 32 metadata words and the 256-byte `ioctl` bounce
+# buffer, which is the only memory a DRM payload is ever copied through.
+# Subtracted FIRST, before M19's, exactly as M14, M15, M16 and M19 each were in
+# turn, so that every earlier milestone's number continues to mean what it meant
+# when it was written.
+#
+# **ADR-0031 §4.3 rule 5 SAID PUTTING THE BLOCK LAST WOULD LEAVE "every existing
+# harness's 'bytes from my block to the end' arithmetic unchanged". THAT IS NOT
+# QUITE TRUE, AND THIS BLOCK IS THE PROOF.** Last is necessary but not
+# sufficient: the previously-last block's own to-the-end measurement is exactly
+# the one a new block after it changes. M19's number went 256 -> 768 and twelve
+# harnesses said so. ADR-0033 §6.4.
+S0_OFF_HEX=$(bssoff ioctlStore)
+ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
+S0_BSS=$(( KDATA_BSS - 16#$S0_OFF_HEX ))
+ck; [[ "$S0_BSS" -eq 512 ]] || fail "the bytes from S0's ioctlStore to the end of .bss are $S0_BSS, expected 512. If that block changed size, change it in ADR-0033, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - S0_BSS ))
 # M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
 # `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
 # 128 bytes of argument text, which is where a command line is staged before it
@@ -302,18 +334,18 @@ M11_ELF_OFF_HEX=$(bssoff elfStore)
 # it meant when it was written. Exactly the accounting M14, M15 and M16 each got
 # in turn.
 M19_OFF_HEX=$(bssoff argsStore)
-[[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
+ck; [[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
 M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
-[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 # M15 (ADR-0019) added a block AFTER M14's: `file_store`, 1280 bytes -- 16
 # metadata words, five rows of four file descriptors, and a one-sector bounce
 # buffer. Subtracted FIRST, before M14's, so that this harness's own milestone's
 # number continues to mean in 2026 what it meant when it was written.
 M15_OFF_HEX=$(bssoff fileStore)
-[[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
+ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-[[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added a SIXTH block after M11's: `fat_store` (1824 bytes -- 32
 # metadata words, a 256-entry cluster chain, one sector buffer and an 8.3 name
@@ -322,19 +354,19 @@ KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # `.bss` and subtracted out below, so that THIS harness's own number and M11's
 # both come out exactly as they did before M14 existed.
 M14_OFF_HEX=$(bssoff fatStore)
-[[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
+ck; [[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o — M14's filesystem state block is missing"
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
-[[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
-[[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M9_BSS=$(( M9_BSS + M10_STORE + M11_BSS + M14_BSS ))
-[[ $(( KDATA_BSS + ASM_BSS - M9_BSS )) -eq 5224 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M9_BSS are M9's ring-3 blocks, leaving $(( KDATA_BSS + ASM_BSS - M9_BSS )) — expected 5224 (5096 through M7, plus 128 for the virtual-memory state). If you meant to grow it, say so in GAP-0053."
+ck; [[ $(( KDATA_BSS + ASM_BSS - M9_BSS )) -eq 5224 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M9_BSS are M9's ring-3 blocks, leaving $(( KDATA_BSS + ASM_BSS - M9_BSS )) — expected 5224 (5096 through M7, plus 128 for the virtual-memory state). If you meant to grow it, say so in GAP-0053."
 echo "STRUCTURAL: pass  exactly 5224 bytes of mutable static storage outside M9's blocks — 5096 inherited, 128 for the address space"
 
 # 2d. THE VM SUBSYSTEM'S STATE IS ONE SYMBOL.
 VM_SIZE=$(bsssize vmStore)
-[[ -n "$VM_SIZE" ]] || fail "vm_store is not in kdata.o"
-[[ "$VM_SIZE" -eq 128 ]] || fail "vm_store is $VM_SIZE bytes, expected 128 (sixteen u64 words)"
+ck; [[ -n "$VM_SIZE" ]] || fail "vm_store is not in kdata.o"
+ck; [[ "$VM_SIZE" -eq 128 ]] || fail "vm_store is $VM_SIZE bytes, expected 128 (sixteen u64 words)"
 echo "STRUCTURAL: pass  vm_store is one 128-byte symbol"
 
 # 2e. THE STORAGE SEAM IS EXACTLY ONE CALL SITE.
@@ -346,12 +378,12 @@ echo "STRUCTURAL: pass  vm_store is one 128-byte symbol"
 # a second call site would be invisible in any test that only looked at
 # behaviour. ADR-0011 §0 is the pattern; ADR-0012 §3 restates it.
 SEAM_SITES=$(grep -c '^\s*return Bss[.]addressOf(vmStore)' "$CORE_DIR/kernel/vm.dart")
-[[ "$SEAM_SITES" -eq 1 ]] || fail "Bss.addressOf(vmStore) is returned from $SEAM_SITES functions in vm.dart, expected exactly 1 (vmMetaBase). The storage seam is the whole mutable-statics migration plan — see vm.dart's header."
+ck; [[ "$SEAM_SITES" -eq 1 ]] || fail "Bss.addressOf(vmStore) is returned from $SEAM_SITES functions in vm.dart, expected exactly 1 (vmMetaBase). The storage seam is the whole mutable-statics migration plan — see vm.dart's header."
 STRAY=$(grep -n 'Bss[.]addressOf(vmStore)' "$CORE_DIR/kernel/vm.dart" | grep -vE '^\s*[0-9]+:\s*(//|///|\*)' | grep -vE 'final Bss vmStore = ' | grep -vc 'return Bss[.]addressOf(vmStore)')
-[[ "$STRAY" -eq 0 ]] || fail "vm.dart has $STRAY call(s) of Bss.addressOf(vmStore) outside vmMetaBase"
+ck; [[ "$STRAY" -eq 0 ]] || fail "vm.dart has $STRAY call(s) of Bss.addressOf(vmStore) outside vmMetaBase"
 for f in "$CORE_DIR"/kernel/*.dart; do
   [[ "$(basename "$f")" == "vm.dart" ]] && continue
-  grep -qw 'vmStore' "$f" && fail "$(basename "$f") references vmStore — the VM's storage seam must not leak out of vm.dart"
+  ck; grep -qw 'vmStore' "$f" && fail "$(basename "$f") references vmStore — the VM's storage seam must not leak out of vm.dart"
 done
 echo "STRUCTURAL: pass  Bss.addressOf(vmStore) is called from exactly 1 function, in vm.dart's storage seam, and from no other kernel source"
 
@@ -364,13 +396,13 @@ echo "STRUCTURAL: pass  Bss.addressOf(vmStore) is called from exactly 1 function
 VM_MAP=$(awk -F'= *' '/^const int vmMapBytes/{gsub(/;/,"",$2); print $2; exit}' "$CORE_DIR/kernel/vm.dart")
 MAX_FRAMES=$(awk -F'= *' '/^const int pmmMaxFrames/{gsub(/;/,"",$2); print $2; exit}' "$CORE_DIR/kernel/pmm.dart")
 FRAME_BYTES=$(awk -F'= *' '/^const int pmmFrameBytes/{gsub(/;/,"",$2); print $2; exit}' "$CORE_DIR/kernel/pmm.dart")
-[[ -n "$VM_MAP" && -n "$MAX_FRAMES" && -n "$FRAME_BYTES" ]] || fail "could not read vmMapBytes / pmmMaxFrames / pmmFrameBytes out of the source"
-[[ "$VM_MAP" -eq $(( MAX_FRAMES * FRAME_BYTES )) ]] || fail "vm.dart maps $VM_MAP bytes but the allocator manages $(( MAX_FRAMES * FRAME_BYTES )) — raise vmMapBytes, vmBigLastEx and pmmMaxFrames together"
+ck; [[ -n "$VM_MAP" && -n "$MAX_FRAMES" && -n "$FRAME_BYTES" ]] || fail "could not read vmMapBytes / pmmMaxFrames / pmmFrameBytes out of the source"
+ck; [[ "$VM_MAP" -eq $(( MAX_FRAMES * FRAME_BYTES )) ]] || fail "vm.dart maps $VM_MAP bytes but the allocator manages $(( MAX_FRAMES * FRAME_BYTES )) — raise vmMapBytes, vmBigLastEx and pmmMaxFrames together"
 echo "STRUCTURAL: pass  vm.dart maps $VM_MAP bytes and the allocator manages $(( MAX_FRAMES * FRAME_BYTES )) — the same number"
 
 # The geometry constants have to multiply out against each other, and derive.py
 # keeps an independent copy of them that must not drift.
-python3 - "$CORE_DIR/kernel/vm.dart" "$DERIVE" <<'PY' || fail "vm.dart's page geometry is internally inconsistent, or derive.py's copy of it has drifted"
+ck; python3 - "$CORE_DIR/kernel/vm.dart" "$DERIVE" <<'PY' || fail "vm.dart's page geometry is internally inconsistent, or derive.py's copy of it has drifted"
 import re, sys
 src = open(sys.argv[1]).read()
 def c(name):
@@ -418,7 +450,7 @@ echo "STRUCTURAL: pass  vm.dart's page geometry multiplies out against itself an
 # this message.
 M7_VM=$(awk -F'= *' '/^VM_FRAMES = /{print $2; exit}' "$CORE_DIR/tests/conformance/m7-frames/derive.py")
 VM_FRAMES=$(awk -F'= *' '/^const int vmFrameCount/{gsub(/;/,"",$2); print $2; exit}' "$CORE_DIR/kernel/vm.dart")
-[[ "$M7_VM" == "$VM_FRAMES" ]] || fail "m7-frames/derive.py reserves $M7_VM frames for the page tables but vm.dart takes $VM_FRAMES"
+ck; [[ "$M7_VM" == "$VM_FRAMES" ]] || fail "m7-frames/derive.py reserves $M7_VM frames for the page tables but vm.dart takes $VM_FRAMES"
 echo "STRUCTURAL: pass  m7-frames' derivation reserves the same $VM_FRAMES page-table frames vm.dart takes"
 
 # 2h. CR0.WP IS SET IN boot.S, AND IT IS HALF THE MILESTONE.
@@ -429,8 +461,8 @@ echo "STRUCTURAL: pass  m7-frames' derivation reserves the same $VM_FRAMES page-
 # `vmtest ro` STILL printed SURVIVED. Boot A below proves it from the register;
 # this proves the instruction is in the source, so a revert is caught before a
 # boot. GAP-0080.
-grep -qE '^\s*orl \$0x80010000, %eax' "$CORE_DIR/boot/boot.S" || fail "core/boot/boot.S no longer sets CR0 bit 16 (WP) alongside bit 31 (PG). Without WP a read-only page-table entry does not stop a supervisor write and this whole milestone is decorative — see GAP-0080."
-grep -qE '^\s*orl \$\(1 << 11\), %eax' "$CORE_DIR/boot/boot.S" || fail "core/boot/boot.S no longer sets EFER.NXE (bit 11). A page-table entry with bit 63 set would then be a RESERVED-bit violation rather than a protection."
+ck; grep -qE '^\s*orl \$0x80010000, %eax' "$CORE_DIR/boot/boot.S" || fail "core/boot/boot.S no longer sets CR0 bit 16 (WP) alongside bit 31 (PG). Without WP a read-only page-table entry does not stop a supervisor write and this whole milestone is decorative — see GAP-0080."
+ck; grep -qE '^\s*orl \$\(1 << 11\), %eax' "$CORE_DIR/boot/boot.S" || fail "core/boot/boot.S no longer sets EFER.NXE (bit 11). A page-table entry with bit 63 set would then be a RESERVED-bit violation rather than a protection."
 echo "STRUCTURAL: pass  boot.S sets CR0.WP with PG and EFER.NXE with LME"
 
 # ---------------------------------------------------------------------------
@@ -451,12 +483,10 @@ echo "STRUCTURAL: pass  boot.S sets CR0.WP with PG and EFER.NXE with LME"
 #   vmStore                               the whole storage seam.
 # ---------------------------------------------------------------------------
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
-[[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
-VERIFY_OUT="$(OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" \
-  "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$CORE_DIR/build/portio.o" "$KERNEL_ELF" 2>&1)"
-VERIFY_STATUS=$?
+ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$CORE_DIR/build/kdata.o" "$CORE_DIR/build/portio.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
-if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
+ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"
 fi
 EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 | grep -oE '[0-9]+')
@@ -467,7 +497,7 @@ EXTERN_COUNT=$(grep -oE '\(([0-9]+) declared extern' <<<"$VERIFY_OUT" | head -1 
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\buser_store_addr\b" <<<"$VERIFY_OUT" && fail "user_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static userStore"
+ck; grep -q "\buser_store_addr\b" <<<"$VERIFY_OUT" && fail "user_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static userStore"
 M9_EXTERNS="enter_user gdt_base tlb_invlpg tr_read tss_base user_resume_ok_addr user_return"
 M9_PRESENT=0
 for sym in $M9_EXTERNS; do
@@ -481,7 +511,7 @@ done
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\belf_store_addr\b" <<<"$VERIFY_OUT" && fail "elf_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static elfStore"
+ck; grep -q "\belf_store_addr\b" <<<"$VERIFY_OUT" && fail "elf_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static elfStore"
 # M11 (ADR-0015) added FIVE more -- `sse_enabled`, `cr4_read`, `fx_save`,
 # `fx_restore` and `procStore`. They are subtracted BY NAME for the reason
 # M8's twelve, M9's eight and M10's one are: this harness's claim is about ITS
@@ -490,20 +520,20 @@ grep -q "\belf_store_addr\b" <<<"$VERIFY_OUT" && fail "elf_store_addr is still d
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\bproc_store_addr\b" <<<"$VERIFY_OUT" && fail "proc_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static procStore"
+ck; grep -q "\bproc_store_addr\b" <<<"$VERIFY_OUT" && fail "proc_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static procStore"
 M11_EXTERNS="sse_enabled cr4_read fx_save fx_restore"
 M11_PRESENT=0
 for sym in $M11_EXTERNS; do
   grep -q "\b$sym\b" <<<"$VERIFY_OUT" && M11_PRESENT=$(( M11_PRESENT + 1 ))
 done
-[[ "$M11_PRESENT" -eq 4 ]] || fail "only $M11_PRESENT of M11's 4 externs are in kmain.o's manifest ($M11_EXTERNS)"
+ck; [[ "$M11_PRESENT" -eq 4 ]] || fail "only $M11_PRESENT of M11's 4 externs are in kmain.o's manifest ($M11_EXTERNS)"
 # M15 (ADR-0019) added exactly ONE: `fileStore`, the file-descriptor
 # table's storage seam. Subtracted for the same reason every block above is.
 # M17 (ADR-0021) deleted this accessor: the storage it addressed became a DCDart
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && fail "file_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fileStore"
+ck; grep -q "\bfile_store_addr\b" <<<"$VERIFY_OUT" && fail "file_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fileStore"
 M15_PRESENT=0
 EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
 # M14 (ADR-0018) added exactly ONE: `fatStore`, the filesystem's storage
@@ -513,7 +543,7 @@ EXTERN_COUNT=$(( EXTERN_COUNT - M15_PRESENT ))
 # `@bss` mutable static in the subsystem that owns it, so the extern is gone.
 # The check INVERTS rather than disappearing — a resurrected accessor would
 # otherwise be invisible here, and that is the regression ADR-0021 must prevent.
-grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && fail "fat_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fatStore"
+ck; grep -q "\bfat_store_addr\b" <<<"$VERIFY_OUT" && fail "fat_store_addr is still declared extern — ADR-0021 deleted it when the storage became the @bss mutable static fatStore"
 M14_PRESENT=0
 EXTERN_COUNT=$(( EXTERN_COUNT - M14_PRESENT ))
 EXTERN_COUNT=$(( EXTERN_COUNT - M11_PRESENT ))
@@ -528,22 +558,22 @@ for gone in \
             shell_len_addr shell_state_addr shell_mbinfo_addr \
             kbd_prefix_addr fault_count_addr fb_state_addr \
             pmm_store_addr vm_store_addr; do
-  grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
+  ck; grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
-[[ "$EXTERN_COUNT" -eq 33 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M9's seven, expected 33 (22 from M7 after ADR-0021, plus M8's eleven)"
+ck; [[ "$EXTERN_COUNT" -eq 33 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M9's seven, expected 33 (22 from M7 after ADR-0021, plus M8's eleven)"
 for sym in cr0_read cr2_read cr3_read paging_install vm_exec_probe vm_exec_ok_addr \
            nx_enabled kernel_text_end kernel_rodata_start kernel_rodata_end \
            kernel_data_start; do
-  grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
+  ck; grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
 done
 # M8's twelfth was `vm_store_addr` (asserted absent above). What it addressed is
 # now `vmStore`, a 128-byte @bss block in vm.dart, asserted here by size rather
 # than by presence in an extern manifest it is no longer in.
-[[ "$(bsssize vmStore)" == "128" ]] || fail "vmStore is not a 128-byte object in kmain.o's .bss — M8's state did not survive the ADR-0021 migration"
+ck; [[ "$(bsssize vmStore)" == "128" ]] || fail "vmStore is not a 128-byte object in kmain.o's .bss — M8's state did not survive the ADR-0021 migration"
 # kdata.o must STILL have no undefined symbols at all — GAP-0056 records that as
 # a real property, and it is why the section-boundary accessors went in boot.S
 # rather than beside the storage they describe.
-grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
+ck; grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 32 from M7 plus exactly twelve, and kdata.o still passes standalone"
 
 # 2i. EVERY @rodata TABLE IS THE SIZE ITS CALL SITE PASSES.
@@ -555,8 +585,8 @@ echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 32 from M7 plu
 check_table() {
   local sym="$1" want="$2" got
   got=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v s="$sym" '$8==s {print $3; exit}')
-  [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M8 depends on was not emitted (a table with no call site is dropped by the linker)"
-  [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
+  ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M8 depends on was not emitted (a table with no call site is dropped by the linker)"
+  ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
 check_table shellStrHelp 2224  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table vmStrCr3 7
@@ -626,7 +656,7 @@ drive_session() {
   # previous boot still in TIME_WAIT. All three used to surface as QEMU
   # dying with "Address already in use".
   local port
-  port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
+  ck; port=$(python3 "$PICKER") || fail "pick-port.py could not find a free TCP port"
   timeout 300 qemu-system-x86_64 \
     -kernel "$KERNEL_ELF" \
     -m "$mem" \
@@ -638,24 +668,17 @@ drive_session() {
     -qmp "tcp:127.0.0.1:$port,server,nowait" \
     >"$outdir/qemu.log" 2>&1 &
   local qemu_pid=$!
-  python3 "$DRIVER" \
-    --port "$port" \
-    --serial "$ser" \
-    --wait-for 'M1 END\n' \
-    --png "$png" \
-    --screen-text "$outdir/screen.txt" \
-    --keys "$keys" \
-    "$@"
-  local drive_status=$?
-  wait "$qemu_pid" 2>/dev/null
-  local qemu_status=$?
-  if [[ $drive_status -ne 0 ]]; then
+  local drive_status
+  run_status drive_status -- python3 "$DRIVER" --port "$port" --serial "$ser" --wait-for 'M1 END\n' --png "$png" --screen-text "$outdir/screen.txt" --keys "$keys" "$@"
+  local qemu_status
+  await qemu_status "$qemu_pid"
+  ck; if [[ $drive_status -ne 0 ]]; then
     cat "$outdir/qemu.log" >&2
     echo "--- serial captured so far ---" >&2
     cat "$ser" >&2
     fail "qmp-drive.py exited $drive_status for the $label boot."
   fi
-  if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
+  ck; if [[ $qemu_status -ne 0 && $qemu_status -ne 124 ]]; then
     cat "$outdir/qemu.log" >&2
     fail "qemu-system-x86_64 exited $qemu_status unexpectedly on the $label boot (log above)"
   fi
@@ -705,8 +728,8 @@ if [[ $REGEN -eq 1 ]]; then
   echo "REGEN: wrote $EXPECTED_SERIAL and $EXPECTED_SCREEN — the derived checks below still have to pass"
 fi
 
-[[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL (run with --regen once to create it)"
-[[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
+ck; [[ -f "$EXPECTED_SERIAL" ]] || setup_error "golden not found at $EXPECTED_SERIAL (run with --regen once to create it)"
+ck; [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SCREEN"
 
 # ---------------------------------------------------------------------------
 # Step 5 — assert.
@@ -720,14 +743,14 @@ fi
 # fails before anything else does.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
-if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
+ck; if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
   cmp "$WORKDIR/prefix.bin" "$M1_EXPECTED" >&2
   fail "the first $M1_BYTES bytes of this boot do not match m1-interrupts/expected.txt — M8 changed M0/M1 serial output"
 fi
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
 
 # 5b. The whole serial capture.
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
+ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
   echo "--- first difference ---" >&2
   cmp "$SERIAL_CAPTURE" "$EXPECTED_SERIAL" >&2
   diff <(cat -v "$EXPECTED_SERIAL") <(cat -v "$SERIAL_CAPTURE") | head -40 >&2
@@ -742,7 +765,7 @@ echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byt
 # own report: the actual entries the MMU is walking, dumped with the monitor at
 # the CR3 QEMU says is installed, and walked here by derive.py's independent
 # implementation of the x86-64 4-level walk.
-if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$WORKDIR/session/monitor.txt" \
+ck; if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$WORKDIR/session/monitor.txt" \
      "$(sym __kernel_start)" "$(sym __text_end)" "$(sym __rodata_start)" \
      "$(sym __rodata_end)" "$(sym __data_start)" "$(sym __kernel_end)" <<'PY'
 import importlib.util, re, sys
@@ -896,7 +919,7 @@ echo "ASSERT: pass  the LIVE page tables, read out of guest physical memory at Q
 # GAP-0050's whole point was that a write to `.rodata` succeeded SILENTLY. This
 # is where that stops being true, and the controls are checked first so a kernel
 # in which everything faults cannot look like a pass.
-if ! python3 - "$SERIAL_CAPTURE" "$(sym __rodata_start)" "$(sym __rodata_end)" \
+ck; if ! python3 - "$SERIAL_CAPTURE" "$(sym __rodata_start)" "$(sym __rodata_end)" \
      "$(sym __kernel_start)" "$(sym __text_end)" "$(sym __data_start)" "$(sym __kernel_end)" <<'PY'
 import re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
@@ -1037,7 +1060,7 @@ fi
 echo "ASSERT: pass  a write to a @rodata table raises #PF (present/write/supervisor/data) at exactly that address and the canary is unchanged; an instruction fetch from it raises #PF with the fetch bit; the same operations on writable and executable pages do NOT fault; the shell survived both"
 
 # 5e. The framebuffer (the 80x25 text buffer, read out of guest memory).
-if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
+ck; if ! cmp -s "$SCREEN_TEXT" "$EXPECTED_SCREEN"; then
   echo "--- VGA text buffer as read from guest memory ---" >&2
   cat -n "$SCREEN_TEXT" >&2
   diff -u "$EXPECTED_SCREEN" "$SCREEN_TEXT" >&2
@@ -1046,8 +1069,8 @@ fi
 echo "ASSERT: pass  the 80x25 VGA text buffer at 0xB8000 matches expected-screen.txt exactly — the console still works through the new mapping"
 
 # 5f. The screenshot.
-[[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
-case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
+ck; [[ -s "$SHOT_PNG" ]] || fail "no screenshot was produced at $SHOT_PNG"
+ck; case "$(head -c 8 "$SHOT_PNG" | od -An -tx1 | tr -d ' \n')" in
   89504e470d0a1a0a) ;;
   *) fail "$SHOT_PNG is not a PNG" ;;
 esac
@@ -1082,7 +1105,7 @@ drive_session "$WORKDIR/nonx" \
   --monitor-command "xp/${TABLE_QWORDS}gx {addr}" \
   --monitor-capture "$WORKDIR/nonx/monitor.txt"
 
-if ! python3 - "$WORKDIR/nonx/serial.txt" "$DERIVE" "$WORKDIR/nonx/monitor.txt" \
+ck; if ! python3 - "$WORKDIR/nonx/serial.txt" "$DERIVE" "$WORKDIR/nonx/monitor.txt" \
      "$(sym __rodata_start)" "$(sym __rodata_end)" <<'PY'
 import importlib.util, re, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
@@ -1148,7 +1171,7 @@ then
   fail "NEGATIVE CONTROL FAILED: the no-NX boot did not behave differently in exactly the way losing NX should"
 fi
 # And its capture must differ from the golden, in the `vm` report.
-if cmp -s "$WORKDIR/nonx/serial.txt" "$EXPECTED_SERIAL"; then
+ck; if cmp -s "$WORKDIR/nonx/serial.txt" "$EXPECTED_SERIAL"; then
   fail "NEGATIVE CONTROL FAILED: a boot on a CPU without NX produced the same serial capture as the main session"
 fi
 echo "ASSERT: pass  negative control — on -cpu qemu64,nx=off the kernel reports NX 0, maps .rodata executable, and 'vmtest nx' SURVIVES while 'vmtest ro' still faults: the fetch fault in the main session is caused by the NX bit and by nothing else"
@@ -1169,7 +1192,7 @@ drive_session "$WORKDIR/small" "v,m,ret,wait:1500,v,m,t,e,s,t,spc,r,o,ret,wait:1
   --monitor-command "xp/${TABLE_QWORDS}gx {addr}" \
   --monitor-capture "$WORKDIR/small/monitor.txt"
 
-if ! python3 - "$WORKDIR/small/serial.txt" "$DERIVE" "$WORKDIR/small/monitor.txt" \
+ck; if ! python3 - "$WORKDIR/small/serial.txt" "$DERIVE" "$WORKDIR/small/monitor.txt" \
      "$(sym __kernel_start)" "$(sym __text_end)" "$(sym __rodata_start)" \
      "$(sym __rodata_end)" "$(sym __data_start)" "$(sym __kernel_end)" <<'PY'
 import importlib.util, re, sys
@@ -1214,12 +1237,12 @@ PY
 then
   fail "NEGATIVE CONTROL FAILED: the address space did not come up correctly on a different machine"
 fi
-if cmp -s "$WORKDIR/small/serial.txt" "$EXPECTED_SERIAL"; then
+ck; if cmp -s "$WORKDIR/small/serial.txt" "$EXPECTED_SERIAL"; then
   fail "NEGATIVE CONTROL FAILED: a boot on a 32MiB machine produced the same serial capture as the 128MiB session"
 fi
 SMALL_DIFF=$(cmp "$WORKDIR/small/serial.txt" "$EXPECTED_SERIAL" 2>&1 | grep -oE '(byte|char) [0-9]+' | head -1)
 SMALL_OFFSET=${SMALL_DIFF##* }
-[[ "$SMALL_OFFSET" -le 544 ]] || fail "the 32MiB capture matches M1's entire 544-byte golden, so the boot-time memory-map report did not change with the machine"
+ck; [[ "$SMALL_OFFSET" -le 544 ]] || fail "the 32MiB capture matches M1's entire 544-byte golden, so the boot-time memory-map report did not change with the machine"
 echo "ASSERT: pass  negative control — on a 32MiB machine the memory map differs inside M1's own boot report, and the address space still comes up W^X and still faults on a .rodata write"
 
 # ---------------------------------------------------------------------------
@@ -1258,7 +1281,7 @@ drive_session "$WORKDIR/drain" \
   --monitor-command "xp/${TABLE_QWORDS}gx {addr}" \
   --monitor-capture "$WORKDIR/drain/monitor.txt"
 
-if ! python3 - "$WORKDIR/drain/serial.txt" "$DERIVE" "$WORKDIR/drain/monitor.txt" \
+ck; if ! python3 - "$WORKDIR/drain/serial.txt" "$DERIVE" "$WORKDIR/drain/monitor.txt" \
      "$PML4_HEX" "$(sym __kernel_start)" "$(sym __text_end)" \
      "$(sym __rodata_start)" "$(sym __rodata_end)" "$(sym __data_start)" \
      "$(sym __kernel_end)" <<'PY'
@@ -1330,5 +1353,9 @@ then
 fi
 echo "ASSERT: pass  a full drain / 64-frame write test / refill cycle does not touch the six page-table frames, 'free <PML4>' is refused with ERR RESERVED, and the live tables are still W^X afterwards"
 
+# GAP-0168: the PASS line below describes work; this refuses to print it
+# unless that many checks actually executed. An abort, a loop that iterated
+# zero times, a branch not taken or a deleted guard all land here.
+require_assertions "$ASSERTIONS_REQUIRED"
 echo "M8-paging: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S + portio.S) -> link into THREE PT_LOAD segments -> 12 structural checks (no RWX segment, three segments R E / R / RW, section boundaries page-aligned and non-overlapping, donated .bss 5096 -> 5224, vm_store one 128-byte symbol, the storage seam exactly 1 call site, the mapped extent == the allocator's bound, the page geometry multiplied out against itself and against derive.py, m7's derivation reserving the same 6 frames, CR0.WP and EFER.NXE in boot.S, 49 @rodata sizes) -> verify-freestanding pass ($EXTERN_COUNT declared externs, 32 + 12, kdata.o still clean standalone) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with M1's 544-byte golden intact as a prefix; the LIVE page tables read out of guest physical memory at QEMU's own CR3 and walked independently, proving .text read+execute, .rodata read-only+NX and .data/.bss read+write+NX, identity, page by page, with everything above the 128MiB bound unmapped; a deliberate write to a @rodata table raising #PF with the right CR2 and a decoded error code while the canary stays intact and the shell survives; a deliberate instruction fetch from the same page raising #PF with the fetch bit; both controls (a store to a writable page, a call to an executable page) running clean; a no-NX CPU where the fetch SURVIVES and the write still faults; a 32MiB machine where the address space still comes up W^X; and a full allocator drain/refill cycle that cannot reach the page tables. Screenshot at $SHOT_PNG"
 exit 0
