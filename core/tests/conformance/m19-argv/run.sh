@@ -129,18 +129,24 @@ PY
 # booting is established without booting.
 # ---------------------------------------------------------------------------
 
-# 2a. THE .bss ACCOUNTING, AND WHY M19's BLOCK IS THE LAST ONE.
+# 2a. THE .bss ACCOUNTING, AND WHY M19's BLOCK WAS THE LAST ONE.
 #
 # `argsStore` is 256 bytes of DCDart `@bss` and it is declared in `args.dart`,
-# which kmain.dart lists LAST. That is not a filing preference: every harness
-# from M2 onward measures "the donated bytes from MY block to the end of .bss",
-# and a new block anywhere other than the end would change every one of those
-# numbers at once. At the end, each older harness subtracts this one first and
-# its own number keeps meaning in 2026 what it meant when it was written --
-# exactly what M14, M15 and M16 each did in turn.
+# which kmain.dart listed LAST at M19. That is not a filing preference: every
+# harness from M2 onward measures "the donated bytes from MY block to the end of
+# .bss", and a new block anywhere other than the end would change every one of
+# those numbers at once. At the end, each older harness subtracts the newest one
+# first and its own number keeps meaning in 2026 what it meant when it was
+# written -- exactly what M14, M15 and M16 each did in turn.
 #
-# So the total is 14112 + 256 = 14368: 9728 through M13 plus M18's scheduler
-# header, plus fat_store's 1824, plus file_store's 2560, plus args_store's 256.
+# M20 (ADR-0027) IS NOW THE LAST BLOCK, and this harness gets the same treatment
+# it gave its predecessors: `chanStore` is subtracted FIRST, and what M19
+# asserts afterwards is unchanged -- its own 256 bytes, and that nothing has been
+# inserted BETWEEN args_store and the end of what M19 owned.
+#
+# So M19's total is still 14112 + 256 = 14368: 9728 through M13 plus M18's
+# scheduler header, plus fat_store's 1824, plus file_store's 2560, plus
+# args_store's 256. The kernel's grand total is that plus chanStore's 2624.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
   local f="$1" n="$2" o v
   for o in kmain.o kdata.o; do
@@ -161,16 +167,26 @@ ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{
 ASM_BSS=$((16#$ASM_BSS_HEX))
 [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 14368 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 14368 — 14112 through M18 plus args_store's 256. If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+[[ "$KDATA_BSS" -eq 16992 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 16992 — 14368 through M19 plus chanStore's 2624 (ADR-0027). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+
+# M20's block, subtracted FIRST, exactly as M19's is by every harness before it.
+CHAN_STORE_SIZE=$(bsssize chanStore)
+[[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624 — M20's IPC channel block (ADR-0027)"
+CHAN_OFF=$(bssoff chanStore)
+[[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
+[[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — M20's block is NOT the last one, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+M19_TOTAL=$(( KDATA_BSS - CHAN_STORE_SIZE ))
+[[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore is $M19_TOTAL, not M19's 14368 — M20 moved storage it does not own"
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
 [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"
 ARGS_OFF=$(bssoff argsStore)
 [[ -n "$ARGS_OFF" ]] || fail "argsStore has no .bss offset in kmain.o"
-[[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — M19's block is NOT the last one, so every earlier harness's 'bytes from my block to the end' number has silently moved"
-[[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 14112 ]] \
-  || fail "the .bss outside args_store is $(( KDATA_BSS - ARGS_STORE_SIZE )), not M18's 14112 — M19 moved storage it does not own"
+[[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq $(( 16#$CHAN_OFF )) ]] \
+  || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and chanStore begins at $(( 16#$CHAN_OFF )) — something was inserted BETWEEN M19's block and M20's, so M19's 'bytes from my block to the next' number has silently moved"
+[[ $(( M19_TOTAL - ARGS_STORE_SIZE )) -eq 14112 ]] \
+  || fail "the .bss outside args_store and chanStore is $(( M19_TOTAL - ARGS_STORE_SIZE )), not M18's 14112 — M19 moved storage it does not own"
 
 # The three regions inside the block, multiplied out against the block's own
 # size. A region that ran past the end would corrupt whatever follows it in
@@ -191,7 +207,7 @@ A_MIN_STACK=$(dartconst argsMinStack args.dart)
   || fail "the $A_MAX_COUNT offsets at $A_OFF_OFF do not end where the text begins ($A_TEXT_OFF)"
 [[ $(( A_TEXT_OFF + A_MAX_BYTES )) -eq "$A_STORE" ]] \
   || fail "the $A_MAX_BYTES bytes of text at $A_TEXT_OFF do not end at the block's end ($A_STORE)"
-echo "STRUCTURAL: pass  the kernel's mutable statics are 14368 bytes, 256 of them argsStore and argsStore is the LAST block in .bss: $A_META_WORDS metadata words at $A_META_OFF, $A_MAX_COUNT offsets at $A_OFF_OFF, $A_MAX_BYTES bytes of argument text at $A_TEXT_OFF, ending exactly at $A_STORE"
+echo "STRUCTURAL: pass  the kernel's mutable statics are $KDATA_BSS bytes, 2624 of them M20's chanStore which is the LAST block in .bss, leaving M19's own 14368 with 256 of them argsStore and NOTHING between argsStore and chanStore: $A_META_WORDS metadata words at $A_META_OFF, $A_MAX_COUNT offsets at $A_OFF_OFF, $A_MAX_BYTES bytes of argument text at $A_TEXT_OFF, ending exactly at $A_STORE"
 
 # 2b. THE STORAGE SEAM: ONE ACCESSOR PER REGION, THREE CALL SITES, ONE FILE.
 SEAM=$(grep -cE "^  return Bss[.]addressOf[(]argsStore[)]" "$CORE_DIR/kernel/args.dart")

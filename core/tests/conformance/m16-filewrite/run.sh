@@ -242,10 +242,22 @@ KDATA_BSS=$DART_BSS
 # earlier milestone's, so that this harness's own number continues to mean what
 # it meant when it was written. Exactly the accounting M14, M15 and M16 each got
 # in turn.
+# M20 (ADR-0027) added a block AFTER M19's, and it is now the LAST one in .bss:
+# `chanStore`, 2624 bytes -- eight global counter words and two 1280-byte channel
+# port records, each of which is a 128-byte header, 128 bytes of per-slot lengths
+# and 1024 bytes of message ring. Subtracted FIRST, before every earlier
+# milestone's, so that this harness's own number continues to mean what it meant
+# when it was written. Exactly the accounting M14, M15, M16 and M19 each got in
+# turn.
+M20_OFF_HEX=$(bssoff chanStore)
+[[ -n "$M20_OFF_HEX" ]] || fail "chanStore has no .bss offset in kmain.o -- M20's IPC channel block (ADR-0027) is missing"
+M20_BSS=$(( KDATA_BSS - 16#$M20_OFF_HEX ))
+[[ "$M20_BSS" -eq 2624 ]] || fail "the bytes from M20's chanStore to the end of .bss are $M20_BSS, expected 2624. If that block changed size, change it in ADR-0027, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M20_BSS ))
 M19_OFF_HEX=$(bssoff argsStore)
 [[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"
 M19_BSS=$(( KDATA_BSS - 16#$M19_OFF_HEX ))
-[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to the end of .bss are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
+[[ "$M19_BSS" -eq 256 ]] || fail "the bytes from M19's argsStore to M20's chanStore are $M19_BSS, expected 256. If that block changed size, change it in ADR-0023, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
 [[ "$KDATA_BSS" -eq 14112 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 14112 — 11552 through M14 (11488, plus M18's 64-byte scheduler header, ADR-0022) plus file_store's 2560. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it."

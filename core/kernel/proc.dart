@@ -1746,6 +1746,16 @@ void procCleanup(u64 s) {
   if (orphans > u64(0)) {
     fileOrphanLine(orphans);
   }
+  // M20: this slot's IPC endpoints go with everything else it owned, and for
+  // exactly the reason its descriptors do. This is the ONLY caller of
+  // [chanReleaseOwner] and it is deliberately this function rather than the exit
+  // syscall: two of the three callers here are failures, and an endpoint that
+  // survived a KILLED process would leave its peer waiting forever on a
+  // conversation nobody is on the other end of. Released by ID rather than by
+  // slot, because slots are reused and IDs are not; the `id < 1` guard inside
+  // handles the load-refusal path, where this slot's ID word is still the
+  // previous occupant's or has never been written at all.
+  chanReleaseOwner(procGet(s, u64(procSlotId)));
   procSet(s, u64(procSlotState), u64(procStateFree));
   uartWrite(Rodata.addressOf(procStrKill), u64(15));
   uartPutHex(s, u64(2));
