@@ -126,10 +126,11 @@ symsize() {
 # Step 2 — structural checks. Everything establishable without booting is.
 # ---------------------------------------------------------------------------
 
-# 2a. THE .bss ACCOUNTING, AND WHY M20's BLOCK IS THE LAST ONE.
+# 2a. THE .bss ACCOUNTING, AND WHY M20's BLOCK IS THE SECOND-TO-LAST ONE.
 #
 # `chanStore` is 2624 bytes of DCDart `@bss` declared in `chan.dart`, which
-# kmain.dart lists LAST. That is not a filing preference: every harness from M2
+# kmain.dart lists second-to-last, ahead of S0's ioctlStore. That order is not a
+# filing preference: every harness from M2
 # onward measures "the donated bytes from MY block to the end of .bss", and a new
 # block anywhere other than the end would change every one of those numbers at
 # once. At the end, each older harness subtracts this one first -- exactly what
@@ -155,14 +156,27 @@ ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{
 ASM_BSS=$((16#$ASM_BSS_HEX))
 [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o donates $ASM_BSS bytes of .bss, expected exactly 96"
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 16992 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 16992 — 14368 through M19 plus chanStore's 2624. If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
+[[ "$KDATA_BSS" -eq 17504 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 17504 — 14368 through M19, plus chanStore's 2624, plus S0's ioctlStore 512 (ADR-0033). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
+
+# S0's block (ADR-0033) landed AFTER M20's and is the last one in .bss now, so
+# it is subtracted FIRST -- exactly the accounting M20 itself gave M14, M15, M16
+# and M19. ADR-0031 §4.3 rule 5 requires the ioctl bounce buffer to be last, and
+# drm-abi CHECK 16 reads kernel.map to confirm it rather than trusting a comment.
+IOCTL_STORE_SIZE=$(bsssize ioctlStore)
+[[ "$IOCTL_STORE_SIZE" == "512" ]] || fail "ioctlStore is ${IOCTL_STORE_SIZE:-missing} bytes, expected 512 (ADR-0033)"
+IOCTL_OFF=$(bssoff ioctlStore)
+[[ -n "$IOCTL_OFF" ]] || fail "ioctlStore has no .bss offset in kmain.o"
+[[ $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "ioctlStore ends at $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) and kmain.o's .bss is $DART_BSS — S0's block is NOT the last one, and ADR-0031 §4.3 rule 5 requires the ioctl bounce buffer to be last"
+DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
 
 CHAN_STORE_SIZE=$(bsssize chanStore)
 [[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624"
 CHAN_OFF=$(bssoff chanStore)
 [[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
 [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss is $DART_BSS — M20's block is NOT the last one, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS — M20's block is not immediately before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
 [[ $(( KDATA_BSS - CHAN_STORE_SIZE )) -eq 14368 ]] \
   || fail "the .bss outside chanStore is $(( KDATA_BSS - CHAN_STORE_SIZE )), not M19's 14368 — M20 moved storage it does not own"
 
@@ -201,7 +215,7 @@ C_STORE=$(dartconst chanStoreBytes chan.dart)
 # The ring depth must be a power of two, because the slot index is a MASK.
 [[ $(( C_DEPTH & C_MASK )) -eq 0 && $(( C_DEPTH - 1 )) -eq "$C_MASK" ]] \
   || fail "chanRingDepth $C_DEPTH and chanRingMask $C_MASK are not a power of two and its mask — `counter & mask` would not be a slot index"
-echo "STRUCTURAL: pass  chanStore is $C_STORE bytes and the LAST block in .bss: $C_METAW global words at 0, then $C_PORTS port records of $C_PORTB (a ${C_HDRB}-byte header, $C_LENB bytes of per-slot lengths, $C_DATAB bytes of ring), tiling exactly; $C_DEPTH slots per direction is a power of two and $C_MASK is its mask"
+echo "STRUCTURAL: pass  chanStore is $C_STORE bytes and the SECOND-TO-LAST block in .bss, immediately before S0's ioctlStore: $C_METAW global words at 0, then $C_PORTS port records of $C_PORTB (a ${C_HDRB}-byte header, $C_LENB bytes of per-slot lengths, $C_DATAB bytes of ring), tiling exactly; $C_DEPTH slots per direction is a power of two and $C_MASK is its mask"
 
 # 2b. THE 64-BYTE CAP IS THE DESIGN, AND IT IS CHECKED IN THE KERNEL.
 #
@@ -625,7 +639,7 @@ echo "CHECK 5: pass  the running hash after every one of the four rounds matches
 # more is REFUSED, so "the ring is bounded" is not satisfied by a kernel that
 # refuses the second.
 have "IPC CHK SENDFULL GOT FFFFFFFFFFFFFFF6 WANT FFFFFFFFFFFFFFF6"
-have "CHAN REFUSE C 0C EP 0000000000000000 R FFFFFFFFFFFFFFF6"
+have "CHAN REFUSE C 0E EP 0000000000000000 R FFFFFFFFFFFFFFF6"
 SEQ_LAST=$(printf '%08X' $(( $(d rounds) + $(d burst) - 1 )))
 have "CHAN SEND EP 00 LEN 40 SEQ $SEQ_LAST"
 havent "CHAN SEND EP 00 LEN 40 SEQ $(printf '%08X' $(( $(d rounds) + $(d burst) )))"
@@ -673,10 +687,10 @@ for n, e in enumerate(exits):
     # ...and only THEN is the peer reported gone, on both directions.
     gone_r = [i for i in range(nxt if nxt <= len(lines) else len(lines))
               if i > (got[-1] if got else rel)
-              and lines[i] == "CHAN REFUSE C 0D EP 0000000000000001 R FFFFFFFFFFFFFFF3"]
+              and lines[i] == "CHAN REFUSE C 0F EP 0000000000000001 R FFFFFFFFFFFFFFF3"]
     gone_s = [i for i in range(nxt if nxt <= len(lines) else len(lines))
               if i > (got[-1] if got else rel)
-              and lines[i] == "CHAN REFUSE C 0C EP 0000000000000001 R FFFFFFFFFFFFFFF3"]
+              and lines[i] == "CHAN REFUSE C 0E EP 0000000000000001 R FFFFFFFFFFFFFFF3"]
     if not gone_r:
         fails.append("session %d: the survivor never got CHAN_PEERGONE from a receive "
                      "after draining" % n)
@@ -725,8 +739,8 @@ chkline SENDGONE    FFFFFFFFFFFFFFF3
 chkline SENDFULL    FFFFFFFFFFFFFFF6
 # THE KERNEL SAID SO TOO, on its own side of the boundary, for the two that
 # matter most: the read-only destination and the overflowing pointer.
-have "CHAN REFUSE C 0D EP 0000000000000000 R FFFFFFFFFFFFFFF8"
-have "CHAN REFUSE C 0C EP 0000000000000000 R FFFFFFFFFFFFFFF8"
+have "CHAN REFUSE C 0F EP 0000000000000000 R FFFFFFFFFFFFFFF8"
+have "CHAN REFUSE C 0E EP 0000000000000000 R FFFFFFFFFFFFFFF8"
 # AND THE CHANNEL SURVIVED ALL OF THEM: the conversation continued afterwards,
 # which is what the eight burst sends that follow the battery demonstrate.
 echo "CHECK 8: pass  NINETEEN refusal outcomes observed FROM RING 3 as return values — including a receive into the program's own READ-ONLY page (W^X held: the kernel refused rather than writing through a mapping ring 3 cannot write) and a send with ptr = 0xFFFFFFFFFFFFFFFF (bounded before the addition, so DCDart's overflow trap never fired inside the syscall handler) — and the channel kept working afterwards"
@@ -784,9 +798,9 @@ nphave() { grep -qF -- "$1" "$NP_SERIAL" || { sed -n '/M1 END/,$p' "$NP_SERIAL" 
 nphavent() { grep -qF -- "$1" "$NP_SERIAL" && { sed -n '/M1 END/,$p' "$NP_SERIAL" >&2; fail "the control transcript contains what it must not: $1"; }; }
 
 nphave "IPC OPEN R FFFFFFFFFFFFFFFD"
-nphave "CHAN REFUSE C 0B EP 0000000000000000 R FFFFFFFFFFFFFFFD"
-nphave "CHAN REFUSE C 0C EP 0000000000000000 R FFFFFFFFFFFFFFFD"
 nphave "CHAN REFUSE C 0D EP 0000000000000000 R FFFFFFFFFFFFFFFD"
+nphave "CHAN REFUSE C 0E EP 0000000000000000 R FFFFFFFFFFFFFFFD"
+nphave "CHAN REFUSE C 0F EP 0000000000000000 R FFFFFFFFFFFFFFFD"
 nphave "IPC CHK NPSEND GOT FFFFFFFFFFFFFFFD WANT FFFFFFFFFFFFFFFD"
 nphave "IPC CHK NPRECV GOT FFFFFFFFFFFFFFFD WANT FFFFFFFFFFFFFFFD"
 nphave "IPC NOPROC BAD 0000"
@@ -800,5 +814,5 @@ echo "CHECK 13: pass  NEGATIVE CONTROL — the SAME BINARY started with \`run 0x
 # ---- The exit criterion, stated once more against what actually happened. --
 SERIAL_BYTES=$(wc -c <"$SERIAL" | tr -d ' ')
 echo
-echo "M20-ipc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build ONE freestanding static ELF64 program which make-image.py writes to TWO BYTE-IDENTICAL disk slots (it refuses to build an image where they differ) -> 8 structural checks (chanStore 2624 bytes and the LAST block in .bss with its regions tiling exactly and the ring depth a power of two, chanMsgBytes HARD-CAPPED at 64 in the kernel with both validators bounding the length before touching the pointer and only the WRITE one requiring the W bit, the single-producer discipline and the publication order read out of chanSysSend/chanSysRecv, a 3-call-site storage seam named nowhere else with exactly one release site which is procCleanup, $CODE_COUNT distinct refusal-and-status codes all above one floor (12 of them provoked from ring 3 in this run) and three syscall numbers colliding with nothing, 17 @rodata tables against their call sites, shellStrHelp UNCHANGED at 2224, and chanInit/chanExitReport both silent on a boot that opens no channel) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M20 added no assembly) -> TWO real QEMU boots, M1's ${M1_BYTES}-byte golden a byte-exact prefix of both. ${SERIAL_BYTES} bytes of transcript in which TWO RING-3 PROCESSES IN TWO DIFFERENT ADDRESS SPACES EXCHANGED SIXTEEN MESSAGES: the SAME BINARY took the requester role and the responder role because \`chanopen\` told it which it was, four requests of four different lengths ($(d req_lens)) crossed one way and four replies of four more ($(d rep_lens)) came back DERIVED FROM THE BYTES THAT ARRIVED, and each process EXITED WITH A 64-BIT FNV-1a HASH OF EVERY PAYLOAD BYTE IT RECEIVED — $(d a_hash) and $(d b_hash), both computed on the host from the protocol's formulas BEFORE the machine booted, both reproduced exactly by a SECOND session on the same port number with a new generation and two new process ids; the ring filled to exactly $(d burst) messages and refused the ninth; EIGHT MESSAGES SENT BY A PROCESS THAT THEN EXITED WERE DELIVERED IN FULL to a survivor whose peer no longer existed, in that order, with CHAN_PEERGONE arriving only once the last of them was drained; nineteen refusal outcomes observed from ring 3 as return values, among them a receive into the program's own read-only page and a send with a pointer of 0xFFFFFFFFFFFFFFFF; the frame allocator's free count identical to the frame across both sessions because a channel is @bss and costs it nothing; and the SAME BINARY run as an M10-style program with no process slot refused by all three syscalls with CHAN_NOPROC. Screenshot at $SHOT_PNG"
+echo "M20-ipc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build ONE freestanding static ELF64 program which make-image.py writes to TWO BYTE-IDENTICAL disk slots (it refuses to build an image where they differ) -> 8 structural checks (chanStore 2624 bytes and the second-to-last block in .bss, immediately before S0's ioctlStore with its regions tiling exactly and the ring depth a power of two, chanMsgBytes HARD-CAPPED at 64 in the kernel with both validators bounding the length before touching the pointer and only the WRITE one requiring the W bit, the single-producer discipline and the publication order read out of chanSysSend/chanSysRecv, a 3-call-site storage seam named nowhere else with exactly one release site which is procCleanup, $CODE_COUNT distinct refusal-and-status codes all above one floor (12 of them provoked from ring 3 in this run) and three syscall numbers colliding with nothing, 17 @rodata tables against their call sites, shellStrHelp UNCHANGED at 2224, and chanInit/chanExitReport both silent on a boot that opens no channel) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M20 added no assembly) -> TWO real QEMU boots, M1's ${M1_BYTES}-byte golden a byte-exact prefix of both. ${SERIAL_BYTES} bytes of transcript in which TWO RING-3 PROCESSES IN TWO DIFFERENT ADDRESS SPACES EXCHANGED SIXTEEN MESSAGES: the SAME BINARY took the requester role and the responder role because \`chanopen\` told it which it was, four requests of four different lengths ($(d req_lens)) crossed one way and four replies of four more ($(d rep_lens)) came back DERIVED FROM THE BYTES THAT ARRIVED, and each process EXITED WITH A 64-BIT FNV-1a HASH OF EVERY PAYLOAD BYTE IT RECEIVED — $(d a_hash) and $(d b_hash), both computed on the host from the protocol's formulas BEFORE the machine booted, both reproduced exactly by a SECOND session on the same port number with a new generation and two new process ids; the ring filled to exactly $(d burst) messages and refused the ninth; EIGHT MESSAGES SENT BY A PROCESS THAT THEN EXITED WERE DELIVERED IN FULL to a survivor whose peer no longer existed, in that order, with CHAN_PEERGONE arriving only once the last of them was drained; nineteen refusal outcomes observed from ring 3 as return values, among them a receive into the program's own read-only page and a send with a pointer of 0xFFFFFFFFFFFFFFFF; the frame allocator's free count identical to the frame across both sessions because a channel is @bss and costs it nothing; and the SAME BINARY run as an M10-style program with no process slot refused by all three syscalls with CHAN_NOPROC. Screenshot at $SHOT_PNG"
 exit 0

@@ -17,8 +17,11 @@
 # What is checked here that no boot could establish:
 #
 #   * THE PROGRAM ISSUES EXACTLY THE SIX SYSCALLS IT DECLARES and no others --
-#     0 (exit), 1 (write), 3 (yield), 11 (chanopen), 12 (chansend), 13
-#     (chanrecv). Read by walking backwards from every `int $0x80` to the last
+#     0 (exit), 1 (write), 3 (yield), 13 (chanopen), 14 (chansend), 15
+#     (chanrecv). They were 11, 12 and 13 until the merge with S0: the syscall
+#     registry had reserved 11 for `fdwait` and allocated 12 to `ioctl`, so the
+#     channel moved to the next free numbers. See docs/syscall-registry.md and
+#     GAP-0213. Read by walking backwards from every `int $0x80` to the last
 #     thing that wrote RAX, which is m18's technique and is here for m18's
 #     reason: collecting every immediate ever moved into RAX reports data as
 #     syscall numbers.
@@ -212,15 +215,15 @@ for i, l in enumerate(insns):
         if re.search(r",%(e|r)ax\b", p) or re.search(r"\bcall\b", p):
             break
     nums.add(num)
-allowed = {0, 1, 3, 11, 12, 13}
+allowed = {0, 1, 3, 13, 14, 15}
 extra = nums - allowed
 if extra:
     fails.append("issues syscall number(s) %s; it declares only 0 (exit), 1 (write), "
-                 "3 (yield), 11 (chanopen), 12 (chansend) and 13 (chanrecv). UNKNOWN "
+                 "3 (yield), 13 (chanopen), 14 (chansend) and 15 (chanrecv). UNKNOWN "
                  "means the number reaching RAX is not a constant this script can read, "
                  "which is itself a reason to look."
                  % ", ".join(str(n) for n in sorted(extra, key=str)))
-for need, why in ((11, "chanopen"), (12, "chansend"), (13, "chanrecv"), (3, "yield")):
+for need, why in ((13, "chanopen"), (14, "chansend"), (15, "chanrecv"), (3, "yield")):
     if need not in nums:
         fails.append("never loads %d into RAX -- it never calls `%s`" % (need, why))
 
