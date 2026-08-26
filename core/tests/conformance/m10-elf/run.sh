@@ -483,16 +483,24 @@ echo "STRUCTURAL: pass  a writable+executable page is refused twice, independent
 # zeroing being deleted.
 ALLOCS=$(grep -c 'allocFrame();' "$CORE_DIR/kernel/elf.dart")
 ZEROES=$(grep -c 'vmZeroFrame(' "$CORE_DIR/kernel/elf.dart")
-[[ "$ALLOCS" -eq 5 ]] || fail "elf.dart calls allocFrame() $ALLOCS times, expected 5 (the header frame, the sector scratch frame, the page-table frame, one per segment page, and the stack page). If you added one, it needs a vmZeroFrame beside it — see GAP-0094."
-[[ "$ZEROES" -eq 4 ]] || fail "elf.dart calls vmZeroFrame() $ZEROES times, expected 4 — one for every allocFrame() except the page-table frame, which vmProgTableInstall zeroes. EVERY frame this loader hands to ring 3 must be zeroed before anything is copied into it, and on QEMU no behavioural check can tell you when that stops happening (GAP-0094)."
+# M20 (ADR-0027): the header frame and the sector scratch frame MOVED to
+# procCreate when `run` became process-backed, so the loader itself now takes
+# three: the page-table frame, one per segment page, and the stack page. The
+# invariant this pair of checks exists to protect is unchanged and is now
+# checked in BOTH files — every frame handed to ring 3 is zeroed first.
+PROC_ALLOCS=$(grep -c 'allocFrame();' "$CORE_DIR/kernel/proc.dart")
+PROC_ZEROES=$(grep -c 'vmZeroFrame(' "$CORE_DIR/kernel/proc.dart")
+[[ "$ALLOCS" -eq 3 ]] || fail "elf.dart calls allocFrame() $ALLOCS times, expected 3 (the page-table frame, one per segment page, and the stack page). The header and sector scratch frames belong to procCreate since ADR-0027. If you added one, it needs a vmZeroFrame beside it — see GAP-0094."
+[[ "$ZEROES" -eq 2 ]] || fail "elf.dart calls vmZeroFrame() $ZEROES times, expected 2 — one for every allocFrame() except the page-table frame, which vmProgTableInstall zeroes. EVERY frame this loader hands to ring 3 must be zeroed before anything is copied into it, and on QEMU no behavioural check can tell you when that stops happening (GAP-0094)."
+[[ "$PROC_ZEROES" -ge "$PROC_ALLOCS" ]] || fail "proc.dart calls allocFrame() $PROC_ALLOCS times but vmZeroFrame() only $PROC_ZEROES — since ADR-0027 the header and sector scratch frames are taken here, and every frame that reaches ring 3 must be zeroed before anything is copied into it (GAP-0094)."
 grep -q '^    vmZeroFrame(frame);$' "$CORE_DIR/kernel/elf.dart" || fail "elfLoadSegment no longer zeroes the frame before copying the segment into it. The .bss tail would then hold whatever the frame last contained, and ring 3 can read it."
 grep -q '  vmZeroFrame(ptFrame);' "$CORE_DIR/kernel/vm.dart" || fail "vmProgTableInstall no longer zeroes the page-table frame — 512 words of allocator litter installed as a page table is 512 mappings the CPU will believe"
-echo "STRUCTURAL: pass  every one of elf.dart's 5 allocFrame() calls is paired with a zeroing (4 here, the page table's inside vmProgTableInstall) — asserted structurally because on QEMU the behavioural check for it cannot fail (GAP-0094)"
+echo "STRUCTURAL: pass  every one of elf.dart's $ALLOCS allocFrame() calls is paired with a zeroing ($ZEROES here, the page table's inside vmProgTableInstall), and proc.dart's $PROC_ALLOCS are covered by its $PROC_ZEROES — asserted structurally because on QEMU the behavioural check for it cannot fail (GAP-0094)"
 
 # 3f. EVERY @rodata TABLE IS THE SIZE ITS CALL SITE PASSES.
 #
 # GAP-0060: a @rodata table carries no length (DCDart ADR-0040), so every byte
-# count is a hand-maintained literal. M10 adds 59 tables and grows shellStrHelp
+# count is a hand-maintained literal. M10 adds 58 tables and grows shellStrHelp
 # again (1589 -> 1658, one new command line).
 check_table() {
   local sym="$1" want="$2" got
@@ -528,7 +536,12 @@ check_table elfStrEnter 14
 check_table elfStrStack 10
 check_table elfStrFrame 7
 check_table elfStrDone 14
-check_table elfStrPages 7
+# M20 (ADR-0027): elfStrPages is GONE. It was the ` PAGES ` field of the
+# `ELF DONE EXIT <code> PAGES <n>` line, and `n` was `vmCountUser` over the
+# program window — a count the shell could take when the window lived in the
+# KERNEL's page directory. It cannot any more: the window belongs to the
+# process, whose address space has been freed by the time that line runs. What
+# came back is reported by `PROC KILL SLOT n FREED m` instead.
 check_table elfStrTeardown 19
 check_table elfStrTable 7
 check_table elfStrRefused 12
@@ -560,7 +573,7 @@ check_table elfStrE22 32
 check_table elfStrE23 40
 check_table elfStrE24 24
 check_table elfStrE25 47
-echo "STRUCTURAL: pass  all 59 M10 message/command tables plus shellStrHelp (1658 -> 1871 -> 2147; M11 added three command lines, M14 four) are exactly the sizes their call sites pass"
+echo "STRUCTURAL: pass  all 58 M10 message/command tables (elfStrPages retired by ADR-0027) plus shellStrHelp (1658 -> 1871 -> 2147; M11 added three command lines, M14 four) are exactly the sizes their call sites pass"
 
 # 3g. EVERY REFUSAL CODE HAS ITS OWN SENTENCE, AND NO TWO SENTENCES ARE THE SAME.
 #
@@ -926,7 +939,16 @@ for va, (w, x) in sorted(want_pages.items()):
                      "-- the loader did not use the allocator" % (va, pa))
 
 # --- IT RAN AT CPL 3, AND SAID WHAT THE FILE SAYS IT SHOULD ----------------
+# M20 (ADR-0027): `run` starts a PROCESS, so two lines now sit between the
+# loader's ENTER line and ring 3's first word -- `PROC START`, which reports the
+# entry and RSP the scheduler is about to use, and `PROC PD`, which reports the
+# page directories. They are matched literally (no capture groups) so that every
+# group number below still means what it meant. `PROC START`'s RSP is required
+# to be the SAME as the one argsBuild computed and ELF ENTER printed: those two
+# disagreeing would mean the process was entered on a stack nobody built.
 m = re.search(r"^ELF ENTER RIP ([0-9A-F]{16}) RSP ([0-9A-F]{16})\n"
+              r"PROC START SLOT [0-9A-F]{2} ENTRY [0-9A-F]{16} RSP \2\n"
+              r"PROC PD [0-9A-F]{16} KPD [0-9A-F]{16} CR3 [0-9A-F]{16} KPML4 [0-9A-F]{16}\n"
               r"USER CS ([0-9A-F]{16}) SS ([0-9A-F]{16}) RFLAGS ([0-9A-F]{16}) CPL ([0-7])\n"
               r"USER WRITE (.*)\n"
               r"USER WRITE (BSS\[[0-9A-F]{2}\] SUM=[0-9A-F]{2})\n"
@@ -993,15 +1015,26 @@ else:
                      "made none that needed refusing" % m.group(11))
 
 # --- and it was torn down completely ---------------------------------------
-teardowns = re.findall(r"^ELF TEARDOWN FREED ([0-9A-F]{8}) TABLE ([0-9A-F]{16})$",
+# M20 (ADR-0027): the teardown is `PROC KILL`, not `ELF TEARDOWN`, and there is
+# no post-teardown `ELF WINDOW` line any more. The window belonged to the
+# PROCESS, and by the time the shell can look, the whole address space is gone
+# -- there is nothing left to walk and no CR3 to walk it from. The property
+# that line stood for ("nothing survived the program") is asserted two ways
+# that are strictly stronger: every load, refusal and fault is followed by a
+# `PROC KILL SLOT n FREED m`, and the allocator's free count below must return
+# to its baseline exactly.
+teardowns = re.findall(r"^PROC KILL SLOT ([0-9A-F]{2}) FREED ([0-9A-F]{8})$",
                        cap, re.M)
 windows = [int(w, 16) for w in
            re.findall(r"^ELF WINDOW PAGES 00000200 USER ([0-9A-F]{8})$", cap, re.M)]
 if not windows:
     fails.append("no `ELF WINDOW` line at all")
-elif windows[-1] != 0:
-    fails.append("after every program finished, %d pages of the program window "
-                 "are still user-accessible" % windows[-1])
+if not teardowns:
+    fails.append("no `PROC KILL` line at all -- nothing was ever torn down")
+for slot, freed in teardowns:
+    if int(freed, 16) == 0:
+        fails.append("a `PROC KILL SLOT %s` gave back 0 frames -- a program "
+                     "that was loaded owns at least its page table" % slot)
 if len(want_pages) not in windows:
     fails.append("the user-accessible count in the program window is never %d -- "
                  "the program's pages were never actually mapped" % len(want_pages))
@@ -1031,8 +1064,11 @@ for lba_key, code, phrase in (
     if "FAULT " in after:
         fails.append("`run %x` (%s) faulted instead of reporting -- a refusal "
                      "path must leave a running kernel" % (lba, lba_key))
-    if not re.search(r"ELF WINDOW PAGES 00000200 USER 00000000", after):
-        fails.append("after refusing %s the program window is not empty" % lba_key)
+    if not re.search(r"^PROC KILL SLOT [0-9A-F]{2} FREED [0-9A-F]{8}$", after, re.M):
+        fails.append("after refusing %s the slot was not torn down -- since "
+                     "ADR-0027 a refused load holds a process slot, an address "
+                     "space and every frame the loader took until procCleanup "
+                     "gives them back" % lba_key)
 
 # --- THE FAULT CONTROL: it loads, it runs, it dies, and it is cleaned up ----
 gp_lba = layout["gp"]["header_lba"]
@@ -1053,11 +1089,9 @@ else:
         fails.append("the `gp` fault was not reported at e_entry with CPL 3")
     if "FAULT RECOVERED" not in after:
         fails.append("the shell did not survive the `gp` program's fault")
-    if not re.search(r"ELF TEARDOWN FREED 0000000[0-9A-F] TABLE [0-9A-F]{16}", after):
+    if not re.search(r"^PROC KILL SLOT [0-9A-F]{2} FREED 0000000[0-9A-F]$", after, re.M):
         fails.append("the fault path did not tear the program down -- its pages "
                      "and its page table would be live for the rest of the boot")
-    if not re.search(r"ELF WINDOW PAGES 00000200 USER 00000000", after):
-        fails.append("after the `gp` program died the window is not empty")
 
 # --- NOTHING LEAKED ACROSS SEVEN LOADS -------------------------------------
 frames = re.findall(r"^PMM MANAGED [0-9A-F]{8} FREE ([0-9A-F]{8}) USED [0-9A-F]{8} "
@@ -1211,16 +1245,47 @@ echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -
 #     at run time and is nowhere near them -- and every page in the window is
 #     checked against the ELF's own p_flags.
 # ---------------------------------------------------------------------------
-CR3_HEX=$(grep -m1 -oE '^VM CR3 [0-9A-F]{16}' "$SERIAL_CAPTURE" | awk '{print $3}')
-[[ -n "$CR3_HEX" ]] || fail "could not read the CR3 out of the session capture"
-
 SPIN_ELF="$WORKDIR/variants/prog-spin.elf"
 [[ -s "$SPIN_ELF" ]] || fail "make-image.py did not emit the spin variant"
+
+# ---------------------------------------------------------------------------
+# M20 (ADR-0027): A LIVE PROGRAM RUNS IN ITS OWN ADDRESS SPACE, so the tables to
+# dump are the PROCESS's, not the kernel's.
+#
+# This used to dump at the `VM CR3` the kernel printed at boot. That was the
+# right address when a `run` program lived in the KERNEL's page directory; it is
+# the wrong one now, and the check below caught it exactly — "the tables were
+# dumped at 0x149000 but the CPU is using 0x14F000".
+#
+# The process's PML4 does not exist until the program is loaded, and `xp` needs
+# the address before the boot starts. So the spin boot runs TWICE: once to learn
+# the address, once to dump at it. Both boots are identical and the allocator is
+# deterministic, so the second one's CR3 is the first one's PML4 — and the
+# assertion that they match is still made, against QEMU's own `info registers`,
+# rather than assumed. No address here is a literal.
+# ---------------------------------------------------------------------------
+drive_session "$WORKDIR/spinprobe" "v,m,ret,wait:1200,$(typekeys "run $LBA_SPIN"),ret,wait:3000" \
+  "$WORKDIR/spinprobe/shot.png" "spin-probe" 60 128M \
+  --monitor-command 'info registers' \
+  --monitor-capture "$WORKDIR/spinprobe/monitor.txt"
+CR3_HEX=$(grep -m1 -oE '^PROC NEW SLOT [0-9A-F]{2} ID [0-9A-F]{8} PML4 [0-9A-F]{16}' \
+  "$WORKDIR/spinprobe/serial.txt" | awk '{print $8}')
+[[ -n "$CR3_HEX" ]] || fail "could not read the live program's PML4 out of the spin-probe capture — \`run\` did not create a process (ADR-0027)"
+
+# The process's PML4 is not self-contained: `procSpaceBuild` COPIES the kernel's
+# upper-level entries into it, so they still point at the KERNEL's own PDPT and
+# PD frames. A walk that started at the process PML4 and only had the process's
+# frames would fall off at the first kernel entry — which is exactly what
+# happened ("0x14C000 is outside every dumped region"). Both regions are dumped.
+KCR3_HEX=$(grep -m1 -oE '^VM CR3 [0-9A-F]{16}' "$WORKDIR/spinprobe/serial.txt" | awk '{print $3}')
+[[ -n "$KCR3_HEX" ]] || fail "could not read the kernel's CR3 out of the spin-probe capture"
+
 drive_session "$WORKDIR/spin" "v,m,ret,wait:1200,$(typekeys "run $LBA_SPIN"),ret,wait:3000" \
   "$WORKDIR/spin/shot.png" "spin" 61 128M \
   --addr-from-serial 'ELF STACK [0-9A-F]{16} FRAME [0-9A-F]{16} TABLE ([0-9A-F]{16})' \
   --monitor-command 'info registers' \
   --monitor-command "xp/${TABLE_QWORDS}gx 0x$CR3_HEX" \
+  --monitor-command "xp/${TABLE_QWORDS}gx 0x$KCR3_HEX" \
   --monitor-command "xp/${PT_QWORDS}gx {addr}" \
   --monitor-capture "$WORKDIR/spin/monitor.txt"
 
@@ -1228,7 +1293,7 @@ drive_session "$WORKDIR/spin" "v,m,ret,wait:1200,$(typekeys "run $LBA_SPIN"),ret
 # is derived from THAT file -- two bytes of it differ from prog.elf, and the
 # byte-for-byte image check would (correctly) fail against the wrong one.
 if ! python3 - "$WORKDIR/spin/serial.txt" "$DERIVE" "$WORKDIR/spin/monitor.txt" \
-     "$SPIN_ELF" "$KERNEL_ELF" "$CR3_HEX" "$TABLE_QWORDS" "$PT_QWORDS" <<'PY'
+     "$SPIN_ELF" "$KERNEL_ELF" "$CR3_HEX" "$TABLE_QWORDS" "$PT_QWORDS" "$KCR3_HEX" <<'PY'
 import importlib.util, re, subprocess, sys
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
 spec = importlib.util.spec_from_file_location("derive", sys.argv[2])
@@ -1236,6 +1301,9 @@ d = importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
 monitor = open(sys.argv[3], encoding="utf-8").read()
 elf = d.Elf(open(sys.argv[4], "rb").read())
 cr3_hex, table_n, pt_n = sys.argv[6], int(sys.argv[7]), int(sys.argv[8])
+# M20 (ADR-0027): the kernel's own CR3, whose upper-level frames the process
+# PML4 points into because procSpaceBuild copied its entries.
+kcr3_hex = sys.argv[9]
 sym = {}
 for line in subprocess.run(["x86_64-elf-readelf", "-sW", sys.argv[5]],
                            capture_output=True, text=True).stdout.splitlines():
@@ -1277,6 +1345,8 @@ if int(cr3_hex, 16) != cr3:
 # that returned zeroes instead of raising would report the program as unmapped.
 mem = (d.Memory()
        .add(cr3, d.parse_xp(monitor, "xp/%dgx 0x%s" % (table_n, cr3_hex)))
+       .add(int(kcr3_hex, 16),
+            d.parse_xp(monitor, "xp/%dgx 0x%s" % (table_n, kcr3_hex)))
        .add(pt, d.parse_xp(monitor, "xp/%dgx 0x%s" % (pt_n, m.group(3)))))
 tables = d.PageTables(cr3, mem)
 
@@ -1485,8 +1555,13 @@ if "ELF ENTER RIP %016X" % elf.e_entry not in cap:
                  "machine")
 if "BSS[00] SUM=00" not in cap:
     fails.append(".bss was not zeroed on the 32MiB machine")
-if not re.search(r"^ELF WINDOW PAGES 00000200 USER 00000000$", cap, re.M):
-    fails.append("the 32MiB boot does not end with an empty program window")
+# M20 (ADR-0027): the same translation as the main session's check. There is no
+# post-teardown `ELF WINDOW` line, because the window belonged to the process
+# and the whole address space is gone by the time the shell could look. The
+# teardown itself is the evidence, and it is stronger: it says how many frames
+# came back.
+if not re.search(r"^PROC KILL SLOT [0-9A-F]{2} FREED [0-9A-F]{8}$", cap, re.M):
+    fails.append("the 32MiB boot never tore the program's process down")
 def frames(text):
     return re.findall(r"^ELF PAGE [0-9A-F]{16} P \d U \d W \d X \d PA ([0-9A-F]{16})$",
                       text, re.M)
@@ -1534,7 +1609,12 @@ if not re.search(r"^PMM DRAIN NEXT 0000000000000000 FREE 00000000$", cap, re.M):
     fails.append("the drain did not exhaust the allocator, so this control "
                  "proves nothing")
 after = cap.split("PMM DRAIN NEXT 0000000000000000")[-1]
-if "ELF REFUSED 03 no free frame" not in after:
+# M20 (ADR-0027): `run` creates a process, so an empty allocator is refused by
+# the PROCESS layer's vocabulary now -- procErrNoFrames (4) -- rather than the
+# loader's. It is refused EARLIER than before, too: procSpaceBuild cannot build
+# an address space, so the loader is never reached. The property is unchanged
+# and is the whole point of the control: refuse, do not fault, do not enter.
+if "PROC REFUSED 04 the allocator has no frames" not in after:
     fails.append("`run` did not refuse when the allocator was empty. Either it "
                  "loaded a program into pages nobody allocated, or it faulted "
                  "instead of reporting. Captured: %r" % after[:500])
@@ -1543,7 +1623,7 @@ if "ELF ENTER" in after:
 if "FAULT " in after:
     fails.append("a fault was reported on the no-frames boot -- the refusal path "
                  "is supposed to leave a running kernel")
-if after.count("ELF REFUSED 03") < 2:
+if after.count("PROC REFUSED 04") < 2:
     fails.append("the second `run` did not refuse the same way -- the first "
                  "refusal must leave the machine exactly as it found it")
 if not cap.rstrip().endswith("oscortex>"):

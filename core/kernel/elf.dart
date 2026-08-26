@@ -327,11 +327,6 @@ final List<u8> elfStrDone = const [
 
 /// Field separator.
 ///
-/// `' PAGES '` -- 7 bytes.
-@rodata
-final List<u8> elfStrPages = const [
-  u8(0x20), u8(0x50), u8(0x41), u8(0x47), u8(0x45), u8(0x53), u8(0x20),
-];
 
 /// Line label.
 ///
@@ -1818,9 +1813,41 @@ void shellElfRunName(u64 from, u64 end) {
 }
 
 /// The body both forms share. [named] chooses which of [elfLoad] and
-/// [elfLoadFile] provides the image; everything else -- the guards, the two
-/// scratch frames, the reporting, the entry into ring 3 and the reclamation on
-/// every refusing path -- is identical and always was.
+/// [elfLoadFile] provides the image, and it is passed straight through to
+/// [procCreate], which is the one function on this machine that turns a file on
+/// a disk into something that can be entered in ring 3.
+///
+/// ---------------------------------------------------------------------------
+/// M20 (ADR-0027): `run` LAUNCHES A PROCESS NOW, AND THAT IS THE WHOLE CHANGE.
+/// ---------------------------------------------------------------------------
+/// Until M20 this function did its own load and its own `enter_user`, and
+/// `proc run` did a DIFFERENT load through [procCreate]. The two had drifted
+/// into having one half each of what a program needs:
+///
+///   * this path built a System V initial stack (M19) and entered ring 3 with
+///     no process slot -- so `sbrk` was refused, because a heap's bookkeeping
+///     lives in a slot (`heapSlotBase`..`heapSlotCalls`) and there was none.
+///     **argv but no heap: `malloc` could not work.**
+///   * [procCreate] built a slot, an address space and a heap, and entered with
+///     RSP at the top of an EMPTY page. **A heap but no argv.**
+///
+/// So no program could have both, which is the thing a real C program needs
+/// first. The fix is not to teach this function about heaps -- that would be a
+/// second copy of the process machinery, and the copy is what let the two drift
+/// in the first place. It is to DELETE this path's launch and call the other
+/// one, so there is exactly one function that loads a program and exactly one
+/// that starts it.
+///
+/// **The refusal that used to make this impossible is gone by construction.**
+/// [procErrElfLive] exists because an M10 `run` program owns page-directory
+/// entry 128 of the KERNEL's directory while a process owns its own; the two
+/// could not both be live. This function no longer creates the first kind, so
+/// the conflict it guarded against cannot arise from here.
+///
+/// The session is COOPERATIVE ([procPolicyCoop]) and that is deliberate: `run`
+/// starts one program, there is nobody to preempt it for, and a preemptive
+/// session would unmask the PIT and move every later `ticks` reading in the
+/// shell (ADR-0022, GAP-0058).
 @bare
 void shellElfLoadAndEnter(u64 headerLba, u64 named) {
   if (vmMeta(u64(vmMetaReady)) < u64(1)) {
@@ -1835,57 +1862,44 @@ void shellElfLoadAndEnter(u64 headerLba, u64 named) {
     elfReportError(u64(elfErrLive));
     return;
   }
-
-  final u64 hdr = allocFrame();
-  if (hdr < u64(1)) {
-    elfReportError(u64(elfErrNoFrames));
+  // A process needs somewhere to keep its FPU state, and a machine with no
+  // FXSR has nowhere. `proc run` has refused this since M11 (GAP-0092); now
+  // that `run` creates a process too, it refuses it in the same words rather
+  // than starting a program whose XMM registers nobody owns.
+  if (procHead(u64(procHeadSse)) < u64(1)) {
+    procRefuse(u64(procErrNoSse));
     return;
   }
-  final u64 scratch = allocFrame();
-  if (scratch < u64(1)) {
-    final u64 back = freeFrame(hdr);
-    elfSetMeta(u64(elfMetaStatus), back);
-    elfReportError(u64(elfErrNoFrames));
+  if (procLive() > u64(0)) {
+    procRefuse(u64(procErrBusy));
     return;
   }
-  vmZeroFrame(hdr);
-  vmZeroFrame(scratch);
 
-  elfSetMeta(u64(elfMetaHeaderLba), headerLba);
-  elfSetMeta(u64(elfMetaPages), u64(0));
-  elfSetMeta(u64(elfMetaSegments), u64(0));
-  elfSetMeta(u64(elfMetaSectors), u64(0));
-  elfSetMeta(u64(elfMetaZeroed), u64(0));
-  elfSetMeta(u64(elfMetaExit), u64(0));
-  elfSetMeta(u64(elfMetaScratch), scratch);
+  procSessionReset();
+  procSetHead(u64(procHeadPolicy), u64(procPolicyCoop));
 
-  u64 st = u64(elfErrOk);
-  if (named > u64(0)) {
-    st = elfLoadFile(hdr, scratch);
-  } else {
-    st = elfLoad(headerLba, hdr, scratch);
-  }
-
-  // The two scratch frames go back BEFORE ring 3 is entered, on every path.
-  // They hold a copy of the file, which the program has no business reading.
-  // Bound rather than dropped for `dcc`'s reason (ADR-0013 §8). The word they
-  // land in is the one that held the scratch frame's address, which is now
-  // meaningless: after this line the loader owns neither frame.
-  final u64 b1 = freeFrame(scratch);
-  final u64 b2 = freeFrame(hdr);
-  elfSetMeta(u64(elfMetaScratch), b1 | b2);
-
+  // The arguments are ALREADY STAGED -- `shellElfRunCmd` collected them from
+  // the command line before anything was loaded, and [procCreate] builds them
+  // onto the stack page the loader maps. Nothing is reset here, which is the
+  // one thing that separates this launcher from `proc run`'s.
+  final u64 st = procCreate(headerLba, named);
   if (st > u64(0)) {
-    elfReportError(st);
-    // The SAME reclamation the exit and fault paths use, so a file rejected at
-    // its third segment gives back exactly what a program that ran gives back,
-    // and says so in the same words. It reports the real page-table frame --
-    // a refusal after `vmProgTableInstall` has one, and printing 0 there would
-    // be a line that says a table never existed.
-    elfReclaim();
+    procRefuse(st);
+    procSessionReset();
+    procEndLine();
     return;
   }
 
+  // -------------------------------------------------------------------------
+  // THE LOADER'S OWN REPORT, WHICH IS THE LAUNCHER'S TO PRINT.
+  //
+  // These are the lines m10, m14 and m15 assert the loader by, and they survive
+  // ADR-0027 unchanged: they describe the IMAGE, which is still loaded by
+  // elf.dart out of `elfMeta`, and not the launch, which is now `proc.dart`'s.
+  // They are printed HERE rather than inside [procCreate] because `proc run`
+  // does not print them and moving them there would put a `run` command's
+  // diagnostics into every process the scheduler creates.
+  // -------------------------------------------------------------------------
   uartWrite(Rodata.addressOf(elfStrLoad), u64(15));
   uartPutHex(elfMeta(u64(elfMetaPages)), u64(8));
   uartWrite(Rodata.addressOf(elfStrSegments), u64(10));
@@ -1899,53 +1913,47 @@ void shellElfLoadAndEnter(u64 headerLba, u64 named) {
   uartPutHex(u64(vmProgStackTop), u64(16));
   uartWrite(Rodata.addressOf(elfStrFrame), u64(7));
   uartPutHex(elfMeta(u64(elfMetaStackFrame)), u64(16));
-  // The page table's own frame, so a harness can dump the window's leaves out
-  // of guest physical memory. It is NOT inside the six contiguous frames
-  // `vmInit` took, so a walk that started at CR3 and refused to follow a
-  // pointer outside that span -- which is exactly what m8's and m9's walkers
-  // do, deliberately -- cannot reach it without being told where it is.
   uartWrite(Rodata.addressOf(elfStrTable), u64(7));
   uartPutHex(elfMeta(u64(elfMetaPtFrame)), u64(16));
   uartNewline();
-  elfPageReport();
-  elfWindowLine();
-
-  // M19 (ADR-0023): THE INITIAL PROCESS STACK. The arguments the shell staged
-  // are copied onto the program's own stack page -- through the frame's
-  // physical address, which is what the kernel can reach -- and the RSP this
-  // returns is the one ring 3 is entered with. It is 16-byte aligned and points
-  // at `argc`, which is what the System V ABI says a process entry point sees.
-  //
-  // A refusal here tears the load down the same way every other refusal does:
-  // the frames go back and the shell survives. It is not reachable with the
-  // bounds `args.dart` enforces and it is checked anyway, because those bounds
-  // and the size of a page are two numbers in two files.
-  final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));
-  if (rsp < u64(1)) {
-    argsReportError(u64(argsErrNoRoom));
-    elfReclaim();
-    return;
-  }
+  // Printed after the load, because the addresses in it are addresses in the
+  // stack page the load allocated.
   argsReport();
 
-  final u64 entry = elfMeta(u64(elfMetaEntry));
   uartWrite(Rodata.addressOf(elfStrEnter), u64(14));
-  uartPutHex(entry, u64(16));
+  uartPutHex(elfMeta(u64(elfMetaEntry)), u64(16));
   uartWrite(Rodata.addressOf(userStrRsp), u64(5));
-  uartPutHex(rsp, u64(16));
+  uartPutHex(procGet(u64(0), u64(procSlotRsp)), u64(16));
   uartNewline();
 
-  elfSetMeta(u64(elfMetaLive), u64(1));
-  enter_user(entry, rsp, u64(0), u64(userCodeSel), u64(userDataSel));
+  procStart(u64(0)); // returns only through `user_return`
+
+  procToKernel();
 
   // Reached only through `user_return`, i.e. only if the program called `exit`.
   // A program that faulted came back to the shell through `fault_resume` and
   // this frame no longer exists.
+  //
+  // The exit code comes from `userMetaExit`, which `userSysExit` writes BEFORE
+  // it hands control to the process layer -- see the note there. Reading it out
+  // of the process slot does not work: `procCleanup` has released the slot by
+  // the time this line runs. m14, m15 and m16 assert this line by name.
+  // NO PAGE COUNT HERE ANY MORE, and the reason is the whole of ADR-0027 seen
+  // from the other end. Before M20 the program's window lived in the KERNEL's
+  // page directory, so counting the user pages still mapped in it after the
+  // teardown was a question the shell could answer on its own CR3. It is not
+  // any more: the window belonged to the PROCESS, and by this line the
+  // process's address space has been freed entirely. `vmCountUser` would be
+  // walking a page directory entry that is no longer there.
+  //
+  // The number it used to report is reported better by `PROC KILL SLOT n
+  // FREED m`, which counts what actually came back rather than what is left.
   uartWrite(Rodata.addressOf(elfStrDone), u64(14));
-  uartPutHex(elfMeta(u64(elfMetaExit)), u64(16));
-  uartWrite(Rodata.addressOf(elfStrPages), u64(7));
-  uartPutHex(vmCountUser(u64(vmProgBase), u64(vmProgEnd)), u64(8));
+  uartPutHex(userMeta(u64(userMetaExit)), u64(16));
   uartNewline();
+
+  procEndLine();
+  procPdLine();
 }
 
 /// `run` with no argument, or with one this shell cannot parse as an LBA.

@@ -1481,11 +1481,22 @@ void userSysExit(u64 frame) {
   // NORMALLY when it switched to somebody else, and never returns when this was
   // the last one. Neither shape fits the three lines below, which assume the
   // machine is going back to a shell.
-  if (procLive() > u64(0)) {
-    procSysExit(frame, code);
-    return;
-  }
+  // M20 (ADR-0027): THE EXIT CODE IS RECORDED BEFORE THE PROCESS BRANCH, not
+  // after it. `procSysExit` does not come back when this was the last process,
+  // and the code it was given is written into a SLOT that `procCleanup` then
+  // releases -- so a shell that read it afterwards read a word nobody owns.
+  // (It read `F000F859F000E739` -- BIOS shadow -- which is how this was found.)
+  // One word, written once, on both paths, before either can lose it.
   userSetMeta(u64(userMetaExit), code);
+  // M20 (ADR-0027): THIS LINE IS PRINTED ON BOTH PATHS NOW.
+  //
+  // It used to be below the process branch, so a program that was a process
+  // never reported its syscall or refusal counts -- and once `run` created a
+  // process, that was EVERY program. The counts are per-boot counters in
+  // `userMeta`, not per-process, and "how many syscalls did this session make
+  // and how many were refused" is exactly as meaningful for a process as it
+  // was for an M10 window program. m10-elf asserts REFUSALS is zero for a
+  // program that should have made none that needed refusing.
   uartWrite(Rodata.addressOf(userStrExit), u64(15));
   uartPutHex(code, u64(16));
   uartWrite(Rodata.addressOf(userStrSyscalls), u64(10));
@@ -1493,6 +1504,10 @@ void userSysExit(u64 frame) {
   uartWrite(Rodata.addressOf(userStrRefusals), u64(10));
   uartPutHex(userMeta(u64(userMetaRefusals)), u64(8));
   uartNewline();
+  if (procLive() > u64(0)) {
+    procSysExit(frame, code);
+    return;
+  }
   // M10: whichever of the two things that can be in ring 3 called this.
   if (elfLive() > u64(0)) {
     elfSetMeta(u64(elfMetaExit), code);
