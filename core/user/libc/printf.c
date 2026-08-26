@@ -83,7 +83,7 @@ static unsigned long putnum(unsigned long n, unsigned long v, unsigned long base
   return n;
 }
 
-int printf(const char *fmt, ...) {
+int os_printf(const char *fmt, ...) {
   __builtin_va_list ap;
   unsigned long n = 0;
   __builtin_va_start(ap, fmt);

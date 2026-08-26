@@ -585,10 +585,22 @@ M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, �
 
 **The total after M17 is a total of DCDart `@bss` rather than of donated bytes, and it keeps moving.**
 14048 + 64 (M18's scheduler header, ADR-0022) = **14112 at M18**, + 256 (`argsStore`, ADR-0023) =
-**14368 at M19**. `argsStore` is the LAST block in `kmain.o`'s `.bss` and `m19-argv` asserts that it
-ends exactly at the end of the section — the same convention M14, M15 and M16 each followed, so that
-every earlier harness's "the donated bytes from MY block to the end of `.bss`" keeps meaning what it
-meant when it was written, by subtracting each later milestone's block first.
+**14368 at M19**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte `ioctl` bounce
+buffer) = **14880 at S0**. **`ioctlStore` is now the LAST block** in `kmain.o`'s `.bss`, and
+`m19-argv` asserts that it ends exactly at the end of the section — the same convention M14, M15,
+M16 and M19 each followed in turn, so that every earlier harness's "the donated bytes from MY block
+to the end of `.bss`" keeps meaning what it meant when it was written, by subtracting each later
+milestone's block first.
+
+**And S0 is where that convention's wording turned out to be slightly wrong**, which is worth
+recording here because this is the running total everyone consults. ADR-0031 §4.3 rule 5 said that
+putting the new block LAST would leave *"every existing harness's 'bytes from my block to the end'
+arithmetic unchanged"*. **Last is necessary but not sufficient**: the block that WAS last has a
+to-the-end measurement of its own, and a new block after it changes exactly that one. `argsStore`'s
+number went **256 → 768** and twelve harnesses said so. The remedy is the one already in the repo —
+each new block adds its own subtraction step first — and the rule should read *"…so that every
+EARLIER block's arithmetic is unchanged, and the previously-last block gets a new subtraction
+step."* ADR-0033 §6.3(a).
 
 **The donated total does not reach zero, and that is why this gap CLOSES rather than shrinking.** The
 96 bytes left in `core/boot/kdata.S` are not a measure of a missing language feature: a DCDart `@bss`
@@ -5917,14 +5929,37 @@ relative to the keystroke injection. Not diagnosed further, and still not fixed:
 one this entry already proposes (mask the CPU-managed bits before comparing) and it now has two
 harnesses' goldens to move rather than one.
 
-
 ---
 
 ## GAP-0158 — There is no `ioctl` and no device namespace, and the DRM ABI is an ioctl ABI reached through a device node
 
 **Domain:** kernel, syscalls, ABI (design unit, ADR-0029)
-**Status:** OPEN — nothing implemented. This is the keystone item: every other gap opened by ADR-0029
-is downstream of it.
+**Status:** **CLOSED by ADR-0033.** `ioctl` is syscall 12 and is implemented in
+`core/kernel/ioctl.dart`; `/dev/dri/card0` and `/dev/dri/renderD128` are served from `fileSysOpen`.
+Both halves this entry called "separable" were built in one unit, because the second is four
+lines once the first exists.
+
+**What was built, against what this entry asked for:** the `_IOC` decode with all four fields; a
+dispatch on `_IOC_NR` that is never handed the request word; `_IOC_SIZE` checked against the
+descriptor's SET and **refused, not zero-extended**, on a mismatch; a size above `ioctlMaxPayload`
+(256) **refused, not truncated**; both of M16's pointer validators, read-side for `_IOC_WRITE` and
+write-side for `_IOC_READ` and **both before either copy** on an `_IOWR`; and a copy through a
+kernel `.bss` bounce buffer, so a driver is handed an offset and never a ring-3 pointer. The
+device branch went in `fileSysOpen` after the validated copy and before `fatParseAt`, **not** in
+`fatLookup` — exactly as this entry warned in bold.
+
+**The syscall registry this entry asked for in its third point was built by ADR-0031**, one unit
+ahead of `ioctl`, which is what it asked for.
+
+**What is NOT closed and is now GAP-0177:** there is no DRM driver behind the syscall and no DRM
+semantics at all. What works is the membrane. Also still open: `mmap` (GAP-0159) and
+`drmGetDevices2` (GAP-0171).
+
+**Verified by** `tests/conformance/drm-abi/run.sh` CHECKs 14–16, four mandatory negative controls,
+and four mutations, all killed.
+
+*The original entry follows, unchanged, because what it asked for is the specification that was
+implemented.*
 
 The kernel has **ten syscalls** — `exit`, `write`, `who`, `yield`, `sbrk`, `open`, `read`, `close`,
 `seek`, `fdwrite` (`core/user/libc/oslibc.h:66`–`80`). **`ioctl` is not among them and no equivalent
@@ -6421,9 +6456,23 @@ harnesses is itself unguarded.
 
 ---
 
----
-
 ## GAP-0169 — `libdrm` compiles for this OS and cannot be linked: 43 symbols, and here they are
+
+**Status: CLOSED by ADR-0033. The 43 are 0.** `libdrm`'s five core objects now link completely
+against `core/user/libc` plus the two files ADR-0033 added — `posix.c` (the opt-in POSIX face and
+the twenty tier-2 loud stubs) and `port.c` (the tier-1 C functions). **`main` is the only undefined
+symbol left**, which is what "a library" means.
+
+`expected-missing-core.txt` is now empty and the harness diffs against it on every run, so the
+anti-vacuity moved with it: CHECK 2b requires the LINK to succeed and requires `main` to be
+undefined, which an empty object set could not satisfy.
+
+**`modetest` went 76 → 32**, and the 32 that remain are exactly the expensive set
+`design/libdrm-port.md` §7.2 predicted: `pthread_create`/`pthread_join`, `poll`, `select`, libm
+(`fabs`, `roundf`), `getopt`, `strtod`/`strtof`, `gettimeofday`, `usleep`. **That prediction was
+made before any of this was built and it was exactly right.** GAP-0173 is unchanged.
+
+*The original entry follows.*
 
 **Domain:** userland, libc, ports (ADR-0031)
 **Status:** OPEN — **and it is now a list rather than an estimate.** The list is checked into the repo
@@ -6470,9 +6519,31 @@ linking, no C++ runtime, no libm. See GAP-0173 for what does.
 ## GAP-0170 — four libc symbols bind by name and are the wrong function, and the link is clean
 
 **Domain:** userland, libc (ADR-0031 §2.1)
-**Status:** OPEN — **asserted by `tests/conformance/drm-abi/run.sh` CHECK 2**, which fails if any of
-the four ever comes out *undefined* and fails if `oslibc.h`'s declarations change shape. So the day
-somebody adds a POSIX-shaped `open`, the harness makes them read this entry.
+**Status:** **CLOSED by ADR-0033**, and CHECK 2 now asserts the OPPOSITE of what it used to: linking
+libdrm against `core/user/libc`'s NATIVE objects alone must leave `open`, `read`, `close` and
+`printf` **undefined**, and the check fails if any of them ever binds again.
+
+**The fix.** The native surface exports `os_open`, `os_read`, `os_close`, `os_printf` and
+`os_write`; `oslibc.h` keeps the short spellings for its own callers as `#define`s stated in the
+header. A program that includes `oslibc.h` is unchanged to the character. A port — which includes
+`<fcntl.h>` and `<unistd.h>`, not `oslibc.h` — gets an undefined reference and cannot link. **A
+mismatch that used to link silently is now a link error.**
+
+**The `errno` question this entry called "a decision, not a patch" is decided:** `core/user/libc/
+posix.c` is a separate, opt-in translation unit, it is the only place `errno` exists on this
+operating system, and nothing in `core/kernel/` learned the word. `drmIoctl`'s retry loop is
+**provably one-shot** rather than emulated: no oscortex refusal maps to `EINTR` or `EAGAIN`,
+because there are no signals and nothing blocks. GAP-0179 records what makes that false later.
+ADR-0033 §2.5 states the four alternatives that were rejected.
+
+**A FIFTH SYMBOL, AND THE COMPILER FOUND IT.** This entry named four. When `posix.c` tried to define
+POSIX's `ssize_t write(int, const void *, size_t)`, clang refused it against oscortex's
+two-argument `unsigned long write(const void *, size_t)` — *"conflicting types for `write`"*. The
+clash was not merely latent, it **blocked the adapter**. `write` is `os_write` now. `exit` and
+`sbrk` are a sixth and seventh, are not reached by libdrm, and are measured in GAP-0178 rather than
+changed.
+
+*The original entry follows.*
 
 Of the 53 symbols libdrm needs, `core/user/libc` defines ten: `open close read printf malloc free
 memcpy memset strcmp strlen`. **Six are the right function. Four are not.**
@@ -6609,6 +6680,18 @@ cheaper one, and §4.2 should name it.
 
 ## GAP-0174 — the DRM device must be named `/dev/dri/card0`, not `:DRI0`, and `drm-abi.md` S1 says otherwise
 
+**Status: NARROWED by ADR-0033.** Both names are served, literally, from `fileSysOpen`, and the
+placement rule this entry carried over from `display-protocol.md` §2.1 was obeyed: the branch is
+after the pointer-validated bounce-buffer copy and before `fatParseAt`, never in `fatLookup`.
+
+**What remains open is the DOCUMENT, not the code:** `design/drm-abi.md` S1 still proposes `:DRI0`
+and still needs correcting. And `drmOpenByName` additionally `stat`s the node and compares
+`major()`/`minor()` against `DRM_MAJOR` 226 — `major`/`minor`/`makedev` are implemented in
+`posix.c` and compute Linux's encoding correctly, but **`stat` is a loud stub** (GAP-0180), so
+nothing can produce a `dev_t` for them to decode. That is the remaining half of this entry.
+
+*The original entry follows.*
+
 **Domain:** namespace, GPU (ADR-0031 §6)
 **Status:** OPEN — the device namespace does not exist at all (GAP-0158). This entry corrects the
 *design* before it is built.
@@ -6709,3 +6792,189 @@ flakiness (GAP-0161) and `m9-ring3`'s (GAP-0157) — and that is a separate deci
 guard work", which is what this unit was asked to establish. Doing it here would have meant
 inheriting those choices silently, which is the thing ADR-0030 §4 explicitly warned the next author
 about.
+
+---
+
+## GAP-0177 — `ioctl` works and there is no DRM: the membrane is built, the driver behind it is a pattern generator, and the descriptor table is six hand-written rows
+
+**Domain:** kernel, ABI, GPU (ADR-0033 §5)
+**Status:** OPEN, and it is the honest boundary of what ADR-0033 claims.
+
+**`ioctl` is syscall 12 and it works. NO DRM SEMANTICS ARE IMPLEMENTED.** `ioctlDevServe` — the
+"driver" — fills the read-side payload with `(descIndex << 4 | devIndex) ^ byteIndex` and returns 0.
+That is a deterministic pattern the harness predicts from outside the kernel, and it is there to
+prove the bounce and the direction handling, not to be a GPU. `DRM_IOCTL_VERSION` does not return a
+driver name; `GEM_CLOSE` closes nothing; `SET_MASTER` masters nothing.
+
+**What genuinely works is the membrane**, and it is the rung `design/drm-abi.md` S0 asked for:
+decode, validate, bounce, dispatch on `_IOC_NR`, refuse on skew, out-copy only on success. Every
+future driver inherits that shape, including the signature that makes it impossible for one to hold
+a ring-3 pointer.
+
+**The descriptor table is SIX ROWS AND HAND-WRITTEN**, and this entry is also the argument for
+finally building `design/drm-abi.md` §4.2's generator (GAP-0175, still open). The six are `VERSION`,
+`GET_MAGIC`, `GEM_CLOSE`, `GET_CAP`, `SET_MASTER` and `SYNCOBJ_HANDLE_TO_FD` — chosen to exercise
+every direction, the no-payload case, and the two-legal-sizes case. There are **121** requests.
+
+**AND SIX ROWS PRODUCED ONE WRONG NUMBER.** `struct drm_auth` is **4** bytes on the branch `drm.h`
+takes here, so `DRM_IOCTL_GET_MAGIC` is `0x80046402`. This table said **8** — a plausible guess,
+because `drm_handle_t` genuinely IS `unsigned long` on that same branch (ADR-0031 §3), so "the BSD
+branch widens things" is a real pattern that does not apply to this struct. It was caught only
+because the value was read out of a compiled object before being trusted. **Six rows, one error, by
+an author who had just finished reading the encoding ADR. 121 rows by hand is not a plan.**
+
+**Cost of the workaround:** every request the kernel is asked to serve needs a row, and each row is
+a chance to transcribe a size wrongly in a way that is invisible until a client sends that request.
+
+---
+
+## GAP-0178 — `exit` and `sbrk` still collide with POSIX by name, and the collision class is now measured rather than guessed
+
+**Domain:** userland, libc (ADR-0033 §2.3)
+**Status:** OPEN, deliberately, and scoped rather than fixed.
+
+ADR-0033 renamed five symbols to `os_*` — the four of GAP-0170 plus `write`, which clang found by
+refusing to compile `posix.c` against it. **Two more collide and were left alone:**
+
+| symbol | ours | POSIX's | why it was left |
+|---|---|---|---|
+| `exit` | `void exit(unsigned long status)` | `void exit(int)` | A port's `exit(1)` converts and behaves correctly. The hazard is real but benign |
+| `sbrk` | `void *sbrk(size_t)`, **NULL** on failure | `void *sbrk(intptr_t)`, **`(void *)-1`** on failure | A port testing `== (void *)-1` **misses an out-of-memory and proceeds**. This is the sharper of the two |
+
+**Neither is reached by libdrm and neither blocks `posix.c`**, which is why this unit stopped here.
+`sbrk`'s is the one to fix first if a port ever calls it: NULL-instead-of-`MAP_FAILED` is the same
+shape of error as GAP-0170's, one layer down.
+
+**The general rule this suggests, which nothing enforces yet:** every symbol `core/user/libc`
+exports under a name that also exists in POSIX is a candidate for this failure, and the only two
+things standing between us and it are (a) that ports mostly do not call them and (b) that somebody
+looks. A check that enumerated `oslibc.h`'s exports against a list of POSIX names would be cheap and
+does not exist.
+
+---
+
+## GAP-0179 — `drmIoctl`'s retry loop is provably one-shot, and the proof expires the day this OS grows signals or non-blocking descriptors
+
+**Domain:** userland, libc, ABI (ADR-0033 §2.4)
+**Status:** OPEN as a **tripwire**, not as a defect. Nothing is wrong today.
+
+`drmIoctl`'s entire body is
+`do { ret = ioctl(...); } while (ret == -1 && (errno == EINTR || errno == EAGAIN));`.
+
+`posix_errno_for` maps **no** oscortex refusal onto `EINTR` or `EAGAIN`, and that is not an
+omission: there are no signals on this operating system (no delivery mechanism exists at all) and
+no descriptor is non-blocking (nothing blocks). So the `while` condition is false on its first
+evaluation, always, and the loop runs its body exactly once — the loop doing precisely what it was
+written to do on a platform where the conditions it retries on cannot arise.
+
+**WHAT MAKES THIS FALSE.** `fdwait` (syscall 11, GAP-0141) is the blocking primitive three designs
+name. The day it exists, or the day anything delivers a signal, a refusal that *should* map to
+`EAGAIN` will appear — and if `posix_errno_for` is not updated in the same unit, `drmIoctl` will
+return an error where it should have retried. If it IS updated but nothing sets the condition that
+ends the retry, `drmIoctl` spins forever.
+
+**A retry loop that silently starts spinning is worse than one that never did**, which is why this
+is a gap entry and not a comment. Whoever builds `fdwait` should read this one.
+
+---
+
+## GAP-0180 — three of the sixteen "must work" libdrm symbols are loud stubs, because the kernel has nothing behind them
+
+**Domain:** userland, libc, kernel (ADR-0033, `design/libdrm-port.md` §2)
+**Status:** OPEN, and this is the one place ADR-0033 does not meet libdrm-port.md §2's bar.
+
+`design/libdrm-port.md` §2 tiers sixteen symbols as **must WORK**. Thirteen do. **Three are stubs
+that refuse loudly**, and each is blocked on kernel work rather than on libc work:
+
+| symbol | reached from | what it needs |
+|---|---|---|
+| `stat` / `fstat` | `drmGetNodeTypeFromFd`, `drmGetDevice2` | **A `stat` syscall and a `dev_t` scheme.** Neither exists. `drmOpenByName` compares `major()`/`minor()` against `DRM_MAJOR` 226 — and `major`/`minor`/`makedev` ARE implemented and correct, so the arithmetic is ready and there is nothing to feed it |
+| `clock_gettime(CLOCK_MONOTONIC)` | `drmWaitVBlank` | **A time syscall.** `tick_count` is the kernel's and no syscall reads it. GAP-0164 |
+
+**They are stubbed rather than faked, and the distinction is the whole entry.** Inventing 226:0 in
+`fstat` would make `drmGetNodeTypeFromFd` return `DRM_NODE_PRIMARY` on the strength of a number this
+OS made up, and the first thing that number would do is be believed. A stub that refuses is a
+missing feature; a stub that returns a plausible value is a wrong answer, which is GAP-0170's whole
+lesson applied one layer up.
+
+**Every tier-2 stub is in `posix.c` and every one of them COUNTS ITSELF.** `posix_stub_calls()` and
+`posix_stub_last()` are exported so that *"nothing on the R0–R3 path called a stub"* is a claim a
+program can assert rather than one this repo makes. The twenty are: `mknod`, `chmod`, `chown`,
+`mkdir`, `remove`, `access`, `opendir`, `readdir`, `closedir`, `fopen`, `fclose`, `sscanf`,
+`fprintf`, `vfprintf`, `open_memstream`, `asprintf`, `strcasecmp`, `strncasecmp`, `mmap`, `munmap`.
+
+**Two things in that list are NOT stubs and are correct:** `geteuid` returns a non-zero uid (true —
+there are no users, so nobody is root — and it is also the answer that keeps libdrm off the
+device-node-creation path), and `getenv` returns NULL (true: GAP-0146, there is no environment, so
+every variable really is unset). Neither counts itself, because nothing went wrong.
+
+**Also a real difference from POSIX, recorded here so a port author meets it:** `posix.c`'s `open`
+honours the access mode and ignores every other flag. `O_CREAT`/`O_TRUNC`/`O_APPEND` are *subsumed*
+— oscortex's `O_WRITE` already means all three (ADR-0020 §0, GAP-0127) — so a caller who did not ask
+for truncation gets it anyway. `O_RDWR` on a **device** maps to `O_READ` and is honest, because
+`ioctl` is the write path; `O_RDWR` on a **file** is not serveable and is refused rather than
+silently downgraded.
+
+---
+
+## GAP-0181 — `O_CLOEXEC` is ignored, correctly, and will stop being correct the day `exec` exists
+
+**Domain:** userland, libc
+**Status:** OPEN as a tripwire. Nothing is wrong today.
+
+`posix.c`'s `open` ignores `O_CLOEXEC`. libdrm passes it on every device open
+(`open(path, O_RDWR | O_CLOEXEC)`). **Ignoring it is correct right now** because there is no `exec`
+on this operating system, so there is no descriptor-inheritance event for the flag to control.
+
+The day something like `exec` appears, this becomes a descriptor leak across it — and it will be
+silent, because the flag was accepted. Same shape as GAP-0179: a promise that is vacuously kept
+until the thing it promises about exists.
+
+---
+
+## GAP-0182 — `realloc` always copies and `qsort` is insertion sort, and both are stack-driven choices
+
+**Domain:** userland, libc (`core/user/libc/port.c`)
+**Status:** OPEN, with the complexity stated so that neither is a mystery later.
+
+**`realloc` cannot grow in place.** `malloc.c` is a first-fit free list, and even with
+`malloc_usable` (added by ADR-0033 so `realloc` could copy a safe length rather than over-reading
+the old block) there is no "is the next block free" query. So every `realloc` is
+malloc + copy + free. libdrm calls it from `drmModeAtomicAddProperty`, which grows by a page's worth
+of items at a time, so the copies are O(log n) in the number of properties — acceptable, and not a
+general guarantee.
+
+**AND ADDING `malloc_usable` GREW EVERY PROGRAM ON THE VOLUME BY 48 BYTES.** Worth recording
+because it is the kind of number that is baffling later: the function is **19 bytes of code**, and
+with 16-byte function alignment and its symbol-table entry each linked program grew **0x30**. That is
+not free — `m14-fat`'s test program crossed a cluster boundary because of it, so `FS CHAIN LEN` went
+`000A → 000B` and a third cluster appeared in `FS CLUS`. Nothing is wrong; it is what adding a
+function to `malloc.c` costs when the link has no `--gc-sections`. **The trade is clearly worth it:**
+without `malloc_usable`, `realloc` has no safe copy length and over-reads the old block on every
+growing call, silently, on a heap with no guard pages.
+
+**`qsort` is insertion sort, O(n²), and that is a deliberate trade against the stack.** Real qsort
+is quicksort with O(log n) recursion depth; **this OS gives a program ONE PAGE of stack** (ADR-0013)
+and there is no guard page below it, so a recursive sort on a pathological input overflows silently.
+libdrm's atomic property list is tens of items. **The day something sorts a large array this is the
+entry to read**, and the fix is heapsort — O(n log n) with O(1) stack — not quicksort.
+
+---
+
+## GAP-0183 — one `printf` is still one console line, so a POSIX `printf` cannot honour `\n`, and no userland change can fix it
+
+**Domain:** userland, libc, kernel console
+**Status:** OPEN. It is a kernel-interface property, not a libc bug.
+
+`posix.c` provides a real POSIX `printf` — port.c's full conversion set, C's return value, and no
+120-byte cap, because the output is chunked across as many `write` syscalls as it takes.
+
+**What it cannot do is line semantics.** `userSysWrite` prints `USER WRITE `, the caller's bytes,
+**and a newline of its own**. So every chunk becomes its own console line, an embedded `\n` produces
+nothing where a newline should be and a line break where one should not, and a program that builds
+output incrementally cannot.
+
+**No userland change fixes this**, which is why it is recorded rather than worked around: the
+newline and the `USER WRITE ` prefix are the kernel's, added inside syscall 1. Fixing it means a
+console syscall that does not frame what it is given — which is a real interface change, affects
+every golden in the repo, and was correctly out of scope for a unit about `ioctl`.

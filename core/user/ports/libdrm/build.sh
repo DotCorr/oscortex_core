@@ -135,7 +135,12 @@ LIBC_CFLAGS=(
   -mno-red-zone -fno-stack-protector -fno-asynchronous-unwind-tables -fno-builtin
   -O2 -Wall -Wextra -Werror "-I$LIBC_DIR" -DLIBC_FREE_ENABLED=1
 )
-for s in syscall string malloc printf rfile start; do
+# S0 (ADR-0033) adds `posix` and `port`. They are NOT part of the native
+# surface -- posix.c is the opt-in POSIX face (open/read/close/ioctl/errno) and
+# port.c is the tier-1 C functions a port needs -- and they are measured here
+# because the question this file answers is "what can libdrm link against",
+# which is exactly the set a port is allowed to link.
+for s in syscall string malloc printf rfile start posix port; do
   clang "${LIBC_CFLAGS[@]}" "$LIBC_DIR/$s.c" -o "$OUT/libcobj/$s.o" \
     || fail "clang could not compile core/user/libc/$s.c"
 done

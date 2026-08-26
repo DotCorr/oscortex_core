@@ -155,6 +155,19 @@ PY
 #
 # So the total is 14112 + 256 = 14368: 9728 through M13 plus M18's scheduler
 # header, plus fat_store's 1824, plus file_store's 2560, plus args_store's 256.
+#
+# S0 (ADR-0033) ADDED A BLOCK AFTER THIS ONE: `ioctlStore`, 512 bytes -- 32
+# metadata words and the 256-byte `ioctl` bounce buffer. So the total is now
+# 14368 + 512 = 14880, and `argsStore` IS NO LONGER THE LAST BLOCK IN .bss;
+# `ioctlStore` is.
+#
+# **THIS HARNESS'S CLAIM IS UNCHANGED IN SUBSTANCE AND THAT IS THE POINT.**
+# What M19 asserted was that its block sits at the END so that no earlier
+# harness's "bytes from my block to the end" number moves. S0 kept that
+# discipline by putting its own block after this one and by giving every
+# earlier harness a subtraction step -- which is exactly what M14, M15, M16 and
+# M19 each did in turn. So the assertions below subtract `ioctlStore` FIRST and
+# then check that `argsStore` is last among what remains.
 bssfield() {   # bssfield <readelf column> <symbol> -- kmain.o first, then kdata.o
   local f="$1" n="$2" o v
   for o in kmain.o kdata.o; do
@@ -175,14 +188,25 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 14368 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 14368 — 14112 through M18 plus args_store's 256. If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 14880 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 14880 — 14112 through M18, plus args_store's 256, plus S0's ioctlStore 512. If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+
+# S0's block, subtracted FIRST so that every assertion below it means what it
+# meant when M19 wrote it.
+IOCTL_STORE_SIZE=$(bsssize ioctlStore)
+ck; [[ "$IOCTL_STORE_SIZE" == "512" ]] || fail "ioctlStore is ${IOCTL_STORE_SIZE:-missing} bytes, expected 512 (ADR-0033)"
+IOCTL_OFF=$(bssoff ioctlStore)
+ck; [[ -n "$IOCTL_OFF" ]] || fail "ioctlStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "ioctlStore ends at $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — S0's block is NOT the last one, and ADR-0031 §4.3 rule 5 requires the ioctl bounce buffer to be last"
+DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
 ck; [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"
 ARGS_OFF=$(bssoff argsStore)
 ck; [[ -n "$ARGS_OFF" ]] || fail "argsStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — M19's block is NOT the last one, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+  || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and kmain.o's .bss (less S0's ioctlStore) is $DART_BSS bytes — M19's block is NOT the last one before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
 ck; [[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 14112 ]] \
   || fail "the .bss outside args_store is $(( KDATA_BSS - ARGS_STORE_SIZE )), not M18's 14112 — M19 moved storage it does not own"
 
@@ -205,7 +229,7 @@ ck; [[ $(( A_OFF_OFF + A_MAX_COUNT * 8 )) -eq "$A_TEXT_OFF" ]] \
   || fail "the $A_MAX_COUNT offsets at $A_OFF_OFF do not end where the text begins ($A_TEXT_OFF)"
 ck; [[ $(( A_TEXT_OFF + A_MAX_BYTES )) -eq "$A_STORE" ]] \
   || fail "the $A_MAX_BYTES bytes of text at $A_TEXT_OFF do not end at the block's end ($A_STORE)"
-echo "STRUCTURAL: pass  the kernel's mutable statics are 14368 bytes, 256 of them argsStore and argsStore is the LAST block in .bss: $A_META_WORDS metadata words at $A_META_OFF, $A_MAX_COUNT offsets at $A_OFF_OFF, $A_MAX_BYTES bytes of argument text at $A_TEXT_OFF, ending exactly at $A_STORE"
+echo "STRUCTURAL: pass  the kernel's mutable statics are 14880 bytes, 512 of them S0's ioctlStore (which is the LAST block in .bss, ADR-0031 §4.3 rule 5) and 256 of them argsStore, which is the last before it: $A_META_WORDS metadata words at $A_META_OFF, $A_MAX_COUNT offsets at $A_OFF_OFF, $A_MAX_BYTES bytes of argument text at $A_TEXT_OFF, ending exactly at $A_STORE"
 
 # 2b. THE STORAGE SEAM: ONE ACCESSOR PER REGION, THREE CALL SITES, ONE FILE.
 SEAM=$(grep -cE "^  return Bss[.]addressOf[(]argsStore[)]" "$CORE_DIR/kernel/args.dart")
@@ -660,5 +684,5 @@ echo
 # unless that many checks actually executed. An abort, a loop that iterated
 # zero times, a branch not taken or a deleted guard all land here.
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "M19-argv: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's SIX OBJECTS (M19's start.c among them, the only one that defines \`_start\`) AND ONE PROGRAM SOURCE TWICE, the second ignoring argv as a negative control -> make-image.py writes a FAT16 volume whose ALPHA.TXT and BETA.TXT differ in ALL THREE of lines, words and bytes and whose chains go backwards -> structural checks (the kernel's mutable statics 14112 -> 14368 with argsStore one 256-byte block that is the LAST in .bss so no earlier harness's accounting moves, its three regions tiling exactly, a 3-call-site storage seam in one file, 11 @rodata tables against their call sites, five distinct refusal values with four distinct sentences, and the entry path proven to use the computed RSP) -> build-progs checks (\`_start\` is the LIBRARY's, reads argc from (%rsp) and argv from 8(%rsp), and NEVER WRITES %rsp) -> verify-freestanding pass on kmain.o, kdata.o and kernel.elf (${EXTERN_COUNT} declared externs, unchanged from M18 — M19 added no assembly) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with m1-interrupts' ${M1_BYTES}-byte golden intact as a prefix; A C PROGRAM WRITTEN AS \`int main(int argc, char **argv)\` TOLD BY THE SHELL WHICH FILE TO COUNT, counting alpha.txt to $(d alpha_lines)/$(d alpha_words)/$(d alpha_chars) and then, THE SAME BINARY, beta.txt to $(d beta_lines)/$(d beta_words)/$(d beta_chars), every number computed on the host from the volume this harness wrote and each exit status derived from its own file; a flag argument selecting one column and two file arguments both counted and totalled; THE INITIAL PROCESS STACK READ OUT OF GUEST PHYSICAL MEMORY WITH QEMU'S OWN MONITOR and checked against the System V ABI -- RSP 16-byte aligned, argc at RSP, every argv pointer inside the program's own mapped user page and naming the exact bytes typed, NULL argv terminator, NULL envp, AT_NULL auxv and every padding byte zero -- with the checker itself required to reject a wrong argv and a wrong argc; a control build handed the same argv and ignoring it, printing $(d neg_file)'s counts for beta.txt and a different exit status; argc 1 and a name that is not on the volume both handled from ring 3; nine arguments and a 129-byte argument refused by the shell before a frame was taken, with the shell alive and correct afterwards; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
+echo "M19-argv: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's SIX OBJECTS (M19's start.c among them, the only one that defines \`_start\`) AND ONE PROGRAM SOURCE TWICE, the second ignoring argv as a negative control -> make-image.py writes a FAT16 volume whose ALPHA.TXT and BETA.TXT differ in ALL THREE of lines, words and bytes and whose chains go backwards -> structural checks (the kernel's mutable statics 14112 -> 14368 -> 14880 with argsStore one 256-byte block and S0's ioctlStore the 512-byte block after it that is the LAST in .bss, so no earlier harness's accounting moves, its three regions tiling exactly, a 3-call-site storage seam in one file, 11 @rodata tables against their call sites, five distinct refusal values with four distinct sentences, and the entry path proven to use the computed RSP) -> build-progs checks (\`_start\` is the LIBRARY's, reads argc from (%rsp) and argv from 8(%rsp), and NEVER WRITES %rsp) -> verify-freestanding pass on kmain.o, kdata.o and kernel.elf (${EXTERN_COUNT} declared externs, unchanged from M18 — M19 added no assembly) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with m1-interrupts' ${M1_BYTES}-byte golden intact as a prefix; A C PROGRAM WRITTEN AS \`int main(int argc, char **argv)\` TOLD BY THE SHELL WHICH FILE TO COUNT, counting alpha.txt to $(d alpha_lines)/$(d alpha_words)/$(d alpha_chars) and then, THE SAME BINARY, beta.txt to $(d beta_lines)/$(d beta_words)/$(d beta_chars), every number computed on the host from the volume this harness wrote and each exit status derived from its own file; a flag argument selecting one column and two file arguments both counted and totalled; THE INITIAL PROCESS STACK READ OUT OF GUEST PHYSICAL MEMORY WITH QEMU'S OWN MONITOR and checked against the System V ABI -- RSP 16-byte aligned, argc at RSP, every argv pointer inside the program's own mapped user page and naming the exact bytes typed, NULL argv terminator, NULL envp, AT_NULL auxv and every padding byte zero -- with the checker itself required to reject a wrong argv and a wrong argc; a control build handed the same argv and ignoring it, printing $(d neg_file)'s counts for beta.txt and a different exit status; argc 1 and a name that is not on the volume both handled from ring 3; nine arguments and a 129-byte argument refused by the shell before a frame was taken, with the shell alive and correct afterwards; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
 exit 0

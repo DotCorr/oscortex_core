@@ -37,6 +37,14 @@ part 'heap.dart';
 part 'fat.dart';
 part 'file.dart';
 part 'args.dart';
+// S0 (ADR-0033) — `ioctl`, syscall 12, and the device namespace.
+//
+// **LAST ON PURPOSE.** ADR-0031 §4.3 rule 5 requires the ioctl bounce buffer
+// to be the last thing in `.bss`, so that every existing harness's "bytes from
+// my block to the end" arithmetic (ADR-0021) is unchanged by this file
+// existing. `tests/conformance/drm-abi/run.sh` reads `core/build/kernel.map`
+// and CHECKS that ordering rather than trusting this comment.
+part 'ioctl.dart';
 
 /// Kernel entry point.
 ///

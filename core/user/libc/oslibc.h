@@ -52,6 +52,75 @@
 #ifndef OSLIBC_H
 #define OSLIBC_H
 
+/* ---------------------------------------------------------------------------
+ * 0. THE SYMBOLS ARE `os_*`. THE SPELLINGS ARE THE SHORT ONES.
+ *    This is the fix for GAP-0170 and it is not a convenience alias.
+ *    docs/decisions/0033-*.md §2 argues it; this is the mechanism.
+ *
+ * THE HAZARD IT CLOSES. `libdrm` needs `open`, `read`, `close` and `printf`.
+ * This library used to DEFINE all four, under those exact names, with
+ * DIFFERENT SIGNATURES AND A DIFFERENT ERROR CONVENTION:
+ *
+ *   ours: unsigned long open(const char *name)      -- ONE argument, an 8.3
+ *         name in a FAT16 ROOT DIRECTORY, refusal at or above FILE_ERR_FLOOR
+ *   theirs: int open(const char *path, int flags, ...) -- a PATH, two or three
+ *         arguments, -1 on failure with `errno` set
+ *
+ * `x86_64-elf-ld` resolved all four without a word. THE LINK WAS CLEAN AND THE
+ * PROGRAM WOULD HAVE BEEN WRONG -- and the near-miss is what would have made it
+ * hard to find: our refusals are 0xFFFFFFFFFFFFFFF9 and friends, which AS AN
+ * `int` are small negative numbers, so libdrm's `if (fd < 0)` would appear to
+ * work. What would not work is everything after it. A successful open returns
+ * 0..3, the O_RDWR argument is silently discarded, and
+ * drmOpenDevice("/dev/dri/card0", ...) would try to open a FAT16 file whose
+ * name is a path.
+ *
+ * THE FIX, AND WHY IT IS A `#define` AND NOT A RENAME OF THE SPELLING.
+ * The four functions now EXPORT the symbols `os_open`, `os_read`, `os_close`
+ * and `os_printf`. The short spellings are preserved for callers by the four
+ * `#define`s below, so no program that includes this header changed by one
+ * character. The direction is the whole point:
+ *
+ *   * a program that INCLUDES THIS HEADER gets oscortex's `open`, exactly as
+ *     before, at the same source spelling;
+ *   * a PORT THAT DOES NOT INCLUDE THIS HEADER -- which is every port, because
+ *     ported C includes <fcntl.h> and <unistd.h> -- now gets an UNDEFINED
+ *     REFERENCE to `open` and CANNOT LINK.
+ *
+ * A mismatch that used to link silently is now a link error. That is the
+ * entire requirement, and it is checked: tests/conformance/drm-abi/run.sh
+ * CHECK 2 requires all four to come out UNDEFINED when libdrm's objects are
+ * linked against this library, and fails if any of them ever binds again.
+ *
+ * WHAT A PORT LINKS INSTEAD: core/user/libc/posix.h and posix.c, a SEPARATE
+ * and OPT-IN translation unit that implements the POSIX-shaped surface --
+ * `open(path, flags, ...)`, `read`, `close`, `ioctl`, and an `errno` -- on top
+ * of the `os_*` calls. It is not part of this header and a native oscortex
+ * program never links it. ADR-0033 §2 states what was rejected and why.
+ *
+ * `write` IS A FIFTH, AND THE COMPILER PROVED IT RATHER THAN A REVIEWER
+ * GUESSING IT. GAP-0170 named four. When posix.c tried to define POSIX's
+ * `ssize_t write(int, const void *, size_t)`, clang refused it outright --
+ * "conflicting types for 'write'", against oscortex's two-argument
+ * `unsigned long write(const void *, size_t)` in this header. So the clash was
+ * not merely latent, it BLOCKED THE ADAPTER, and `write` is aliased here for
+ * the same reason and by the same mechanism as the four. It is `os_write`.
+ *
+ * TWO MORE NAMES COLLIDE AND ARE DELIBERATELY LEFT ALONE, NAMED RATHER THAN
+ * SILENTLY FIXED: `exit` (ours takes unsigned long, POSIX's takes int -- a
+ * port's `exit(1)` converts and behaves correctly), and `sbrk` (ours returns
+ * NULL where POSIX returns (void *)-1, so a port testing `== (void *)-1`
+ * would miss an out-of-memory). Neither is reached by libdrm and neither
+ * blocks posix.c, so both are MEASURED in GAP-0178 rather than changed by a
+ * unit that was not asked to. That is the boundary this unit drew, and it is
+ * drawn where the evidence stops rather than where the work got tiring.
+ * ------------------------------------------------------------------------- */
+#define open os_open
+#define read os_read
+#define close os_close
+#define printf os_printf
+#define write os_write
+
 typedef unsigned long size_t;
 typedef unsigned long uintptr_t;
 
@@ -78,6 +147,15 @@ typedef unsigned long uintptr_t;
 /* M16. `fileSysWriteNo`. It is NOT called SYS_WRITE: syscall 1 has been that
  * since M9 and it prints on the console. See fdwrite() below. */
 #define SYS_FDWRITE 9
+
+/* S0 (ADR-0033). `core/kernel/ioctl.dart`'s `ioctlSysNo`.
+ *
+ * TWELVE, AND ELEVEN IS SKIPPED ON PURPOSE. `fdwait` was named as syscall 11
+ * by three separate design documents before `ioctl` existed, so `ioctl` took
+ * the next number. docs/syscall-registry.md is the allocator and
+ * core/scripts/verify-syscall-registry.sh fails if this line and that table
+ * and core/kernel/ioctl.dart ever disagree. */
+#define SYS_IOCTL 12
 
 /* core/kernel/user.dart's `userRefused`: what a refused syscall returns. */
 #define SYS_REFUSED 0xFFFFFFFFFFFFFFFFUL
@@ -159,6 +237,67 @@ typedef unsigned long uintptr_t;
 
 /* `fileWriteMax`: the largest single fdwrite() the kernel will perform. */
 #define WRITE_FILE_MAX 512UL
+
+/* ---------------------------------------------------------------------------
+ * 1c. S0 — `ioctl`, and the eleven refusals core/kernel/ioctl.dart can give.
+ *
+ *     THE REFUSALS OCCUPY A BAND OF THEIR OWN, 0xE0..0xEF, BELOW file.dart's
+ *     0xF1..0xFE. That is ADR-0031 §4.3 rule 7 made mechanical: an `ioctl`
+ *     refusal and a file refusal can never be the same number, so a program
+ *     cannot mistake IOCTL_EBADFD for FILE_EBADFD and `ioctl` on a FAT16 file
+ *     is a DISTINCT answer rather than a reused one. The floor is the same
+ *     floor -- one comparison still separates a result from a refusal.
+ *
+ *     `tests/conformance/drm-abi/run.sh` reads every one of these back out of
+ *     core/kernel/ioctl.dart and compares, exactly as m15-fileio does for
+ *     file.dart's fourteen.
+ * ------------------------------------------------------------------------- */
+
+/* `ioctlRetFloor`. Same value as FILE_ERR_FLOOR and the same discipline. */
+#define IOCTL_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
+
+#define IOCTL_EBADFD 0xFFFFFFFFFFFFFFEFUL   /* no such open descriptor */
+#define IOCTL_ENOTDEV 0xFFFFFFFFFFFFFFEEUL  /* it is a FAT16 file, not a device
+                                             * -- ENOTTY's equivalent */
+#define IOCTL_EBADTYPE 0xFFFFFFFFFFFFFFEDUL /* _IOC_TYPE is not one we serve */
+#define IOCTL_EBADSIZE 0xFFFFFFFFFFFFFFECUL /* _IOC_SIZE is zero, or above
+                                             * IOCTL_MAX_PAYLOAD. REFUSED,
+                                             * never truncated */
+#define IOCTL_EBADDIR 0xFFFFFFFFFFFFFFEBUL  /* _IOC_DIR is not the direction
+                                             * this request is served with */
+#define IOCTL_EBADPTR 0xFFFFFFFFFFFFFFEAUL  /* argp is not yours, or not
+                                             * writable when the kernel is
+                                             * about to write it */
+#define IOCTL_EBADNR 0xFFFFFFFFFFFFFFE9UL   /* no descriptor for (type, nr) */
+#define IOCTL_ESIZESKEW 0xFFFFFFFFFFFFFFE8UL /* the request IS served and the
+                                              * size is not one this kernel
+                                              * accepts for it -- the two sides
+                                              * disagree about the struct.
+                                              * REFUSED, never zero-extended */
+#define IOCTL_ENOOWNER 0xFFFFFFFFFFFFFFE7UL /* nothing that owns descriptors is
+                                             * running */
+#define IOCTL_ENODEV 0xFFFFFFFFFFFFFFE6UL   /* the descriptor names no device */
+
+/* `ioctlMaxPayload` and `ioctlEncMaxSize`. The first is the bound that DOES
+ * the work; the second is the `_IOC` encoding's own 14-bit ceiling, which this
+ * kernel records and reports and deliberately does NOT rely on. The measured
+ * largest DRM payload across all 121 requests is 248 bytes. */
+#define IOCTL_MAX_PAYLOAD 256UL
+#define IOCTL_ENC_MAX_SIZE 16383UL
+
+/* Issues [request] against [fd] with the payload at [argp]. Returns 0, or one
+ * of the eleven refusals above.
+ *
+ * IT IS NOT CALLED ioctl() AND THE NAME IS THE INTERFACE -- fdwrite()'s
+ * argument (§3b-M16) applied to the case that made it urgent. POSIX's
+ * `ioctl` returns -1 and sets errno; this returns the kernel's refusal
+ * unchanged, because a wrapper that collapsed eleven distinct refusals to -1
+ * would be throwing away the only diagnostic there is. A port that needs the
+ * POSIX face links posix.c, which builds it here rather than in the kernel --
+ * ADR-0031 §4.1 forbids the kernel returning -1 by name.
+ *
+ * [argp] may be NULL only for a request whose _IOC_DIR is _IOC_NONE. */
+unsigned long os_ioctl(unsigned long fd, unsigned long request, void *argp);
 
 /* ---------------------------------------------------------------------------
  * 2. Raw syscalls. `int $0x80`, number in RAX, arguments in RDI and RSI.
@@ -405,6 +544,15 @@ void free(void *p);
  * exported because a claim about an allocator that cannot be counted is not a
  * claim. */
 unsigned long malloc_bytes_from_kernel(void); /* total sbrk'd, in bytes */
+
+/* S0 (ADR-0033). The USABLE payload of a live block -- what `realloc` must
+ * know to copy the old contents without reading past the end of the old
+ * allocation. May be more than was asked for, because the allocator rounds up
+ * to `mallocAlign` and only splits when the remainder is at least
+ * `mallocMinSplit`. Reading it is the ONLY way port.c's realloc learns
+ * anything about a block, which is what keeps malloc.c's header layout
+ * private to malloc.c. */
+size_t malloc_usable(void *p);
 unsigned long malloc_free_blocks(void);       /* blocks on the free list now */
 
 /* Read out of the ELF by derive.py, so the harness's arithmetic about where

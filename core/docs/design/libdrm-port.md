@@ -1,6 +1,9 @@
 # Porting `libdrm` — the measurement
 
-**Status: MEASURED, and partly LANDED.** Everything with a number in it was produced by
+**Status: MEASURED, and LANDED — see §8.1 for what ADR-0033 changed.** The headline numbers in this
+document are the measurement as it stood on 2026-08-26 BEFORE `ioctl` and the POSIX adapter existed;
+they are kept as written because they are the measurement this document exists to record, and §8.1
+states what each became. Everything with a number in it was produced by
 `core/tests/conformance/drm-abi/run.sh` against libdrm `773536b1e5dde694dd743815528aff8bb2cf2cc3`
 (2.4.134, 2026-08-13) on 2026-08-26, and is re-produced on every run of that harness. The decisions
 this document is downstream of are **ADR-0031**; the decision *it* is downstream of is **ADR-0029**.
@@ -368,6 +371,38 @@ compiles, the gap is a list, and the list is 43 long.
 * **`modetest` is not linked.** 76 short, and 3 of those are pthreads and `poll`.
 * **The full §4.2 descriptor generator is not built** — only the name-table half of it, because
   nothing consumes a descriptor until the dispatcher exists. GAP-0175.
+
+### 8.1 What ADR-0033 then landed, and what the numbers above became
+
+**Three of those four are now done.** Re-measured by the same `build.sh` on the same pinned commit:
+
+| | this document measured | after ADR-0033 |
+|---|---:|---:|
+| libdrm core, missing symbols | **43** | **0** — the five objects link; `main` is the only undefined symbol left |
+| `modetest`, missing symbols | **76** | **32** |
+| `ioctl` | not implemented | **syscall 12, implemented**, `core/kernel/ioctl.dart` |
+| the §4.2 descriptor generator | name-table half only | **still name-table half only.** GAP-0175 and GAP-0177 |
+
+**§2's tiering held up, and §7.2's prediction was exactly right.** The 32 that remain for `modetest`
+are the expensive ones this document named before any of the work was done: `pthread_create`,
+`pthread_join`, `poll`, `select`, `fabs`, `roundf`, `getopt`, `strtod`/`strtof`, `gettimeofday`,
+`usleep`. **The sequencing sentence in §7.2 — "libdrm links after a tier-C libc; `modetest` runs only
+after threads" — is now measured rather than projected.**
+
+**Thirteen of §2's sixteen tier-1 symbols work. Three do not**, and all three are blocked on kernel
+work rather than libc work: `stat`, `fstat` (no `stat` syscall, no `dev_t`) and `clock_gettime` (no
+time syscall). GAP-0180.
+
+**§3's four became five.** `write` belongs on that list and this document did not have it: oscortex's
+`write(buf, len)` against POSIX's `write(fd, buf, len)` is the same clash, and clang refused to
+compile the two declarations together. It was found by building the adapter, not by reading. GAP-0178
+carries the two that remain (`exit`, `sbrk`).
+
+**§5's corollary was implemented as written.** This document said *"a descriptor cannot carry one size
+per request… ours should be to refuse until a request is deliberately given a second legal size,
+because zero-extending by default is how a caller's uninitialised field becomes a kernel default
+nobody chose."* That is exactly what `ioctlDescAltSize` does, and `SYNCOBJ_HANDLE_TO_FD` — the request
+this document watched move — is the one row that carries two.
 
 ---
 

@@ -1476,6 +1476,11 @@ void userSysExit(u64 frame) {
   // before M16 boots a kernel that never writes, so on every one of them this
   // prints nothing and no golden moves.
   fileWriteReport();
+  // S0 (ADR-0033): a THIRD block, and only if this boot opened a device or
+  // issued an `ioctl`. Same discipline as the two above and for the same
+  // reason: twenty-one harnesses boot a kernel that never does either, and on
+  // every one of them this prints nothing and no golden moves.
+  ioctlReport();
   // M11: a process's exit is a different event. It may not be the end of
   // anything -- another process can be READY -- so [procSysExit] RETURNS
   // NORMALLY when it switched to somebody else, and never returns when this was
@@ -1619,6 +1624,19 @@ void userSyscall(u64 frame) {
   // five. What is different is entirely inside [fileSysWrite].
   if (no == u64(fileSysWriteNo)) {
     fileSysWrite(frame);
+    return;
+  }
+  // S0 (ADR-0033): `ioctl` (syscall 12). It sits with the file syscalls and
+  // not with `sbrk` and `yield`, because it needs what THEY need: a descriptor
+  // table, which `run <name>` produces without a process slot. [fileOwnerRow]
+  // decides that inside [ioctlSysIoctl], once, exactly as the other six do.
+  //
+  // **11 is skipped and that is the registry working.** `fdwait` was named as
+  // 11 by three separate designs before `ioctl` existed, so `ioctl` took 12 —
+  // see docs/syscall-registry.md, which this dispatcher is checked against by
+  // `core/scripts/verify-syscall-registry.sh`.
+  if (no == u64(ioctlSysNo)) {
+    ioctlSysIoctl(frame);
     return;
   }
   if (no == u64(userSysWhoNo)) {

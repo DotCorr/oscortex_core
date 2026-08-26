@@ -27,8 +27,15 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 8 | `seek` | `fileSysSeekNo` | `core/kernel/file.dart` | `SYS_SEEK` | 0019 |
 | 9 | `fdwrite` | `fileSysWriteNo` | `core/kernel/file.dart` | `SYS_FDWRITE` | 0020 |
 | 10 | `preempts` | `procSysPreemptsNo` | `core/kernel/proc.dart` | *(none)* | 0022 |
+| 12 | `ioctl` | `ioctlSysNo` | `core/kernel/ioctl.dart` | `SYS_IOCTL` | 0032 |
 
-**Eleven syscalls.** Number 10 has no `oslibc.h` name: it is a diagnostic the preempt harness reads,
+**Twelve syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and
+`fdwait` is not built, so the allocated set is 0–10 and 12. **That gap is the
+registry working, not a bug in it**: `ioctl` was implemented after `fdwait` was
+named and took the next free number rather than the next number, which is
+exactly the outcome this file exists to produce.
+
+**Eleven syscalls before S0.** Number 10 has no `oslibc.h` name: it is a diagnostic the preempt harness reads,
 not something a program is meant to call, and the registry records that asymmetry rather than tidying
 it away.
 
@@ -38,8 +45,7 @@ it away.
 
 | # | name | claimed by | status |
 |--:|---|---|---|
-| 11 | `fdwait(mask, timeoutTicks) -> readyMask` | `design/blocking-and-threads.md` §3, `design/display-protocol.md` §2.4, `design/time-and-power.md` §5 | **the only blocking primitive.** Three designs name it and all three say 11 |
-| 12 | `ioctl(fd, request, argp)` | **ADR-0031 §4**, `design/drm-abi.md` S0 | **allocated by this registry, and the reason it exists.** `ioctl` was at least the third thing to reach for "the next number" |
+| 11 | `fdwait(mask, timeoutTicks) -> readyMask` | `design/blocking-and-threads.md` §3, `design/display-protocol.md` §2.4, `design/time-and-power.md` §5 | **the only blocking primitive.** Three designs name it and all three say 11. **Still reserved after S0** — `ioctl` went to 12 rather than taking it |
 
 **Why `ioctl` is 12 and not 11.** `fdwait` was named first, in three documents, and moving it would
 break three designs to save one number. `design/drm-abi.md` §9 says "take the next number from the

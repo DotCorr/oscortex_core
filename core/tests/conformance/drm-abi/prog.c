@@ -60,6 +60,17 @@
  * other mutable global. */
 volatile unsigned int drmabiMarker = 0x0D8A0001u;
 
+/* S0 (ADR-0033). A word in `.rodata` — READABLE from ring 3, NOT WRITABLE —
+ * for the `_IOC_READ` write-side negative control to aim at.
+ *
+ * IT HAS TO BE A SEPARATE OBJECT FROM `drmabiMarker`, WHICH IS NOT const AND
+ * THEREFORE LIVES IN `.data`. Aiming the control at a writable page would make
+ * it pass for the wrong reason — or rather, would make it FAIL to control
+ * anything, because the write-side validator would correctly allow it.
+ * `volatile const` rather than plain `const` so the compiler cannot fold it
+ * away and leave the address pointing at nothing. */
+volatile const unsigned int drmabiRoTarget = 0x0D8A0002u;
+
 /* FNV-1a, 32-bit, over the little-endian bytes of every request number in
  * table order. Transcribed here and again in run.sh's python; the two are
  * independent implementations of a five-line function, which is the level of
@@ -189,6 +200,207 @@ int main(int argc, char **argv) {
     }
   }
   printf("DRMABI ZEROSIZE %d MAXSIZE %d CEIL %d", zerosz, (int)maxsz, 16383);
+
+  /* =====================================================================
+   * S0 (ADR-0033) — THE IOCTL ITSELF, AND THE FOUR NEGATIVE CONTROLS.
+   *
+   * Everything above this line runs on a kernel with no `ioctl` and is
+   * unchanged. Everything below issues real syscall 12s against a real
+   * device descriptor.
+   *
+   * **EVERY REQUEST WORD BELOW IS BUILT BY THE `_IOC` MACROS FROM LIBDRM'S
+   * UNMODIFIED uAPI HEADERS**, exactly as the nine above are -- not typed as
+   * a hex literal. That is what makes the comparison with the kernel's decode
+   * a comparison of two independent computations rather than of a number with
+   * itself. ADR-0031 §4.4 requires precisely this.
+   *
+   * The negative controls are the point of the unit, so each one PRINTS THE
+   * REFUSAL IT OBSERVED rather than a pass/fail verdict: the harness compares
+   * the observed value against a value it derives itself, and a control that
+   * printed "ok" would be the program grading its own homework.
+   * ===================================================================== */
+
+  {
+    unsigned long fd;
+    unsigned long r;
+    /* The payload buffer. `volatile` so the compiler cannot decide that a
+     * buffer the kernel writes through a pointer is dead. 64 bytes is
+     * DRM_IOCTL_VERSION's `_IOC_SIZE`, which is the largest thing sent. */
+    static volatile unsigned char payload[64];
+    unsigned int k;
+
+    /* ---- open the device. ADR-0031 §6: the name is LITERAL. ---- */
+    fd = openmode("/dev/dri/card0", O_READ);
+    printf("DRMABI DEVOPEN fd=%x", (unsigned int)fd);
+
+    /* A name in the device namespace that is not a device this kernel
+     * serves. Must be FILE_ENOTFOUND and must NOT be attempted as an 8.3
+     * FAT name -- a `/` name reaching fatParseAt would be EBADNAME. */
+    r = openmode("/dev/dri/card9", O_READ);
+    printf("DRMABI DEVMISS %x", (unsigned int)r);
+
+    if (fd < FILE_ERR_FLOOR) {
+      /* ---- R0: the real thing. _IOWR('d', 0x00, struct drm_version). ----
+       * Seeded so the out-copy is distinguishable from "the buffer was
+       * already right". */
+      for (k = 0; k < 64; k++) {
+        payload[k] = 0xA5;
+      }
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_VERSION, (void *)payload);
+      printf("DRMABI IOCTL VERSION ret=%x b0=%x b63=%x", (unsigned int)r,
+             (unsigned int)payload[0], (unsigned int)payload[63]);
+
+      /* ---- _IOC_NONE: a request with no payload at all, and argp NULL.
+       * Four of the 121 are like this and a kernel that assumed a payload
+       * would refuse it. ---- */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_SET_MASTER, (void *)0);
+      printf("DRMABI IOCTL SET_MASTER ret=%x", (unsigned int)r);
+
+      /* ---- _IOC_WRITE only: userspace writes, the kernel reads. The
+       * out-direction byte count must be ZERO, which is the anti-vacuity
+       * check ADR-0031 §4.4 asks for -- a kernel ignoring _IOC_DIR would
+       * copy both ways and the IN/OUT counts would match. ---- */
+      for (k = 0; k < 8; k++) {
+        payload[k] = 0x5C;
+      }
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_GEM_CLOSE, (void *)payload);
+      printf("DRMABI IOCTL GEM_CLOSE ret=%x b0=%x", (unsigned int)r,
+             (unsigned int)payload[0]);
+
+      /* ---- THE VERSION-SKEW ROW. The SAME nr, TWO legal sizes.
+       * libdrm 2.4.134 says 24 bytes; Linux 6.12 says 16. Both must be
+       * served, and they differ ONLY in _IOC_SIZE -- so a kernel that
+       * switched on the whole request word serves exactly one of them.
+       * The second request is built by hand from the FIELDS, which is the
+       * only way to express "the same request, an older struct". ---- */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,
+                   (void *)payload);
+      printf("DRMABI IOCTL SYNCOBJ24 ret=%x", (unsigned int)r);
+      r = os_ioctl(fd, (unsigned long)_IOC(IOC_INOUT, 'd', 0xC1, 16),
+                   (void *)payload);
+      printf("DRMABI IOCTL SYNCOBJ16 ret=%x", (unsigned int)r);
+
+      /* =================================================================
+       * NEGATIVE CONTROL 1 — AN OVERSIZED PAYLOAD MUST BE REFUSED, NOT
+       * TRUNCATED.
+       *
+       * 4096 bytes is far above IOCTL_MAX_PAYLOAD (256) and far below the
+       * encoding's 14-bit ceiling (16383), so this is a request the ENCODING
+       * permits and the KERNEL must not. A truncating kernel would return 0
+       * having copied 256 bytes, and the caller would have no way to notice.
+       * ================================================================= */
+      r = os_ioctl(fd, (unsigned long)_IOC(IOC_INOUT, 'd', 0x00, 4096),
+                   (void *)payload);
+      printf("DRMABI NEG OVERSIZE ret=%x", (unsigned int)r);
+
+      /* =================================================================
+       * NEGATIVE CONTROL 2 — A WRONG-SIZE REQUEST MUST BE REFUSED, NOT
+       * ZERO-EXTENDED.
+       *
+       * nr 0x00 is VERSION and this kernel serves it at exactly 64 bytes.
+       * 48 is a legal _IOC_SIZE, is under IOCTL_MAX_PAYLOAD, and is not in
+       * the descriptor's set. Linux's policy for a short struct is to
+       * zero-extend; ours is to refuse, because zero-extending by default is
+       * how a caller's uninitialised field becomes a kernel default nobody
+       * chose (design/libdrm-port.md §5).
+       * ================================================================= */
+      r = os_ioctl(fd, (unsigned long)_IOC(IOC_INOUT, 'd', 0x00, 48),
+                   (void *)payload);
+      printf("DRMABI NEG WRONGSIZE ret=%x", (unsigned int)r);
+
+      /* =================================================================
+       * NEGATIVE CONTROL 3 — AN `argp` OUTSIDE THE PROCESS MUST BE REFUSED.
+       *
+       * A KERNEL ADDRESS, chosen the same way m9-ring3's payload chooses
+       * one. The kernel copies with kernel privilege, so a `memcpy` into an
+       * address ring 3 named is a write ring 3 could not have performed
+       * itself -- this is the hole the whole of §4.3 rule 4 exists to close,
+       * and it must be closed IN SOFTWARE: GAP-0153 records that SMEP's bit
+       * is set and that nothing on this machine proves it blocks anything.
+       * ================================================================= */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_VERSION, (void *)0x100000UL);
+      printf("DRMABI NEG BADPTR ret=%x", (unsigned int)r);
+
+      /* And a pointer that is inside the program's window but whose range
+       * RUNS OFF THE END of a mapped page -- GAP-0124's case, which is why
+       * elfOwns walks every page rather than the first. */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_VERSION,
+                   (void *)((unsigned long)payload + 0x3FE000UL));
+      printf("DRMABI NEG FARPTR ret=%x", (unsigned int)r);
+
+      /* =================================================================
+       * NEGATIVE CONTROL 4 — A WRITE-SIDE VIOLATION ON `_IOC_READ` MUST BE
+       * REFUSED.
+       *
+       * **THIS IS THE ONE THAT CATCHES THE DIRECTIONS BEING SWAPPED**, and
+       * it is invisible on all 92 `_IOWR` requests. GET_MAGIC is `_IOC_READ`
+       * only: the KERNEL writes and userspace reads. So `argp` must pass the
+       * WRITE-side validator -- and this aims it at the program's own
+       * `.rodata`, which ring 3 may read and may not write.
+       *
+       * A kernel with the directions backwards would run the READ-side
+       * validator here, pass, and then write to a read-only page.
+       * `drmabiRoTarget` is a `volatile const` and lives in .rodata;
+       * m15-fileio aims a `read` at exactly the same kind of target for
+       * exactly this reason. `drmabiMarker` would NOT do: it is not const,
+       * so it is in .data and ring 3 may write it.
+       * ================================================================= */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_GET_MAGIC,
+                   (void *)&drmabiRoTarget);
+      printf("DRMABI NEG RODATA ret=%x", (unsigned int)r);
+
+      /* **THE `_IOWR` CONTROL THAT DISTINGUISHES "BOTH VALIDATORS" FROM
+       * "THE READ-SIDE ONE".** ADR-0033 §4.3 rule 4 says an _IOWR runs BOTH,
+       * and the two controls above do not prove it: they aim at addresses
+       * that fail the READ-side validator too, so a kernel running only the
+       * read side refuses them for the right-looking reason.
+       *
+       * THIS WAS FOUND BY MUTATION AND NOT BY READING. Deleting the
+       * write-side call from the _IOWR arm left the whole suite GREEN.
+       * `.rodata` is the discriminator: ring 3 may read it, so the read-side
+       * validator PASSES, and the kernel is about to write there. */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_VERSION,
+                   (void *)&drmabiRoTarget);
+      printf("DRMABI NEG IOWRRO ret=%x", (unsigned int)r);
+
+      /* And the same request aimed at writable memory, which MUST succeed --
+       * otherwise the control above would pass for the wrong reason (a
+       * kernel that refused every _IOC_READ). */
+      r = os_ioctl(fd, (unsigned long)DRM_IOCTL_GET_MAGIC, (void *)payload);
+      printf("DRMABI POS RODATACTL ret=%x b0=%x", (unsigned int)r,
+             (unsigned int)payload[0]);
+
+      /* ---- A type this kernel does not serve. Checked FIRST, before any
+       * other field, so this must be EBADTYPE and not EBADNR. ---- */
+      r = os_ioctl(fd, (unsigned long)_IOC(IOC_INOUT, 'z', 0x00, 64),
+                   (void *)payload);
+      printf("DRMABI NEG BADTYPE ret=%x", (unsigned int)r);
+
+      /* ---- A DRM nr this kernel does not serve. ---- */
+      r = os_ioctl(fd, (unsigned long)_IOC(IOC_INOUT, 'd', 0x7E, 64),
+                   (void *)payload);
+      printf("DRMABI NEG BADNR ret=%x", (unsigned int)r);
+
+      os_close(fd);
+    }
+
+    /* ---- ioctl on a FAT16 FILE must be ENOTTY's equivalent, and must be a
+     * DISTINCT value from every file.dart refusal (ADR-0031 §4.3 rule 7). ---- */
+    {
+      unsigned long ffd = openmode("README.TXT", O_READ);
+      if (ffd < FILE_ERR_FLOOR) {
+        r = os_ioctl(ffd, (unsigned long)DRM_IOCTL_VERSION, (void *)payload);
+        printf("DRMABI NEG NOTDEV ret=%x", (unsigned int)r);
+        os_close(ffd);
+      } else {
+        printf("DRMABI NEG NOTDEV noopen=%x", (unsigned int)ffd);
+      }
+    }
+
+    /* ---- ioctl on a descriptor that was never opened. ---- */
+    r = os_ioctl(3, (unsigned long)DRM_IOCTL_VERSION, (void *)payload);
+    printf("DRMABI NEG BADFD ret=%x", (unsigned int)r);
+  }
 
   printf("DRMABI DONE");
   return 0;
