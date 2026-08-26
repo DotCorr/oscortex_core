@@ -6313,3 +6313,249 @@ GAP-0167's fix and the executable-bit change.
 **Ordering note for whoever takes it.** Do (2) first and independently — it is mechanical, it is
 verifiable one harness at a time, and it strictly improves diagnostics whether or not (1) ever lands.
 (1) needs a decision about where N comes from before any code is written.
+
+---
+
+## GAP-0169 — `libdrm` compiles for this OS and cannot be linked: 43 symbols, and here they are
+
+**Domain:** userland, libc, ports (ADR-0031)
+**Status:** OPEN — **and it is now a list rather than an estimate.** The list is checked into the repo
+and diffed on every run of `tests/conformance/drm-abi/run.sh`.
+
+`drm-abi.md` §8.3 recommended `libdrm` as the first C library this OS is pointed at and marked its own
+size claim ⚠ *"(not measured — V0 measures it)"*. It is measured now, and V0 was not needed:
+
+```
+core/user/ports/libdrm/build.sh <libdrm> <out>
+  → 5 objects, 7,801 lines, UNMODIFIED source, x86_64-unknown-none-elf: COMPILES
+  → 53 external symbols, 10 defined by core/user/libc (47 exported), 43 MISSING
+core/user/ports/libdrm/build.sh <libdrm> <out> --with-modetest
+  → 11 objects, 13,433 lines: 88 external, 76 MISSING
+```
+
+**The 43** (`core/user/ports/libdrm/expected-missing-core.txt`):
+
+```
+FD_ISSET* FD_SET* FD_ZERO*  — modetest only, listed with the 76
+__errno_location  access  asprintf  calloc  chmod  chown  clock_gettime
+closedir  fclose  fopen  fprintf  fstat  getenv  geteuid  getpagesize
+ioctl  major  makedev  memcmp  memmove  minor  mkdir  mknod  mmap  munmap
+open_memstream  opendir  qsort  readdir  realloc  remove  snprintf  sprintf
+sscanf  stat  stderr  strcasecmp  strdup  strerror  strncasecmp  strncmp
+strncpy  strstr  vfprintf
+```
+
+**`design/libdrm-port.md` §2 tiers them** into 16 that must actually *work* for an R0–R3 client and 20
+that must merely *link* because they sit on `drmOpenDevice`'s X-server path or on sysfs walking that
+is dead here anyway (§6 / GAP-0171). **That distinction is the useful part of this entry**: a first
+link can satisfy 20 of them with stubs that abort loudly.
+
+**The cost of leaving it open:** `libdrm` cannot be linked into a program, so no DRM ioctl can be
+issued through it, so R0 (`DRM_IOCTL_VERSION` answers) cannot be reached even after `ioctl` exists.
+The two are independent: `ioctl` is GAP-0158 and is kernel work; this is `libc-roadmap.md` tier A–C
+work and is userland.
+
+**What it does NOT need, and this is the good news:** no threads, no TLS, no futexes, no dynamic
+linking, no C++ runtime, no libm. See GAP-0173 for what does.
+
+---
+
+## GAP-0170 — four libc symbols bind by name and are the wrong function, and the link is clean
+
+**Domain:** userland, libc (ADR-0031 §2.1)
+**Status:** OPEN — **asserted by `tests/conformance/drm-abi/run.sh` CHECK 2**, which fails if any of
+the four ever comes out *undefined* and fails if `oslibc.h`'s declarations change shape. So the day
+somebody adds a POSIX-shaped `open`, the harness makes them read this entry.
+
+Of the 53 symbols libdrm needs, `core/user/libc` defines ten: `open close read printf malloc free
+memcpy memset strcmp strlen`. **Six are the right function. Four are not.**
+
+| | `core/user/libc` | what libdrm means |
+|---|---|---|
+| `open` | `unsigned long open(const char *name)` — **one argument**, an 8.3 name in the FAT16 **root directory**, refusal at or above `FILE_ERR_FLOOR` | `open(path, O_RDWR\|O_CLOEXEC)` / `open(path, O_RDWR, 0)` — a path, 2–3 arguments, `-1` + `errno` |
+| `read` | `unsigned long read(unsigned long, void *, size_t)`, refusal floor, `READ_MAX` 512 | `ssize_t read(int, void *, size_t)`, `-1` on failure |
+| `close` | `unsigned long close(unsigned long)` | `int close(int)` |
+| `printf` | five conversions, 120-byte cap, one call is one line on the console | pulled in transitively; libdrm's real diagnostic path is `vfprintf(stderr, …)`, which does not exist here at all |
+
+**`x86_64-elf-ld` resolves all four without a word.** Measured: linking libdrm's five objects against
+`core/user/libc`'s six leaves exactly the 43 undefined, plus `main`, and **not** these four.
+
+**And the near-miss is what would make it hard to find.** `core/user/libc`'s refusals are
+`0xFFFFFFFFFFFFFFF9` and friends, which *as an `int`* are small negative numbers — so libdrm's
+`if (fd < 0)` would appear to work. What would not work is everything after: a successful `open`
+returns 0..3, the `O_RDWR` argument is silently discarded, and `drmOpenDevice("/dev/dri/card0", …)`
+would try to open a FAT16 file whose name is a path.
+
+**And there is no `errno`.** `drmIoctl`'s entire body is
+`do { ret = ioctl(fd, request, arg); } while (ret == -1 && (errno == EINTR || errno == EAGAIN));`.
+GAP-0113 decided against `errno` deliberately — *"the refusal IS the return value"* — and that is a
+good decision this three-line function is incompatible with. `__errno_location` is in the missing 43
+and it is not a formality.
+
+**The fix is a decision, not a patch**, and ADR-0031 §9 declines to take it: either `core/user/libc`
+grows a second, POSIX-shaped surface (`posix_open`, an `errno`, a `-1` convention) that ported C is
+linked against, or the two are kept apart and a port supplies its own adapter. It is a
+`libc-roadmap.md` decision.
+
+---
+
+## GAP-0171 — `libdrm` cannot enumerate a device on this OS whatever the kernel does, and fixing it means modifying libdrm
+
+**Domain:** ports, GPU (ADR-0031 §8.2, `design/libdrm-port.md` §6)
+**Status:** OPEN, and it is the first place ADR-0029's word "unmodified" needs a qualification.
+
+`xf86drm.c` ends **eight** functions with
+
+```c
+#else
+#warning "Missing implementation of drmParseSubsystemType"
+    return -EINVAL;
+#endif
+```
+
+— `drmParse{SubsystemType,PciBusInfo,PciDeviceInfo,UsbBusInfo,UsbDeviceInfo,OFBusInfo,OFDeviceInfo,FauxBusInfo}`.
+The `#ifdef` chain above each is `__linux__` (sysfs) / the BSDs (sysctl or `DRM_IOCTL_GET_PCIINFO`) /
+**nothing**. `drmGetDevices2()` and `drmGetDevice2()` are built on them, and **that is how Mesa finds a
+GPU.** So those calls return `-EINVAL` before any ioctl is issued, no matter how complete this kernel's
+DRM implementation is.
+
+`tests/conformance/drm-abi/run.sh` CHECK 3 requires exactly eight of those warnings to still be
+emitted, so the day libdrm gains an oscortex branch the harness notices.
+
+**Three ways out, none free** (`libdrm-port.md` §6): upstream an `#elif defined(__oscortex__)` branch
+(~30 lines, following the OpenBSD one, but a real review cycle); carry a patch (cheap now, and every
+later "unmodified" claim needs a footnote); or arrange that no client ever calls it —
+⚠ *`modetest -D /dev/dri/card0` and Mesa's driver-file overrides appear to bypass enumeration, but
+this is inferred from reading `modetest.c` and has not been run.*
+
+**The cost of leaving it open:** nothing until R3, and then everything. It should be decided before
+R0, not discovered at R3.
+
+---
+
+## GAP-0172 — `drm.h` takes its BSD branch on this target, so the `_IOC` encoding is ours to choose and choosing wrong is silent
+
+**Domain:** GPU, ABI (ADR-0031 §3)
+**Status:** **RESOLVED for this port** — `core/user/ports/libdrm/shim/sys/ioccom.h` serves Linux's
+encoding and `tests/conformance/drm-abi/run.sh` CHECKs 4, 5 and 11 hold it there, including a negative
+control that boots. **Recorded rather than closed**, because the same trap is waiting for every other
+uAPI header this project ever compiles.
+
+`include/drm/drm.h`'s first `#if` is `defined(__linux__)`. It is false for
+`x86_64-unknown-none-elf`, so the header takes its "one of the BSDs" branch and uses whatever `_IOWR`
+it finds in `<sys/ioccom.h>` — **ours**. Writing BSD's real encoding there compiles cleanly, produces
+byte-identical structs, and changes **29 of 121** DRM request numbers:
+
+* the 92 `_IOWR` requests are **unaffected** (`IOC_INOUT` and `_IOC_READ|_IOC_WRITE` are both
+  `0xC0000000` and the size starts at bit 16 in both schemes);
+* `_IOR`/`_IOW` have their **direction bits swapped**;
+* `_IO` gets `IOC_VOID` (`0x20000000`) instead of zero.
+
+**The 29 include `GEM_CLOSE`** — one of the five core render ioctls — **`SET_CLIENT_CAP`,
+`SET_MASTER` and `DROP_MASTER`.** So a ladder taking the default would have reached R3 before
+anything went wrong, and then failed on the one call that frees a buffer.
+
+`xf86drm.h` needs the same treatment and is easy to miss: its non-`__linux__` branch spells the
+direction bits `IOC_VOID`/`IOC_OUT`/`IOC_IN`/`IOC_INOUT`, and `drmCommandRead`/`Write`/`WriteRead` —
+**the entry point for every per-driver ioctl, i.e. all eleven virtio-gpu ones** — build their requests
+through those names.
+
+**Why not `-D__linux__=1` instead:** `xf86drm.c` has dozens of `#ifdef __linux__` blocks and they turn
+on sysfs walking, `realpath`, udev and `/proc`. Claiming a Linux personality to get four bits right is
+what ADR-0029 §3 rejected by name.
+
+---
+
+## GAP-0173 — `modetest` needs threads, `poll`, `select` and a libm, so the independently-authored conformance suite is behind the substrate
+
+**Domain:** ports, blocking, threads (ADR-0031 §8.3, `design/libdrm-port.md` §7.2)
+**Status:** OPEN, and it changes a schedule assumption `drm-abi.md` made.
+
+`drm-abi.md` §8.3's argument for `libdrm` was partly that *"`libdrm`'s own `modetest` and `drmdevice`
+tools are a conformance suite for R0–R3 written by somebody else."* Measured:
+
+| | libdrm core | + `modetest` + `tests/util` |
+|---|---:|---:|
+| objects / lines | 5 / 7,801 | 11 / 13,433 |
+| missing symbols | **43** | **76** |
+
+The 33 extra include the ones that are not libc-shaped:
+
+* **`pthread_create`, `pthread_join`** — `tests/modetest/cursor.c` animates the cursor on its own
+  thread. Not a linking artefact; the feature does not work without it.
+* **`poll` and `select`** — `modetest.c` waits for DRM events **both** ways, in two places.
+  `blocking-and-threads.md`'s `fdwait` (syscall 11) is the primitive and is unbuilt (GAP-0141).
+* **libm** — `fabs`, `roundf`. There is no libm at all.
+* `getopt`/`optarg`/`optind`, `strtod`, `strtof`, `gettimeofday`, `usleep`, `getchar`, `abort`, `div`,
+  `rand`/`srand`, `time`, `strpbrk`, `strtok`, `strndup`, `strchr`.
+
+**So the honest sequencing is: `libdrm` links after a tier-C libc; `modetest` runs only after threads
+and `fdwait`.** Anyone planning R0–R3 against "modetest will tell us" should plan against a program we
+write, and keep `modetest` as the later acceptance test it can be.
+
+**It also adds a second, much smaller counter-example to `blocking-and-threads.md` §4.2's "no
+threads".** That conclusion rested on ffmpeg and libwayland linking mutexes without needing
+concurrency; `drm-abi.md` §8.1 named Mesa as the counter-example. A 2,491-line test program is a
+cheaper one, and §4.2 should name it.
+
+---
+
+## GAP-0174 — the DRM device must be named `/dev/dri/card0`, not `:DRI0`, and `drm-abi.md` S1 says otherwise
+
+**Domain:** namespace, GPU (ADR-0031 §6)
+**Status:** OPEN — the device namespace does not exist at all (GAP-0158). This entry corrects the
+*design* before it is built.
+
+`drm-abi.md` S1 proposed `open(":DRI0")` and `open(":DRIR0")`, using the `:` sigil that
+`fatNameByteBad` already forbids in disk names, and marked it ⚠ *"whether Mesa can be told those names
+… is the second thing V0 must check."*
+
+**Checked. It cannot.** `xf86drm.h` hardcodes `DRM_DIR_NAME "/dev/dri"`, `DRM_DEV_NAME "%s/card%d"`
+and `DRM_RENDER_DEV_NAME "%s/renderD%d"`; `drmOpenByName` builds the path with `sprintf`, hands it to
+`open`, then `stat`s it and compares `major()`/`minor()` against `DRM_MAJOR` 226. Telling libdrm a name
+of our own means **editing libdrm**, which is the one thing the port exists not to do.
+
+**So the namespace serves the literal strings `/dev/dri/card0` and `/dev/dri/renderD128`.** S1's
+disjointness argument survives unchanged: `fatNameByteBad` forbids `/` in an 8.3 name exactly as it
+forbids `:`, so `/` is as good a sigil and it is the one libdrm already emits. **S1's placement rule
+is unchanged and is the important half** — the branch goes in `fileSysOpen`, after the
+pointer-validated bounce-buffer copy and before `fatParseAt`, **not in `fatLookup`**, where
+`display-protocol.md` §2.1 caught a ring-3-reachable volume corruption.
+
+**Still unresolved by this entry:** `stat` on a device node, and a `major`/`minor` scheme, are both in
+GAP-0169's missing 43 and both would have to answer 226 for `drmOpenByName` to accept the node.
+
+---
+
+## GAP-0175 — the descriptor generator exists only as a name table, because nothing consumes a descriptor yet
+
+**Domain:** GPU, reflection (ADR-0031 §7, `drm-abi.md` §4.2, DCDart escalation 0004 §6)
+**Status:** OPEN — partially addressed, and the part that is built is the cheap half.
+
+`drm-abi.md` §4.2 proposed a build-time generator that reads the uAPI headers and emits, per request:
+name, direction, payload size, and the field list (name, offset, width, signedness) — for the
+dispatcher to validate against and for a `drm trace` command to print by field name. It is this
+project's concrete answer to escalation 0004 §6's "describe the boundary", and `drm-abi.md` Q6 warned
+it *"gets expensive to retrofit once several ioctls are served by hand."*
+
+**Built:** `tests/conformance/drm-abi/gen-table.py` — the *name* half. It reads `drm.h` and
+`virtgpu_drm.h` and emits one entry per request. **It emits names and never numbers**, on purpose:
+a generator that parsed `_IOWR(...)` and did the `_IOC` arithmetic itself would be a second
+implementation of the encoding, and a harness whose expectation is its own second implementation
+proves nothing.
+
+**Not built:** the field list, the offsets, the widths, the reserved-must-be-zero fields, and the
+`drm trace` command. Nothing consumes them, because the dispatcher they would validate does not exist
+(GAP-0158).
+
+**And GAP-0172's version-skew finding adds a requirement §4.2 did not have.** A descriptor cannot
+carry *one* size per request: `struct drm_syncobj_handle` grew a `__u64` after Linux 6.12, so
+`DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD` is `0xc018…` in libdrm 2.4.134 and `0xc010…` in 6.12. The descriptor
+has to carry the **set** of sizes the kernel will accept, plus a policy for a short one. Linux's policy
+is to zero-extend. **Ours should be to refuse until a request is deliberately given a second legal
+size**, because zero-extending by default is how a caller's uninitialised field silently becomes a
+kernel default nobody chose.
+
+**Nobody should open a DCDart escalation for this.** It is a build-time table generator in this repo —
+the same category as `derive.py` and `check-font.py` — and CLAUDE.md rule 3 applies in the negative.
+The DCDart-side question that *is* real is escalation 0004 §6's own, and GAP-0166 records it.

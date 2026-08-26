@@ -1,0 +1,4 @@
+https://gitlab.freedesktop.org/mesa/drm.git
+773536b1e5dde694dd743815528aff8bb2cf2cc3
+2026-08-13
+2.4.134

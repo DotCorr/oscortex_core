@@ -40,7 +40,7 @@ that, and it should be read before anyone plans a fleet.
 | `display-protocol.md` | surfaces, transport, damage, input routing | server-side **drawing verbs**, not pixels — `fdwrite`'s 512-byte cap is 128 pixels, so pixel transfer is structurally impossible |
 | `blocking-and-threads.md` | a blocked process state, `fdwait` | the blocked state is **one constant**; threads are not wanted and the motivating software does not need them |
 | `memory.md` | the ring-3 window, shared frames, kmalloc, PAT/MTRR | do **not** widen `vmProgEnd` — split it into a load bound and a user bound, and 47 goldens stay put |
-| `namespace.md` | device names, VFS shape | the device branch goes in `fileSysOpen`, **never** `fatLookup`, and the sigil is `:` |
+| `namespace.md` | device names, VFS shape | the device branch goes in `fileSysOpen`, **never** `fatLookup`. The sigil was `:`; for DRM it has to be `/`, because `libdrm` hardcodes `/dev/dri/card0` — GAP-0174 |
 | `storage.md` | AHCI/DMA, filesystem beyond FAT16 | a 512-byte file costs **five** sector writes and five flushes; the cost is scheduling, not throughput |
 | `exec-format.md` | `.osx`, dynamic linking | ffmpeg is gated on **size**, not linking — `libavutil.__text` alone is 5.4× the loader's max |
 | `libc-roadmap.md` | what real applications need | 41 symbols exist, **only nine are C89**; 130 of C89's 139 are absent |
@@ -52,6 +52,8 @@ that, and it should be read before anyone plans a fleet.
 | `time-and-power.md` | RTC, monotonic time, shutdown | shutdown is **one `outb`**; and GAP-0058 has been misread for milestones — a real clock costs two golden lines |
 | `demo-harness.md` | showing the machine to a human | `core/scripts/demo.sh` — builds any commit in an isolated worktree, boots it in a window, kills the previous |
 | `gpu.md` | what is actually reachable | VirtIO-GPU 2D only. Measured against this kernel's 22,088 lines: nouveau is 11×, i915+xe 25×, **amdgpu 288×** — and Intel modesetting is rejected not for size but because **no binary exit criterion can be written for it** |
+| `drm-abi.md` | the Linux DRM/KMS ABI, so Mesa runs unmodified (ADR-0029) | virtio-gpu is a **universal shim** — one kernel driver reaches the host's Vulkan through venus. But the substrate is the project: `ioctl`, `mmap`, threads, TLS, dynamic linking, a hosted libc |
+| `libdrm-port.md` | the first C library this OS was pointed at (ADR-0031) | unmodified libdrm **compiles**, 43 symbols short — and four of the ten that resolve are the **wrong function**. Serving BSD's `_IOC` instead of Linux's would have moved 29 of 121 request numbers silently |
 | `hot-files.md` | what blocks parallel work | `kmain.dart`'s `part` list is **append-only and load-bearing**; two agents both appending last silently break a third file |
 | `stale-comments.md` | 41 false comments | `ata.dart` states a superseded pin hash **twice** |
 

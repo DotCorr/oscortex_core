@@ -1,5 +1,16 @@
 # The Linux DRM/KMS ABI in oscortex — what the decision actually costs
 
+> **UPDATE, 2026-08-26 — the first rung is built.** **ADR-0031** ratifies this document's Q4
+> (`libdrm` as the first C library) and `design/libdrm-port.md` is the measurement §8.3 marked ⚠ as
+> unmade: unmodified libdrm **compiles** for `x86_64-unknown-none-elf`, **43 symbols short**, 76 with
+> `modetest`. Three things in this document are corrected there:
+> **(a) S1's `:DRI0` device name is wrong** — `libdrm` hardcodes `/dev/dri/card0` and `stat`s it
+> (GAP-0174); **(b) `modetest` is not available as an R0–R3 conformance suite** — it needs pthreads,
+> `poll`, `select` and a libm (GAP-0173); **(c) §2.1's warning that a struct size change moves a
+> request number silently was observed happening** between libdrm 2.4.134 and Linux 6.12 (GAP-0172,
+> GAP-0175). §4.2's descriptor generator exists as its name-table half only. **`ioctl` is still not
+> implemented; ADR-0031 §4 is its specification and reserves syscall 12 for it.**
+
 **Status: DESIGN. Nothing here is implemented.** The decision this document designs *within* was taken
 by the project owner and is recorded as **ADR-0029**: GPU support comes from implementing the **Linux
 DRM/KMS kernel ABI** so that **Mesa's existing userspace drivers run unmodified**, with **oscortex's
