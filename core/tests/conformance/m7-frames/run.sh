@@ -478,11 +478,22 @@ echo "STRUCTURAL: pass  all 52 M7 @rodata tables plus shellStrHelp (621 -> 1028)
 # check that is possible here, and it is not this one.
 #
 # What it DOES buy, and the reason it is worth having anyway: m10-elf has
-# asserted this for elf.dart alone since M10, and elf.dart is now five of the
-# NINETEEN allocFrame() call sites in this kernel. proc.dart's three page-table
-# frames, user.dart's two ring-3 pages and heap.dart's page are all outside it.
-# This is the check that fails when the twentieth call site is added without a
-# zeroing beside it — which is exactly how a frame reaches ring 3 dirty.
+# asserted this for elf.dart alone since M10, and elf.dart is now three of the
+# SEVENTEEN allocFrame() call sites in this kernel. proc.dart's five, user.dart's
+# two ring-3 pages and heap.dart's page are all outside it. This is the check
+# that fails when the eighteenth call site is added without a zeroing beside it
+# — which is exactly how a frame reaches ring 3 dirty.
+#
+# WHY SEVENTEEN AND NOT NINETEEN (ADR-0034, the launch unification). This census
+# was written against nineteen when e1381f8 added it. Unifying the launch path
+# deleted elf.dart's own `hdr` and `scratch` frames: loading now goes through
+# `procCreate`, which already had that pair, so the duplicates went rather than
+# the work. proc.dart still takes `pml4 pdpt pd hdr scratch` and elf.dart is down
+# to `frame pt sf`. NOTHING WAS EXEMPTED TO GET HERE — the pairing rule, the
+# exemption table and its two delegation re-checks are untouched and still
+# enforced against all seventeen; only the census moved. Neither branch could
+# see this alone: the nineteen-site check arrived on the milestone line in
+# e1381f8, which the launch branch never had.
 python3 - "$CORE_DIR/kernel" <<'PYEOF' || fail "a frame from allocFrame() is not zeroed before it is used, or a new call site has appeared with no accounting (GAP-0154)"
 import glob, os, re, sys
 kdir = sys.argv[1]
@@ -542,9 +553,9 @@ if "vmZeroFrame(vmFrame(i));" not in vmsrc:
     bad.append("vmBuild no longer zeroes vmInit's six frames, and vm.dart's `f` "
                "is exempted here on the grounds that it does")
 
-if sites != 19:
+if sites != 17:
     bad.append("there are %d allocFrame() call sites and this check was written "
-               "against 19. A new one is not a failure -- an unaccounted one is. "
+               "against 17. A new one is not a failure -- an unaccounted one is. "
                "Add it, or its exemption, and move this number." % sites)
 
 for b in bad:
@@ -553,7 +564,7 @@ print("    (%d allocFrame() call sites; %d exempted with a reason)"
       % (sites, len(EXEMPT)))
 sys.exit(1 if bad else 0)
 PYEOF
-echo "STRUCTURAL: pass  all 19 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
+echo "STRUCTURAL: pass  all 17 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).

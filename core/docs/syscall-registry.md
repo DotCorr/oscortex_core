@@ -27,10 +27,26 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 8 | `seek` | `fileSysSeekNo` | `core/kernel/file.dart` | `SYS_SEEK` | 0019 |
 | 9 | `fdwrite` | `fileSysWriteNo` | `core/kernel/file.dart` | `SYS_FDWRITE` | 0020 |
 | 10 | `preempts` | `procSysPreemptsNo` | `core/kernel/proc.dart` | *(none)* | 0022 |
+| 13 | `chanopen` | `chanSysOpenNo` | `core/kernel/chan.dart` | *(none)* | 0027 |
+| 14 | `chansend` | `chanSysSendNo` | `core/kernel/chan.dart` | *(none)* | 0027 |
+| 15 | `chanrecv` | `chanSysRecvNo` | `core/kernel/chan.dart` | *(none)* | 0027 |
 
-**Eleven syscalls.** Number 10 has no `oslibc.h` name: it is a diagnostic the preempt harness reads,
+**Fourteen syscalls.** Number 10 has no `oslibc.h` name: it is a diagnostic the preempt harness reads,
 not something a program is meant to call, and the registry records that asymmetry rather than tidying
-it away.
+it away. **13, 14 and 15 have no `oslibc.h` name either, for a different reason**: the libc has no
+channel binding yet. `m20-ipc`'s program declares `SYS_CHANOPEN`/`SYS_CHANSEND`/`SYS_CHANRECV` itself,
+the way it declares `SYS_EXIT` and `SYS_WRITE`, so those numbers live in exactly two places — the
+kernel and that harness — and both are listed here.
+
+**Why the channel syscalls are 13, 14, 15 and not 11, 12, 13.** They were 11, 12 and 13 in ADR-0027,
+chosen on a branch that forked from `d4e768c` — before this file existed. This registry landed in
+`79a5a6a` and had already reserved 11 for `fdwait` and 12 for `ioctl`. When the two lines were merged,
+`fdwait` and `ioctl` kept their numbers and the channel moved: three design documents and a live
+`ioctl` implementation depend on 11 and 12, while the channel's numbers existed in two files and its
+harness keeps no golden, so the side that could move at no cost moved. **This is exactly the case
+`design/hot-files.md` §5.1 describes** — two agents claiming the same number in two different files,
+a duplicate that merges clean, builds clean, boots clean and mis-dispatches — caught here by this
+registry and its verifier rather than at runtime. GAP-0213 records it.
 
 ---
 

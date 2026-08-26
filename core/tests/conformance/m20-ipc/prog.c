@@ -30,7 +30,7 @@
  *   no process -- `chanopen` returns CHAN_NOPROC. This happens when the same
  *             binary is started with `run <lba>` as an M10-style program rather
  *             than with `proc coop`, and it is the negative control for
- *             GAP-0264: an endpoint is owned by a PROCESS ID and this thing has
+ *             GAP-0204: an endpoint is owned by a PROCESS ID and this thing has
  *             not got one.
  *
  * EVERY NUMBER THIS PROGRAM PRINTS OR EXITS WITH IS DERIVED FROM BYTES IT
@@ -54,9 +54,9 @@ typedef unsigned char u8;
 #define SYS_EXIT 0
 #define SYS_WRITE 1
 #define SYS_YIELD 3
-#define SYS_CHANOPEN 11
-#define SYS_CHANSEND 12
-#define SYS_CHANRECV 13
+#define SYS_CHANOPEN 13
+#define SYS_CHANSEND 14
+#define SYS_CHANRECV 15
 
 /* core/kernel/chan.dart's return values. Copied here rather than included,
  * because this program is freestanding and does not share a header with the
@@ -514,7 +514,7 @@ static void responder(u64 ep) {
 /* THE NEGATIVE CONTROL. Reached when this binary is started with `run <lba>`
  * rather than `proc coop`: it is then an M10-style program in ring 3 with an
  * address space and no process slot, and an endpoint is owned by a PROCESS ID.
- * All three syscalls must refuse it by name. GAP-0264. */
+ * All three syscalls must refuse it by name. GAP-0204. */
 static void noproc(void) {
   u64 bad = 0;
   bad = bad + chk("NPSEND", chansend(0, txBuf, 8), CHAN_NOPROC);

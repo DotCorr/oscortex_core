@@ -5677,6 +5677,17 @@ delegating exemptions are themselves re-checked, and a stale exemption or an una
 site is a failure. Before this, `m10-elf` asserted the property for `elf.dart`'s five sites and
 nothing asserted it for the other fourteen.
 
+**UPDATE — the census is now SEVENTEEN, and the check caught the change (ADR-0034).** Unifying the
+launch path deleted `elf.dart`'s own `hdr` and `scratch` frames: loading goes through `procCreate`,
+which already took that pair, so the duplicates went and the work did not. `elf.dart` is down to
+`frame pt sf` and `proc.dart` still takes `pml4 pdpt pd hdr scratch`. **This is the check working as
+designed, in the direction nobody writes a test for** — it was built to fail on an unaccounted
+*twentieth* site and it failed just as loudly on an unexplained *seventeenth*, which is what a census
+is for. Nothing was exempted to make it pass: the pairing rule, the exemption table and its two
+delegation re-checks are untouched and still enforced against all seventeen. Only the number moved.
+Worth recording because **neither branch could see it alone** — this check arrived on the milestone
+line in `e1381f8`, and the launch branch forked before that commit existed.
+
 **WHAT THIS CHECK DOES NOT DO, said plainly.** It is a **source-shape assertion**. It proves nothing
 about a running machine. QEMU hands out zeroed guest RAM (GAP-0094, GAP-0109), so on a *first*
 allocation an unzeroed frame and a zeroed one hold the same 4096 bytes: **deleting every
@@ -5890,6 +5901,18 @@ This is a **second, distinct flake** from the known `m12-heap` one and had not b
 The likely fix is for the harness to mask RF (and any other CPU-managed bit not under test) before
 comparing, rather than pinning the whole word — M9's claim is about CPL, CS and SS, not about RF. Not
 done here: it changes what an existing golden asserts, which wants its own unit.
+
+**UPDATE — same defect, and the remedy now exists next door.** GAP-0212 turned out to be this exact
+bug in `m12-heap`, and it is now closed there: `rflags_canon()` in `m12-heap/run.sh` clears bit 16 in
+both the capture and the golden before the `cmp`, with four guards that fail the harness if the
+normalisation ever stops matching, if the two files disagree on how many RFLAGS fields they hold, if
+the rewrite changes the file's length, or if the screen golden grows an RFLAGS field of its own.
+**`m9-ring3` is still OPEN and was deliberately not changed during that integration** — the scope
+there was the merge and `m12-heap`'s flake, and quietly editing what a second, unrelated golden
+asserts is how a merge starts hiding things. But whoever takes this should copy that helper rather
+than reinvent it, and should keep its guards: the `0202` in the diff above means IF and the reserved
+bit and nothing else, so blanking the word instead of the one bit would vacate M9's only evidence
+that ring 3 ran with interrupts enabled.
 
 ---
 
@@ -6885,8 +6908,35 @@ anywhere outside `procCreate`, `procStart`, `procSwitchTo` and `procSysExit`.
 ## GAP-0212 — m12-heap's flake is RFLAGS bit 16 (RF), and it is in the golden
 
 **Domain:** tests (M12)
-**Status:** OPEN — diagnosed here, not fixed. Recorded because "m12-heap is flaky" was folklore and
-this is the actual cause.
+**Status:** **CLOSED.** Diagnosed on the launch branch, fixed during integration. The diagnosis below
+is kept intact because it is the useful part; what changed is that the fix it asks for now exists.
+
+**THE FIX.** Step 6b compares the whole capture against the golden with `cmp -s` — a byte-for-byte
+whole-file compare, not a field parse — so there was no numeric mask to apply anywhere. Instead
+`rflags_canon()` rewrites the RFLAGS field **in both the capture and the golden** before they are
+compared, clearing **bit 16 and no other bit**, leaving every other byte of both files untouched. The
+comparison runs on the two normalised copies; the originals are not modified, so step 6a — M1's
+544-byte golden as a byte-exact prefix — sees exactly what it always saw. That prefix carries no
+RFLAGS token and has to stay byte-exact for its own reasons.
+
+**WHAT THE FIX DELIBERATELY DOES NOT DO.** It does not blank the RFLAGS value and it does not
+wildcard the field. IF (0x200), ZF (0x40), PF (0x4) and the reserved 0x2 are live assertions about
+the state ring 3 actually ran in; a normalisation that vacated them would pass a kernel that returned
+to user mode with interrupts disabled. Turning a real check into a vacuous one is the defect family
+this suite has spent a session repairing, and it would have been an easy one to commit here.
+
+**FOUR GUARDS KEEP THE NORMALISATION FROM BECOMING VACUOUS ITSELF**, because a substitution that
+silently stops matching is exactly how this flake would return with nothing going red. The harness
+fails if the pattern matches **no** RFLAGS field in the capture (the register dump changed shape); if
+capture and golden hold **different numbers** of RFLAGS fields (a real behavioural difference, not
+this flake); if the normalisation changes the capture's **byte length** (it must rewrite one hex digit
+in place); or if `expected-screen.txt` ever grows an RFLAGS field, since the screen check is a
+byte-for-byte `cmp` too and the flake would simply reappear there.
+
+**Demonstrated, not asserted.** Repeated consecutive runs of the harness, plus two mutations of the
+same regenerated golden with opposite required outcomes: setting bit 16 in the golden must still
+**pass**, and clearing IF — a different bit in the same field — must still **fail**. The numbers are
+in the integration commit.
 
 `m12-heap` fails intermittently on its byte-exact serial comparison. The difference is always the
 same one field:
@@ -6910,6 +6960,78 @@ information this harness is trying to assert.
 (or in the kernel's report), the way a `wc` harness would normalise line endings. Do not regenerate
 the golden and call it fixed — that is what has been happening.
 
+*(Taken. The comparison-side option was the one implemented, for the reason given at the top: 6b is a
+whole-file `cmp`, so the normalisation had to happen on both files rather than on one field of a
+parse. The kernel's report is unchanged — no kernel code was touched to fix a test flake.)*
+
 **Observed in this milestone:** the M20 sweep regenerated m12's golden with RF **set** and then the
 verification boot produced it **clear**, failing the comparison. m12 passed on the baseline sweep of
 the same tree earlier the same session. Nothing in ADR-0034 touches RFLAGS.
+
+---
+
+## GAP-0213 — M20's IPC claimed syscalls 11, 12 and 13; the registry had already reserved 11 and 12, and arbitrated
+
+**Domain:** kernel ABI, IPC (surfaced by integration, ADR-0027 meeting ADR-0031)
+**Status:** **CLOSED — arbitrated by the registry.** `fdwait` keeps 11, `ioctl` keeps 12, and the
+channel syscalls moved to the registry's next free numbers: **`chanopen` 13, `chansend` 14,
+`chanrecv` 15**. Escalated first, because syscall numbers are userland ABI and CLAUDE.md names that
+explicitly; the answer was that this is **applying the registry's existing decision, not making a new
+one** — the ABI question was settled when `79a5a6a` landed the registry, and what remained was only
+which side pays to conform.
+
+**Why the channel moved and not `ioctl`.** The party that can move at zero cost moves. `ioctl` is
+implemented across `core/kernel/ioctl.dart`, `core/user/libc/*.c` and `drm-abi/run.sh`, and `fdwait`
+is named by three design documents that all say 11. The channel's numbers lived in two files, and
+`m20-ipc` keeps **no golden** — it derives every expectation — so moving it cost three constants,
+three `#define`s, six doc comments, one required-syscall set in its own harness, an ADR table, three
+registry rows, and a re-run. Moving `ioctl` would have been a cross-cutting rewrite of work that had
+not landed yet.
+
+**What it looks like now.** `verify-syscall-registry.sh` reports `14 allocated (0..15), 2 reserved
+(11=fdwait, 12=ioctl), no number claimed twice, kernel and oslibc.h agree with the registry`.
+
+`core/kernel/chan.dart` declares
+
+```
+const int chanSysOpenNo = 11;
+const int chanSysSendNo = 12;
+const int chanSysRecvNo = 13;
+```
+
+and `core/docs/syscall-registry.md` reserves **11 for `fdwait`** — named by three separate design
+documents, all of which say 11 — and **12 for `ioctl`**, which the registry calls "allocated by this
+registry, and the reason it exists". Only 13 was free.
+
+**Neither branch could see this, and neither is at fault.** The registry and its verifier
+`core/scripts/verify-syscall-registry.sh` were both added by `79a5a6a` (ADR-0031), the tip of
+`milestones-m1-m6`. M20 branched from `d4e768c`, five commits earlier, when no registry existed and
+nothing had claimed 11, 12 or 13. M20 took the next three numbers, which was the only convention
+available to it. The collision exists only once the two are on one line.
+
+**Measured, not inferred.** `verify-syscall-registry.sh` passes on a pristine `79a5a6a` export:
+`11 allocated (0..10), 2 reserved (11=fdwait, 12=ioctl), no number claimed twice`. On the merged line
+it fails with three rows missing, and `m20-ipc`'s own userland agrees with the kernel
+(`#define SYS_CHANOPEN 11 / SYS_CHANSEND 12 / SYS_CHANRECV 13` in `m20-ipc/prog.c`), so this is a
+real ABI claim on both sides of the syscall boundary and not a stale constant.
+
+**12 is not merely reserved any more, it is taken.** `ioctl` is implemented as `ioctlSysNo = 12` with
+`#define SYS_IOCTL 12`, in work that had not yet been committed when this was written. When that
+lands beside this, two kernels claim 12 and one of them is wrong.
+
+**Cost while it is open.** `drm-abi/run.sh` invokes the registry verifier, so that harness fails on
+the merged line. It is the only harness that does.
+
+**THE POINT WORTH KEEPING, once the numbers stop being interesting.** `syscall-registry.md`'s own
+header says why it exists: `design/hot-files.md` §5.1 records that **two agents both claimed 11 in two
+different files**, and that such a duplicate "merges clean, builds clean, boots clean, and
+mis-dispatches". That is precisely what happened here, a second time, between two branches that could
+not see each other — and this time the registry and its verifier caught it before it ran. The registry
+earned its keep on the first merge after it landed.
+
+**What it cost to be caught late rather than early.** `m20-ipc`'s own harness carries a duplicate-
+syscall check that scans every `const int *SysNo` in `core/kernel/*.dart`. It did **not** fire, and
+could not have: 11 and 12 were *reserved* in a document, not *declared* in the kernel, so there was
+no second constant for it to collide with. A check that reads only code cannot see a reservation that
+lives only in prose. The registry verifier is the one that reads both, which is the argument for
+running it on every merge and not only when `drm-abi` happens to be in the set.

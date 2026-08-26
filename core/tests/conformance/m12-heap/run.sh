@@ -637,6 +637,49 @@ drive_session "$WORKDIR/nomem" "$NOMEM_KEYS" "$WORKDIR/nomem/shot.png" "drained"
 # Step 6 — assert.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# RFLAGS.RF NORMALISATION FOR THE WHOLE-CAPTURE COMPARE (GAP-0212).
+#
+# QEMU sets RFLAGS bit 16 -- RF, the Resume Flag -- non-deterministically on the
+# ring-3 register dump. The same two binaries print
+#
+#     USER CS ... SS ... RFLAGS 0000000000000246 CPL 3
+#
+# on one boot and RFLAGS 0000000000010246 on the next, with nothing else in the
+# capture different. 6b is a byte-for-byte `cmp` of the whole file rather than a
+# field parse, so that one bit fails the entire harness.
+#
+# `--regen` NEVER FIXED THIS, IT RE-FLIPPED THE COIN. Regenerating wrote
+# whichever way the bit had landed on that boot into the golden, so the harness
+# went on failing about half the time -- in the other direction, which is why it
+# looked intermittent rather than wrong.
+#
+# So the bit is cleared in BOTH the capture and the golden before they are
+# compared, and nowhere else in either file. Every other byte survives, INCLUDING
+# THE OTHER FIFTEEN HEX DIGITS OF THIS FIELD: IF (0x200), ZF (0x40), PF (0x4) and
+# the reserved 0x2 are assertions about the state ring 3 actually ran in.
+# Blanking the value or wildcarding the field would pass a kernel that returned
+# to user mode with interrupts disabled, which is the exact defect family this
+# suite has been repairing -- a check converted into a vacuous one.
+#
+# 6a is deliberately NOT normalised. It compares the M1 boot prefix against
+# m1-interrupts/expected.txt, that prefix contains no RFLAGS token, and that
+# golden has to stay byte-exact for the reason 6a exists at all.
+# ---------------------------------------------------------------------------
+rflags_canon() {
+  python3 - "$1" "$2" <<'RFPY'
+import re, sys
+src = open(sys.argv[1], "rb").read()
+n = [0]
+def clear_rf(m):
+    n[0] += 1
+    return m.group(1) + (b"%016X" % (int(m.group(2), 16) & ~0x10000))
+out = re.sub(rb"(RFLAGS )([0-9A-F]{16})", clear_rf, src)
+open(sys.argv[2], "wb").write(out)
+print(n[0])
+RFPY
+}
+
 # 6a. M1's whole golden must still be a byte-exact PREFIX.
 M1_BYTES=$(wc -c <"$M1_EXPECTED" | tr -d ' ')
 head -c "$M1_BYTES" "$SERIAL_CAPTURE" >"$WORKDIR/prefix.bin"
@@ -646,15 +689,27 @@ if ! cmp -s "$WORKDIR/prefix.bin" "$M1_EXPECTED"; then
 fi
 echo "ASSERT: pass  M1's entire ${M1_BYTES}-byte golden is still a byte-exact prefix of this boot's serial output"
 
-# 6b. The whole serial capture.
-if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED_SERIAL"; then
-  echo "--- first difference ---" >&2
-  cmp "$SERIAL_CAPTURE" "$EXPECTED_SERIAL" >&2
-  diff <(cat -v "$EXPECTED_SERIAL") <(cat -v "$SERIAL_CAPTURE") | head -60 >&2
+# 6b. The whole serial capture, with RFLAGS.RF cleared on both sides (GAP-0212).
+CAP_RF=$(rflags_canon "$SERIAL_CAPTURE" "$WORKDIR/serial.rfcanon")
+EXP_RF=$(rflags_canon "$EXPECTED_SERIAL" "$WORKDIR/expected.rfcanon")
+
+# NON-VACUITY. If the register dump ever changes shape, the substitution above
+# matches nothing, silently stops normalising, and the flake returns with no
+# test having gone red to say so. These three lines are what stop this
+# normalisation from becoming the thing it exists to prevent.
+[[ "$CAP_RF" -ge 1 ]] || fail "the RFLAGS.RF normalisation matched no RFLAGS field in the capture — the ring-3 register dump changed format and this normaliser is now vacuous (GAP-0212)"
+[[ "$EXP_RF" -eq "$CAP_RF" ]] || fail "the capture has $CAP_RF RFLAGS field(s), the golden has $EXP_RF — a differing COUNT is a real behavioural difference, not the RF flake (GAP-0212)"
+[[ "$(wc -c <"$WORKDIR/serial.rfcanon" | tr -d ' ')" -eq "$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')" ]] || fail "the RFLAGS.RF normalisation changed the capture's byte length — it must rewrite one hex digit in place and touch nothing else (GAP-0212)"
+! grep -q 'RFLAGS' "$EXPECTED_SCREEN" || fail "expected-screen.txt now carries an RFLAGS field. The screen check below is a byte-for-byte cmp too, so the RF flake (GAP-0212) will reappear there. Normalise it the way 6b does."
+
+if ! cmp -s "$WORKDIR/serial.rfcanon" "$WORKDIR/expected.rfcanon"; then
+  echo "--- first difference (RFLAGS bit 16 cleared on both sides; every other byte is as captured) ---" >&2
+  cmp "$WORKDIR/serial.rfcanon" "$WORKDIR/expected.rfcanon" >&2
+  diff <(cat -v "$WORKDIR/expected.rfcanon") <(cat -v "$WORKDIR/serial.rfcanon") | head -60 >&2
   fail "captured serial output did not exactly match $EXPECTED_SERIAL"
 fi
 SERIAL_BYTES=$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')
-echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byte-for-byte"
+echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byte-for-byte in every bit but RFLAGS.RF, which QEMU sets non-deterministically ($CAP_RF field(s) normalised on each side — GAP-0212)"
 
 # 6c. EVERY EXPECTATION ABOUT THE SESSION COMES OUT OF THE TWO BINARIES.
 python3 - "$SERIAL_CAPTURE" "$DERIVE" "$PROG_H" "$PROG_P" <<'PY' || fail "the session capture does not match what the two ELF files say must have happened"

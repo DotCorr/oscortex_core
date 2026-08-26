@@ -29,9 +29,14 @@ M20 is the first thing that crosses that boundary on purpose.
 
 | # | Call | Returns |
 |---|---|---|
-| 11 | `chanopen(port)` | an endpoint handle `(port << 1) \| side`, or a refusal |
-| 12 | `chansend(ep, ptr, len)` | `len`, or a refusal |
-| 13 | `chanrecv(ep, ptr, cap)` | the number of bytes delivered, or a status, or a refusal |
+| 13 | `chanopen(port)` | an endpoint handle `(port << 1) \| side`, or a refusal |
+| 14 | `chansend(ep, ptr, len)` | `len`, or a refusal |
+| 15 | `chanrecv(ep, ptr, cap)` | the number of bytes delivered, or a status, or a refusal |
+
+*(These were 11, 12 and 13 when this ADR was written. `syscall-registry.md` — which landed in
+`79a5a6a`, after this branch forked — had already reserved 11 for `fdwait` and 12 for `ioctl`, so the
+channel syscalls moved to the registry's next free numbers when the two lines were merged. The
+registry is the allocator; see GAP-0213.)*
 
 A **channel** is a kernel object with exactly **two endpoints** and **two independent rings**, one per
 direction. Each ring holds up to 8 messages of at most **64 bytes**. Neither call ever blocks: a full
@@ -118,16 +123,16 @@ Each with a gap number, so none of it is left as an impression:
 
 * **Not a rendezvous, and not synchronous.** §2.1.
 * **No blocking receive, no wait queue, no wakeup.** A receiver polls; under M18's preemption a
-  polling receiver burns its quantum and is switched away. **GAP-0260**, which also records that
+  polling receiver burns its quantum and is switched away. **GAP-0200**, which also records that
   everything a `chanwait` would need is already in the ring's state.
-* **No capability or handle transfer.** A message is bytes; it cannot convey authority. **GAP-0261**.
+* **No capability or handle transfer.** A message is bytes; it cannot convey authority. **GAP-0201**.
 * **No naming.** A port is a small integer both peers agree on by convention. There is no registry and
-  no way to ask "who is the compositor". **GAP-0262**.
+  no way to ask "who is the compositor". **GAP-0202**.
 * **No multicast, no broadcast, exactly two endpoints.** A compositor with N clients uses N channels,
-  and today N ≤ 2. **GAP-0263**.
+  and today N ≤ 2. **GAP-0203**.
 * **Not a byte stream.** Messages are discrete: never coalesced, never split.
 * **Not reachable without a process.** An endpoint is owned by a process id, so an M9 payload and an
-  M10 `run` program are refused with `chanRetNoProc`. **GAP-0264**, and the harness's second boot is
+  M10 `run` program are refused with `chanRetNoProc`. **GAP-0204**, and the harness's second boot is
   that refusal happening.
 * **No flow control beyond FULL.** The kernel never drops a message it accepted, and never accepts one
   it cannot hold.
@@ -140,7 +145,7 @@ Each with a gap number, so none of it is left as an impression:
 
 IPC is the classic place to hand back the protections other milestones paid for. Every item below is a
 refusal with its own code, and every one **except item 9** is exercised **from ring 3, as a return
-value**, in `m20-ipc`'s first boot. Item 9 cannot be — see it, and GAP-0266.
+value**, in `m20-ipc`'s first boot. Item 9 cannot be — see it, and GAP-0206.
 
 **1. The endpoint is an argument; the owner is not.** A handle names a port and a side. The *owner* of
 that side is compared against `procGet(procCurrent(), procSlotId)` — the kernel's own scheduler state,
@@ -198,7 +203,7 @@ inside a syscall handler because a ring index was wrong. It is checked and count
 (`chanRetCorrupt`, `chanMetaCorrupt`). It is the one refusal that **cannot** be provoked from ring 3,
 and `build-progs.sh` knows that and exempts it **by name** — one symbol wide — from the "the program
 knows every refusal `chan.dart` declares" check, so a fifteenth refusal added without teaching the
-program about it still fails the build. GAP-0266.
+program about it still fails the build. GAP-0206.
 
 ### 4.1 One thing the brief assumed that this tree does not have
 
@@ -286,7 +291,7 @@ mechanical:
    statistics. Nothing decides anything from them; they are printed.
 
 **So, precisely: the single thing this file relies on that an SMP kernel would not give it is that no
-fence instruction is emitted.** Everything else is already SMP-shaped. **GAP-0265** records that, and
+fence instruction is emitted.** Everything else is already SMP-shaped. **GAP-0205** records that, and
 records that `m20-ipc` runs under `proc coop` on one CPU and therefore cannot demonstrate the
 difference.
 
@@ -312,9 +317,9 @@ different 64-bit number. The per-round running hashes are checked too, so a wron
 
 **Twelve of the fourteen refusal-and-status codes are provoked from ring 3 and checked as return
 values.** The two that are not are named rather than left to be counted: `chanRetCorrupt`, which
-nothing can produce (GAP-0266), and `chanRetBusy`, which needs a **third** process to knock on an
+nothing can produce (GAP-0206), and `chanRetBusy`, which needs a **third** process to knock on an
 occupied port — and every `proc` form starts exactly two, so no boot in this suite can arrange one
-(GAP-0267). Both are asserted structurally instead, which is a weaker claim and is written down as one.
+(GAP-0207). Both are asserted structurally instead, which is a weaker claim and is written down as one.
 
 Also established: four request lengths and four different reply lengths crossing in both directions,
 with each reply **derived by the responder from the bytes that arrived** (so one wrong byte fails on

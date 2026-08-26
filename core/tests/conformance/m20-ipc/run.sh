@@ -37,8 +37,8 @@
 #     covering TWELVE of chan.dart's FOURTEEN refusal-and-status codes. The two
 #     that are NOT exercised are named rather than left to be counted:
 #     `chanRetBusy` needs a THIRD process to try an already-open port and `proc
-#     coop` starts exactly two (GAP-0267), and `chanRetCorrupt` is a state
-#     nothing in this kernel can produce (GAP-0266).
+#     coop` starts exactly two (GAP-0207), and `chanRetCorrupt` is a state
+#     nothing in this kernel can produce (GAP-0206).
 #     Including the two that matter most: a `chanrecv` whose destination is the program's own
 #     READ-ONLY page (refused, because the kernel must not write through a
 #     mapping ring 3 cannot write, ADR-0027 section 4), and a `chansend` whose
@@ -53,15 +53,15 @@
 #
 #   * A NEGATIVE CONTROL THAT IS NOT A PROCESS. The SAME BINARY started with
 #     `run <lba>` is an M10-style program with no process slot, and all three
-#     syscalls refuse it with CHAN_NOPROC. GAP-0264.
+#     syscalls refuse it with CHAN_NOPROC. GAP-0204.
 #
 # WHAT IT DOES NOT ASSERT, SO NOBODY INFERS IT
 # ---------------------------------------------------------------------------
 #   * NOTHING HERE IS CONCURRENT. One CPU, and `proc coop` does not preempt, so
 #     the interleaving is exactly the two programs' yields. ADR-0027 section 6
-#     says what that leaves unproven and GAP-0265 records it.
+#     says what that leaves unproven and GAP-0205 records it.
 #   * NO BLOCKING. The responder POLLS. There is no wait queue and no wakeup;
-#     GAP-0260.
+#     GAP-0200.
 #   * NO SHARED MEMORY AND NO FRAME EVER MOVES. A message is 64 bytes, checked
 #     in the kernel. ADR-0027 section 2 is why.
 #   * THE CHANNEL IS NOT REACHABLE FROM AN M9 PAYLOAD. Only the `run <lba>` half
@@ -367,7 +367,7 @@ for fn in sorted(os.listdir(root)):
             fails.append("syscall %d is both %s (%s) and %s (%s)"
                          % (val, seen[val][0], seen[val][1], name, fn))
         seen.setdefault(val, (name, fn))
-for need in (11, 12, 13):
+for need in (13, 14, 15):
     if need not in seen:
         fails.append("syscall %d is not declared anywhere" % need)
 if fails:

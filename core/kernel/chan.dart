@@ -49,17 +49,17 @@
 //   * NO RENDEZVOUS. L4/seL4-style synchronous IPC makes the compositor's
 //     liveness depend on every client's: a `send` that blocks until the peer
 //     receives lets one wedged client stop the display server. ADR-0027 section 2.
-//   * NO BLOCKING RECEIVE. A receiver polls. GAP-0260.
+//   * NO BLOCKING RECEIVE. A receiver polls. GAP-0200.
 //   * NO CAPABILITY OR HANDLE TRANSFER. A message is bytes; it cannot convey
-//     authority. GAP-0261.
+//     authority. GAP-0201.
 //   * NO NAMING. A port is a small integer both peers agree on by convention.
-//     GAP-0262.
+//     GAP-0202.
 //   * NO MULTICAST. Exactly two endpoints. A compositor with N clients uses N
-//     channels. GAP-0263.
+//     channels. GAP-0203.
 //   * NOT A BYTE STREAM. Messages are discrete: never coalesced, never split.
 //   * NOT AVAILABLE TO AN M9 PAYLOAD OR AN M10 `run` PROGRAM. An endpoint is
 //     owned by a PROCESS ID, and neither of those two things has a process slot.
-//     GAP-0264.
+//     GAP-0204.
 //
 // ---------------------------------------------------------------------------
 // THE ONE PLACE CORRECTNESS DEPENDS ON BEING SINGLE-CORE
@@ -96,7 +96,7 @@
 //
 // **Stated plainly, so nobody has to infer it:** the single thing this file
 // relies on that an SMP kernel would not give it is that no fence instruction is
-// emitted. Everything else is already SMP-shaped. GAP-0265.
+// emitted. Everything else is already SMP-shaped. GAP-0205.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS VALIDATED, AND WHY EACH CHECK IS THERE
@@ -344,14 +344,14 @@ final List<u8> chanStrX = const [
 // Constants.
 // ---------------------------------------------------------------------------
 
-/// Syscall 11 -- `chanopen(port)`.
-const int chanSysOpenNo = 11;
+/// Syscall 13 -- `chanopen(port)`.
+const int chanSysOpenNo = 13;
 
-/// Syscall 12 -- `chansend(ep, ptr, len)`.
-const int chanSysSendNo = 12;
+/// Syscall 14 -- `chansend(ep, ptr, len)`.
+const int chanSysSendNo = 14;
 
-/// Syscall 13 -- `chanrecv(ep, ptr, cap)`.
-const int chanSysRecvNo = 13;
+/// Syscall 15 -- `chanrecv(ep, ptr, cap)`.
+const int chanSysRecvNo = 15;
 
 /// How many channels can exist at once.
 ///
@@ -471,7 +471,7 @@ const int chanRetFloor = 0xFFFFFFFFFFFFFF00;
 const int chanRetBadPort = 0xFFFFFFFFFFFFFFFE;
 
 /// The caller is not a process. An M9 payload and an M10 `run` program have no
-/// process id, and an endpoint is owned by one. GAP-0264.
+/// process id, and an endpoint is owned by one. GAP-0204.
 const int chanRetNoProc = 0xFFFFFFFFFFFFFFFD;
 
 /// Both endpoints of the port are taken, or the port is [chanPortHalfClosed].
@@ -962,7 +962,7 @@ void chanReleaseOwner(u64 id) {
 // The syscalls.
 // ---------------------------------------------------------------------------
 
-/// Syscall 11 -- `chanopen(port)`. Returns an endpoint handle `(port << 1) |
+/// Syscall 13 -- `chanopen(port)`. Returns an endpoint handle `(port << 1) |
 /// side`, or a refusal.
 ///
 /// **The SIDE is assigned by the kernel, in arrival order, and it is the only
@@ -1049,7 +1049,7 @@ void chanSysOpen(u64 frame) {
   userSetFrame(frame, u64(userFrameRax), ep);
 }
 
-/// Syscall 12 -- `chansend(ep, ptr, len)`. Returns [len], or a refusal.
+/// Syscall 14 -- `chansend(ep, ptr, len)`. Returns [len], or a refusal.
 ///
 /// **Never blocks.** A full ring is [chanRetFull] and the message is not
 /// enqueued, so the sender still has it and can decide what to do -- retry,
@@ -1124,7 +1124,7 @@ void chanSysSend(u64 frame) {
   // Everything the consumer will read has been written. On an SMP kernel a
   // RELEASE FENCE goes here, between the last store to the slot and the store
   // that advances head; on this single-core kernel the interrupt gate's cleared
-  // IF is what serialises it. See this file's header, point 3, and GAP-0265.
+  // IF is what serialises it. See this file's header, point 3, and GAP-0205.
   chanSetPort(port, chanHeadWord(d), head + u64(1));
   chanBumpPort(port, u64(chanPortSends));
   chanBumpMeta(u64(chanMetaSends));
@@ -1138,7 +1138,7 @@ void chanSysSend(u64 frame) {
   userSetFrame(frame, u64(userFrameRax), len);
 }
 
-/// Syscall 13 -- `chanrecv(ep, ptr, cap)`. Returns the number of bytes
+/// Syscall 15 -- `chanrecv(ep, ptr, cap)`. Returns the number of bytes
 /// delivered, [chanRetEmpty], [chanRetPeerGone], or a refusal.
 ///
 /// **Never blocks, and DRAINS BEFORE IT MOURNS.** A dead peer's messages were
@@ -1187,7 +1187,7 @@ void chanSysRecv(u64 frame) {
   // head is read FIRST. A stale head makes this ring look emptier than it is,
   // which costs a delayed message and never a wrong one; the reverse order would
   // let the slot be read before its contents were published. On an SMP kernel an
-  // ACQUIRE FENCE goes here. GAP-0265.
+  // ACQUIRE FENCE goes here. GAP-0205.
   final u64 head = chanPort(port, chanHeadWord(d));
   final u64 tail = chanPort(port, chanTailWord(d));
   if (head < tail) {
@@ -1227,7 +1227,7 @@ void chanSysRecv(u64 frame) {
   // ---- THE RELEASE POINT ----
   // The slot has been copied out before tail is advanced, so the producer cannot
   // overwrite it while it is being read. On an SMP kernel a RELEASE FENCE goes
-  // here. GAP-0265.
+  // here. GAP-0205.
   chanSetPort(port, chanTailWord(d), tail + u64(1));
   chanBumpPort(port, u64(chanPortRecvs));
   chanBumpMeta(u64(chanMetaRecvs));
