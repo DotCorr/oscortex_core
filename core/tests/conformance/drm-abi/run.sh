@@ -118,7 +118,14 @@ echo "$REG_OUT"
 # that `fdwait` still holds 11 and that `ioctl` is 12 -- the two facts the
 # registry was built to protect. Asserting "2 reserved" would have been
 # asserting that ioctl stays unimplemented forever.
-grep -q '12 allocated' <<<"$REG_OUT" || fail "the registry no longer allocates twelve syscalls; ADR-0033 implements ioctl as 12"
+#
+# AND ASSERTING A TOTAL WAS THE SAME MISTAKE ONE SIZE SMALLER. This line read
+# `grep -q '12 allocated'` until M20's channel syscalls took 13, 14 and 15 and
+# made the total fifteen -- a registry with every fact this check cares about
+# intact, failed by a proxy for those facts. What it means is "12 is allocated
+# rather than reserved", so that is what it now says: `12=` appears in the
+# verifier's output only inside its RESERVED list.
+grep -q '12=' <<<"$REG_OUT" && fail "the registry lists 12 as RESERVED again; ADR-0033 implements ioctl as 12, so it must be allocated"
 grep -q '11=fdwait' <<<"$REG_OUT"    || fail "the registry no longer reserves 11 for fdwait; three designs name it and ADR-0031 §5 is why ioctl took 12 instead"
 grep -qE '^\| 12 \| .ioctl. \| .ioctlSysNo.' "$CORE_DIR/docs/syscall-registry.md" \
   || fail "the registry's row for syscall 12 is not ioctl/ioctlSysNo"
