@@ -5670,3 +5670,349 @@ pointers, "the call site zeroes it" becomes a rule enforced by whoever writes th
 then is probably still not to make `allocFrame` zero, but to give the DMA path an `allocDmaFrame()`
 that does — so `frames drain` keeps costing what it costs. Recorded here so that is a decision rather
 than an accident.
+
+---
+
+## GAP-0158 — There is no `ioctl` and no device namespace, and the DRM ABI is an ioctl ABI reached through a device node
+
+**Domain:** kernel, syscalls, ABI (design unit, ADR-0029)
+**Status:** OPEN — nothing implemented. This is the keystone item: every other gap opened by ADR-0029
+is downstream of it.
+
+The kernel has **ten syscalls** — `exit`, `write`, `who`, `yield`, `sbrk`, `open`, `read`, `close`,
+`seek`, `fdwrite` (`core/user/libc/oslibc.h:66`–`80`). **`ioctl` is not among them and no equivalent
+exists in any form.** The Linux DRM ABI that ADR-0029 adopts is delivered entirely through `ioctl`:
+measured against Linux 6.12, `include/uapi/drm/drm.h` defines **109** `DRM_IOCTL_*` constants and
+`drivers/gpu/drm/drm_ioctl.c` dispatches **75** of them.
+
+Two distinct missing pieces, and they are separable:
+
+1. **The syscall.** `ioctl(fd, request, argp)` where `request` is an `_IOC`-encoded word carrying
+   direction (2 bits), payload size (14 bits), type letter (8 bits) and command number (8 bits). A
+   server must decode all four. **It must not switch on the whole 32-bit value**, because `libdrm`
+   computes the number from `sizeof(struct)` at compile time — a struct whose size differs by one byte
+   produces a different request number and the mismatch is silent. The copy-in/copy-out is bounded by
+   `_IOC_SIZE` and must go through M16's two mutation-tested pointer validators; a size above a fixed
+   bound must be **refused**, not truncated.
+2. **Something to call it on.** Every `open` on this OS goes to FAT16, root directory, 8.3 names
+   (ADR-0018). **There are no device nodes.** `display-protocol.md` §2.1 already solved the shape —
+   a reserved-name branch carrying the `:` sigil, which `fatNameByteBad` already forbids in disk names,
+   so the two namespaces are disjoint by construction. **That document also recorded the trap and it
+   applies verbatim here: the branch goes in `fileSysOpen` (`file.dart:1360`), after the
+   pointer-validated bounce-buffer copy and before `fatParseAt` — NOT in `fatLookup`, where
+   `fileMakeEmpty` would treat the device name as a real directory entry, truncate and rewrite it. A
+   device branch in `fatLookup` is a ring-3-reachable volume corruption.**
+
+**A third thing this surfaces, and it is not graphics.** `design/README.md` fix #2 asks for a
+**syscall-number registry** because numbers 0–10 live in four files and **two agents have both already
+written `= 11`** (`fdwait` and an earlier display draft). `ioctl` is at least the third claimant on a
+number. **The registry should be built in the same unit as `ioctl`, not after it.**
+
+**Cost of the workaround:** there is no workaround. Without `ioctl` there is no DRM ABI, and without a
+device namespace there is nothing to issue it against. `drm-abi.md` S0 and S1 are the rungs.
+
+---
+
+## GAP-0159 — There is no `mmap`, and every DRM buffer object is reached through one
+
+**Domain:** kernel, memory, ABI (design unit, ADR-0029)
+**Status:** OPEN — nothing implemented. Hard-gated on a prerequisite this repo has wanted three times.
+
+`sbrk` (ADR-0016) is the only way a ring-3 program on this OS obtains a page. There is no `mmap`, no
+`munmap`, no `mprotect`, and no kernel object that can be mapped into an address space.
+
+**The DRM ABI does not have an alternative path.** A GEM buffer object is reached by calling a
+driver-specific ioctl to obtain a **fake offset** — Linux calls the machinery the
+`drm_vma_offset_manager`; virtio-gpu's is `DRM_IOCTL_VIRTGPU_MAP`, xe's is
+`DRM_IOCTL_XE_GEM_MMAP_OFFSET` — and then calling **`mmap` on the DRM file descriptor at that offset**.
+The offset is a token in a per-device address space, **not a file offset**, and a `read`/`write`
+substitute does not exist in the ABI. `drm_gem.c` is 1,535 lines and `drm_gem_shmem_helper.c` — the
+shared implementation for drivers whose buffers are ordinary system pages, which is virtio-gpu's case
+and would be ours — is 782.
+
+**The prerequisite, and it is the important half of this entry.** A mapped buffer object outlives the
+handle that created it, and a second process may map the same object. Today:
+
+* `freeFrame` is a plain bit-clear with **no reference count**;
+* `procSpaceFree` frees **every present leaf** in the window unconditionally.
+
+`display-protocol.md` §1.3/§8 wants this fixed for shared surface frames and calls mapping one physical
+frame into two address spaces *"unsound today… silent at the machine level and only loud at the harness
+level"*. `blocking-and-threads.md` §4.3 wants the same fix for shared page tables under threads. **This
+is now a third consumer, and it should be one unit for all three rather than three.**
+
+**Cost of the workaround:** there is none available. A copy-based substitute would defeat the entire
+point of the buffer-object model, whose purpose is that the device reads the pages the CPU wrote.
+
+---
+
+## GAP-0160 — No file descriptor can cross a process boundary, so PRIME and dma-buf have no transport
+
+**Domain:** kernel, IPC, ABI (design unit, ADR-0029)
+**Status:** OPEN — nothing implemented. The receiving slot exists and is reserved; the mechanism does not.
+
+`DRM_IOCTL_PRIME_HANDLE_TO_FD` turns a GEM handle into a file descriptor. That fd is a `dma-buf`: it can
+be `mmap`ed, `poll`ed for its implicit fence, given `DMA_BUF_IOCTL_SYNC`
+(`include/uapi/linux/dma-buf.h`, 182 lines — the whole uAPI), and imported by a *different* device with
+`PRIME_FD_TO_HANDLE`. `drivers/dma-buf/` is 8,618 lines.
+
+**The ioctls are not the problem. The transport is.** On Linux an fd crosses a process boundary through
+`SCM_RIGHTS` on a Unix socket. This OS has **no sockets, no fd passing, and no mechanism that could
+carry one** (`display-protocol.md` §0). That document ranked it first in its retrofit table and called
+it *"the single hardest thing to retrofit"*, because buffers, keymaps and clipboard all ride on it.
+
+**What is already right about this.** `display-protocol.md` §2.5 and §5.3(1) reserved **four handle
+words in the verb-batch header, defined as must-be-zero**, precisely so a future out-of-band handle
+transport needs no wire-format version 2. **Those four words are the slot, and ADR-0029 is the first
+consumer that justifies filling them** (`drm-abi.md` R5, C1). The foresight cost sixteen bytes and it
+is about to pay.
+
+**One scope note that keeps this smaller than it looks.** Under ADR-0029's containment (`drm-abi.md`
+§4.3) the compositor talks to a Mesa-hosting process and clients still send drawing verbs. **So the
+number of fd-passing boundaries is one, inside the system's own trust domain — not one per client, as
+it would be under Wayland.**
+
+---
+
+## GAP-0161 — The DRM ABI is per-driver below `DRM_COMMAND_BASE`, so "one ABI, all GPUs" is false, and here are the numbers
+
+**Domain:** ABI, planning (design unit, ADR-0029)
+**Status:** OPEN as a record — this is not a defect to fix, it is a fact that corrects an expectation,
+and it is filed so nobody re-derives it.
+
+ADR-0029's rationale is that Mesa already covers Intel, AMD, Nvidia, Adreno and Mali, so implementing
+"the DRM ABI" means being able to run what exists. **That is true of the userspace half of a GPU driver
+and false of the kernel half**, and the ioctl number space says so directly. From
+`include/uapi/drm/drm.h`:
+
+| range | meaning |
+|---|---|
+| `0x00`–`0x3F` | core DRM — **shared**, 75 table entries, of which **17** are `DRM_RENDER_ALLOW` |
+| `0x40`–`0x9F` | `DRM_COMMAND_BASE`..`DRM_COMMAND_END` — **per-driver** |
+| `0xA0`–`0xBC` | KMS — **shared**, 38 ioctls |
+| `0xBF`–`0xCD` | `drm_syncobj` — **shared**, 12 ioctls |
+
+Measured per-driver, Linux 6.12, `wc -l include/uapi/drm/*_drm.h` and a `grep` for the ioctl defines:
+
+| driver | uAPI header lines | ioctls |
+|---|---:|---:|
+| `virtgpu` | 270 | **11** (all `DRM_RENDER_ALLOW`) |
+| `panfrost` | 282 | 9 |
+| `msm` | 405 | 12 |
+| `nouveau` | 520 | 13 |
+| `panthor` | 966 | 15 |
+| `amdgpu` | 1,299 | 16, **plus 53 `AMDGPU_INFO_*` sub-queries behind one ioctl** |
+| `xe` | 1,701 | 12 |
+| `i915` | **3,916** | **62**, plus 59 `I915_PARAM_*` and an open-ended extension-chain scheme |
+
+**The ioctl count understates the difference and the header line count understates it further.** `xe`
+has twelve ioctls and 1,701 header lines because the work moved into the structures: `drm_xe_vm_bind`
+is a page-table programming interface, `drm_xe_exec_queue_create` is a hardware context, and
+`drm_xe_device_query` returns the ASIC's topology. **Serving those honestly means having the thing they
+describe — which is the kernel driver `gpu.md` §1 measured at 560,555 lines for Intel and ~1.2 million
+non-header lines for AMD, behind firmware that is cryptographically signed.**
+
+**The correct statement, and the one to quote if this comes back:** *implementing "the DRM ABI" for a
+given GPU is not an alternative to writing that GPU's kernel driver — it is the interface that driver
+exposes.* What the shared 17 + 38 + 12 buy is that the day such a driver exists, Mesa works against it
+unchanged. **What actually delivers "almost all GPUs" under ADR-0029 is virtio-gpu's eleven ioctls plus
+venus / virgl / DRM native context, and that works in a virtual machine and nowhere else**
+(`drm-abi.md` §1.3, §6.3).
+
+---
+
+## GAP-0162 — Mesa would be the first C library this OS ever links, and there is no C++ runtime at all
+
+**Domain:** toolchain, userland, planning (design unit, ADR-0029)
+**Status:** OPEN — two items, of which the second is the larger and is unscoped anywhere in the project.
+
+**1. Reuse in this project is currently zero, and Mesa is the wrong place to start.** Kernel, libc and
+drivers are all hand-written DCDart. DCDart has extern FFI (DCDart ADR-0038, verified) and **the OS has
+never linked a real C library.** The libc is **32 exported functions**, of which 9 are C89 names
+(`libc-roadmap.md` §1.1). The ELF loader **refuses `ET_DYN` and `PT_INTERP` by name** (`elf.dart:1280`,
+GAP-0091). Pointing that toolchain at one of the largest C/C++ codebases in existence as its first
+target is the highest-variance possible plan.
+
+**The recommendation is concrete and is on the critical path anyway: `libdrm` is the right first C
+library.** It is small, it is almost entirely `ioctl` wrappers and struct marshalling, it needs no
+threads beyond atomics, no C++ and no libm — and decisively, **it is the thing that tells you whether
+your DRM ABI is right**, because its own `modetest` and `drmdevice` tools are a conformance suite for
+the first four DRM rungs written by somebody else. That is exactly the independently-authored
+expectation every exit criterion in this repo is built on. ⚠ *libdrm's size and undefined-symbol count
+were not measured — `drm-abi.md` V0 is the rung that measures them.*
+
+**2. There is no C++ runtime, and no document in this project has ever scoped one.**
+`libc-roadmap.md` is 1,518 lines about the C library and does not mention C++ once. Its picolibc
+recommendation does not touch it. But **Mesa's Vulkan runtime and several of its drivers are C++17, and
+ACO is C++20.** A C++ runtime needs `operator new`/`delete`, `__cxa_atexit` and static-initialisation
+ordering, RTTI unless every object is built `-fno-rtti`, and either exception support — an unwinder,
+`.eh_frame`, a personality routine — or a proof that the whole build links `-fno-exceptions`.
+
+⚠ *Whether the venus path specifically can be built entirely `-fno-exceptions -fno-rtti` is unmeasured,
+and it is the difference between "a few hundred lines of glue" and "port libc++abi". `drm-abi.md` V0
+measures it by checking whether the built venus ICD has any undefined `_Z*` symbols at all.*
+
+**This is the single largest unbudgeted item in ADR-0029's plan.** `libc-roadmap.md`'s tier table
+(A…E) has no row for Mesa and should gain one: Mesa sits **above** tier E, because it needs everything
+tier E needs *plus* a C++ runtime that no tier includes.
+
+---
+
+## GAP-0163 — This machine's QEMU cannot exercise any 3D or compute path, and no software substitute exists
+
+**Domain:** tooling, conformance, environment (design unit, ADR-0029)
+**Status:** OPEN — this is a logistics prerequisite, not a code one, and nothing on the ladder can
+substitute for it.
+
+Measured on this Mac, 2026-08-26, QEMU 11.0.0 (Homebrew):
+
+```
+$ qemu-system-x86_64 -device help | grep -i virtio-gpu
+name "virtio-gpu-device", bus virtio-bus
+name "virtio-gpu-pci", bus PCI, alias "virtio-gpu"
+name "virtio-vga", bus PCI
+
+$ qemu-system-x86_64 -display help
+none  curses  cocoa  dbus
+```
+
+**There is no `virtio-gpu-gl-pci` and no `vhost-user-gpu`**, so this QEMU was built without
+virglrenderer; and **no EGL-capable display backend**, so there is nothing for a 3D backend to render
+into. `gpu.md` §3.8 already measured the consequence from the guest side on the same machine:
+`device_feature[0..31] = 0x30000002` with `VIRTIO_GPU_F_VIRGL` (bit 0) **clear**, and `num_capsets = 0`.
+
+**Every rung from `drm-abi.md` R4 (`EXECBUFFER`) onward — which is the entire Vulkan compute track —
+requires a Linux host with a QEMU built against virglrenderer.** That host does **not** need a discrete
+GPU: a Linux host's own llvmpipe would serve. It does need to be Linux.
+
+**And there is no software substitute, which is the part worth stating.** The obvious one is Mesa's
+**lavapipe** — a conformant software Vulkan implementation needing no GPU and no DRM at all, which
+would let the whole Vulkan stack be proved with zero driver work. **It requires LLVM in the guest**: it
+JITs, which means millions of lines of C++ and an `mmap(PROT_EXEC)` hole in the W^X policy ADR-0012
+established. That is not a rung, it is a second project. `drm-abi.md` §3.3 has the per-driver table;
+the only Mesa Vulkan drivers that need no LLVM are the ones that need real hardware or a host to
+forward to.
+
+**Consequence if the host is not available:** the compute ladder stops at "the venus ICD links against
+our libc" and **the honest statement becomes that the compute path cannot be proved on the available
+hardware.** That is `drm-abi.md` Q5 and it is an owner question, not an engineering one.
+
+---
+
+## GAP-0164 — There are no fences, no vblank events, and no way to deliver either
+
+**Domain:** kernel, ABI, scheduling (design unit, ADR-0029)
+**Status:** OPEN — the primitive that would carry them is designed (`fdwait`) and unbuilt.
+
+The DRM ABI reports completion three ways and a serious implementation eventually needs all three:
+
+1. **`drm_syncobj`** — 12 ioctls, `drivers/gpu/drm/drm_syncobj.c` is 1,719 lines. Binary **and
+   timeline** semaphores; this is what Vulkan's `VkSemaphore` and `VkFence` map onto. `DRM_CAP_SYNCOBJ`
+   and `DRM_CAP_SYNCOBJ_TIMELINE` gate them, so a first implementation may honestly answer *no*. ⚠ *I
+   do not know whether any current Mesa Vulkan driver still functions with syncobj declined — RADV and
+   ANV have required it for years. This is the single most likely place the compute ladder stalls, and
+   `drm-abi.md` V2 is where it is found out.*
+2. **`sync_file`** — an fd whose readiness *is* the fence
+   (`include/uapi/linux/sync_file.h`, 113 lines), interoperating with `poll` and with dma-buf's
+   implicit fences.
+3. **Event records read off the DRM fd.** `read(2)` on a DRM descriptor returns a stream of fixed-size
+   records — `DRM_EVENT_VBLANK`, `DRM_EVENT_FLIP_COMPLETE`, `DRM_EVENT_CRTC_SEQUENCE`. **This is how a
+   compositor learns a page flip completed**, and it is the mechanism `display-protocol.md` §3.2
+   refused to claim tearing was eliminated without. Repo-wide there is still no vblank interrupt of any
+   kind.
+
+**All three want a blocking wait, and this OS still has none.** `blocking-and-threads.md` designed
+exactly the right primitive — `fdwait(mask, timeoutTicks) → readyMask`, level-triggered, re-tested by
+the kernel at wake time — and nothing is built. **This entry adds a fourth readiness kind to that
+document's §3.5 table: a DRM descriptor is ready when an event record is queued.**
+
+**The asymmetry worth recording, because it is why the compute path is harder here than the display
+path.** `gpu.md` §3.6 argued correctly that a first virtio-gpu driver can **poll** the used ring and
+that this is the same trade `ata.dart` already made. That stays true for display. **It does not
+transfer to compute: a dispatch you poll for burns the core you were trying to free**, so real fences —
+and, behind them, MSI-X and the local APIC this kernel has never touched — are promoted from "not
+needed" to "wanted" the moment `drm-abi.md` V3 exists.
+
+---
+
+## GAP-0165 — Write-combining is now a correctness bug rather than a performance note, and this narrows GAP-0071 item 1
+
+**Domain:** kernel, memory, hardware correctness (design unit, ADR-0029)
+**Status:** OPEN — **narrows GAP-0071 item 1**, which predicted this and did not name the subsystem
+that would trip it.
+
+GAP-0071 item 1 records that `core/boot/boot.S` maps all of `[3 GiB, 4 GiB)` **writable, cacheable,
+with no MTRR or PAT setup**, and says of it:
+
+> for a *linear framebuffer* specifically it is benign and even desirable… **the moment it touches a
+> real device register through a BAR rather than a framebuffer, this becomes a correctness problem
+> rather than a performance note.**
+
+`gpu.md` §3.5 named the first subsystem that trips it — a virtio-gpu driver's common-configuration,
+ISR and notify registers — and recorded it as *"known-wrong, invisible here"*: under TCG nothing
+notices, and under KVM the EPT memory type for an MMIO slot forces uncacheable regardless of the guest
+PAT.
+
+**ADR-0029 adds a second and worse case, and it is not invisible under emulation for the same reason.**
+A GEM buffer object that is CPU-mapped and device-read is the classic write-combining case: the CPU
+streams pixels or command-buffer bytes into it, and the correct memory type is **WC**, not WB and not
+UC. Getting it wrong is a large, silent performance loss on every frame and every dispatch, and — where
+the device reads without a snoop — a correctness bug.
+
+**Two distinct memory types are therefore wanted, and they are not the same fix:**
+
+* **UC / UC-** for device registers reached through a BAR (GAP-0071 item 1's original case);
+* **WC** for CPU-mapped buffer objects (this entry's case).
+
+**The narrow fix, unchanged from `gpu.md` §3.5's:** program PAT entries and map the specific pages with
+`PWT`/`PCD`/`PAT` set, rather than remapping the whole gigabyte. That is real page-table work at
+runtime and it is its own unit. **Until it exists, no claim that this driver stack is
+hardware-correct should be made** — and under ADR-0029 that caveat matters less than it looks, because
+§8.2 of that ADR says bare metal is not reachable anyway.
+
+---
+
+## GAP-0166 — The reflective membrane has no mechanism: an `@extern` declaration carries no descriptors, and Mesa is the largest zombie the project will consider
+
+**Domain:** cross-repo dependency, DCDart-side language gap, ABI (design unit, ADR-0029)
+**Status:** OPEN — recorded from this side of the seam. **The decision it depends on is DCDart's, not
+this repo's**, and DCDart's own escalation for it is open and unratified.
+
+DCDart escalation 0004 §6 states the tension this project has now committed to:
+
+> **C libraries are zombies by construction, and linking them does not fix that.** … Every FFI boundary
+> is a hole in the reflective world, and the holes are exactly where the large, useful, already-written
+> software lives.
+
+It offers three options — FFI it in, simulate it, **describe the boundary** — and recommends the third:
+*"the FFI declaration itself carries full descriptors, so the interface is reflective even though the
+implementation is opaque."* **Nothing implements it.** DCDart ADR-0038 built `@extern` as a signature
+plus a sidecar `<output>.o.externs` manifest of permitted-undefined symbol *names*. A name is not a
+descriptor: it records that `ffs` may be undefined, not what `ffs` takes, returns or means.
+
+**Two things this repo should record, and neither is a request to change DCDart.**
+
+1. **ADR-0029 §7 takes option 3 and specifies the mechanism as a build-time table generator in *this*
+   repo**, reading `include/uapi/drm/*.h` and emitting a descriptor per ioctl request number — name,
+   direction, size, field list — which the dispatcher validates against and which backs a `drm trace`
+   command that can say, by field name, what crossed. **That is not a DCDart language feature and
+   CLAUDE.md rule 3 applies in the negative: nobody should open a DCDart escalation for it.** It is the
+   same category as `derive.py` and `check-font.py`.
+2. **The DRM boundary is unusually well suited to being described, and that is worth writing down
+   because the next boundary will not be.** It is one call — `ioctl(fd, request, argp)` — carrying one
+   flat POD struct per request number, with the struct's exact size encoded in the request number
+   itself, defined in 24,265 lines of public, versioned, stability-guaranteed uAPI, with **nothing
+   crossing that the kernel does not own on both sides.** Compare ffmpeg, whose boundary is hundreds of
+   hand-written signatures with prose-documented ownership — which is precisely why DCDart ADR-0038
+   refuses ARC-managed types in an `@extern` signature. **A generated-descriptor plan that works for
+   DRM does not automatically work for ffmpeg, and the two should not be costed together.**
+
+**What remains genuinely DCDart's:** whether `@extern` declarations ever carry descriptors in the
+language, which is escalation 0004 §6's open question and is blocked behind that escalation's items 2
+and 3 (ratify the introspection/intercession split; ship static `.rodata` emission — the latter having
+landed since, as ADR-0040/0051).
+
+**The limit, stated so this entry is not read as bigger than it is.** Describing a boundary describes
+*what crosses it*. Mesa's internal state, threads, heap and shader IR stay opaque, and ADR-0029 §7(d)
+says so. The architectural half of the answer — Mesa quarantined in its own address space behind
+oscortex's own protocol for the display path — is this repo's and is recorded in `drm-abi.md` §4.3.
