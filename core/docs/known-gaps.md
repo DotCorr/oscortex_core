@@ -5732,7 +5732,10 @@ byte-identical old-vs-new differential across all five objects and `kernel.elf`.
 ## GAP-0156 — no conformance harness has `set -e`, so `set -u` is load-bearing by accident
 
 **Domain:** tooling, conformance harnesses (fix batch, ADR-0028)
-**Status:** OPEN — the three known instances are fixed; the structural weakness is not.
+**Status:** OPEN — the three known instances are fixed; the structural weakness is not. **Surveyed
+2026-08-26 (ADR-0030): 0 of 20 harnesses can take `set -e` as written; 20 of 20 are blocked.** The
+per-harness work list is at the bottom of this entry, and ADR-0030 argues that `set -e` is the wrong
+mechanism for this suite in any case. Superseding work is GAP-0168.
 
 `declare -A` (bash 4+) appeared in `m13-libc:248`, `m8-paging:174` and `m9-ring3:158`. Under
 `/bin/bash` 3.2 the declaration fails and the subsequent `SYM[__kernel_start]=...` becomes an
@@ -5757,6 +5760,84 @@ Adding `set -e` to twenty harnesses is not a safe drive-by — these scripts use
 declarations and **missed five further `${SYM[...]}` expansions** further down `m8-paging`, which only
 surfaced when the harness was actually executed under `/bin/bash`. A portability claim is worth what
 its execution under the target interpreter is worth, not what a grep says.
+
+---
+
+### The survey (2026-08-26) — what actually blocks `set -e`, harness by harness
+
+**The paragraph above names the wrong constructs.** Executed under `/bin/bash` 3.2.57 with
+`set -euo pipefail`, `cmd || fail ...` is **safe** (`set -e` is suppressed for every command in a
+`&&`/`||` list except the last), `(( ... ))` **in a condition** is **safe** (condition contexts are
+suppressed too), and `grep -q ... || fail` is **safe** for the same reason as the first. There are
+**zero** bare `(( ... ))` statements and **zero** uses of `let` anywhere in the suite.
+
+The construct that actually blocks all twenty was not named: **capture-then-`$?`**.
+
+```sh
+BUILD_OUT="$(bash "$CORE_DIR/scripts/build-kernel.sh" 2>&1)"
+BUILD_STATUS=$?          # <-- under set -e this line is NEVER REACHED when the build fails
+echo "$BUILD_OUT"
+[[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
+```
+
+Under `set -e` the assignment aborts the harness. `fail()` never runs, so there is **no**
+`M<n>: FAIL — ...` line and no captured build output — a strict regression in diagnosis. Verified by
+execution, not by reading the manual.
+
+**Classes.** A = capture-then-`$?`. C = a bare predicate as a statement (`cmp`/`diff` in a diagnostic
+block, `hdiutil detach` in cleanup, `grep`) whose non-zero status is expected. G = `grep -q ... && fail`,
+where the *good* case is grep returning 1.
+
+| Harness | A | C | G | Blocking sites (line numbers) |
+|---|---:|---:|---:|---|
+| `m0-boot` | 4 | 0 | 0 | A: 39, 40, 63, 83 |
+| `m1-interrupts` | 4 | 1 | 0 | A: 72, 73, 314, 342 · C: 361 |
+| `m2-console` | 6 | 3 | 0 | A: 106, 107, 241, 242, 302, 311 · C: 337, 348, 360 |
+| `m3-shell` | 7 | 7 | 0 | A: 104, 105, 283, 284, 376, 377, 385 · C: 413, 424, 458, 477, 478, 480, 491 |
+| `m4-fault` | 7 | 7 | 1 | A: 105, 106, 382, 383, 464, 465, 473 · C: 503, 514, 595, 614, 615, 617, 628 · G: 127 |
+| `m5-pci` | 7 | 5 | 12 | A: 138, 139, 511, 512, 714, 715, 726 · C: 753, 764, 920, 998, 1020 · G: 153, 340, 534, 541, 550, 554, 564, 573, 577, 586, 596, 618 |
+| `m6-disk` | 7 | 5 | 13 | A: 103, 104, 380, 381, 557, 558, 568 · C: 596, 604, 605, 738, 835 · G: 299, 402, 409, 418, 422, 432, 441, 445, 454, 464, 477, 482, 838 |
+| `m7-frames` | 7 | 4 | 10 | A: 111, 112, 558, 559, 688, 689, 698 · C: 785, 793, 794, 1072 · G: 292, 574, 584, 588, 598, 607, 611, 620, 630, 646 |
+| `m8-paging` | 7 | 4 | 9 | A: 113, 114, 454, 455, 640, 641, 650 · C: 724, 732, 733, 1043 · G: 354, 470, 474, 484, 493, 497, 506, 516, 531 |
+| `m9-ring3` | 7 | 6 | 9 | A: 127, 128, 421, 422, 735, 736, 745 · C: 150, 155, 822, 830, 831, 1166 · G: 194, 344, 437, 444, 448, 457, 467, 481, 493 |
+| `m10-elf` | 7 | 5 | 6 | A: 125, 126, 632, 633, 730, 731, 740 · C: 118, 807, 815, 816, 1189 · G: 297, 649, 653, 662, 672, 687 |
+| `m11-proc` | 7 | 5 | 4 | A: 141, 142, 610, 611, 686, 687, 696 · C: 134, 818, 826, 827, 1341 · G: 410, 625, 633, 647 |
+| `m12-heap` | 7 | 5 | 6 | A: 107, 435, 436, 482, 528, 529, 538 · C: 115, 632, 640, 641, 1006 · G: 231, 233, 450, 458, 473, 1000 |
+| `m13-libc` | 7 | 6 | 5 | A: 122, 384, 385, 431, 481, 482, 491 · C: 129, 140, 543, 551, 552, 579 · G: 239, 332, 399, 407, 422 |
+| `m14-fat` | 9 | 6 | 2 | A: 109, 484, 526, 527, 546, 548, 632, 633, 642 · C: 116, 581, 928, 929, 935, 945 · G: 401, 503 |
+| `m15-fileio` | 9 | 5 | 3 | A: 120, 486, 516, 517, 536, 538, 618, 619, 628 · C: 127, 136, 570, 868, 873 · G: 503, 826, 830 |
+| `m16-filewrite` | 9 | 7 | 8 | A: 144, 668, 698, 699, 737, 738, 818, 819, 828 · C: 151, 160, 766, 1076, 1248, 1349, 1354 · G: 685, 744, 1196, 1215, 1234, 1276, 1296, 1332 |
+| `m18-preempt` | 6 | 1 | 1 | A: 103, 104, 285, 322, 323, 332 · C: 96 · G: 228 |
+| `m19-argv` | 7 | 3 | 1 | A: 112, 303, 329, 330, 398, 399, 408 · C: 119, 515, 520 · G: 311 |
+| `mb-info` | 4 | 1 | 0 | A: 63, 64, 93, 123 · C: 149 |
+| **totals** | **135** | **86** | **90** | **311 sites, 20/20 harnesses blocked, 0 convertible** |
+
+*(Line numbers are as of this commit — i.e. **after** GAP-0167's `Step 3b` was added to `m19-argv`.)*
+
+**GAP-0167's fix added two of these sites, and that is worth stating rather than hiding.** `Step 3b`
+introduces one class A (`VERIFY_OUT=$(...)` / `VERIFY_STATUS=$?` at 329–330) and one class G
+(`grep -q "FREESTANDING: FAIL" ... && fail` at 311). Both were copied deliberately from
+`m18-preempt` §3h and `m8-paging`, because matching the suite's existing idiom is worth more than
+pre-emptively adopting a convention that has not been decided yet (GAP-0168). When the `capture()`
+helper of GAP-0168 §2 lands, these two sites convert with the other 133.
+
+**Nothing was converted, because nothing qualified.** Two notes on reading the table:
+
+* **Class C is not uniformly benign.** The `cmp "$SERIAL_CAPTURE" "$EXPECTED" >&2` sites sit inside
+  failure-diagnostic blocks, where `cmp` returning 1 *is* the expected case. Under `set -e` the
+  harness would abort **inside its own diagnostic**, before the `fail "..."` that names what went
+  wrong — losing the message while keeping the non-zero exit. The `hdiutil detach` sites
+  (`m14-fat:581`, `m15-fileio:570`, `m16-filewrite:766` and `1076`) are cleanup and can legitimately
+  return non-zero when the volume is briefly busy.
+* **Class G is load-bearing style, not sloppiness.** `grep -q "\b$gone\b" <<<"$VERIFY_OUT" && fail
+  "$gone is still declared extern"` is how nine harnesses assert the ADR-0021 extern deletions. The
+  passing case is grep exit 1. Converting these means inverting ~89 assertions, each with its own
+  sentence.
+
+**ADR-0030 is the decision**: do not adopt `set -e`; adopt an assertion-count floor plus a `capture()`
+helper instead, because `set -e` does not catch this gap's own motivating example (a collapsed
+`declare -A` map produces no non-zero status anywhere — every assignment succeeds and the harness
+compares wrong values against wrong values). GAP-0168 tracks that work.
 
 ---
 
@@ -6134,7 +6215,7 @@ oscortex's own protocol for the display path — is this repo's and is recorded 
 ## GAP-0167 — `m19-argv`'s PASS line claims `verify-freestanding` ran. It never invokes it.
 
 **Domain:** conformance, rule 1 (found during the ADR-0028 fix batch)
-**Status:** OPEN — found and recorded, deliberately NOT fixed here (see below).
+**Status:** **CLOSED** 2026-08-26 (ADR-0030 §6). Fixed and verified — see "How it was fixed" below.
 
 `core/tests/conformance/m19-argv/run.sh` ends with a PASS message reading
 `... -> build-progs checks (...) -> verify-freestanding -> FOUR real QEMU boots`. **The only mention
@@ -6159,8 +6240,76 @@ harnesses run `verify-freestanding` against the same `build/kmain.o`, `kdata.o`,
 `kernel.elf` that M19 builds, so a leaked runtime symbol would still be caught by the suite. What is
 missing is M19's *own* assertion of it, and what is wrong is the sentence saying it has one.
 
-**Why not fixed in this commit.** The unit that found it was scoped to
+**Why it was not fixed when found.** The unit that found it was scoped to
 `core/scripts/verify-freestanding.sh` and the three `declare -A` harnesses, and was explicitly told to
 touch only those. `m19-argv` belongs to the milestone that just landed. The fix is small — copy
 `m18-preempt`'s five-line block and re-run the harness (~290 s) — but it is another agent's harness
 and another milestone's exit criterion, so it is escalated rather than taken.
+
+---
+
+**How it was fixed (2026-08-26).** A new `Step 3b` in `m19-argv/run.sh`, placed between the
+`build-progs` checks and the volume, modelled on `m18-preempt` §3h and matching its style. It does
+five things, not one:
+
+1. Runs `scripts/verify-freestanding.sh` on `build/kmain.o`, `build/kdata.o` and `build/kernel.elf`,
+   capturing combined output.
+2. **Checks the exit status** (`VERIFY_STATUS`), which is the part the gap was really about.
+3. Belt-and-braces as `m8-paging` and `m13-libc` do it: fails if a `FREESTANDING: FAIL` line was
+   printed while the script exited 0.
+4. Requires **exactly three** `FREESTANDING: pass` lines — the status alone would be satisfied by a
+   script that printed nothing at all, which is the vacuity this whole batch is about.
+5. Pins the declared-extern count at **44**, unchanged from M18. M19 builds the initial process stack
+   in Dart and enters ring 3 through the `enter_user` stub that already existed; a new assembly
+   primitive would be a different design, and this is where that would show up.
+
+The PASS line no longer asserts the bare word. It now reads `-> verify-freestanding pass on kmain.o,
+kdata.o and kernel.elf (44 declared externs, unchanged from M18 — M19 added no assembly) ->`, so the
+sentence carries a number that came out of the check rather than a claim that the check happened.
+
+Occurrences of the string in the file went from **1 to 8**. `m19-argv` was re-run in full under
+`/bin/bash` 3.2.57 and passes with the check executing: four `FREESTANDING:` lines now appear in its
+log where there were none.
+
+**What this was and was not.** It was a missing assertion plus a false sentence. It was **not** an
+unguarded kernel: rule 1 was enforced on these same objects by seven other harnesses throughout, and
+the extern count the new check pins is the value those harnesses were already asserting.
+
+---
+
+## GAP-0168 — the conformance suite has no mechanism that a PASS line only prints if its assertions ran
+
+**Domain:** tooling, conformance harnesses (opened by ADR-0030, successor to GAP-0156)
+**Status:** OPEN — surveyed and designed, deliberately NOT implemented in the commit that opened it.
+
+GAP-0156 asked for `set -e`. ADR-0030 surveyed all twenty harnesses, found **0 of 20** convertible
+(134 capture-then-`$?` sites, 86 bare predicates, 89 `grep -q ... && fail`), and concluded that `set
+-e` is the wrong instrument regardless — **it does not catch GAP-0156's own motivating example.** A
+`declare -A` that silently collapses to index 0 under bash 3.2 produces no non-zero exit status
+anywhere: every assignment succeeds, every lookup returns the same wrong value, and the harness
+compares wrong values against wrong values and prints PASS.
+
+**The property that actually wants protecting** is not "no command failed" but **"the assertions this
+PASS line describes actually executed."** Two mechanisms address it directly, and both also cover the
+silent-wrong-value case above:
+
+1. **An assertion-count floor.** A `checked()`/`pass()` helper increments a counter; immediately
+   before the PASS line, `(( ASSERTIONS >= <pinned N> )) || fail "only $ASSERTIONS of N assertions
+   ran"`. One site per harness instead of 134. Catches an abort, a `for` that iterated zero times, a
+   `case` that fell through, and a guard edited into unreachability — the whole GAP-0155 / GAP-0156
+   family. The cost is honest and should be stated when it is done: the pinned N is a golden that
+   moves whenever a harness legitimately gains or loses an assertion, exactly like `shellStrHelp`'s
+   size, and it must be derived from a count the harness itself emits rather than hand-maintained.
+2. **A `capture()` helper** replacing capture-then-`$?`, preserving output *and* status:
+   `capture OUT STATUS -- bash scripts/verify-freestanding.sh build/kmain.o`. This is what would have
+   to be written anyway before `set -e` could ever be safe, and it is a readability gain on its own
+   merits. 134 sites, mechanical, no semantic change.
+
+**Why not done in the opening commit.** Touching twenty harnesses costs a ~27-minute full re-run per
+iteration, and the counter discipline is a choice the implementer should make with ADR-0030 in front
+of them rather than inherit silently. The unit that opened this had already spent its re-run budget on
+GAP-0167's fix and the executable-bit change.
+
+**Ordering note for whoever takes it.** Do (2) first and independently — it is mechanical, it is
+verifiable one harness at a time, and it strictly improves diagnostics whether or not (1) ever lands.
+(1) needs a decision about where N comes from before any code is written.

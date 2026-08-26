@@ -292,6 +292,31 @@ PROGDIR="$WORKDIR/progs"
 bash "$SCRIPT_DIR/build-progs.sh" "$PROGDIR" || fail "build-progs.sh failed"
 
 # ---------------------------------------------------------------------------
+# Step 3b — verify-freestanding.sh (CLAUDE.md rule 1), and the extern count.
+#
+# GAP-0167: this harness's PASS line has always claimed `-> verify-freestanding
+# ->`, and until now that string was the ONLY mention of the script anywhere in
+# the file. The claim was not false about the KERNEL -- seven other harnesses
+# run the check against these same objects, so rule 1 was and is enforced -- but
+# it was false about THIS HARNESS, and a sentence a reader audits is not
+# contradicted by re-running the suite. Modelled on m18-preempt §3h.
+VERIFY_OUT=$( (cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o \
+                                  && bash scripts/verify-freestanding.sh build/kdata.o \
+                                  && bash scripts/verify-freestanding.sh build/kernel.elf) 2>&1 )
+VERIFY_STATUS=$?
+echo "$VERIFY_OUT"
+[[ $VERIFY_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed (output above)"
+# Belt and braces, as m8-paging and m13-libc do it: the status alone would be
+# satisfied by a script that printed nothing at all.
+grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT" \
+  && fail "verify-freestanding.sh printed a FAIL line while exiting 0"
+grep -c "FREESTANDING: pass" <<<"$VERIFY_OUT" | grep -qx 3 \
+  || fail "expected exactly 3 FREESTANDING: pass lines (kmain.o, kdata.o, kernel.elf)"
+EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern(s).*/\1/p' <<<"$VERIFY_OUT" | head -1)
+[[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares ${EXTERN_COUNT:-no} externs, expected 44 — UNCHANGED from M18. M19 builds the initial process stack in Dart and enters ring 3 through the enter_user stub that already existed; a new assembly primitive would be a different design."
+echo "FREESTANDING: pass  $EXTERN_COUNT declared externs, unchanged from M18 — M19 added no assembly"
+
+# ---------------------------------------------------------------------------
 # Step 4 — the volume, and an independent tool's opinion of it.
 # ---------------------------------------------------------------------------
 DISK_IMG="$WORKDIR/disk.img"
@@ -630,5 +655,5 @@ echo "CHECK 11: pass  argc 1 and a missing file are handled BY THE PROGRAM; BOTH
 
 # ---- The exit criterion, stated once more against what actually happened. --
 echo
-echo "M19-argv: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's SIX OBJECTS (M19's start.c among them, the only one that defines \`_start\`) AND ONE PROGRAM SOURCE TWICE, the second ignoring argv as a negative control -> make-image.py writes a FAT16 volume whose ALPHA.TXT and BETA.TXT differ in ALL THREE of lines, words and bytes and whose chains go backwards -> structural checks (the kernel's mutable statics 14112 -> 14368 with argsStore one 256-byte block that is the LAST in .bss so no earlier harness's accounting moves, its three regions tiling exactly, a 3-call-site storage seam in one file, 11 @rodata tables against their call sites, five distinct refusal values with four distinct sentences, and the entry path proven to use the computed RSP) -> build-progs checks (\`_start\` is the LIBRARY's, reads argc from (%rsp) and argv from 8(%rsp), and NEVER WRITES %rsp) -> verify-freestanding -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with m1-interrupts' ${M1_BYTES}-byte golden intact as a prefix; A C PROGRAM WRITTEN AS \`int main(int argc, char **argv)\` TOLD BY THE SHELL WHICH FILE TO COUNT, counting alpha.txt to $(d alpha_lines)/$(d alpha_words)/$(d alpha_chars) and then, THE SAME BINARY, beta.txt to $(d beta_lines)/$(d beta_words)/$(d beta_chars), every number computed on the host from the volume this harness wrote and each exit status derived from its own file; a flag argument selecting one column and two file arguments both counted and totalled; THE INITIAL PROCESS STACK READ OUT OF GUEST PHYSICAL MEMORY WITH QEMU'S OWN MONITOR and checked against the System V ABI -- RSP 16-byte aligned, argc at RSP, every argv pointer inside the program's own mapped user page and naming the exact bytes typed, NULL argv terminator, NULL envp, AT_NULL auxv and every padding byte zero -- with the checker itself required to reject a wrong argv and a wrong argc; a control build handed the same argv and ignoring it, printing $(d neg_file)'s counts for beta.txt and a different exit status; argc 1 and a name that is not on the volume both handled from ring 3; nine arguments and a 129-byte argument refused by the shell before a frame was taken, with the shell alive and correct afterwards; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
+echo "M19-argv: PASS — dcc build -> assemble -> link -> clang builds core/user/libc's SIX OBJECTS (M19's start.c among them, the only one that defines \`_start\`) AND ONE PROGRAM SOURCE TWICE, the second ignoring argv as a negative control -> make-image.py writes a FAT16 volume whose ALPHA.TXT and BETA.TXT differ in ALL THREE of lines, words and bytes and whose chains go backwards -> structural checks (the kernel's mutable statics 14112 -> 14368 with argsStore one 256-byte block that is the LAST in .bss so no earlier harness's accounting moves, its three regions tiling exactly, a 3-call-site storage seam in one file, 11 @rodata tables against their call sites, five distinct refusal values with four distinct sentences, and the entry path proven to use the computed RSP) -> build-progs checks (\`_start\` is the LIBRARY's, reads argc from (%rsp) and argv from 8(%rsp), and NEVER WRITES %rsp) -> verify-freestanding pass on kmain.o, kdata.o and kernel.elf (${EXTERN_COUNT} declared externs, unchanged from M18 — M19 added no assembly) -> FOUR real QEMU boots. A ${SERIAL_BYTES}-byte serial match with m1-interrupts' ${M1_BYTES}-byte golden intact as a prefix; A C PROGRAM WRITTEN AS \`int main(int argc, char **argv)\` TOLD BY THE SHELL WHICH FILE TO COUNT, counting alpha.txt to $(d alpha_lines)/$(d alpha_words)/$(d alpha_chars) and then, THE SAME BINARY, beta.txt to $(d beta_lines)/$(d beta_words)/$(d beta_chars), every number computed on the host from the volume this harness wrote and each exit status derived from its own file; a flag argument selecting one column and two file arguments both counted and totalled; THE INITIAL PROCESS STACK READ OUT OF GUEST PHYSICAL MEMORY WITH QEMU'S OWN MONITOR and checked against the System V ABI -- RSP 16-byte aligned, argc at RSP, every argv pointer inside the program's own mapped user page and naming the exact bytes typed, NULL argv terminator, NULL envp, AT_NULL auxv and every padding byte zero -- with the checker itself required to reject a wrong argv and a wrong argc; a control build handed the same argv and ignoring it, printing $(d neg_file)'s counts for beta.txt and a different exit status; argc 1 and a name that is not on the volume both handled from ring 3; nine arguments and a 129-byte argument refused by the shell before a frame was taken, with the shell alive and correct afterwards; and the frame allocator's free count identical, to the frame, before and after. Screenshot at $SHOT_PNG"
 exit 0
