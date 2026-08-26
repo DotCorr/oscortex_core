@@ -279,12 +279,22 @@ echo "STRUCTURAL: pass  five distinct refusal values and four distinct sentences
 # vmProgStackTop, ...)` after building a perfectly good block puts the program
 # on an empty stack and `_start`'s first instruction faults. It would be caught
 # by a boot -- but naming it here says which line is load-bearing.
-grep -q "enter_user(entry, rsp, u64(0), u64(userCodeSel), u64(userDataSel));" \
-  "$CORE_DIR/kernel/elf.dart" \
-  || fail "elf.dart does not enter ring 3 with the RSP argsBuild computed"
+# M20 (ADR-0034): THE SAME PROPERTY, CHECKED WHERE IT NOW LIVES. `run` no
+# longer enters ring 3 itself -- it creates a process -- so the load-bearing
+# line moved from elf.dart to proc.dart. It is still exactly one line, and the
+# mutation it guards against is still the same one: entering with
+# `vmProgStackTop` after building a perfectly good block.
+grep -q "procSet(s, u64(procSlotRsp), rsp);" "$CORE_DIR/kernel/proc.dart" \
+  || fail "procCreate does not record the RSP argsBuild computed — a process would start on an empty stack and _start's first instruction would fault"
+grep -q "procGet(s, u64(procSlotRsp))" "$CORE_DIR/kernel/proc.dart" \
+  || fail "proc.dart does not enter ring 3 with the RSP it recorded"
+grep -q "procSet(s, u64(procSlotRsp), u64(vmProgStackTop));" "$CORE_DIR/kernel/proc.dart" \
+  && fail "procCreate still sets a process's RSP to vmProgStackTop — the pre-M19 empty-stack entry is back"
+grep -q "enter_user(" "$CORE_DIR/kernel/elf.dart" \
+  && fail "elf.dart enters ring 3 again — ADR-0034 made procCreate/procStart the only launch path, and a program launched from elf.dart has no process slot and therefore no heap"
 grep -q "final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));" \
-  "$CORE_DIR/kernel/elf.dart" \
-  || fail "elf.dart does not build the initial stack in the frame the loader mapped at vmProgStackPage"
+  "$CORE_DIR/kernel/proc.dart" \
+  || fail "procCreate does not build the initial stack in the frame the loader mapped at vmProgStackPage (ADR-0034 moved this line out of elf.dart; it must be in exactly one place)"
 # And the block is built in the program's own address space, never in the
 # kernel's: `argsPhys` is the ONE place the virtual-to-physical conversion is
 # written, and it is written once.

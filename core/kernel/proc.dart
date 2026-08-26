@@ -287,6 +287,17 @@ const int procErrNoSse = 7;
 const int procErrElfLive = 8;
 const int procErrSameLba = 9;
 
+/// M20: [argsBuild] would not fit `argc`, the pointer vector and the argument
+/// text into the process's stack page while leaving [argsMinStack] bytes for the
+/// program itself.
+///
+/// **It is not reachable with the bounds `args.dart` enforces** -- eight
+/// arguments of 128 bytes total cannot approach a 4KiB page -- and it is a named
+/// refusal anyway, because those bounds and the size of a page are two numbers
+/// in two files, and a load that cannot build a stack must fail by name rather
+/// than enter ring 3 with a stack pointer nobody computed.
+const int procErrArgs = 10;
+
 /// Syscall 3 — `yield`. Declared here rather than beside `userSysExitNo` in
 /// `user.dart` because the syscall does not exist without a process table: with
 /// nothing to switch to it is refused, and `user.dart`'s own payloads never
@@ -772,6 +783,17 @@ final List<u8> procStrE09 = const [
   u8(0x72), u8(0x61), u8(0x6D), u8(0x73), u8(0x20), u8(0x6D), u8(0x75), u8(0x73), u8(0x74), u8(0x20), u8(0x62), u8(0x65),
   u8(0x20), u8(0x61), u8(0x74), u8(0x20), u8(0x64), u8(0x69), u8(0x66), u8(0x66), u8(0x65), u8(0x72), u8(0x65), u8(0x6E),
   u8(0x74), u8(0x20), u8(0x4C), u8(0x42), u8(0x41), u8(0x73), u8(0x0A),
+];
+
+/// Refusal text.
+///
+/// `'the arguments do not fit on the initial stack\n'` -- 46 bytes.
+@rodata
+final List<u8> procStrE10 = const [
+  u8(0x74), u8(0x68), u8(0x65), u8(0x20), u8(0x61), u8(0x72), u8(0x67), u8(0x75), u8(0x6D), u8(0x65), u8(0x6E), u8(0x74),
+  u8(0x73), u8(0x20), u8(0x64), u8(0x6F), u8(0x20), u8(0x6E), u8(0x6F), u8(0x74), u8(0x20), u8(0x66), u8(0x69), u8(0x74),
+  u8(0x20), u8(0x6F), u8(0x6E), u8(0x20), u8(0x74), u8(0x68), u8(0x65), u8(0x20), u8(0x69), u8(0x6E), u8(0x69), u8(0x74),
+  u8(0x69), u8(0x61), u8(0x6C), u8(0x20), u8(0x73), u8(0x74), u8(0x61), u8(0x63), u8(0x6B), u8(0x0A),
 ];
 
 /// Usage text for `proc` with an argument this shell cannot parse.
@@ -1786,8 +1808,14 @@ void procCleanup(u64 s) {
 /// Every discarded `freeFrame` status is ADDED to the header's ERRORS word
 /// rather than dropped, which works because `pmmFreeOk` is 0: a clean session
 /// reports `ERRORS 00000000` as a claim rather than as a default (ADR-0011 §4).
+/// M20: [named] chooses where the image comes from, exactly as it does in
+/// `shellElfLoadAndEnter` -- 0 means [lba] is a sector number and the loader
+/// reads contiguous sectors, and 1 means a FAT16 chain is already open and the
+/// loader reads image-relative sectors through it. **The two forms differ in
+/// nothing else**, which is why one parameter and two `if`s express the whole
+/// difference rather than a second copy of this function.
 @bare
-u64 procCreate(u64 lba) {
+u64 procCreate(u64 lba, u64 named) {
   final u64 s = procFreeSlot();
   if (s == u64(procMax)) {
     return u64(procErrNoSlot);
@@ -1822,16 +1850,48 @@ u64 procCreate(u64 lba) {
   elfSetMeta(u64(elfMetaStackFrame), u64(0));
   elfSetMeta(u64(elfMetaScratch), scratch);
 
-  // M14: `proc run` takes LBAs and only LBAs, so the loader's sector reads must
-  // go through the contiguous path. A `cat` or a `run <name>` earlier in the
+  // M14: a NUMERIC load takes LBAs and only LBAs, so the loader's sector reads
+  // must go through the contiguous path. A `cat` or a named load earlier in the
   // session leaves a cluster chain open in `fat.dart`, and `elfImageLba` would
   // then read THAT file's sectors for these LBAs. One call closes it, in the
   // one place that knows this load is a numeric one.
-  fatClose();
+  //
+  // M20: a NAMED load must not close it -- the caller opened the chain and the
+  // loader is about to read the image through it.
+  if (named < u64(1)) {
+    fatClose();
+  }
 
   // ---- the two-instruction trick ----
   paging_install(procGet(s, u64(procSlotPml4)));
-  final u64 st = elfLoad(lba, hdr, scratch);
+  u64 st = u64(elfErrOk);
+  if (named > u64(0)) {
+    st = elfLoadFile(hdr, scratch);
+  } else {
+    st = elfLoad(lba, hdr, scratch);
+  }
+  // M20 (ADR-0034): THE PAGE REPORT IS TAKEN HERE, WHILE THE PROGRAM'S OWN CR3
+  // IS STILL INSTALLED, AND THAT IS THE ONLY PLACE IT CAN BE TAKEN.
+  //
+  // `elfPageReport` and `elfWindowLine` walk from CR3 -- `vmProgLeaf` and
+  // `vmEffective` both do -- and before ADR-0034 the program's window lived in
+  // the KERNEL's page directory, so the shell could walk it after the load had
+  // finished. It cannot any more: the window belongs to this process, and the
+  // shell runs on the kernel's CR3.
+  //
+  // It is inside the EXISTING bracket rather than in a second one of its own.
+  // An earlier attempt at this milestone put a `paging_install`/`procToKernel`
+  // pair in the shell launcher instead, after the slot was already READY and
+  // LIVE, and the session then never came back from the program's last `exit` --
+  // control was lost somewhere after `PROC KILL`. The mechanism was not run to
+  // ground; the report was moved here, into the window this kernel has walked
+  // process page tables in since M11, and the problem does not arise. Do not
+  // reintroduce a second bracket without understanding that first.
+  if (st < u64(1)) {
+    elfPageReport();
+    elfWindowLine();
+  }
+
   procToKernel();
 
   // The scratch frames go back BEFORE anything else, on every path, for
@@ -1849,8 +1909,35 @@ u64 procCreate(u64 lba) {
 
   procSet(s, u64(procSlotPt), elfMeta(u64(elfMetaPtFrame)));
   procSet(s, u64(procSlotEntry), elfMeta(u64(elfMetaEntry)));
-  procSet(s, u64(procSlotRsp), u64(vmProgStackTop));
   procSet(s, u64(procSlotStackFrame), elfMeta(u64(elfMetaStackFrame)));
+
+  // -------------------------------------------------------------------------
+  // M20 (ADR-0034): THE INITIAL PROCESS STACK, BUILT HERE RATHER THAN NOWHERE.
+  //
+  // Until this line a process was entered with RSP = `vmProgStackTop`: the top
+  // of an EMPTY page. That is what "a heap but no argv" meant -- M19 taught the
+  // M10 `run` path to build a System V initial stack and never taught this one,
+  // so the two ways to start a program each had half of what a program needs.
+  //
+  // **THIS RUNS ON THE KERNEL'S CR3 AND THAT IS WHY IT IS HERE.**
+  // [argsBuild] writes every byte through `argsPhys` -- the PHYSICAL address of
+  // the stack frame, which the kernel's identity map covers -- rather than
+  // through `[vmProgStackPage, vmProgStackTop)`, which only the process's own
+  // tables map. So it neither needs nor wants the target address space
+  // installed, and placing it AFTER `procToKernel()` keeps the window in which
+  // this kernel runs on a process's page tables as narrow as it has ever been:
+  // the loader call, and nothing else.
+  //
+  // A refusal tears the slot down through [procCleanup], the same path every
+  // other refusal in this function uses, so a load that cannot build a stack
+  // gives back every frame it took.
+  // -------------------------------------------------------------------------
+  final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));
+  if (rsp < u64(1)) {
+    procCleanup(s);
+    return u64(procErrArgs);
+  }
+  procSet(s, u64(procSlotRsp), rsp);
   procSet(s, u64(procSlotPages), elfMeta(u64(elfMetaPages)));
   procSet(s, u64(procSlotSegments), elfMeta(u64(elfMetaSegments)));
   procSet(s, u64(procSlotLo), elfMeta(u64(elfMetaLo)));
@@ -2205,6 +2292,10 @@ void procRefuse(u64 code) {
     uartWrite(Rodata.addressOf(procStrE08), u64(39));
     return;
   }
+  if (code == u64(procErrArgs)) {
+    uartWrite(Rodata.addressOf(procStrE10), u64(46));
+    return;
+  }
   uartWrite(Rodata.addressOf(procStrE09), u64(43));
 }
 
@@ -2417,6 +2508,16 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross, u64 policy, u64 budget) {
   }
 
   procSessionReset();
+  // M20: `proc run` names its programs by LBA and gives them no arguments, so
+  // the staged vector is EMPTIED rather than inherited. Without this line the
+  // arguments of whatever `run <name> ...` the user typed earlier in the
+  // session would be built onto both of these processes' stacks -- an argv
+  // belonging to a different program, which is worse than none.
+  //
+  // The processes still get a COMPLETE System V initial stack: `argc` = 0, the
+  // `argv` NULL, the `envp` NULL and the AT_NULL pair. An empty argv is not the
+  // same thing as no stack, and it is the first that a program is entitled to.
+  argsReset();
   procSetHead(u64(procHeadPolicy), policy);
   procSetHead(u64(procHeadBudget), budget);
   // ---------------------------------------------------------------------
@@ -2453,14 +2554,14 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross, u64 policy, u64 budget) {
   uartNewline();
   procSseLine();
 
-  final u64 sa = procCreate(lbaA);
+  final u64 sa = procCreate(lbaA, u64(0));
   if (sa > u64(0)) {
     procRefuse(sa);
     procSessionTimerOff();
     procEndLine();
     return;
   }
-  final u64 sb = procCreate(lbaB);
+  final u64 sb = procCreate(lbaB, u64(0));
   if (sb > u64(0)) {
     procRefuse(sb);
     procSessionReset();

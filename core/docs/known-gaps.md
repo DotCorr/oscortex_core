@@ -6775,3 +6775,141 @@ behaviourally, and this file's whole discipline is that those are different stre
 for other reasons — the port number arriving in `argv` (GAP-0202 and GAP-0149 together), at which
 point one program can be told to open a port it does not own and the existing two-process session
 covers it.
+
+---
+
+## GAP-0208 — RESOLVED: a program could not have both argv and a heap
+
+**Domain:** kernel (M10/M11/M19/M20)
+**Status:** **RESOLVED** by `docs/decisions/0034-one-launch-path.md`, verified by
+`tests/conformance/m20-launch/run.sh`.
+
+This entry records a defect that was closed, because it was invisible in every green suite and the
+shape of how it hid is worth keeping.
+
+**What was wrong.** This operating system had two ways to start a program and each was missing what
+the other had. `run <name> [args]` built a System V initial stack (M19) and entered ring 3 without
+creating a process — and `sbrk` is refused unless a process is live, because a heap's break lives in
+a process slot (`heapSlotBase`..`heapSlotCalls`), so `malloc` returned NULL. `proc run <lbaA> <lbaB>`
+created processes with address spaces and heaps and entered them with RSP at the top of an empty
+page, so they had no argv. **No program could have arguments and dynamic memory at the same time**,
+which is a hard blocker on hosting real C software.
+
+**Why no harness caught it.** Because each harness exercised the path that had the half it needed.
+`m19-argv/prog.c` states in its own header "NO malloc ANYWHERE ... `run <name>` does not create
+[a process]" and uses only static buffers; `m13-libc`, the `malloc` harness, is launched with
+`proc run 20 a0` and is named by LBA. Twenty green harnesses, and the gap between them was the bug.
+**A capability that two tests cover one half each is not covered.**
+
+**How it is closed.** `run` now creates a process (`procCreate`, which also learned the FAT-named
+load), and `procCreate` builds the argv stack for every process it creates. `enter_user` no longer
+appears in `elf.dart` at all. `m20-launch` proves the two halves *through each other*: its program
+reads every byte of the argv-named file through a `malloc`ed buffer, so the counts it prints are
+unobtainable unless both halves worked.
+
+---
+
+## GAP-0209 — `proc run` gets a complete stack but an empty argv
+
+**Domain:** kernel (M20)
+**Status:** OPEN — a bounded consequence of ADR-0034, recorded so nobody reads M20 as bigger than it is.
+
+Since ADR-0034 every process gets a System V initial stack built by `argsBuild`. `proc run` names its
+programs by **LBA** and has no arguments to give them, so it calls `argsReset()` and its processes get
+a complete but **empty** vector: `argc` = 0, the `argv` NULL, the `envp` NULL and the AT_NULL pair.
+
+That is strictly better than the bare `vmProgStackTop` they got before — an empty argv is not the same
+thing as no stack — but it means **`proc run` still cannot pass arguments**. A program that needs them
+must be launched by name with `run`. Closing this needs `proc run` to take names rather than sector
+numbers, which is a shell-parsing change and not a kernel one.
+
+**The visible cost of the change:** `PROC START ... RSP` moved from `0x10200000` to `0x101FFFD0` for
+every `proc run` program, which is why m11, m12, m13 and m18's goldens moved in the M20 commit.
+
+---
+
+## GAP-0210 — `run` now refuses on a machine without FXSR
+
+**Domain:** kernel (M20)
+**Status:** OPEN — a deliberate behavioural narrowing, stated so it is not discovered as a surprise.
+
+Before ADR-0034 an M10 `run` program had no process slot, no FPU save area and no need of one, so it
+ran on a CPU with SSE disabled. Now that `run` creates a process it inherits `proc run`'s refusal:
+a machine where `sse_enabled()` is 0 has nowhere to `fxsave`, and `procHeadSse < 1` refuses the launch
+with `procErrNoSse` rather than starting a program whose sixteen XMM registers nobody owns (GAP-0092
+makes that argument at length).
+
+**What that costs:** `run` on `-cpu qemu64,-sse,-fxsr` used to work and now prints a refusal. Nothing
+in the suite depended on it — `m11-proc` boots that machine precisely to require the refusal — but it
+is a capability that was silently removed rather than one that was never there.
+
+---
+
+## GAP-0211 — A second `paging_install` bracket in the shell launcher loses control after the last exit
+
+**Domain:** kernel (M20)
+**Status:** OPEN — **worked around, not solved.** The cost is that one diagnostic had to move, and
+that nobody yet knows why it had to.
+
+While implementing ADR-0034 the page report (`elfPageReport`/`elfWindowLine`, which walk from CR3)
+needed the program's own address space installed, because the window belongs to the process now
+rather than to the kernel's page directory. The first attempt put a
+`paging_install(procGet(0, procSlotPml4))` ... `procToKernel()` pair in `shellElfLoadAndEnter`,
+**after** `procCreate` had returned — that is, after the slot was already READY and LIVE and its
+register frame synthesised.
+
+**The symptom.** The load reported correctly, the page report printed correct flags and physical
+addresses, the program ran and produced correct output, `sbrk` worked, and the process exited and was
+torn down — `PROC EXIT` and `PROC KILL` both printed. Then **nothing.** No `PROC END`, no shell
+prompt, no fault line, no `#UD`. Control never came back from `user_return()`. Removing that one
+bracket, changing nothing else, restored it exactly.
+
+**What is not known.** Why. `procToKernel()` is a single `paging_install` of the kernel PML4;
+`procSpaceBuild` copies every kernel mapping into the process's PML4, which is the stated reason
+running kernel code on a process's CR3 is safe at all; and `procCreate` has done exactly this around
+the loader since M11 without trouble. The difference is only *when* — after the slot is live rather
+than during its construction. Whether the resume words `enter_user` records, a TLB effect, or
+something about a LIVE slot is involved was **not** determined.
+
+**The workaround.** The report was moved into `procCreate`'s existing bracket, where the loader's CR3
+is already installed. That is arguably where it belonged anyway — it describes the load — and it is
+also why `proc run` now prints `ELF PAGE`/`ELF WINDOW` lines it did not print before.
+
+**Why this matters to the next person.** The obvious tidy-up is to move the page report back out of
+`procCreate` and into the launcher "where the other reporting lives". A comment in `procCreate` says
+not to. Understanding this properly is worth doing before any second `paging_install` site is added
+anywhere outside `procCreate`, `procStart`, `procSwitchTo` and `procSysExit`.
+
+---
+
+## GAP-0212 — m12-heap's flake is RFLAGS bit 16 (RF), and it is in the golden
+
+**Domain:** tests (M12)
+**Status:** OPEN — diagnosed here, not fixed. Recorded because "m12-heap is flaky" was folklore and
+this is the actual cause.
+
+`m12-heap` fails intermittently on its byte-exact serial comparison. The difference is always the
+same one field:
+
+```
+<  USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000000246 CPL 3
+>  USER CS 0000000000000023 SS 000000000000001B RFLAGS 0000000000010246 CPL 3
+```
+
+`0x10000` is **RF, the Resume Flag** — bit 16 of RFLAGS. The CPU sets it transiently around
+instruction restart, so whether it is set in the frame this kernel reports depends on exactly where
+the process was when the syscall was taken. It is genuinely non-deterministic under QEMU, and
+`--regen` does not fix it: it just records whichever value that particular boot produced, so the
+golden is a coin flip that stays flipped until the next regeneration.
+
+**Why it looks like a kernel bug and is not.** Every other field on the line — CS, SS, CPL, and the
+low twelve bits of RFLAGS (IF, and the arithmetic flags) — is stable and correct. RF carries no
+information this harness is trying to assert.
+
+**The fix, when someone takes it:** mask RF out of the reported RFLAGS in the harness's comparison
+(or in the kernel's report), the way a `wc` harness would normalise line endings. Do not regenerate
+the golden and call it fixed — that is what has been happening.
+
+**Observed in this milestone:** the M20 sweep regenerated m12's golden with RF **set** and then the
+verification boot produced it **clear**, failing the comparison. m12 passed on the baseline sweep of
+the same tree earlier the same session. Nothing in ADR-0034 touches RFLAGS.
