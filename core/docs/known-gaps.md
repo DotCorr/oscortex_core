@@ -148,22 +148,76 @@ itself is UNCHANGED by M1 — the predicted growth into a boot sequencer did not
 
 ---
 
-## GAP-0003 — Import path from kernel.dart to DCDart's prelude assumes a fixed sibling checkout
+## GAP-0003 — The kernel could not name DCDart's prelude portably
 
 **Domain:** kernel, build tooling
-**Status:** OPEN — same limitation DCDart's own `dcc/README.md` already accepts for itself.
+**Status:** NARROWED (2026-08-27, ADR-0043). The oscortex_core half is **RESOLVED** — the build is now
+portable to any `DCDART_HOME`, proved from a worktree with no sibling DCDart. The DCDart half —
+**dcc has no library resolution and no way to be told where its prelude is** — is OPEN and is
+**DCDart's to fix**, per CLAUDE.md rule 3.
 
-`core/kernel/kmain.dart` imports DCDart's prelude via a literal relative path
-(`../../../DCDart/core/runtime/dc-core-bare/prelude.dart`), which only resolves correctly if
-oscortex_core and DCDart are checked out as siblings at the expected depth. `DCDART_HOME` (used by
-`core/scripts/build-kernel.sh` to locate `dcc` itself) does NOT control this — Dart's own import
-resolution is independent of how the build script finds the compiler binary. A real fix needs either a
-proper package/library resolver (the same gap DCDart's own `dcc` has for its own prelude — see that
-repo's `core/dcc/README.md` "known simplification") or an explicit override mechanism neither project
-has built yet.
+### What was wrong
 
-**Cost of the workaround:** the checkout layout is undocumented-enforced, not tooling-enforced — a
-different layout silently breaks the import with a front_end error, not a clear "wrong layout" message.
+`core/kernel/kmain.dart:20` imported the prelude by a literal relative path
+(`../../../DCDart/core/runtime/dc-core-bare/prelude.dart`) while `core/scripts/build-kernel.sh`
+located the compiler through `DCDART_HOME`. Two independent answers to "which DCDart", with nothing
+checking that they agreed. When they diverged the build failed with
+
+```
+dcc build: DccLowerError: no @bare top-level function found in kmain.dart
+```
+
+**which describes a broken compiler, and was read as one.** Four clean DCDart checkouts were tested,
+all four failed, and the reported conclusion was that `dcc` was unbuildable. A sibling session
+disproved it by building a clean clone. One cause, four data points, one line of Dart. That
+misdiagnosis is the real cost of this gap and it is why it was worth fixing properly.
+
+### The mechanism (measured, and it corrects GAP-0110)
+
+`dcc` accepts an annotation only when the annotation class's enclosing-library URI **equals** the one
+prelude URI it computes for itself as `Platform.script.resolve('../../runtime/dc-core-bare/
+prelude.dart')` (`dcc-lower/lib/lower.dart:622`, `dcc/lib/pipeline.dart:165`). That comparison is
+exact `Uri` equality on a **lexically** normalised absolute path: `..` is folded, and **symlinks are
+resolved on neither side**. Six experiments in ADR-0043 pin this down, including a direct probe
+showing `Platform.script` reports a symlinked path unresolved.
+
+So it is not, as GAP-0110 records, that "Dart resolves library identity through real paths" — it
+resolves nothing. Two spellings of one file are two libraries; one spelling reached through a symlink
+on *both* sides is one library. The observable failures are identical, but the wrong model made a
+symlink look impossible in principle. It is not, and the fix depends on that.
+
+### What was done here
+
+`build-kernel.sh` materialises `core/build/dcdart` as a symlink to `$DCDART_HOME`, runs
+`dart core/build/dcdart/core/dcc/bin/dcc.dart`, and `kmain.dart` imports through the same prefix. The
+two paths are the same characters by construction. A `dcc` on PATH is no longer used (it would be a
+third uncontrolled answer), the import line is asserted literally before every build, and the resolved
+prelude path is printed on every build — it is the fact `@bare` resolution turns on and it was
+previously invisible.
+
+Verified: canonical sibling layout, an unrelated real path, a symlinked `DCDART_HOME` (previously
+fatal), and a worktree with no sibling DCDart. `kmain.o` is byte-identical
+(md5 `4e7efe27345b84cc8de56cc159c406ed`) in all four and against the pre-change build, so no golden
+moves.
+
+### What remains, and where it belongs
+
+DCDart cannot be *told* where its prelude is: no `--prelude` flag and no env override in
+`core/dcc/lib/cli_args.dart`; `dc:core.bare` as a real scheme needs the front_end fork DCDart's
+ADR-0008 deferred; and a `package:` URI cannot work at all, because `kernel_frontend.dart` writes its
+synthetic driver into a fresh temp directory and invokes `dart compile kernel` with no `--packages`,
+so no package config is ever in scope. DCDart's own `pipeline.dart:157-164` says it: *"dcc currently
+only works run from inside this checkout at this exact relative layout."*
+
+**Escalation, not implemented here.** The narrowest honest fix is `dcc build --prelude <path>`,
+defaulting to today's behaviour, so a consumer names the prelude once instead of encoding it in a
+source import. That is a DCDart-repo change with a DCDart ADR and DCDart conformance coverage
+(rule 3). Nothing in DCDart was touched — its tree also carries ~2,300 lines of another session's
+uncommitted work.
+
+**Residual cost here:** `kmain.dart` does not resolve in an editor or under `dart analyze` until
+`build-kernel.sh` has run once in that checkout, and two concurrent builds in one checkout with
+different `DCDART_HOME` values race on the symlink (they already raced on `core/build/*.o`).
 
 ---
 
@@ -2366,6 +2420,20 @@ four commits ahead of the pin and the difference was visible immediately.
 **Cost:** an rsync per build, and a mirror that has to be re-synced after every edit. M10's sandbox
 did that with a three-line script.
 
+> **OBSOLETE as of 2026-08-27 (ADR-0043).** The whole "SECOND STEP" above — copy the repo beside the
+> clone, and the "a symlink is not enough" paragraph with it — existed only because `kmain.dart`
+> hard-coded `../../../DCDart`. It no longer does. `DCDART_HOME` now selects the prelude as well as
+> the compiler, so a pinned sandbox is just:
+>
+> ```bash
+> DCDART_HOME=<sandbox>/DCDart bash core/tests/conformance/<h>/run.sh   # from the real repo, in place
+> ```
+>
+> No rsync, no mirror, no re-sync after every edit, and the sandbox may be a symlink. The FIRST step
+> (copying `core/frontend` into the clone) is unaffected and still required. Note also that the
+> mechanism this entry states — "Dart resolves a relative import through the file's REAL path" — is
+> wrong; see the correction under GAP-0110.
+
 
 ---
 
@@ -3523,6 +3591,17 @@ directory the whole sandbox sits in, and `mktemp -d` on this machine hands you o
 
 **Cost:** one line in whatever script builds the sandbox, and this entry, because the error message
 points at the one thing that is not wrong.
+
+> **Correction (2026-08-27, ADR-0043).** The *symptom* and the *fix* above are both right; the stated
+> **cause is not**. Dart does not resolve library identity through real paths — it does not resolve
+> symlinks at all. A direct probe shows `Platform.script` reporting a symlinked path unresolved, and
+> a build whose import *and* dcc invocation both go through the same symlink succeeds. The comparison
+> in `dcc-lower/lib/lower.dart:622` is exact `Uri` equality on a **lexically** normalised path, so
+> `/tmp/…` and `/private/tmp/…` are two libraries because they are two *strings*, not because either
+> was canonicalised. This matters: the real-path model made a symlink look impossible in principle,
+> and it is not — a symlinked `DCDART_HOME` now builds fine. The sandbox rule ("use `/private/tmp`")
+> is unchanged, and is now enforced by construction: `build-kernel.sh` derives both sides from one
+> `core/build/dcdart` prefix, so they cannot disagree whatever the sandbox is called.
 
 ---
 ## GAP-0111 — What `core/user/libc`'s `malloc` does NOT do, listed rather than discovered later

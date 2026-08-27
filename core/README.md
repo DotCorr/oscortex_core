@@ -30,9 +30,18 @@ Everything buildable lives here. See the repo root `README.md` for the project o
 ## Dependency on DCDart
 
 Builds via a `DCDART_HOME` environment variable (defaults to a sibling `../DCDart` checkout), invoking
-`dcc` directly from there — mirrors DCDart's own conformance harnesses' PATH-then-fallback pattern. No
-git submodule: DCDart is still pre-M3 and changes daily, so `DCDART_PIN.txt` (one line: the commit hash
-and date this was last verified against) is the entire dependency story for now.
+`dcc` directly from there. No git submodule: DCDart is still pre-M3 and changes daily, so
+`DCDART_PIN.txt` (one line: the commit hash and date this was last verified against) is the entire
+dependency story for now.
+
+`DCDART_HOME` is now the **only** input that selects a DCDart, and it may point anywhere — a sibling
+checkout, an unrelated path, or a symlink (ADR-0043). `build-kernel.sh` materialises it as
+`core/build/dcdart` and both the compiler invocation and `kmain.dart`'s prelude import go through that
+one prefix, because `dcc` matches annotation libraries by exact URI and any second spelling of the
+prelude path makes every `@bare` in the kernel invisible to it. A `dcc` on PATH is deliberately ignored
+for the same reason. Every build prints which prelude it resolved; if that line is wrong, nothing else
+in the build is trustworthy. The sibling-checkout requirement this section used to carry is gone —
+see known-gaps GAP-0003 for what remains, which is DCDart's.
 
 ## Current milestone: M11 — done
 

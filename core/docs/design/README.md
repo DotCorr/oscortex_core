@@ -199,10 +199,15 @@ sees 49 "language version too high" errors is looking at this, not at a real bre
 `dc_sys/toolchain/dart-sdk`, put on PATH by `dc_sys/env.sh`. **Source that file before anything.**
 The demo specialist lost most of its debugging time to this before finding it.
 
-Two related isolation facts, both verified: a git worktree only builds if **DCDart is a real sibling
+~~Two related isolation facts, both verified: a git worktree only builds if **DCDart is a real sibling
 directory** — `kmain.dart` imports the prelude by a relative path, and a *symlink does not work*
 because Dart resolves library identity through real paths (the same root cause as GAP-0110). An APFS
-clone (`cp -Rc`) does work and is near-free.
+clone (`cp -Rc`) does work and is near-free.~~ **OBSOLETE (2026-08-27, ADR-0043).** A git worktree now
+builds with `DCDART_HOME` pointing anywhere — a sibling, an unrelated real path, or a symlink — and no
+sibling DCDart need exist at all. Proved from a worktree that has none. The stated cause was also
+wrong: Dart resolves *nothing*; `dcc` compares library URIs as lexically normalised strings and
+symlinks survive unresolved on both sides, which is why routing the import and the compiler through
+one `core/build/dcdart` prefix works. See GAP-0003 and the correction under GAP-0110.
 
 ## The ordered queue
 

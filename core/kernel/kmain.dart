@@ -13,11 +13,34 @@
 // and pointing at `part`/`part of`. The constraint itself is unchanged -- see
 // docs/known-gaps.md GAP-0004 item 4.
 //
-// Import path assumes the sibling-checkout convention (../../../DCDart)
-// documented in core/README.md -- same "only works from this exact layout"
-// limitation DCDart's own dcc/README.md already accepts for itself (no real
-// library resolver exists yet on either side). See known-gaps GAP-0003.
-import '../../../DCDart/core/runtime/dc-core-bare/prelude.dart';
+// THE PRELUDE IMPORT GOES THROUGH `core/build/dcdart`, WHICH IS A SYMLINK TO
+// $DCDART_HOME THAT `core/scripts/build-kernel.sh` CREATES ON EVERY BUILD.
+// Do not "simplify" this back to a path that names DCDart directly (ADR-0043).
+//
+// `dcc` decides which annotations are `@bare`/`@extern`/`@rodata` by comparing
+// the annotation class's enclosing-library URI against ONE prelude URI it
+// computes for itself, as `Platform.script.resolve('../../runtime/dc-core-bare/
+// prelude.dart')` (DCDart core/dcc/lib/pipeline.dart:165). That comparison is
+// exact URI equality on a LEXICALLY normalised absolute path -- `..` segments
+// are folded, symlinks are NOT resolved on either side. So this import has to
+// produce, character for character, the same absolute path dcc derives from
+// wherever it was invoked from. If it does not, every annotation in this file
+// silently stops counting and the build fails with
+// `no @bare top-level function found in kmain.dart` -- an error that reads as a
+// broken compiler and has already cost one full misdiagnosis.
+//
+// Routing BOTH through `core/build/dcdart` is what makes them agree by
+// construction rather than by convention: build-kernel.sh invokes
+// `dart core/build/dcdart/core/dcc/bin/dcc.dart`, so dcc's own prelude URI is
+// `core/build/dcdart/core/runtime/dc-core-bare/prelude.dart` -- the exact path
+// this line resolves to, for ANY $DCDART_HOME, at any real path, symlinked or
+// not. The old `../../../DCDart/...` hard-coded a second, independent answer to
+// "which DCDart", which is why it only ever worked in one checkout layout.
+//
+// See known-gaps GAP-0003. The underlying gap -- that DCDart has no library
+// resolution and no way to be TOLD where its prelude is -- is still open, and
+// still DCDart's to fix.
+import '../build/dcdart/core/runtime/dc-core-bare/prelude.dart';
 
 part 'uart.dart';
 part 'multiboot.dart';

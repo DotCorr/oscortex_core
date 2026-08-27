@@ -32,13 +32,14 @@ DCDART_HOME="${DCDART_HOME:-$REPO_DIR/../DCDart}"
 [[ -d "$DCDART_HOME" ]] || setup_error "DCDART_HOME not found at $DCDART_HOME (set DCDART_HOME explicitly, or checkout DCDart as a sibling of $REPO_DIR — see core/README.md)"
 [[ -f "$DCDART_HOME/core/dcc/bin/dcc.dart" ]] || setup_error "$DCDART_HOME does not look like a DCDart checkout (missing core/dcc/bin/dcc.dart)"
 
-if command -v dcc >/dev/null 2>&1; then
-  DCC_CMD=(dcc)
-elif command -v dart >/dev/null 2>&1; then
-  DCC_CMD=(dart "$DCDART_HOME/core/dcc/bin/dcc.dart")
-else
-  setup_error "neither dcc nor dart found on PATH"
-fi
+# NOTE (ADR-0043): a `dcc` on PATH is deliberately NOT used any more, even when
+# one exists. `dcc` derives the prelude it type-checks annotations against from
+# its OWN script location, so a PATH `dcc` is a second, invisible answer to
+# "which DCDart is this build using" that $DCDART_HOME does not control. That
+# divergence is exactly the defect this ADR closes; a wrapper on PATH would
+# re-open it. dcc is always run out of $DCDART_HOME, through the symlink built
+# below.
+command -v dart >/dev/null 2>&1 || setup_error "dart not found on PATH (source env.sh)"
 
 if ! command -v clang >/dev/null 2>&1; then
   setup_error "clang not found on PATH"
@@ -82,9 +83,76 @@ BUILD_DIR="$CORE_DIR/build"
 mkdir -p "$BUILD_DIR"
 
 # ---------------------------------------------------------------------------
+# Step 0 — ONE ROOT FOR THE TOOLCHAIN. (ADR-0043, GAP-0003.)
+#
+# `dcc` has no library resolution: it computes the prelude whose annotation
+# classes define `@bare`/`@extern`/`@rodata` as
+# `Platform.script.resolve('../../runtime/dc-core-bare/prelude.dart')`, and then
+# accepts an annotation only if the class's enclosing-library URI is EQUAL to
+# that (DCDart core/dcc-lower/lib/lower.dart:622). Equality is exact, on a
+# lexically normalised absolute path: `..` is folded, symlinks are resolved on
+# NEITHER side. Measured, not assumed -- see the ADR for the six experiments.
+#
+# The consequence is unforgiving. If kmain.dart's import and dcc's own script
+# location name the same prelude by two different strings -- a symlink on one
+# side, a different checkout three directories up, /tmp vs /private/tmp -- then
+# NOTHING in kmain.dart is annotated as far as dcc is concerned, and the build
+# dies with `no @bare top-level function found in kmain.dart`. That message
+# describes a broken compiler. It has already been read as one, for four
+# consecutive clean DCDart checkouts, none of which was the problem.
+#
+# So this build gives both sides ONE path prefix and derives everything from it:
+# `$BUILD_DIR/dcdart` is a symlink to $DCDART_HOME, dcc is invoked THROUGH it,
+# and kmain.dart imports THROUGH it. They cannot disagree, because they are the
+# same characters. This works for any $DCDART_HOME at any real path -- which the
+# old hard-coded `../../../DCDart` import did not, and could not.
+# Both sides must be built from the PHYSICAL path of the directory dcc will be
+# run in, because that is the one Dart uses. `dart compile kernel` takes the
+# importing library's URI from `File('kmain.dart').absolute.uri`, i.e. from
+# getcwd(), which the kernel returns symlink-free; `pwd` in a shell does not.
+# Reaching this checkout through a symlinked parent would otherwise hand dcc a
+# logical prefix and the front end a physical one -- two spellings of one file,
+# which is precisely the failure being closed here.
+KERNEL_DIR="$(cd "$CORE_DIR/kernel" && pwd -P)"
+LINK_DIR="$(dirname "$KERNEL_DIR")/build"   # what `../build` resolves to from KERNEL_DIR
+mkdir -p "$LINK_DIR"
+
+DCDART_LINK="$LINK_DIR/dcdart"
+if [[ -L "$DCDART_LINK" ]]; then
+  rm -f "$DCDART_LINK"
+elif [[ -e "$DCDART_LINK" ]]; then
+  setup_error "$DCDART_LINK exists and is not a symlink — remove it (build-kernel.sh owns that name)"
+fi
+ln -s "$DCDART_HOME" "$DCDART_LINK" || setup_error "could not create toolchain symlink $DCDART_LINK -> $DCDART_HOME"
+
+DCC_CMD=(dart "$DCDART_LINK/core/dcc/bin/dcc.dart")
+PRELUDE_PATH="$DCDART_LINK/core/runtime/dc-core-bare/prelude.dart"
+[[ -f "$PRELUDE_PATH" ]] || setup_error "no prelude at $PRELUDE_PATH (DCDART_HOME=$DCDART_HOME does not look like a DCDart checkout)"
+
+# The import line is asserted LITERALLY, not parsed. `dcc`'s comparison is a
+# string comparison, so the check that protects it should be one too: any edit
+# that points kmain.dart at DCDart by some other spelling gets named here, in
+# one line, instead of surfacing later as a missing `@bare`.
+EXPECTED_IMPORT="import '../build/dcdart/core/runtime/dc-core-bare/prelude.dart';"
+if ! grep -qxF -- "$EXPECTED_IMPORT" "$CORE_DIR/kernel/kmain.dart"; then
+  setup_error "core/kernel/kmain.dart does not import the prelude through core/build/dcdart.
+              expected exactly: $EXPECTED_IMPORT
+              found:            $(grep -n "dc-core-bare/prelude.dart'" "$CORE_DIR/kernel/kmain.dart" | head -1)
+              dcc matches annotation libraries by exact URI; any other spelling of this path
+              makes every @bare/@extern/@rodata in kmain.dart invisible to it (ADR-0043, GAP-0003)."
+fi
+
+# PRINT THE FACT THAT DECIDES THE BUILD. The toolchain banner already says which
+# tree and which commit; this says which prelude, which is the thing `@bare`
+# resolution actually turns on. Both the path dcc computes and the tree it lands
+# in, because the first is what must match and the second is what a human needs.
+echo "build-kernel: prelude  $PRELUDE_PATH"
+echo "build-kernel:          -> $(cd "$DCDART_HOME" && pwd -P)/core/runtime/dc-core-bare/prelude.dart"
+
+# ---------------------------------------------------------------------------
 # Step 1 — dcc build --mode bare kmain.dart -o build/kmain.o
 # ---------------------------------------------------------------------------
-( cd "$CORE_DIR/kernel" && "${DCC_CMD[@]}" build --mode bare kmain.dart -o "$BUILD_DIR/kmain.o" )
+( cd "$KERNEL_DIR" && "${DCC_CMD[@]}" build --mode bare kmain.dart -o "$BUILD_DIR/kmain.o" )
 DCC_STATUS=$?
 if [[ $DCC_STATUS -ne 0 ]]; then
   fail "'dcc build --mode bare kmain.dart -o kmain.o' exited $DCC_STATUS"
