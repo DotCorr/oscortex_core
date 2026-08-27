@@ -7848,11 +7848,50 @@ against nothing — it can only catch somebody editing one of the two files, whi
 two-place-edit problem GAP-0232 already records from the other side. GAP-0232 is "the literal went
 stale"; this is "even when the literal is fresh, it is not measuring the toolchain".
 
-**What closing it takes, and it is small.** `build-kernel.sh` already knows `DCDART_HOME`. Have it
-`git -C "$DCDART_HOME" rev-parse --short HEAD`, compare against `DCDART_PIN.txt`'s first field, and
-refuse — or at minimum print a loud line — when they differ, with an override for the deliberate
-"bumping the pin" case. Then `m7-frames`' literal can go away entirely and the pin becomes a fact
-about the build rather than a fact about two files agreeing with each other.
+**PARTLY CLOSED at M21.** `build-kernel.sh` now prints the toolchain's identity on **every build**,
+so it lands in every harness log:
+
+```
+build-kernel: toolchain /path/to/DCDart @ f9676f2 +DIRTY; DCDART_PIN.txt says 38f0b06
+build-kernel: WARNING — the toolchain is NOT the pinned commit. ...
+build-kernel: WARNING — the toolchain working tree is DIRTY, so 'f9676f2' does not identify it. ...
+```
+
+Three facts because all three vary independently: **where** the toolchain is, **what commit** it is
+on, and **whether that commit is what is actually on disk**. `OSCORTEX_REQUIRE_PIN=1` makes either
+mismatch fatal, and that should become the default the moment the pin and the toolchain agree — it is
+a warning today only because a hard failure would take all 24 harnesses red for a reason that is not
+theirs. `m7-frames`' literal can then go away entirely.
+
+### The harder half, and it is NOT what this entry first assumed
+
+The first version of this entry concluded "the pin is stale". **That is not established, and the
+experiment that would have established it fails for a different reason.** Measured at M21:
+
+| toolchain | result building the same kernel |
+|---|---|
+| `.claude/worktrees/DCDart` @ `f9676f2` **+ uncommitted edits** | **builds** |
+| clean `git worktree` @ `38f0b06` (the pin) | `DccLowerError: no @bare top-level function found in kmain.dart` |
+| clean `git worktree` @ `f9676f2` — **the same commit as the working one** | same error |
+| clean worktree @ `f9676f2` **with the working tree's uncommitted diff applied** | same error |
+
+Each fresh worktree was given the documented setup: the 211 MB vendored frontend copied in as **real
+files** (a symlink is not enough — GAP-0110, dcc resolves library identity through real paths), and
+`dart pub get` run in all six packages so every `.dart_tool` and `pubspec.lock` exists. Package
+resolution was confirmed identical in shape to the working checkout's.
+
+**So the pin is not proven bad; what is proven is worse.** A checkout of the *exact commit that
+works* does not build. The working toolchain therefore depends on local state that **neither repo
+tracks and the documented setup does not reproduce** — `core/frontend/` is gitignored by DCDart's own
+ADR-0005/0007, and whatever else is missing was not found. A commit hash does not currently identify
+a buildable DCDart, which is why `DCDART_PIN.txt` cannot mean what it says no matter how it is
+checked.
+
+**What closing THAT takes** is DCDart's to answer, not this repo's (CLAUDE.md rule 3): either a
+`tools/bootstrap.sh` in DCDart that turns a bare checkout into a working toolchain and is itself
+tested, or a recorded statement of exactly which untracked artifacts are load-bearing. Until then,
+"verified against DCDart X" means "verified against the DCDart working tree that happened to be on
+that machine", and this repo can only do what it now does: say so, loudly, in every build log.
 
 **A caveat that is part of the finding.** `38f0b06` IS an ancestor of `f9676f2`, so nothing built
 during M21 used a compiler older than the pin — the drift is forward, and the two intervening commits

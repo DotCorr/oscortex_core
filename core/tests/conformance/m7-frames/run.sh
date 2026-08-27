@@ -433,7 +433,14 @@ echo "STRUCTURAL: pass  pmmInit's compiled code carries the 0x8000-frame bound"
 # the pin is load-bearing for are named so a future bump has to answer to both:
 # nested while-loops (e3cfe18, M7) and `@bss` (8713298, M17).
 PIN=$(awk '{print $1; exit}' "$CORE_DIR/../DCDART_PIN.txt")
-ck; [[ "$PIN" == 8713298* ]] || fail "DCDART_PIN.txt says $PIN; the tree is built against 8713298 — DCDart's ADR-0051, which M17 needs for @bss (pmm.dart's storage seam) and which is itself past e3cfe18, the nested-while-loop commit M7 needs (GAP-0068)"
+# 38f0b06 SINCE 71cf08f, AND THIS LINE WAS NOT MOVED WITH IT. That commit bumped
+# DCDART_PIN.txt and left the literal here at 8713298, so this harness has been
+# RED on the pristine tree ever since — the only one of the twenty-four that
+# was, and the shakedown found it by running the suite rather than by reading
+# the commit. Recorded in docs/known-gaps.md GAP-0247: a pin assertion that is
+# a literal in one file and a value in another is a two-place edit, and the
+# second place was missed the first time it mattered.
+ck; [[ "$PIN" == 38f0b06* ]] || fail "DCDART_PIN.txt says $PIN; the tree is built against 38f0b06 — which is past 8713298 (DCDart's ADR-0051, which M17 needs for @bss, pmm.dart's storage seam) and past e3cfe18 (nested while-loops, which M7 needs — GAP-0068). Both facts the pin is load-bearing for are still named here so a future bump has to answer to both."
 ck; grep -q 'while (f < lastEx)' "$CORE_DIR/kernel/pmm.dart" || fail "pmm.dart's inner frame loop is gone — if it was decomposed into a helper, the pin bump is no longer justified and GAP-0068 needs updating"
 echo "STRUCTURAL: pass  DCDART_PIN.txt is $PIN and pmm.dart's memory-map walk is still a genuine nested loop"
 
