@@ -1,0 +1,46 @@
+# core/tests/conformance/d1-mouse/events-main.txt
+#
+# The main boot's pointer script. ONE file drives BOTH sides: run.sh turns each
+# line into a QMP `input-send-event`, and derive.py turns the SAME line into the
+# packet line the kernel must print -- computed from the protocol, never read
+# off a previous run.
+#
+# Every delta is within +/-127 on purpose. QEMU clamps each axis to that per
+# packet and keeps sending packets until the accumulated motion drains, so a
+# bigger one would arrive as two packets and this harness asserts whole motions.
+# derive.py refuses a script that would be split rather than silently asserting
+# half of it.
+
+# 1. Right and DOWN. A downward screen motion reaches the guest as a NEGATIVE
+#    ninth-bit Y delta, because a PS/2 mouse reports Y positive AWAY from the
+#    user -- so this packet is the axis inversion, exercised first.
+rel 120 100
+
+# 2. Left and UP. The X magnitude is 40, so byte 1 is 0xD8, whose OWN high bit
+#    is set -- but read from byte 0's sign bit it is -40 and read from byte 1's
+#    high bit it is also -40, so this is NOT the sign-extension control. The
+#    control that distinguishes them is fed to the decoder directly in the
+#    second boot, because QEMU's +/-127 clamp makes a POSITIVE delta with
+#    byte 1 >= 0x80 unreachable from a real motion.
+rel -40 -30
+
+# 3-6. Press and release, on two different buttons, as FOUR separate events.
+#      Separate on purpose: a press and a release in one QMP call would be one
+#      sync and therefore one packet, in which the button was never seen down.
+btn left down
+btn left up
+btn right down
+btn right up
+
+# 7-10. The wheel -- asserted only because the device ANSWERED 0x03 to 0xF2; if
+#       it had not, these four packets would be three bytes each and carry no Z
+#       at all, and the harness would be asserting the three-byte shape instead.
+btn wheel-up down
+btn wheel-up up
+btn wheel-down down
+btn wheel-down up
+
+# 11-12. Two more motions, to put the pointer somewhere with nothing behind it
+#        for the screenshot and the pixel read-back.
+rel 120 120
+rel 120 120

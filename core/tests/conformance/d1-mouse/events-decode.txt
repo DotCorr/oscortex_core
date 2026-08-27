@@ -1,0 +1,72 @@
+# core/tests/conformance/d1-mouse/events-decode.txt
+#
+# The DECODER boot's script. Where events-main.txt drives the real emulated
+# device and asserts what a correct driver makes of it, this one drives the
+# packet state machine itself -- through `mouse feed`, which calls exactly the
+# function IRQ12 calls -- and asserts the three things a real device cannot be
+# asked to produce on demand:
+#
+#   * a misaligned stream, so the framing rule has something to do;
+#   * a POSITIVE nine-bit delta whose byte 1 has its own high bit set, which
+#     QEMU's +/-127 clamp makes unreachable from a real motion and which is the
+#     one input that tells a correct sign extension from the obvious wrong one;
+#   * an overflow packet, which the device only sends when it is moved faster
+#     than nine bits can describe.
+#
+# AND THEN ONE THING THAT IS NOT SYNTHETIC AT ALL. The last three elements feed
+# ONE byte and then let the REAL device send a REAL packet into the offset that
+# byte created. The wrong packet that comes out of it, the resynchronisation
+# that follows, and the correct packet after that are all the real device's own
+# bytes -- which is a claim the synthetic case above cannot make.
+
+# --- a stream that is offset by three bytes -------------------------------
+# 00, 01 and 02 all have bit 3 clear, so none of them can be a first byte:
+# three discards, the stream stays where it is, and then 08 10 00 00 is a clean
+# packet. dx = +16, dy = 0.
+feed 00 01 02 08 10 00 00
+state a
+
+# --- THE SIGN-EXTENSION CONTROL -------------------------------------------
+# byte 0 = 0x08: NEITHER sign bit set, so both deltas are POSITIVE 200. Byte 1
+# and byte 2 are 0xC8, whose own high bit IS set -- so a driver that
+# sign-extended from byte 1 would read -56 and move the pointer LEFT. X must go
+# to 16 + 200 = 216, and Y must go UP (a positive Y delta is away from the
+# user), clamping at the top of the screen.
+feed 08 C8 C8 00
+# The same two bytes with byte 0's X sign bit set: NOW it is -56, and X must go
+# to 216 - 56 = 160. Same byte 1, opposite answer, and the only difference is a
+# bit in a different byte.
+feed 18 C8 C8 00
+# Both signs set, and both magnitudes large enough to run off the top left:
+# dx = -192 takes X below zero and must CLAMP at 0 rather than wrapping (which
+# in this language would trap, inside an interrupt handler); dy = -192 is
+# toward the user and must take Y DOWN the screen to 192.
+feed 38 40 40 00
+state b
+
+# --- OVERFLOW ------------------------------------------------------------
+# Bit 6 is the X overflow flag and bit 7 the Y overflow flag. Either one means
+# the byte that arrived is the low eight bits of something larger, so the packet
+# is DISCARDED rather than applied -- the position must not move at all.
+feed 48 10 10 00
+feed 88 10 10 00
+state c
+
+# --- ONE BYTE IS NOT A PACKET --------------------------------------------
+# The control for "the decoder prints on every byte": after this the transcript
+# must have exactly the same number of packet lines as before it.
+feed 08
+state d
+
+# --- AND NOW THE REAL DEVICE, INTO THE OFFSET THAT BYTE JUST CREATED ------
+# The decoder is expecting byte 1. The device's next genuine packet is
+# 08 10 00 00, so its first three bytes finish a packet that was never sent --
+# one WRONG report, which is the protocol's own limit and not a defect in the
+# driver -- and its fourth byte, the zero Z, cannot be a first byte and is
+# discarded. The stream is then aligned again.
+rel 16 0
+state e
+# ...and the next real motion decodes correctly, which is what "resynchronised"
+# has to mean.
+rel 100 100
+state f

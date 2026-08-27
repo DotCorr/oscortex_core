@@ -91,7 +91,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=148
+ASSERTIONS_REQUIRED=151
 
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
@@ -188,7 +188,7 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 17504 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 17504 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 17664 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 17664 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033), plus D1's mouseStore 160 (ADR-0042). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
 # The two later blocks, subtracted NEWEST FIRST, so that every assertion below
 # means what it meant when M19 wrote it.
@@ -201,16 +201,29 @@ ck; [[ $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) -eq "$DART_BSS" ]] \
 DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
 
+# D1 (ADR-0042) put its block in FRONT of S0's, because ADR-0031 §4.3 rule 5
+# requires the ioctl bounce buffer to stay last. Subtracted SECOND, so that
+# `chanStore`'s adjacency check below still means "immediately before the block
+# that came after it" rather than silently becoming a check on nothing.
+MOUSE_STORE_SIZE=$(bsssize mouseStore)
+ck; [[ "$MOUSE_STORE_SIZE" == "160" ]] || fail "mouseStore is ${MOUSE_STORE_SIZE:-missing} bytes, expected 160 — D1's PS/2 mouse block (ADR-0042)"
+MOUSE_OFF=$(bssoff mouseStore)
+ck; [[ -n "$MOUSE_OFF" ]] || fail "mouseStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$MOUSE_OFF + MOUSE_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "mouseStore ends at $(( 16#$MOUSE_OFF + MOUSE_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS bytes — D1's block is not immediately before S0's"
+DART_BSS=$(( DART_BSS - MOUSE_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - MOUSE_STORE_SIZE ))
+
 CHAN_STORE_SIZE=$(bsssize chanStore)
 ck; [[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624 — M20's IPC channel block (ADR-0027)"
 CHAN_OFF=$(bssoff chanStore)
 ck; [[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS bytes — M20's block is not immediately before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore and D1's mouseStore is $DART_BSS bytes — M20's block is not immediately before D1's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
 DART_BSS=$(( DART_BSS - CHAN_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - CHAN_STORE_SIZE ))
 M19_TOTAL=$KDATA_BSS
-ck; [[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore and ioctlStore is $M19_TOTAL, not M19's 14368 — a later milestone moved storage it does not own"
+ck; [[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore, mouseStore and ioctlStore is $M19_TOTAL, not M19's 14368 — a later milestone moved storage it does not own"
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
 ck; [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"

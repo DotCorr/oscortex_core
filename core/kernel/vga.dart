@@ -423,6 +423,20 @@ void m2Enter() {
   // wedge the keyboard permanently and silently. kbdInit() also finishes the
   // banner line with the drained count and a newline.
   kbdInit();
+
+  // D1 (ADR-0042): the mouse, brought up in the same breath as the keyboard and
+  // for the same reason -- this is the moment the console exists and input can
+  // start arriving. BEFORE `picUnmaskKeyboardOnly()`, deliberately: the whole
+  // sequence is a command/response conversation through the SHARED data port at
+  // 0x60, and an IRQ1 arriving in the middle of it would read one of the mouse's
+  // replies and hand it to the scancode table. With IRQ1 still masked the only
+  // thing reading 0x60 is `mouseEnable` itself.
+  //
+  // It prints nothing on any path, including every failure path, so M1's
+  // 544-byte golden is untouched and so is every screen golden -- what happened
+  // is in the flags word the `mouse` command reports.
+  mouseEnable();
+
   picUnmaskKeyboardOnly();
 
   vgaWrite(Rodata.addressOf(shellStrPrompt), u64(10));

@@ -134,7 +134,7 @@ ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL
 # 2a. THE MMIO STORES MUST SURVIVE OPTIMIZATION.
 #
 # This is the check this milestone exists to make, and it is new: as of
-# 2026-08-21 `dcc` passes `-O2` (DCDart ADR-0042), where every DCDart object
+# 2026-08-21 `dcc` passes `-O2` (DCDart ADR-0037), where every DCDart object
 # ever built before that day was -O0. A store to a VGA cell is textbook dead
 # code -- nothing in this program ever reads it back -- so without DCDart
 # ADR-0041's volatile `Pointer<T>` access, LLVM would delete `vgaClear`'s

@@ -1294,6 +1294,32 @@ void shellExecute() {
     shellFb();
     return;
   }
+  // D1 (ADR-0042). The pointer. `mouse feed ` is a PREFIX including its trailing
+  // space, matched FIRST so the bare `mouse` exact match cannot swallow it; then
+  // `mouse` alone; then the bare `mouse` prefix LAST, so an unknown argument
+  // lands on the usage line rather than on the unknown-command path -- `mouse`
+  // IS a command, it just needs to be told what to do. Same shape as `frames`,
+  // `vmtest` and `user`, and for the same reason: there is still no tokenizer
+  // (GAP-0057 item 3).
+  //
+  // **THERE IS NO `help` LINE FOR IT, AND THAT IS DELIBERATE.** `shellStrHelp`
+  // is 2224 bytes and five byte-exact serial goldens plus m3-shell's screen
+  // golden contain it verbatim (GAP-0105, GAP-0115), so one line here moves six
+  // goldens by substitution. M18 added three commands with no help line and M20
+  // added none at all, for this reason; D1 does the same and GAP-0254 records
+  // the cost, which is that the command is undiscoverable from the shell itself.
+  if (shellStartsWith(Rodata.addressOf(mouseStrCmdFeed), u64(11)) > u64(0)) {
+    shellMouseFeed();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(mouseStrCmd), u64(5)) > u64(0)) {
+    shellMouse();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(mouseStrCmd), u64(5)) > u64(0)) {
+    shellMouseUsage();
+    return;
+  }
   // M6. `disk id` and `disk read <lba>` -- the first command in this shell
   // that reads bytes off a storage device, over ATA PIO
   // (core/kernel/ata.dart). `disk read` is a PREFIX match because it takes a
