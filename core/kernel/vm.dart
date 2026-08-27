@@ -1592,7 +1592,24 @@ void vmTestRo() {
   // finding, recorded as docs/known-gaps.md GAP-0082. The check was NOT relaxed
   // to accommodate it: an assertion that a milestone weakens in order to pass
   // is not an assertion.
-  Pointer<u8>.fromAddress(a).value = u8(0xFF);
+  // VOLATILE, AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A HINT.
+  //
+  // This store exists ONLY for its side effect: it must take a #PF against a
+  // read-only page. Nothing ever reads the result -- the canary is checked
+  // through a different path -- so as an ORDINARY store it is dead, and at -O2
+  // LLVM deletes it. That is not hypothetical: DCDart's ADR-0069 split device
+  // access (`Volatile<T>`) from ordinary access (`Pointer<T>`) and made the
+  // latter plain, and the first oscortex build after that change deleted this
+  // line outright. `vmtest ro` then printed SURVIVED with the canary INTACT --
+  // the fault never happened AND the write never landed, which reads exactly
+  // like "W^X is broken" and is in fact "the test evaporated".
+  //
+  // The failure mode is the one worth naming: a security harness that cannot
+  // fail. `m8-paging` is what proves GAP-0050 closed and ADR-0012's W^X real,
+  // and a deleted store makes it prove nothing while still looking like a
+  // test. `Volatile` is the language's way of saying "this access IS the
+  // observable behaviour", which is precisely true here.
+  Volatile<u8>.fromAddress(a).value = u8(0xFF);
   uartWrite(Rodata.addressOf(vmStrTestRoOops), u64(40));
 }
 
