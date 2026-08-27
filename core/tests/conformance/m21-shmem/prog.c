@@ -561,6 +561,34 @@ static void consumer(u64 ep) {
   put("\n");
   flush();
 
+#ifdef M21_ROFAULT
+  /* THE STORE THAT MUST FAULT. Built only into the second binary, because it
+   * kills this process and the exit code carrying the hash is lost with it --
+   * which is exactly why the hash is PRINTED above rather than only returned.
+   *
+   * `W 0` in a page table and "a store actually faults" are the same claim only
+   * if CR0.WP and the ring-3 boundary behave as M8 and M9 established. They are
+   * separately tested, but M21 is the milestone that introduces a page ring 3
+   * can REACH and must not WRITE, so the demonstration belongs here.
+   *
+   * TWO-SIDED, which is the point. If the mapping is read-only the CPU raises
+   * #PF with error 0x7 (present, write, user) and the line below never prints.
+   * If M21 ever maps a grantee writable, the store SUCCEEDS, the line prints,
+   * and the harness fails on its presence -- so this control cannot pass by
+   * accident in either direction. */
+  put(" M21 C ROSTORE VA ");
+  putHex(va, 16);
+  put("\n");
+  flush();
+  {
+    volatile u8 *ro = (volatile u8 *)va;
+    ro[0] = 0xFF;
+  }
+  put(" M21 C ROSTORE SURVIVED -- THE SHARED MAPPING IS WRITABLE\n");
+  flush();
+  shmExit(0xBAD);
+#endif
+
   /* 8. Drop the capability. This is the LAST one naming the region, so the
    *    kernel destroys it here and the frames go back to the allocator -- which
    *    is the line the harness brackets the `frames` count around. */

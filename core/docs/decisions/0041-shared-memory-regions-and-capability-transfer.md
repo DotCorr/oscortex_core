@@ -344,11 +344,14 @@ fetch, so nothing here leans on a hardware backstop.**
 
 ### 8.1 What is NOT checked, named so nobody infers it
 
-**A write through the consumer's read-only mapping is never attempted.** It would `#PF` and the kernel
-would kill the process before it could report its hash, so the read-only-ness is asserted from the
-page tables instead — a weaker claim than a fault would be, and it is written down as one.
-**GAP-0238** records what closing it takes (a payload whose *last* act is the store, with the exit
-code carried some other way).
+**A write through the consumer's read-only mapping IS attempted, and faults.** This paragraph
+originally said it was not, and deferred it to GAP-0238 on the grounds that the store kills the
+process before it can report its hash. That was true and was not a good enough reason: the hash is
+now PRINTED before the store and read out of the transcript, and a second binary built from the same
+source with `-DM21_ROFAULT` performs the store as its last act. The harness requires
+`PF CR2 <region base> ERR 00000007 PRESENT WRITE USER DATA` from `CPL 3` and the process to be
+killed — and requires the absence of the line the program prints if the store SUCCEEDS, so the
+control is two-sided. GAP-0238 is closed.
 
 **The no-process guard is structural, not behavioural.** All four syscalls refuse a caller with no
 process slot, and ADR-0034 unified the launch path so that nothing the shell can start produces one.
@@ -360,8 +363,8 @@ would hit it — and what is missing is a payload that issues `shmcreate`.
 
 ## 9. What the conformance harness establishes
 
-`core/tests/conformance/m21-shmem/run.sh` — 86 checks, `verify-freestanding` on four objects, one
-QEMU boot.
+`core/tests/conformance/m21-shmem/run.sh` — 93 checks, `verify-freestanding` on four objects, two
+QEMU boots.
 
 **One binary, built once, written to two byte-identical disk slots.** Which process creates the region
 and which receives it is decided entirely by which one `chanopen` answers first, so "one process wrote

@@ -53,9 +53,8 @@
 #     region has exactly ONE WRITER by construction. ADR-0041 §6 says what that
 #     leaves unproven and GAP-0236 records it.
 #   * NO INVOLUNTARY REVOCATION IS TESTED BECAUSE THERE IS NONE. GAP-0233.
-#   * A WRITE THROUGH THE CONSUMER'S READ-ONLY MAPPING IS NOT ATTEMPTED. It
-#     would #PF and kill the process before it could report its hash; the
-#     read-only-ness is asserted from the page tables instead. GAP-0238.
+#   (A write through the read-only mapping IS attempted -- see BOOT 2. It was
+#    deferred at first and is no longer: GAP-0238 is closed.)
 #
 # Usage:
 #   core/tests/conformance/m21-shmem/run.sh
@@ -76,7 +75,7 @@ setup_error() { echo "M21-shmem: FAIL — $1" >&2; exit 2; }
 # Sourced AFTER fail(), which every helper in it reports through.
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=86
+ASSERTIONS_REQUIRED=93
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
             x86_64-elf-readelf; do
@@ -494,6 +493,12 @@ echo "$MI_OUT"
 # The shell parses `proc coop` / `run` arguments as HEX, so the LBAs are passed
 # without their 0x and lower-cased. Field 5 is `0x20,` in `slot A: header LBA
 # 0x20, image LBA 0x21, ...`.
+# The second image carries the -DM21_ROFAULT binary in both slots, so that boot
+# is also "one binary, two roles" and the role split is still the kernel's.
+RO_IMG="$WORKDIR/disk-rofault.img"
+capture_sh RI_OUT RI_STATUS -- "python3 '$SCRIPT_DIR/make-image.py' '$RO_IMG' '$WORKDIR/shm-rofault.elf' 2>&1"
+ck; [[ $RI_STATUS -eq 0 ]] || { echo "$RI_OUT" >&2; fail "make-image.py could not build the read-only-store image"; }
+
 LBA_A=$(echo "$MI_OUT" | awk '/^slot A:/{gsub("0x","",$5); gsub(",","",$5); print tolower($5)}')
 LBA_B=$(echo "$MI_OUT" | awk '/^slot B:/{gsub("0x","",$5); gsub(",","",$5); print tolower($5)}')
 ck; [[ -n "$LBA_A" && -n "$LBA_B" ]] || fail "could not read the two slot LBAs out of make-image.py's report"
@@ -906,8 +911,65 @@ echo "STRUCTURAL: pass  the no-process guard is present in all four syscalls and
 echo "$NP_OUT"
 
 # ---------------------------------------------------------------------------
+# BOOT 2 — A STORE THROUGH THE GRANTEE'S READ-ONLY MAPPING MUST FAULT.
+#
+# The page tables say `W 0` (asserted above, out of the live tables). This boot
+# asserts the CPU AGREES, because those are the same claim only if CR0.WP and
+# the ring-3 boundary behave as M8 and M9 established — and M21 is the milestone
+# that introduces a page ring 3 can REACH and must not WRITE.
+#
+# TWO-SIDED. If the mapping is read-only the store raises #PF with error 0x7 —
+# present, write, user — and `ROSTORE SURVIVED` never appears. If a grantee were
+# ever mapped writable the store SUCCEEDS and that line DOES appear, and this
+# harness fails on its presence. Neither outcome can pass by accident.
+#
+# The hash is read out of the TRANSCRIPT here, not out of an exit code: the
+# faulting process is killed and never reaches `exit`, which is exactly why
+# prog.c prints it before storing.
+# ---------------------------------------------------------------------------
+echo
+echo "=== BOOT 2: a store through the read-only mapping ==="
+DISK_IMG="$RO_IMG"
+RO_KEYS="$(typekeys "proc coop $LBA_A $LBA_B"),ret,wait:20000"
+drive_session "$WORKDIR/rofault" "$RO_KEYS" "read-only-store"
+sread "$WORKDIR/rofault/serial.txt" > "$WORKDIR/rofault/serial.text"
+ROT="$WORKDIR/rofault/serial.text"
+
+ck; grep -q "M21 C SURVIVED H $WANT_CONS_HASH" "$ROT" \
+  || fail "the read-only-store boot did not get as far as reading the region correctly, so its fault would prove nothing"
+ck; grep -q "M21 C ROSTORE VA $WANT_REGION_VA" "$ROT" \
+  || fail "the program never announced the store it was about to make"
+# THE CONTROL THAT MUST NOT APPEAR.
+ck; ! grep -q "ROSTORE SURVIVED" "$ROT" \
+  || fail "A STORE THROUGH THE GRANTEE'S MAPPING SUCCEEDED. The shared region is writable to a process that holds a READ-ONLY capability; ADR-0041 §6.2's one-writer property is false and every claim resting on it is void."
+# AND THE FAULT THAT MUST.
+ck; grep -q "PF CR2 $WANT_REGION_VA ERR 00000007 PRESENT WRITE USER DATA" "$ROT" \
+  || fail "no page fault at $WANT_REGION_VA with error 0x7 (present, write, user, data). Got: $(grep -oE 'PF CR2 [0-9A-F]+ ERR [0-9A-F]+ .*' "$ROT" | head -1)"
+ck; grep -qE "USER FAULT VEC 0E ERR 0000000000000007 RIP [0-9A-F]+ CPL 3" "$ROT" \
+  || fail "the fault was not reported as a ring-3 (CPL 3) #PF"
+# AND THE PROCESS DIED FOR IT.
+capture_sh ROK_OUT ROK_STATUS -- "python3 - '$ROT' <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+i_hash = t.find('M21 C SURVIVED')
+i_ann  = t.find('M21 C ROSTORE VA')
+i_pf   = t.find('PF CR2')
+if not (i_hash >= 0 and i_ann > i_hash and i_pf > i_ann):
+    raise SystemExit('the ordering is wrong: the region must be read correctly, THEN the '
+                     'store announced, THEN the fault (hash=%d announce=%d pf=%d)'
+                     % (i_hash, i_ann, i_pf))
+kills = re.findall(r'^PROC KILL SLOT (\d\d) FREED ([0-9A-F]{8})\$', t, re.M)
+if not kills:
+    raise SystemExit('nothing was killed; a faulting ring-3 process must be torn down')
+print('    (region read correctly -> store announced -> #PF at the region base -> process killed, in that order)')
+PY"
+ck; [[ $ROK_STATUS -eq 0 ]] || { echo "$ROK_OUT" >&2; fail "the read-only-store sequence did not happen in the order that makes it meaningful"; }
+echo "ASSERT: pass  a store through the grantee's mapping FAULTS — #PF error 0x7 at the region base, from CPL 3, and the process is killed. GAP-0238 closed."
+echo "$ROK_OUT"
+
+# ---------------------------------------------------------------------------
 # Done.
 # ---------------------------------------------------------------------------
 echo
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "M21-shmem: PASS — dcc build -> link -> clang builds ONE freestanding ELF64 -> make-image.py writes it to two byte-identical disk slots -> structural checks (the shared window multiplies out against the load region it must not move; shmStore tiles exactly and is last in .bss at 4352 with the total at 21856; the storage seam is 4 call sites in one file; vmShmMap CANNOT EXPRESS a writable+executable page; all five user-pointer validators still walk every page, which is what makes the widened vmUserEnd safe; freeFrame's shared-frame guard is one branch in the one place five teardown paths funnel through; procCleanup releases capabilities on the fault path as well as the exit path; procSpaceBuild clears BOTH windows; a grant is unconditionally read-only; 16 refusal codes distinct, above one floor, and agreeing with prog.c's private copy; the syscall registry accepts 16..19) -> verify-freestanding pass on kmain.o, kdata.o, portio.o and kernel.elf -> ONE REAL QEMU BOOT. Two processes in two different address spaces (two different PML4s) share ${WANT_PAGES} frames: the SAME physical frames appear in BOTH page tables, walked out of the live tables through vmEffective, WRITABLE to the creator, READ-ONLY to the grantee, and NOT EXECUTABLE in either. The consumer exits with $WANT_CONS_HASH, an FNV-1a of all 16384 bytes it read through the shared mapping, computed on the host before the machine booted and different from the producer's $WANT_PROD_HASH. The producer then EXITS while the consumer still holds a capability, its address space is reclaimed, and the consumer re-reads all 16384 bytes and gets the same hash — with neither teardown releasing or counting one frame of the region. The region dies with its last capability, returns exactly $WANT_FRAMES frames, and the allocator's free count is identical before and after. Twenty negative controls observed from ring 3 as return values, including an executable mapping refused, a read-only capability refused permission to widen, four forged handles refused and three out-of-range lengths refused. The no-process guard is asserted STRUCTURALLY and not behaviourally, because ADR-0034 left nothing the shell can start without a process slot — GAP-0239, in GAP-0214's category."
+echo "M21-shmem: PASS — dcc build -> link -> clang builds ONE freestanding ELF64 -> make-image.py writes it to two byte-identical disk slots -> structural checks (the shared window multiplies out against the load region it must not move; shmStore tiles exactly and is last in .bss at 4352 with the total at 21856; the storage seam is 4 call sites in one file; vmShmMap CANNOT EXPRESS a writable+executable page; all five user-pointer validators still walk every page, which is what makes the widened vmUserEnd safe; freeFrame's shared-frame guard is one branch in the one place five teardown paths funnel through; procCleanup releases capabilities on the fault path as well as the exit path; procSpaceBuild clears BOTH windows; a grant is unconditionally read-only; 16 refusal codes distinct, above one floor, and agreeing with prog.c's private copy; the syscall registry accepts 16..19) -> verify-freestanding pass on kmain.o, kdata.o, portio.o and kernel.elf -> TWO REAL QEMU BOOTS. Two processes in two different address spaces (two different PML4s) share ${WANT_PAGES} frames: the SAME physical frames appear in BOTH page tables, walked out of the live tables through vmEffective, WRITABLE to the creator, READ-ONLY to the grantee, and NOT EXECUTABLE in either. The consumer exits with $WANT_CONS_HASH, an FNV-1a of all 16384 bytes it read through the shared mapping, computed on the host before the machine booted and different from the producer's $WANT_PROD_HASH. The producer then EXITS while the consumer still holds a capability, its address space is reclaimed, and the consumer re-reads all 16384 bytes and gets the same hash — with neither teardown releasing or counting one frame of the region. The region dies with its last capability, returns exactly $WANT_FRAMES frames, and the allocator's free count is identical before and after. Twenty negative controls observed from ring 3 as return values, including an executable mapping refused, a read-only capability refused permission to widen, four forged handles refused and three out-of-range lengths refused. A SECOND BOOT stores through the grantee's read-only mapping and requires the #PF: ERR 0x7 (present, write, user, data) at the region base, from CPL 3, with the process killed -- and requires the ABSENCE of the line the program prints if that store succeeds, so the control is two-sided. The no-process guard is asserted STRUCTURALLY and not behaviourally, because ADR-0034 left nothing the shell can start without a process slot — GAP-0239, in GAP-0214's category."

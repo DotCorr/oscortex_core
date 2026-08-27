@@ -62,6 +62,23 @@ x86_64-elf-ld -T "$SCRIPT_DIR/prog.ld" -z max-page-size=0x1000 --build-id=none \
   || fail "x86_64-elf-ld could not link shm.elf"
 [[ -s "$OUT/shm.elf" ]] || fail "the linker reported success but produced no shm.elf"
 
+# THE SECOND BINARY: identical source, one -D, and its consumer's LAST act is a
+# store through the read-only shared mapping. It exists so that "the grantee's
+# mapping is read-only" is demonstrated by a #PF and not only read out of a page
+# table (GAP-0238). Built from the SAME prog.c, so the two cannot drift.
+clang "${CFLAGS[@]}" -DM21_ROFAULT "$SCRIPT_DIR/prog.c" -o "$OUT/shm-rofault.o" \
+  || fail "clang could not compile prog.c with -DM21_ROFAULT"
+x86_64-elf-ld -T "$SCRIPT_DIR/prog.ld" -z max-page-size=0x1000 --build-id=none \
+  -o "$OUT/shm-rofault.elf" "$OUT/shm-rofault.o" \
+  || fail "x86_64-elf-ld could not link shm-rofault.elf"
+[[ -s "$OUT/shm-rofault.elf" ]] || fail "no shm-rofault.elf"
+
+# AND THE TWO MUST DIFFER. A -D that silently stopped taking effect would give a
+# harness that boots the ordinary binary and asserts a fault that never comes.
+if cmp -s "$OUT/shm.elf" "$OUT/shm-rofault.elf"; then
+  fail "shm.elf and shm-rofault.elf are byte-identical -- -DM21_ROFAULT compiled to nothing, so the read-only-store control would be testing the wrong binary"
+fi
+
 python3 - "$OUT/shm.elf" "$SCRIPT_DIR/prog.c" <<'PY' \
   || fail "the program that was built is not the one this harness needs"
 import re, subprocess, sys

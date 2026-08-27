@@ -7688,8 +7688,38 @@ would introduce — and it is a milestone, not a constant bump.
 ## GAP-0238 — A write through the read-only mapping is never attempted
 
 **Domain:** conformance, shared memory (M21, ADR-0041 §8.1)
-**Status:** OPEN — the read-only-ness is asserted from the page tables, which is a weaker claim than a
-fault would be.
+**Status:** **CLOSED at M21**, in the same unit that opened it, after the first version of this entry
+deferred it. `m21-shmem`'s second boot now performs the store and requires the fault.
+
+**What it does.** A second binary is built from the SAME `prog.c` with `-DM21_ROFAULT` (and
+`build-progs.sh` fails if the two link byte-identical, so a `-D` that stopped taking effect cannot
+silently degrade the test into booting the ordinary binary). Its consumer maps the region read-only,
+reads all 16384 bytes, prints its hash, and then stores one byte at the region base. The harness
+requires:
+
+```
+PF CR2 0000000010200000 ERR 00000007 PRESENT WRITE USER DATA
+USER FAULT VEC 0E ERR 0000000000000007 RIP ... CPL 3
+PROC KILL SLOT ...
+```
+
+and requires the ordering — region read correctly, THEN store announced, THEN fault — so a fault
+raised for some other reason cannot satisfy it.
+
+**It is TWO-SIDED, which is what makes it worth having.** If a grantee were ever mapped writable the
+store SUCCEEDS, the program prints `ROSTORE SURVIVED`, and the harness fails on that line's PRESENCE
+with a message naming the invariant that just died. Verified by mutation: turning the store into a
+load made `ROSTORE SURVIVED` appear and the harness caught it. So neither outcome passes by accident.
+
+**The hash is read out of the TRANSCRIPT on that boot, not out of an exit code**, which is the detail
+that made this awkward in the first place: the faulting process is killed and never reaches `exit`.
+`prog.c` prints the hash before storing, so the boot still proves the region was read correctly
+before the fault — otherwise a fault would prove nothing about what was mapped.
+
+*(Historical: the original text follows.)*
+
+**Status:** was OPEN — the read-only-ness was asserted from the page tables, which is a weaker claim
+than a fault.
 
 `m21-shmem` proves the consumer's mapping is read-only by reading the **live page tables** — the
 kernel walks them through `vmEffective` and prints `W 0 X 0` per page, and the harness requires it.
