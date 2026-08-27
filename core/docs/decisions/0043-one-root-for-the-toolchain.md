@@ -95,15 +95,26 @@ through a symlinked parent would otherwise hand dcc a logical prefix and the fro
 
 ## Evidence
 
-Built in a copy of this repo at `/private/tmp/gap0003/wt/oscortex_core`, which has **no DCDart three
-directories up at all**, against `DCDART_HOME=/private/tmp/gap0003/DCDart`:
+Reproduce with a real `git worktree`, placed where **no DCDart exists three directories up**, pointed
+at a DCDart at an unrelated real path:
+
+```bash
+git worktree add --detach /private/tmp/gap0003/nest/gitwt HEAD
+DCDART_HOME=/private/tmp/gap0003/DCDart bash /private/tmp/gap0003/nest/gitwt/core/scripts/build-kernel.sh
+```
+
+Same worktree, the two source revisions, nothing else changed:
 
 ```
-BEFORE (sources at 40ea339):  Bad state: Generating kernel failed!
-                              build-kernel: FAIL — 'dcc build ...' exited 1
-AFTER:                        build-kernel: prelude  /private/tmp/gap0003/wt/oscortex_core/core/build/dcdart/...
-                              build-kernel: PASS — .../core/build/kernel.elf
-                              nm kmain.o -> 0000000000017da0 T kmain
+BEFORE (git checkout 40ea339 -- kmain.dart build-kernel.sh):
+        Bad state: Generating kernel failed!
+        build-kernel: FAIL — 'dcc build --mode bare kmain.dart -o kmain.o' exited 1
+
+AFTER:  build-kernel: prelude  /private/tmp/gap0003/nest/gitwt/core/build/dcdart/core/runtime/…
+        build-kernel:          -> /private/tmp/gap0003/DCDart/core/runtime/…
+        build-kernel: PASS — /private/tmp/gap0003/nest/gitwt/core/build/kernel.elf
+        llvm-nm kmain.o -> 0000000000017da0 T kmain
+        m0-boot from that worktree: PASS (real QEMU boot, exact serial byte match)
 ```
 
 Four configurations now build: the canonical sibling layout, a `DCDART_HOME` at an unrelated real
