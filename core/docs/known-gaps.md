@@ -7919,8 +7919,19 @@ between the probe and QEMU's bind — and `drive_session` already retries on `Ad
 This is the *teardown* side and the retry does not cover it: the error text is different and the run
 is not retried.
 
-**The condition it was seen under** is worth writing down because it is the likely cause: three agents
-running QEMU-heavy sweeps concurrently, load average **21**, on 8 cores.
+**Seen TWICE, on two different harnesses, which is what makes it a class rather than an anecdote.**
+`m16-filewrite` failed the same way on its negative-control boot — `neg.png` and `neg/screen.txt`
+both written, then `ConnectionResetError` — and passed on a straight re-run with no edit in between.
+
+**The condition it was seen under** is worth writing down because it is the likely cause: three
+agents running QEMU-heavy sweeps concurrently, load average **21**, on 8 cores. Both re-runs that
+passed were done after the other agents finished, at load **2.3**. That is correlation from two
+observations, not a proof, and it is recorded as the former.
+
+**The tell that separates it from a real failure**, and the reason it is cheap to triage: the last
+`qmp-drive:` line before the traceback is always a `wrote …` line. Everything the harness asserts has
+already been captured; only the teardown handshake is lost. A real failure fails a `cmp` or a check,
+and says so.
 
 **What closing it takes.** `drive_session` already knows how to retry a boot; it would need to treat a
 `ConnectionResetError` *after* the captures were written as a retryable launch failure rather than a
