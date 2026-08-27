@@ -637,14 +637,27 @@ SERIAL="$RUN_DIR/serial.txt"
 QEMU_LOG="$RUN_DIR/qemu.log"
 
 launch() {
-  local disp="$1" port="$2"
+  local disp="$1" port="$2" serport="$3"
+  # B1: THE SERIAL LINE IS BIDIRECTIONAL NOW.
+  #
+  # It used to be `-serial file:`, which QEMU can only WRITE. That was right
+  # while the kernel could only talk; since B1 it can listen (IRQ4 ->
+  # shellSerialIrq), so the demo hands COM1 a socket instead and
+  # `core/scripts/console.py` types into it.
+  #
+  # `logfile=` is what keeps the old capability: QEMU still writes every output
+  # byte to $SERIAL, so the transcript this script reports and the `--watch`
+  # loop reads are unchanged, and a chardev socket with nobody attached is not
+  # an error. Both halves at once is the whole reason for the chardev form --
+  # `-serial file:` cannot read and `-serial tcp:` alone would lose the file.
   local args=(
     -name "$QEMU_MARKER"
     -kernel "$KERNEL_ELF"
     -m 128M
     -cpu qemu64
     -vga std
-    -serial "file:$SERIAL"
+    -chardev "socket,id=com1,host=127.0.0.1,port=$serport,server=on,wait=off,logfile=$SERIAL,logappend=off"
+    -serial chardev:com1
     -display "$disp"
     -no-reboot
     -qmp "tcp:127.0.0.1:$port,server,nowait"
@@ -673,7 +686,8 @@ ATTEMPT=0
 while :; do
   : >"$SERIAL"
   PORT="$(pick_port)"
-  launch "$DISPLAY_ARG" "$PORT"
+  SERPORT="$(pick_port)"
+  launch "$DISPLAY_ARG" "$PORT" "$SERPORT"
   sleep 2
   kill -0 "$QEMU_PID" 2>/dev/null && break
 
@@ -703,8 +717,9 @@ echo "$QEMU_PID" >"$PIDFILE"
   echo "display  -display $DISPLAY_ARG"
   echo "run dir  $RUN_DIR"
   echo "qmp      127.0.0.1:$PORT"
+  echo "serial   127.0.0.1:$SERPORT"
 } >"$INFOFILE"
-say "QEMU is up (pid $QEMU_PID, QMP on 127.0.0.1:$PORT)"
+say "QEMU is up (pid $QEMU_PID, QMP on 127.0.0.1:$PORT, serial on 127.0.0.1:$SERPORT)"
 
 # ---------------------------------------------------------------------------
 # Drive the tour.

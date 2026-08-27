@@ -131,6 +131,45 @@ class Qmp:
         self.cmd("send-key", keys=keys)
 
 
+class SerialSocket:
+    """COM1 itself: write bytes in, read bytes out.
+
+    This is what a serial console actually is, and it is available because the
+    kernel can now RECEIVE (B1: IRQ4 -> shellSerialIrq). It sends `\n` because
+    the shell's line editor speaks the PS/2 alphabet where Return is LF -- the
+    kernel also translates CR, so either would work, and LF is the one that
+    needs no translation.
+    """
+
+    def __init__(self, host, port, timeout=10.0):
+        self.sock = socket.create_connection((host, int(port)), timeout=timeout)
+
+    def send_line(self, text):
+        self.sock.sendall(text.encode("latin-1", "replace") + b"\n")
+
+    def drain(self, quiet_ms=350, max_ms=8000):
+        out, waited, silent = [], 0, 0
+        self.sock.settimeout(0.05)
+        while waited < max_ms:
+            try:
+                chunk = self.sock.recv(65536)
+            except socket.timeout:
+                chunk = b""
+            except OSError:
+                break
+            if chunk:
+                out.append(chunk.decode("latin-1"))
+                silent = 0
+            else:
+                silent += 50
+                if silent >= quiet_ms and out:
+                    break
+                if silent >= quiet_ms * 4 and not out:
+                    break
+            waited += 50
+        return "".join("".join(out).replace("\r", ""))
+
+
 class Serial:
     """Tails the file QEMU is writing its COM1 output into."""
 
@@ -181,7 +220,7 @@ def discover():
     info = {}
     for line in open(INFO):
         line = line.rstrip("\n")
-        for key in ("run dir", "commit", "worktree", "display", "qmp"):
+        for key in ("run dir", "commit", "worktree", "display", "qmp", "serial"):
             if line.startswith(key):
                 info[key] = line[len(key):].strip()
                 break
@@ -189,6 +228,11 @@ def discover():
         die("%s does not name a qmp endpoint and a run dir" % INFO)
     host, port = info["qmp"].split(":")
     serial = os.path.join(info["run dir"], "serial.txt")
+    # B1: a demo launched after the serial line became bidirectional records a
+    # socket for COM1. When it is there this console uses it directly, which is
+    # both faster and more honest -- bytes go into the guest's UART instead of
+    # being mimed through a PS/2 keyboard one QMP round-trip at a time.
+    sersock = info.get("serial")
     if os.path.exists(PIDFILE):
         pid = open(PIDFILE).read().strip()
         try:
@@ -196,7 +240,7 @@ def discover():
         except (OSError, ValueError):
             die("demo.pid says %s but that process is gone.\n"
                 "          Start one with:  core/scripts/demo.sh" % pid)
-    return host, int(port), serial
+    return host, int(port), serial, sersock
 
 
 def send_line(qmp, text):
@@ -218,43 +262,78 @@ def main():
     ap.add_argument("--serial", help="path to the serial capture (default: from demo.info)")
     ap.add_argument("-c", "--command", action="append", default=[],
                     help="run a command and exit; repeatable, run in order")
+    ap.add_argument("--no-serial-socket", action="store_true",
+                    help="ignore COM1's socket and mime keystrokes through QMP instead")
     ap.add_argument("--quiet-ms", type=int, default=350,
                     help="how long the guest must be silent before a command is "
                          "considered finished (default 350)")
     args = ap.parse_args()
 
+    sersock = None
     if args.qmp and args.serial:
         host, port = args.qmp.split(":")
         port, serial = int(port), args.serial
     else:
-        d_host, d_port, d_serial = discover()
+        d_host, d_port, d_serial, d_sersock = discover()
         if args.qmp:
             host, port = args.qmp.split(":"); port = int(port)
         else:
             host, port = d_host, d_port
         serial = args.serial or d_serial
+        sersock = d_sersock
 
-    if not os.path.exists(serial):
-        die("serial capture not found at %s" % serial)
+    # TWO TRANSPORTS, and the choice is not a preference.
+    #
+    # If the running machine exposes COM1 as a socket, this console IS a serial
+    # console: bytes in, bytes out, one connection. If it does not -- an older
+    # demo, or one launched by hand with `-serial file:` -- it falls back to
+    # miming keystrokes through QMP and tailing the capture file, which is what
+    # this script did before the kernel could receive at all. The fallback is
+    # kept because a machine you cannot type into is still worth reading.
+    if sersock and not args.no_serial_socket:
+        try:
+            shost, sport = sersock.split(":")
+            link = SerialSocket(shost, sport)
+        except Exception as exc:                   # noqa: BLE001 - fall back loudly
+            print("console: could not open COM1 at %s (%s); falling back to QMP keystrokes"
+                  % (sersock, exc), file=sys.stderr)
+            link = None
+    else:
+        link = None
 
-    try:
-        qmp = Qmp(host, port)
-    except Exception as exc:                       # noqa: BLE001 - report and exit
-        die("could not attach to QEMU at %s:%d (%s)" % (host, port, exc))
+    qmp = None
+    ser = None
+    if link is None:
+        if not os.path.exists(serial):
+            die("serial capture not found at %s" % serial)
+        try:
+            qmp = Qmp(host, port)
+        except Exception as exc:                   # noqa: BLE001 - report and exit
+            die("could not attach to QEMU at %s:%d (%s)" % (host, port, exc))
+        ser = Serial(serial)
 
-    ser = Serial(serial)
+    def run(cmd):
+        if link is not None:
+            link.send_line(cmd)
+            return link.drain(args.quiet_ms)
+        send_line(qmp, cmd)
+        return ser.drain(args.quiet_ms)
+
+    def read_only(quiet, mx):
+        if link is not None:
+            return link.drain(quiet, mx)
+        return ser.drain(quiet, mx)
 
     if args.command:
         for cmd in args.command:
-            send_line(qmp, cmd)
-            out = ser.drain(args.quiet_ms)
-            sys.stdout.write(out)
+            sys.stdout.write(run(cmd))
             sys.stdout.flush()
         return 0
 
-    print("console: attached to %s:%d — the machine keeps running when you leave." % (host, port))
+    how = ("COM1 at %s" % sersock) if link is not None else ("QMP keystrokes at %s:%d" % (host, port))
+    print("console: attached over %s — the machine keeps running when you leave." % how)
     print("console: type a command, or :q to quit, :shot to screenshot, :raw for qcodes.")
-    sys.stdout.write(ser.drain(200, 1200))
+    sys.stdout.write(read_only(200, 1200))
     sys.stdout.flush()
     while True:
         try:
@@ -267,28 +346,31 @@ def main():
         if line.startswith(":shot"):
             parts = line.split(None, 1)
             path = parts[1].strip() if len(parts) > 1 else "/tmp/oscortex-console.png"
+            if qmp is None:
+                qmp = Qmp(host, port)      # screenshots always need the monitor
             qmp.cmd("screendump", filename=path)
             print("console: wrote %s" % path)
             continue
         if line.startswith(":raw"):
             parts = line.split(None, 1)
             if len(parts) > 1:
+                if qmp is None:
+                    qmp = Qmp(host, port)  # raw qcodes are a keyboard thing
                 for qc in parts[1].split(","):
                     qc = qc.strip()
                     if qc:
                         qmp.key(qc)
                         time.sleep(0.012)
-                sys.stdout.write(ser.drain(args.quiet_ms))
+                sys.stdout.write(read_only(args.quiet_ms, 8000))
                 sys.stdout.flush()
             continue
         if line.startswith(":wait"):
             parts = line.split(None, 1)
             ms = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() else 2000
-            sys.stdout.write(ser.drain(ms, ms + 2000))
+            sys.stdout.write(read_only(ms, ms + 2000))
             sys.stdout.flush()
             continue
-        send_line(qmp, line)
-        sys.stdout.write(ser.drain(args.quiet_ms))
+        sys.stdout.write(run(line))
         sys.stdout.flush()
     print("console: detached; the machine is still running (demo.sh --status).")
     return 0
