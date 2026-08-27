@@ -815,7 +815,7 @@ u64 chanCallerId() {
 /// installs a capability in the peer's own table; the 64-byte message that
 /// follows carries only the NUMBER the kernel assigned. Bytes still cannot
 /// convey authority -- which is why a forged number in a forged message reaches
-/// nothing (ADR-0035 §4).
+/// nothing (ADR-0041 §4).
 ///
 /// Returns above [chanRetFloor] on refusal so the caller can test one bound, and
 /// prints nothing: the refusal belongs to the `shm` syscall that asked, and is

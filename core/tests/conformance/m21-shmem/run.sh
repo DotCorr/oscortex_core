@@ -50,12 +50,12 @@
 # WHAT IT DOES NOT ASSERT, SO NOBODY INFERS IT
 # ---------------------------------------------------------------------------
 #   * NOTHING HERE IS CONCURRENT. One CPU, `proc coop` does not preempt, and the
-#     region has exactly ONE WRITER by construction. ADR-0035 §6 says what that
-#     leaves unproven and GAP-0218 records it.
-#   * NO INVOLUNTARY REVOCATION IS TESTED BECAUSE THERE IS NONE. GAP-0215.
+#     region has exactly ONE WRITER by construction. ADR-0041 §6 says what that
+#     leaves unproven and GAP-0236 records it.
+#   * NO INVOLUNTARY REVOCATION IS TESTED BECAUSE THERE IS NONE. GAP-0233.
 #   * A WRITE THROUGH THE CONSUMER'S READ-ONLY MAPPING IS NOT ATTEMPTED. It
 #     would #PF and kill the process before it could report its hash; the
-#     read-only-ness is asserted from the page tables instead. GAP-0220.
+#     read-only-ness is asserted from the page tables instead. GAP-0238.
 #
 # Usage:
 #   core/tests/conformance/m21-shmem/run.sh
@@ -865,7 +865,7 @@ echo "$CMP_OUT"
 # was refused by all three channel syscalls, and ADR-0034 abolished the premise
 # rather than the guard.
 #
-# M21 INHERITS EXACTLY THAT SITUATION and it is filed as GAP-0221, in GAP-0214's
+# M21 INHERITS EXACTLY THAT SITUATION and it is filed as GAP-0239, in GAP-0214's
 # category and explicitly NOT in GAP-0206's: the path still exists and is still
 # reachable -- an M9-style `user` payload runs with no process slot and would hit
 # these four lines today -- what is missing is a payload that issues `shmcreate`.
@@ -902,7 +902,7 @@ print('    (all four syscalls ask shmCallerId() before touching procCurrent(), a
       'refuse with shmRetNoProc, and shmCallerId still returns 0 when procLive() is 0)')
 PY"
 ck; [[ $NP_STATUS -eq 0 ]] || { echo "$NP_OUT" >&2; fail "the no-process guard has been weakened or removed"; }
-echo "STRUCTURAL: pass  the no-process guard is present in all four syscalls and runs before anything reads the process slot — asserted by READING, not by running (GAP-0221)"
+echo "STRUCTURAL: pass  the no-process guard is present in all four syscalls and runs before anything reads the process slot — asserted by READING, not by running (GAP-0239)"
 echo "$NP_OUT"
 
 # ---------------------------------------------------------------------------
@@ -910,4 +910,4 @@ echo "$NP_OUT"
 # ---------------------------------------------------------------------------
 echo
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "M21-shmem: PASS — dcc build -> link -> clang builds ONE freestanding ELF64 -> make-image.py writes it to two byte-identical disk slots -> structural checks (the shared window multiplies out against the load region it must not move; shmStore tiles exactly and is last in .bss at 4352 with the total at 21856; the storage seam is 4 call sites in one file; vmShmMap CANNOT EXPRESS a writable+executable page; all five user-pointer validators still walk every page, which is what makes the widened vmUserEnd safe; freeFrame's shared-frame guard is one branch in the one place five teardown paths funnel through; procCleanup releases capabilities on the fault path as well as the exit path; procSpaceBuild clears BOTH windows; a grant is unconditionally read-only; 16 refusal codes distinct, above one floor, and agreeing with prog.c's private copy; the syscall registry accepts 16..19) -> verify-freestanding pass on kmain.o, kdata.o, portio.o and kernel.elf -> ONE REAL QEMU BOOT. Two processes in two different address spaces (two different PML4s) share ${WANT_PAGES} frames: the SAME physical frames appear in BOTH page tables, walked out of the live tables through vmEffective, WRITABLE to the creator, READ-ONLY to the grantee, and NOT EXECUTABLE in either. The consumer exits with $WANT_CONS_HASH, an FNV-1a of all 16384 bytes it read through the shared mapping, computed on the host before the machine booted and different from the producer's $WANT_PROD_HASH. The producer then EXITS while the consumer still holds a capability, its address space is reclaimed, and the consumer re-reads all 16384 bytes and gets the same hash — with neither teardown releasing or counting one frame of the region. The region dies with its last capability, returns exactly $WANT_FRAMES frames, and the allocator's free count is identical before and after. Twenty negative controls observed from ring 3 as return values, including an executable mapping refused, a read-only capability refused permission to widen, four forged handles refused and three out-of-range lengths refused. The no-process guard is asserted STRUCTURALLY and not behaviourally, because ADR-0034 left nothing the shell can start without a process slot — GAP-0221, in GAP-0214's category."
+echo "M21-shmem: PASS — dcc build -> link -> clang builds ONE freestanding ELF64 -> make-image.py writes it to two byte-identical disk slots -> structural checks (the shared window multiplies out against the load region it must not move; shmStore tiles exactly and is last in .bss at 4352 with the total at 21856; the storage seam is 4 call sites in one file; vmShmMap CANNOT EXPRESS a writable+executable page; all five user-pointer validators still walk every page, which is what makes the widened vmUserEnd safe; freeFrame's shared-frame guard is one branch in the one place five teardown paths funnel through; procCleanup releases capabilities on the fault path as well as the exit path; procSpaceBuild clears BOTH windows; a grant is unconditionally read-only; 16 refusal codes distinct, above one floor, and agreeing with prog.c's private copy; the syscall registry accepts 16..19) -> verify-freestanding pass on kmain.o, kdata.o, portio.o and kernel.elf -> ONE REAL QEMU BOOT. Two processes in two different address spaces (two different PML4s) share ${WANT_PAGES} frames: the SAME physical frames appear in BOTH page tables, walked out of the live tables through vmEffective, WRITABLE to the creator, READ-ONLY to the grantee, and NOT EXECUTABLE in either. The consumer exits with $WANT_CONS_HASH, an FNV-1a of all 16384 bytes it read through the shared mapping, computed on the host before the machine booted and different from the producer's $WANT_PROD_HASH. The producer then EXITS while the consumer still holds a capability, its address space is reclaimed, and the consumer re-reads all 16384 bytes and gets the same hash — with neither teardown releasing or counting one frame of the region. The region dies with its last capability, returns exactly $WANT_FRAMES frames, and the allocator's free count is identical before and after. Twenty negative controls observed from ring 3 as return values, including an executable mapping refused, a read-only capability refused permission to widen, four forged handles refused and three out-of-range lengths refused. The no-process guard is asserted STRUCTURALLY and not behaviourally, because ADR-0034 left nothing the shell can start without a process slot — GAP-0239, in GAP-0214's category."

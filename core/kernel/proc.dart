@@ -276,7 +276,7 @@ const int procSlotShmPt = 22;
 /// argument reaches (`chanCallerId`'s discipline, ADR-0027 §4 item 1). A
 /// ring-3 handle names an INDEX INTO THE CALLER'S OWN TABLE, so guessing one
 /// can only ever reach a capability the kernel itself installed there. See
-/// ADR-0035 §4.
+/// ADR-0041 §4.
 ///
 /// Word layout is `shm.dart`'s [shmCapPack]; the words are zero for "no
 /// capability", which is what `procSlotWipe` leaves behind and what a slot
@@ -1902,7 +1902,7 @@ void procCleanup(u64 s) {
   // A region whose last capability this releases is destroyed here, and THAT is
   // where its frames actually go back to the allocator -- which is why the free
   // count is asserted across the LAST exit rather than each one
-  // (`docs/design/memory.md` §2.3, ADR-0035 §5).
+  // (`docs/design/memory.md` §2.3, ADR-0041 §5).
   shmReleaseOwner(s);
   procSet(s, u64(procSlotState), u64(procStateFree));
   uartWrite(Rodata.addressOf(procStrKill), u64(15));

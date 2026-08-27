@@ -3,7 +3,7 @@ part of 'kmain.dart';
 // ---------------------------------------------------------------------------
 // M21 -- SHARED MEMORY REGIONS, AND A CAPABILITY THAT CAN BE HANDED TO A PEER.
 //
-// ADR-0035. The rung above ADR-0027's channel, and the thing that ADR-0027
+// ADR-0041. The rung above ADR-0027's channel, and the thing that ADR-0027
 // deliberately refused to fake.
 //
 // WHY THIS EXISTS AT ALL, IN ONE PARAGRAPH. M20 capped a channel message at 64
@@ -31,7 +31,7 @@ part of 'kmain.dart';
 //    index into the CALLER'S OWN table, so guessing one reaches only a
 //    capability the kernel itself put there -- i.e. one this process was
 //    granted. **The security does not rest on the number being hard to guess**,
-//    which is the honest form of the claim; see ADR-0035 §4.
+//    which is the honest form of the claim; see ADR-0041 §4.
 //
 // 3. A LIFETIME STORY THAT SURVIVES A DEAD PEER. A region's frames are held by
 //    the number of LIVE CAPABILITIES naming it, not by the number of address
@@ -44,14 +44,14 @@ part of 'kmain.dart';
 // as an impression:
 //
 //   * No involuntary revocation. A grantor cannot take a capability back;
-//     `shmdrop` releases the CALLER'S own. GAP-0215, with the mechanism it
+//     `shmdrop` releases the CALLER'S own. GAP-0233, with the mechanism it
 //     would take written out.
 //   * No resize, no partial map, no offset map. A capability names a whole
-//     region and maps it whole. GAP-0216.
-//   * No file backing, no MAP_FIXED, no mprotect, no demand paging. GAP-0217.
+//     region and maps it whole. GAP-0234.
+//   * No file backing, no MAP_FIXED, no mprotect, no demand paging. GAP-0235.
 //   * No atomicity across a region and no lock. One writer by construction
 //     (a grant is READ-ONLY), which is most of why that is survivable.
-//     GAP-0218.
+//     GAP-0236.
 //   * No blocking. A reader polls, exactly as ADR-0027's receiver does
 //     (GAP-0200). Nothing on this machine can block.
 // ---------------------------------------------------------------------------
@@ -88,8 +88,8 @@ const int shmSlotPages = 256;
 /// here rather than discovered later. The window ([vmShmPages], 512) is large
 /// enough for one; the SLOTTING is what caps it at 256. Configuring `shmMax` 1
 /// / `shmSlotPages` 512 fits a full-screen frame today and changes no ABI, no
-/// syscall and no structure -- only these two constants. ADR-0035 §7 records
-/// why M21 did not take that configuration, and GAP-0219 carries it.
+/// syscall and no structure -- only these two constants. ADR-0041 §7 records
+/// why M21 did not take that configuration, and GAP-0237 carries it.
 const int shmMaxPages = 256;
 
 // ---------------------------------------------------------------------------
@@ -604,7 +604,7 @@ u64 shmCallerId() {
 //   bits 32..63  the region's generation at the time the capability was made
 //
 // A ring-3 HANDLE is `(capIndex << 32) | generation` and carries no region
-// index at all -- which is the point. See ADR-0035 §4.
+// index at all -- which is the point. See ADR-0041 §4.
 // ---------------------------------------------------------------------------
 
 @bare
@@ -795,7 +795,7 @@ void shmCreateRollback(u64 vec, u64 n) {
 ///
 /// **The only place a region's frames go back to the allocator**, and it runs
 /// when the LAST capability naming the region is released -- not when the last
-/// mapping goes away. See ADR-0035 §5.
+/// mapping goes away. See ADR-0041 §5.
 @bare
 void shmRegionDestroy(u64 r) {
   final u64 vec = shmReg(r, u64(shmRegVec));
@@ -933,7 +933,7 @@ void shmUnmapPages(u64 r) {
 /// **The creator is the region's only writer, for its whole life.** A grant
 /// conveys [shmPermRo] and `shmSysMap` refuses to widen it, so a region has
 /// exactly one writer by construction. That is most of why the absence of any
-/// lock (§ADR-0035 §6) is survivable rather than merely undetected.
+/// lock (§ADR-0041 §6) is survivable rather than merely undetected.
 ///
 /// The check order below IS the security argument, top to bottom, and it is
 /// `chanSysSend`'s discipline: who is asking, then the length, then resources,
@@ -1126,7 +1126,7 @@ void shmSysGrant(u64 frame) {
   // should be"; this is that answer, and it is not a parameter. A grant that
   // could convey write access would make the number of writers a property of
   // the caller's argument rather than of the design, and every claim in
-  // ADR-0035 §6 about there being one writer would become conditional.
+  // ADR-0041 §6 about there being one writer would become conditional.
   shmSetCap(ps, pi, shmCapPack(r, u64(shmPermRo), u64(0), gen));
   shmSetReg(r, u64(shmRegRefs), shmReg(r, u64(shmRegRefs)) + u64(1));
   shmSetReg(r, u64(shmRegGrants), shmReg(r, u64(shmRegGrants)) + u64(1));
@@ -1258,7 +1258,7 @@ void shmSysMap(u64 frame) {
 /// mapped, and destroys the region if this was the last capability naming it.
 ///
 /// **This is the whole of revocation, and it only ever points at the caller.**
-/// A grantor cannot take a capability back from a grantee. GAP-0215 records
+/// A grantor cannot take a capability back from a grantee. GAP-0233 records
 /// what involuntary revocation would take and why M21 does not have it.
 @bare
 void shmSysDrop(u64 frame) {

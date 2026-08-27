@@ -595,7 +595,7 @@ void _start(void) {
      * starting the same binary with `run <lba>`, which was an M10-style load
      * with no process slot. ADR-0034 unified the launch path so `run` goes
      * through `procCreate`, so nothing the shell can start lands here any more
-     * and `chanopen` always succeeds. GAP-0221 records that, in GAP-0214's
+     * and `chanopen` always succeeds. GAP-0239 records that, in GAP-0214's
      * category: the kernel guard is LIVE and REACHABLE (an M9-style `user`
      * payload would hit it), it is this harness that can no longer reach it.
      * The code stays so that the day a no-slot payload exists, the test does

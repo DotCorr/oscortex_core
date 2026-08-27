@@ -1,4 +1,4 @@
-# ADR-0035 — Shared memory regions, and a capability that can be handed to a peer
+# ADR-0041 — Shared memory regions, and a capability that can be handed to a peer
 
 **Status:** Accepted (M21)
 **Date:** 2026-08-27
@@ -174,7 +174,7 @@ each other:
   fault/kill path go through, so a faulting process releases its capability exactly like a polite one.
   `m21-shmem` asserts there is exactly one call site and that it is that function — M15's
   `fileReleaseOwner` finding and M20's `chanReleaseOwner` finding, applied a third time.
-  **What the peer sees is a torn region**, and that is not fixable here; see §6 and GAP-0218.
+  **What the peer sees is a torn region**, and that is not fixable here; see §6 and GAP-0236.
 * **A region nothing maps.** A creator can exit before its grantee ever calls `shmmap`. The frames are
   held by the *capability*, so they survive — which is why the frame list lives in a per-region
   **frame-vector page** rather than being recovered from a page table. At that instant there is no
@@ -256,7 +256,7 @@ worse than useless**, because the unit of tearing is a frame or a whole buffer, 
 `lock cmpxchgq` on one `u64` of a 16 KB update buys nothing and would advertise a guarantee that does
 not exist. The answer for a compositor is a sequence number the client writes last and the server
 re-reads after copying, or double buffering — both of which are the *client's* protocol, above this
-primitive. **GAP-0218** records that, and records that this harness cannot demonstrate it because
+primitive. **GAP-0236** records that, and records that this harness cannot demonstrate it because
 `proc coop` does not preempt.
 
 ---
@@ -281,7 +281,7 @@ runs with the target's CR3 already in the register. Involuntary revocation there
   which is surgery on `proc.dart` that this milestone would then be shipping untested.
 
 Neither is free and neither is needed by the client this exists for: a compositor revokes by asking
-the client to drop, or by outliving it. **GAP-0215** carries it with the two mechanisms written out.
+the client to drop, or by outliving it. **GAP-0233** carries it with the two mechanisms written out.
 
 **What M21 does have** is the part of revocation that is actually load-bearing for safety: a
 capability dies with its holder, on the fault path as well as the exit path, and a handle to a dead
@@ -293,10 +293,10 @@ region is refused by generation rather than dangling.
   *slotting* — `shmMax = 2` regions of `shmSlotPages = 256` — is what caps it. Configuring one slot of
   512 fits a full-screen frame and changes no ABI, no syscall and no structure, only two constants.
   M21 did not take that configuration because two regions is what two processes need and a
-  one-region kernel could not test a grant to a peer that already holds one. **GAP-0219.**
+  one-region kernel could not test a grant to a peer that already holds one. **GAP-0237.**
 * **No partial map, no offset map, no resize.** A capability names a whole region and maps it whole.
-  **GAP-0216.**
-* **No file backing, no `MAP_FIXED`, no `mprotect`, no demand paging.** **GAP-0217.**
+  **GAP-0234.**
+* **No file backing, no `MAP_FIXED`, no `mprotect`, no demand paging.** **GAP-0235.**
 * **Addresses are chosen by the kernel, never by the caller** — and a region's address is a function
   of its *slot*, so it is the same number in every address space. That is worth more than the address
   space it wastes: an offset in a frame descriptor means the same thing to both peers.
@@ -347,12 +347,12 @@ fetch, so nothing here leans on a hardware backstop.**
 **A write through the consumer's read-only mapping is never attempted.** It would `#PF` and the kernel
 would kill the process before it could report its hash, so the read-only-ness is asserted from the
 page tables instead — a weaker claim than a fault would be, and it is written down as one.
-**GAP-0220** records what closing it takes (a payload whose *last* act is the store, with the exit
+**GAP-0238** records what closing it takes (a payload whose *last* act is the store, with the exit
 code carried some other way).
 
 **The no-process guard is structural, not behavioural.** All four syscalls refuse a caller with no
 process slot, and ADR-0034 unified the launch path so that nothing the shell can start produces one.
-This is GAP-0214's situation exactly, for a second subsystem, and it is filed as **GAP-0221** in that
+This is GAP-0214's situation exactly, for a second subsystem, and it is filed as **GAP-0239** in that
 category and explicitly not in GAP-0206's: the path is live and reachable — an M9-style `user` payload
 would hit it — and what is missing is a payload that issues `shmcreate`.
 
@@ -401,7 +401,7 @@ sufficient**: what actually proves retention is the frame accounting — `PROC K
 rather than 15, and `SHM DEAD … FREED` being 5. A harness that had asserted only "the bytes are still
 right after the peer died" would have passed a kernel with a live use-after-free in it. That is the
 GAP-0124 question — which of these checks is load-bearing — asked of this milestone's own harness, and
-**GAP-0222** carries the answer.
+**GAP-0240** carries the answer.
 
 ---
 
@@ -415,4 +415,4 @@ writes pixels into it with ordinary stores and no syscall, grants the compositor
 capability, and sends a 64-byte descriptor naming it down a channel that did not have to change. What
 is still missing before a compositor is real is a mouse, a way to wait (GAP-0200's `chanwait` or the
 registry's reserved `fdwait`), and a client-level sequence-number protocol for tear-free updates
-(GAP-0218).
+(GAP-0236).

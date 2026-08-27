@@ -63,7 +63,7 @@ part 'chan.dart';
 // harness that subtracts it.
 part 'ioctl.dart';
 
-// M21 (ADR-0035) -- shared memory regions and capability transfer.
+// M21 (ADR-0041) -- shared memory regions and capability transfer.
 //
 // **LAST, AND `ioctlStore` YIELDS THE POSITION IT HELD.** ADR-0033 s6.4 stated
 // the rule this file is the third instance of: "last is necessary but not

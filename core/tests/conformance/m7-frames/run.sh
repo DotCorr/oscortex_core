@@ -256,7 +256,7 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # sufficient: the previously-last block's own to-the-end measurement is exactly
 # the one a new block after it changes. M19's number went 256 -> 768 and twelve
 # harnesses said so. ADR-0033 §6.4.
-# M21 (ADR-0035) added a block AFTER S0's, and it is now the LAST one in .bss:
+# M21 (ADR-0041) added a block AFTER S0's, and it is now the LAST one in .bss:
 # `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
 # records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
@@ -272,9 +272,9 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 M21_OFF_HEX=$(bssoff shmStore)
-ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0035) is missing"
+ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0035, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -532,10 +532,25 @@ echo "STRUCTURAL: pass  all 52 M7 @rodata tables plus shellStrHelp (621 -> 1028)
 #
 # What it DOES buy, and the reason it is worth having anyway: m10-elf has
 # asserted this for elf.dart alone since M10, and elf.dart is now three of the
-# SEVENTEEN allocFrame() call sites in this kernel. proc.dart's five, user.dart's
+# TWENTY allocFrame() call sites in this kernel. proc.dart's five, user.dart's
 # two ring-3 pages and heap.dart's page are all outside it. This is the check
-# that fails when the eighteenth call site is added without a zeroing beside it
-# — which is exactly how a frame reaches ring 3 dirty.
+# that fails when the twenty-first call site is added without a zeroing beside
+# it — which is exactly how a frame reaches ring 3 dirty.
+#
+# WHY TWENTY AND NOT SEVENTEEN (M21, ADR-0041, shared memory). `shm.dart` takes
+# three frames: the shared window's page table, a region's frame-vector page,
+# and each page of a region. ALL THREE ARE ZEROED IN shm.dart ITSELF and NONE IS
+# EXEMPTED — the census moved, the rule did not. The third one is the one that
+# matters: a region's pages are about to be readable from ring 3 in TWO address
+# spaces, so the previous owner's bytes would be reachable by a process that
+# never allocated them. `shmSysCreate` zeroes each page BEFORE it is mapped, not
+# after, which is `heapSbrk`'s discipline for `heapSbrk`'s reason.
+#
+# The window's page table is zeroed in `shm.dart` as well as inside
+# `vmShmTableInstall`, deliberately: the install zeroes it because a table full
+# of allocator litter is 512 mappings the CPU will believe, and the redundant
+# line is what keeps this check true for that site without adding a fifth
+# delegating exemption.
 #
 # WHY SEVENTEEN AND NOT NINETEEN (ADR-0034, the launch unification). This census
 # was written against nineteen when e1381f8 added it. Unifying the launch path
@@ -606,9 +621,9 @@ if "vmZeroFrame(vmFrame(i));" not in vmsrc:
     bad.append("vmBuild no longer zeroes vmInit's six frames, and vm.dart's `f` "
                "is exempted here on the grounds that it does")
 
-if sites != 17:
+if sites != 20:
     bad.append("there are %d allocFrame() call sites and this check was written "
-               "against 17. A new one is not a failure -- an unaccounted one is. "
+               "against 20. A new one is not a failure -- an unaccounted one is. "
                "Add it, or its exemption, and move this number." % sites)
 
 for b in bad:
@@ -617,7 +632,7 @@ print("    (%d allocFrame() call sites; %d exempted with a reason)"
       % (sites, len(EXEMPT)))
 sys.exit(1 if bad else 0)
 PYEOF
-echo "STRUCTURAL: pass  all 17 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
+echo "STRUCTURAL: pass  all 20 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).

@@ -262,7 +262,7 @@ KDATA_BSS=$DART_BSS
 # sufficient: the previously-last block's own to-the-end measurement is exactly
 # the one a new block after it changes. M19's number went 256 -> 768 and twelve
 # harnesses said so. ADR-0033 §6.4.
-# M21 (ADR-0035) added a block AFTER S0's, and it is now the LAST one in .bss:
+# M21 (ADR-0041) added a block AFTER S0's, and it is now the LAST one in .bss:
 # `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
 # records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
@@ -278,9 +278,9 @@ KDATA_BSS=$DART_BSS
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 M21_OFF_HEX=$(bssoff shmStore)
-ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0035) is missing"
+ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0035, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -398,7 +398,15 @@ for name, needs_writable in (("fileOwnsWrite", True), ("fileOwnsRead", False)):
     if not lines[0].startswith("if (ptr <"):
         bad.append("%s does not bound `ptr` on its first line (%r)" % (name, lines[0]))
     first_add = next((i for i, l in enumerate(lines) if "ptr + len" in l), None)
-    first_bound = next((i for i, l in enumerate(lines) if "ptr >= u64(vmProgEnd)" in l), None)
+    # M21 (ADR-0041) split the LOAD bound from the REACHABILITY bound. A
+    # user-pointer validator must test `vmUserEnd` -- one past the last address
+    # ring 3 can reach, which now includes the shared-region window -- and not
+    # `vmProgEnd`, which is still only where the loadable region ends. Pinned by
+    # NAME: `vmProgEnd` here would refuse every legitimate pointer into a shared
+    # region, and neither would be the overflow hole this check exists for.
+    first_bound = next((i for i, l in enumerate(lines) if "ptr >= u64(vmUserEnd)" in l), None)
+    if first_bound is None:
+        bad.append("%s does not bound `ptr` against vmUserEnd (ADR-0041)" % name)
     if first_add is None or first_bound is None or first_bound > first_add:
         bad.append("%s does arithmetic on `ptr` before bounding it" % name)
     if "while (a <= last)" not in b:
