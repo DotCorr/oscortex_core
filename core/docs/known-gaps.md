@@ -8195,6 +8195,20 @@ grew without its call site growing prints the NEXT table's bytes. For a merged t
 no longer run at all — so those two tables lose a guard, silently, and the harness reports it as
 "not emitted" which is the wrong diagnosis and would send the next reader looking in the wrong place.
 
+**AND DCDART ALREADY DECIDED THIS SHOULD NOT HAPPEN**, which changes what kind of entry this is.
+`core/backend/lib/llvm_emit.dart`'s `_emitGlobal` says, in a comment written long before today:
+
+> Deliberately NOT `unnamed_addr`. That moves a global into a mergeable section (verified:
+> `.section .rodata.cst8,"aM",@progbits,8`), which lets the linker collapse two byte-identical
+> globals to ONE ADDRESS. Harmless for name strings; **catastrophic for anything whose address
+> means something**.
+
+So the merging is **a regression against DCDart's own stated intent**, not a design choice this
+repo has to accommodate. Whatever is collapsing these globals is doing it despite `unnamed_addr`
+being withheld on purpose — which means the cause is somewhere else (a `-O2`/globalopt pass, or the
+linker) and is worth finding rather than working around. That reframes option 1 below from "please
+change your design" to "your design says this, and it is no longer true".
+
 **Three ways to close it, and the preference is the first:**
 
 1. **DCDart stops merging `@rodata` tables** — they are a load-bearing named ABI in this project
