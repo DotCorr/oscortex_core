@@ -8007,3 +8007,73 @@ and says so.
 harness failure — or, better, `qmp-drive.py` should tolerate the socket going away once it has
 everything it came for, since at that point there is nothing left to ask QEMU. The second is smaller
 and does not re-run a two-minute boot to fix a one-millisecond race.
+
+---
+
+## GAP-0260 — DCDart now emits SSE for `.bss` zeroing, and this kernel's FPU story forbids it
+
+**Domain:** toolchain, kernel correctness (cross-repo: the fix is DCDart's)
+**Status:** **OPEN — BLOCKING. The tree cannot be rebuilt green today**, and this is not a defect in
+any oscortex commit.
+
+**What happened, measured rather than inferred.** Commit `d2bfef7` — M21, unchanged, which passed a
+full 24/24 sweep this morning — was rebuilt this afternoon with no edit of any kind:
+
+| | this morning | this afternoon |
+|---|---|---|
+| `kernel.elf` md5 | `75f8a81216c6585e89db80fa44c62247` | `32a24251928fbf4f926ce61820b11f19` |
+| `%xmm` instructions in the linked kernel | **0** | **275** |
+| `m11-proc` | PASS | FAIL |
+
+The only thing that changed is the DCDart working tree `build-kernel.sh` resolves to, which another
+unit is editing in place (floating point: `ConstFloat` in DCIR, `f64`/`f32` in the prelude, ADR-0065).
+
+**What the 275 instructions are, and why they appear.** `170 movups`, `58 movaps`, `47 xorps` — the
+shape LLVM produces when it **vectorises a zeroing loop**:
+
+```
+chanInit:
+    xorps  %xmm0,%xmm0
+    movups %xmm0,0x0(%rax)
+    movups %xmm0,0x0(%rax)
+```
+
+That is `chanInit` clearing its own `@bss` block. Every subsystem's `*Init` does the same loop, which
+is why the count is in the hundreds and spread across `argsCollect`, `chanInit`, `elfInit`,
+`fatDirCreate` and the rest. **No oscortex source changed**; the backend simply started allowing SSE
+where it previously emitted integer stores only.
+
+**Why it is a correctness failure here and not a performance question.** `m11-proc` asserts the
+kernel contains **zero** `%xmm` references, and ADR-0015 §2 is why: `procYield` saves a process's FPU
+state **after several hundred instructions of kernel code have already run**. That is only sound while
+the kernel itself never touches an XMM register. With 275 of them — in `chanInit`, in `elfInit`, on
+paths a syscall reaches — a process's FPU state can be clobbered by the kernel between the trap and
+the save. The harness is right and the kernel is now wrong.
+
+**The fix is DCDart's, not this repo's** (CLAUDE.md rule 3: never build a workaround here for a
+DCDart-language gap). A `@bare` freestanding target must not emit SSE at all — the backend needs the
+equivalent of `-mno-sse` / soft-float for bare mode, or at minimum a way for this kernel to say so.
+Working around it here would mean hand-writing every `*Init` to defeat the vectoriser, which is both
+fragile and exactly the kind of workaround rule 3 forbids.
+
+**What this repo did about it.** Nothing that would hide it:
+
+* the regenerated goldens were **thrown away, not committed**. Regenerating against this toolchain
+  would have written a kernel with 275 SSE instructions into twelve byte-exact goldens and turned a
+  loud failure into a silent one — which is the exact failure `--regen` is most able to cause
+  (GAP-0095's warning, and the reason `--regen` still runs every derived check);
+* the regen sweep was stopped as soon as the cause was known, so only `m7`–`m15` were touched and
+  all were reverted;
+* `build-kernel.sh` already prints the toolchain's commit and dirtiness on every build (GAP-0242),
+  which is how this was caught in one step instead of being blamed on B1's IRQ4 work.
+
+**This is GAP-0242's "dangerous case", and it has now happened.** That entry said: *"The loud case is
+a broken build. The dangerous case is a build that succeeds against half of somebody's compiler change
+and produces a subtly different kernel, and every byte-exact golden in this suite would then move for
+a reason no commit here explains."* It did, they would have, and the only reason it was not written
+into the goldens is that `m11-proc` fails loudly on an invariant that has nothing to do with
+addresses. **Without that one check, this would have been a silent 12-golden regeneration.**
+
+**What unblocks it:** DCDart stops emitting SSE in `@bare` mode, or `DCDART_PIN.txt` is honoured by a
+toolchain that does not — and per GAP-0242 there is currently no way to reconstruct such a checkout
+from a commit hash, which is why that entry is the prerequisite for this one.
