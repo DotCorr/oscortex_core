@@ -1391,7 +1391,10 @@ u64 pmmFillLedger() {
 /// 1 if the `u64` at [addr] equals [want].
 @bare
 u64 pmmCheckWord(u64 addr, u64 want) {
-  if (Pointer<u64>.fromAddress(addr).value == want) {
+  // `Volatile<u64>`: the READ-BACK half of a memory test — its value is the
+  // fact that the load really touched the frame. An ordinary load here is
+  // legally forwardable from the store it verifies (DCDart ADR-0069).
+  if (Volatile<u64>.fromAddress(addr).value == want) {
     return u64(1);
   }
   return u64(0);
@@ -1460,8 +1463,12 @@ void shellFramesTest() {
   i = u64(0);
   while (i < got) {
     final u64 a = pmmLedger(i);
-    Pointer<u64>.fromAddress(a).value = a ^ u64(0xA5A5A5A5A5A5A5A5);
-    Pointer<u64>.fromAddress(a + u64(pmmFrameLastWord)).value =
+    // `Volatile<u64>`: these stores exist to be VERIFIED — the harness
+    // asserts their consequence, not their value. Ordinary, the pair is
+    // legally forwardable at -O2 and the RW test could pass without
+    // touching the frames (ADR-0069's split).
+    Volatile<u64>.fromAddress(a).value = a ^ u64(0xA5A5A5A5A5A5A5A5);
+    Volatile<u64>.fromAddress(a + u64(pmmFrameLastWord)).value =
         a ^ u64(0x5A5A5A5A5A5A5A5A);
     i = i + u64(1);
   }
@@ -1610,7 +1617,10 @@ void shellFramesDrain() {
   // instead of a verdict. The frame is safe to write because the drain owns
   // every frame -- there is nothing else it could belong to.
   if (took > u64(0)) {
-    Pointer<u64>.fromAddress(high).value = high ^ u64(0xC3C3C3C3C3C3C3C3);
+    // `Volatile<u64>`: a MAPPING PROBE — "if the map were short, this line
+    // would be a page fault". The access is the assertion, so it must
+    // survive optimization exactly as written.
+    Volatile<u64>.fromAddress(high).value = high ^ u64(0xC3C3C3C3C3C3C3C3);
     uartWrite(Rodata.addressOf(pmmStrDrain), u64(10));
     uartWrite(Rodata.addressOf(pmmStrTouch), u64(6));
     uartPutHex(high, u64(16));

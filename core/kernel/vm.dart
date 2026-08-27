@@ -1592,7 +1592,15 @@ void vmTestRo() {
   // finding, recorded as docs/known-gaps.md GAP-0082. The check was NOT relaxed
   // to accommodate it: an assertion that a milestone weakens in order to pass
   // is not an assertion.
-  Pointer<u8>.fromAddress(a).value = u8(0xFF);
+  //
+  // `Volatile<u8>`: this store exists ONLY for its side effect — it must
+  // take a #PF against a read-only page. Written as an ordinary `Pointer`
+  // store it aims at a global LLVM knows is `constant`, which is UB, and
+  // -O2 DELETES it (measured: the boot's VM FAULTS total drops from 2 to 1
+  // and `vmtest ro` tests nothing). The access is the assertion; `Volatile`
+  // is the spelling for "this access happens, exactly as written".
+  // `core/scripts/verify-mmio-volatile.sh` asserts it survives per site.
+  Volatile<u8>.fromAddress(a).value = u8(0xFF);
   uartWrite(Rodata.addressOf(vmStrTestRoOops), u64(40));
 }
 
@@ -1640,8 +1648,13 @@ void vmTestRw() {
   uartSpace();
   uartPutHex(want, u64(16));
   uartSpace();
-  Pointer<u64>.fromAddress(a).value = want;
-  if (Pointer<u64>.fromAddress(a).value == want) {
+  // `Volatile<u64>` for the same reason `vmtest ro`'s store is: this pair
+  // is a control whose value IS the memory access. Written ordinary, -O2
+  // forwards the store to the load and prints OK without ever touching the
+  // page. Volatile forces the store to land and the read-back to really
+  // read.
+  Volatile<u64>.fromAddress(a).value = want;
+  if (Volatile<u64>.fromAddress(a).value == want) {
     uartWrite(Rodata.addressOf(pmmStrOk), u64(2));
   } else {
     uartWrite(Rodata.addressOf(pmmStrFail), u64(4));
