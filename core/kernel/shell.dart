@@ -1620,6 +1620,71 @@ void shellRecover() {
 /// header. The state word is written only with interrupts disabled on this
 /// side, and only from the IRQ1 handler on the other, so the two never
 /// interleave.
+/// The IRQ4 handler's body: drain COM1 into the shell's line buffer.
+///
+/// **This exists because POLLING CANNOT WORK HERE, and finding that out is the
+/// whole story of this piece of work.** The first version of B1 polled the UART
+/// in `shellMain`'s idle branch, which looked cheap and correct and never ran a
+/// single time. `idle_once()` is `sti; hlt`, and `m2Enter` reaches the shell
+/// through `picUnmaskKeyboardOnly` — mask 0xFD, **IRQ1 and nothing else**. The
+/// timer is masked at the prompt. So the CPU halts and stays halted until a
+/// KEY is pressed, the idle branch does not iterate, and a poll placed there is
+/// dead code that costs nothing and does nothing. A heartbeat counter in that
+/// loop printed zero dots in three seconds, which is what proved it.
+///
+/// So serial input needs a wake-up of its own, and that means an interrupt.
+/// This is `kbdHandle`'s shape deliberately: same guard, same single entry
+/// point into the line editor, same cursor update — because two input paths
+/// that edit one buffer must not acquire two different sets of rules.
+///
+/// **The loop drains the FIFO rather than taking one byte per interrupt.**
+/// `uartInit` enables the 16550's 14-byte receive FIFO, so a host that writes a
+/// whole line at once raises ONE interrupt for up to fourteen characters; a
+/// handler that took one byte would leave thirteen sitting in the FIFO with no
+/// further interrupt coming, and the line would appear one keystroke late
+/// forever after.
+@bare
+void shellSerialIrq() {
+  u64 draining = u64(1);
+  while (draining > u64(0)) {
+    if (uartHasByte() < u64(1)) {
+      draining = u64(0);
+    } else {
+      // TWO TRANSLATIONS, because a terminal is not a PS/2 keyboard.
+      //
+      // The line editor's alphabet is the one `kbdSet1Ascii` produces: Enter is
+      // LF (0x0A) and Backspace is BS (0x08). A terminal on the other end of a
+      // serial line sends CR (0x0D) for Return and usually DEL (0x7F) for
+      // Backspace. Without these two lines the console echoes what you type and
+      // never runs it -- which is exactly what the first working build did, and
+      // it looked like the interrupt was broken rather than the alphabet.
+      //
+      // Translated HERE rather than in `shellKey`, so the PS/2 path keeps its
+      // own alphabet exactly: nothing about the keyboard changes because a
+      // serial port exists.
+      final u64 raw = uartGetc().toU64();
+      u64 key = raw;
+      if (raw == u64(0x0D)) {
+        key = u64(0x0A);
+      }
+      if (raw == u64(0x7F)) {
+        key = u64(0x08);
+      }
+      final u8 sc = key.toU8();
+      if (shellState() > u64(0)) {
+        // A line is submitted or a command is running. `kbdHandle` drops the
+        // key in this case and so does this: there is no input queue in this
+        // kernel (see this file's header), and inventing one for the serial
+        // path only would give the two input sources different semantics.
+        draining = draining;
+      } else {
+        shellKey(sc);
+        vgaUpdateHwCursor();
+      }
+    }
+  }
+}
+
 @bare
 void shellMain() {
   while (u64(1) > u64(0)) {

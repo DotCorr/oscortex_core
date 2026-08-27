@@ -47,6 +47,9 @@ const int kbdStatus = 0x64;
 /// Vector the remapped master PIC delivers IRQ1 on (0x20 + 1).
 const int vectorKeyboard = 0x21;
 
+/// B1: COM1's IRQ, remapped. IRQ4 -> 0x20 + 4.
+const int vectorSerial = 0x24;
+
 // ---------------------------------------------------------------------------
 // Scan-code set 1 -> ASCII.
 // ---------------------------------------------------------------------------
@@ -170,7 +173,17 @@ void kbdInit() {
 /// to do and would only add jitter to the console.
 @bare
 void picUnmaskKeyboardOnly() {
-  Port.outb(u16(picMasterData), u8(0xFD));
+  // B1: 0xED, not 0xFD -- IRQ1 AND IRQ4 (COM1). The name is kept because
+  // `m18-preempt` counts this function's call sites by name and `proc.dart`
+  // restates the value it writes; what changed is that the console is now two
+  // devices rather than one. The timer stays masked, which is the property the
+  // name is really about and the one `picUnmaskTimerAndKeyboard` exists to
+  // contrast with.
+  //
+  // UNMASKING IRQ4 IS SAFE ONLY BECAUSE A HANDLER EXISTS FOR IT: interrupts.dart
+  // dispatches 0x24 to `shellSerialIrq`, and `uartEnableRx` is what actually
+  // makes the device raise it. All three land together or none of them do.
+  Port.outb(u16(picMasterData), u8(0xED));
   Port.outb(u16(picSlaveData), u8(0xFF));
 }
 
@@ -187,7 +200,8 @@ void picUnmaskKeyboardOnly() {
 /// docs/known-gaps.md GAP-0058.
 @bare
 void picUnmaskTimerAndKeyboard() {
-  Port.outb(u16(picMasterData), u8(0xFC));
+  // B1: 0xEC -- IRQ0, IRQ1 and IRQ4, for `picUnmaskKeyboardOnly`'s reason.
+  Port.outb(u16(picMasterData), u8(0xEC));
   Port.outb(u16(picSlaveData), u8(0xFF));
 }
 

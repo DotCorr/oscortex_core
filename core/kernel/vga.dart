@@ -423,6 +423,9 @@ void m2Enter() {
   // wedge the keyboard permanently and silently. kbdInit() also finishes the
   // banner line with the drained count and a newline.
   kbdInit();
+  // B1: arm COM1's receive interrupt in the same breath as the PIC unmask, so
+  // the device and the controller are never out of step with each other.
+  uartEnableRx();
   picUnmaskKeyboardOnly();
 
   vgaWrite(Rodata.addressOf(shellStrPrompt), u64(10));

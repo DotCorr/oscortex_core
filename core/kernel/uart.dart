@@ -101,6 +101,62 @@ void uartPutc(u8 c) {
   Port.outb(u16(0x3F8), c);
 }
 
+// ---------------------------------------------------------------------------
+// B1 -- RECEIVE. Until now this driver was TRANSMIT-ONLY: `uartPutc` and
+// nothing else, with receive interrupts deliberately disabled at `uartInit`
+// since M0. The machine could talk and could not listen, which is why the only
+// way to type into it was the emulated PS/2 keyboard and therefore a GUI.
+//
+// POLLED, NOT INTERRUPT-DRIVEN, and that is a decision rather than a shortcut.
+// An IRQ4 handler would need the 8259 mask changed, a gate installed, and a
+// buffer shared between the handler and `shellMain` -- the same
+// state-word-race machinery `shell.dart`'s header spends a page on for IRQ1.
+// The shell already has an idle branch that runs `sti; hlt` and wakes on every
+// timer tick, so polling there costs one `inb` per tick and needs no new
+// interrupt state at all. If a future user of this port needs bytes faster
+// than 100 Hz, THAT is when the IRQ is worth its complexity.
+// ---------------------------------------------------------------------------
+
+/// 1 if COM1 has a received byte waiting, 0 if not.
+///
+/// LSR bit 0 is Data Ready. Reading it has no side effect; reading the RBR
+/// does (it clears the bit), which is why the test and the read are two
+/// functions and every caller does them in that order.
+/// Arms the 16550's "Received Data Available" interrupt (IER bit 0).
+///
+/// Called when the console comes up, beside the PIC unmask, and NOT from
+/// `uartInit`: M0's init deliberately leaves IER at 0 because there was no IDT
+/// to route a UART IRQ into, and that is still true for the whole of M0/M1.
+/// Arming it earlier would put an interrupt line behind no handler, which is
+/// the thing that comment refuses to do.
+@bare
+void uartEnableRx() {
+  Port.outb(u16(0x3F9), u8(0x01)); // IER: received-data-available only
+}
+
+@bare
+u64 uartHasByte() {
+  final u8 lsr = Port.inb(u16(0x3FD));
+  if ((lsr & u8(0x01)) > u8(0)) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// Reads one received byte from COM1.
+///
+/// **The caller must have checked [uartHasByte] first.** Reading the RBR when
+/// Data Ready is clear returns whatever the register last held, which is a
+/// stale byte presented as a fresh one -- and this port is about to be an
+/// input path for a shell, so a duplicated character is a wrong command rather
+/// than a cosmetic glitch. There is no way to express "no byte" in a `u8`
+/// return, so the contract is the check, and it is stated here rather than
+/// defended by a sentinel that would collide with a real 0xFF.
+@bare
+u8 uartGetc() {
+  return Port.inb(u16(0x3F8));
+}
+
 /// Writes one hex digit for the low nibble of [n] (the high nibble is
 /// ignored -- callers mask). Two branches, not a 16-arm dispatch, because
 /// the arithmetic stays in `u8`: 0-9 -> '0'..'9' (+0x30), 10-15 -> 'A'..'F'
