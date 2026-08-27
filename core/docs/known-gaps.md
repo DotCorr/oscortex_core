@@ -7795,3 +7795,65 @@ why the mutation round above exists and why its results are written down rather 
   executed on a boot.** They are reachable in principle — a third region, a drained allocator, a fifth
   capability, a failed table install — and no boot in this suite arranges one. `shmRetNoCap` is the
   cheapest to reach (a process creating five regions) and would be the first to add.
+
+---
+
+## GAP-0241 — Two M21 decisions are flagged for a human, and are shipped rather than blocked
+
+**Domain:** memory model, syscall ABI (M21, ADR-0041 §10)
+**Status:** OPEN — an escalation, recorded here so it is discoverable from the work queue rather than
+only from an ADR nobody re-reads.
+
+`CLAUDE.md`'s escalation rule names one of these by hand: *"memory layout that userland will
+eventually depend on."* M21 makes exactly such a choice, plus one about the syscall ABI's shape. Both
+are implemented and verified — the ladder is blocked without them — and both want confirmation
+before a compositor protocol is written on top, at which point they stop being cheap.
+
+1. **Ring 3 now has two windows**, `[0x10000000, 0x10200000)` for the load region and
+   `[0x10200000, 0x10400000)` for shared regions, with `vmUserEnd` as the reachability bound. A
+   region's address is a function of its SLOT, so it is the same number in every address space —
+   which is the property a frame descriptor's offset depends on, and therefore the property userland
+   will encode. `docs/design/memory.md` §1.3 recommends this shape, but that file is explicitly a
+   proposal ("Status: DESIGN … nothing implemented"), so M21 promoted a proposal to a shipped memory
+   layout on its own authority.
+2. **`shmgrant` is the first syscall in this kernel that changes another process's state.** GAP-0201
+   recommended a grant syscall in as many words, so the substance is not unilateral; the SHAPE is —
+   four syscalls rather than two, a grant that is read-only and cannot be anything else, and a peer
+   named through a channel endpoint rather than by process id.
+
+ADR-0041 §10 has the full statement of each and what specifically to confirm.
+
+---
+
+## GAP-0242 — `DCDART_PIN.txt` is checked against a literal in a harness, never against the toolchain that actually built the kernel
+
+**Domain:** build, conformance
+**Status:** OPEN — **found by M21 the boring way: by noticing its own builds did not use the pinned
+commit and that nothing anywhere objected.**
+
+`DCDART_PIN.txt` exists to record "the DCDart commit this was last verified against" (CLAUDE.md's
+documentation rules). One harness asserts it — `m7-frames`, with `[[ "$PIN" == <literal>* ]]` — and
+that assertion compares **the file against a string in a shell script**. Nothing compares either one
+against the DCDart checkout `build-kernel.sh` actually invokes.
+
+**Measured during M21.** `DCDART_PIN.txt` says `38f0b06`. `build-kernel.sh` resolves
+`DCDART_HOME="${DCDART_HOME:-$REPO_DIR/../DCDart}"`, which for a worktree under
+`.claude/worktrees/<agent>` is `.claude/worktrees/DCDart` — a checkout sitting at **`f9676f2`, two
+commits past the pin**. Every kernel M21 built, and every harness M21 ran, used `f9676f2`. The pin
+file said `38f0b06` throughout and no check noticed, because no check looks.
+
+**Why this is worse than it sounds.** The pin's whole purpose is reproducibility: "this kernel is
+known to work against that compiler". A pin that is verified against a hardcoded string is verified
+against nothing — it can only catch somebody editing one of the two files, which is precisely the
+two-place-edit problem GAP-0232 already records from the other side. GAP-0232 is "the literal went
+stale"; this is "even when the literal is fresh, it is not measuring the toolchain".
+
+**What closing it takes, and it is small.** `build-kernel.sh` already knows `DCDART_HOME`. Have it
+`git -C "$DCDART_HOME" rev-parse --short HEAD`, compare against `DCDART_PIN.txt`'s first field, and
+refuse — or at minimum print a loud line — when they differ, with an override for the deliberate
+"bumping the pin" case. Then `m7-frames`' literal can go away entirely and the pin becomes a fact
+about the build rather than a fact about two files agreeing with each other.
+
+**A caveat that is part of the finding.** `38f0b06` IS an ancestor of `f9676f2`, so nothing built
+during M21 used a compiler older than the pin — the drift is forward, and the two intervening commits
+are DCDart's own optimiser work. That is luck, not a property anything enforced.

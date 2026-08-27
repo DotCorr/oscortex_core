@@ -405,7 +405,74 @@ GAP-0124 question — which of these checks is load-bearing — asked of this mi
 
 ---
 
-## 10. What this unlocks
+## 10. ESCALATION — two decisions this unit made that it should not have made alone
+
+`CLAUDE.md`'s escalation rule names one of these by hand: *"Any hardware/boot-protocol choice
+that's hard to reverse later … memory layout that userland will eventually depend on."* M21 makes
+exactly such a choice, and a second one about the syscall ABI's shape. Both are **implemented and
+verified**, because the ladder is blocked without them and a reversible decision that is written down
+is worth more than a blocked milestone — but both are flagged here rather than left to be discovered
+by whoever depends on them.
+
+### 10.1 The ring-3 memory layout is now two windows, and userland will depend on it
+
+Before M21 a ring-3 program's whole world was `[0x10000000, 0x10200000)`. It is now:
+
+```
+  [0x10000000, 0x10200000)   PD[128]   load region -- code, data, heap, guard, stack   (UNCHANGED)
+  [0x10200000, 0x10400000)   PD[129]   shared regions                                  (NEW)
+  vmUserEnd = 0x10400000               one past the last address ring 3 can reach
+```
+
+**What makes it hard to reverse:** a shared region's virtual address is a function of its *slot*
+(`vmShmBase + r * shmSlotPages * 4096`), so it is the same number in every address space — which is
+the property that lets a frame descriptor carry an offset both peers agree about. The moment a
+compositor and a client are written against that, `0x10200000` is in userland's contract, exactly as
+`0x10000000` has been since M10 and `prog.ld` in nine harnesses shows.
+
+**The specific things a human should confirm:**
+
+* **Two windows rather than one bigger one.** `docs/design/memory.md` §1.3 recommends this and it is
+  what was built; §2 of this ADR prices the alternative. But that design doc is explicitly a proposal
+  ("Status: DESIGN. Not an ADR, not numbered, nothing implemented"), so this unit promoted a proposal
+  to a shipped memory layout on its own authority.
+* **The address is derived from the slot, not allocated.** The alternative — a bump pointer, or
+  caller-proposed addresses — was rejected in §7.1. It is cheap to change *now* and expensive once a
+  descriptor format is in userland.
+* **`vmUserEnd` is 0x10400000 and not `memory.md`'s proposed 0x14000000 (64 MiB).** This unit claimed
+  only the one page-directory entry it uses, because a validator bound should be what ring 3 can
+  actually reach rather than what it might one day. Raising it later is a one-constant change; it is
+  named here because `memory.md` says a different number and a reader will notice.
+
+### 10.2 The syscall ABI grew four numbers and a new KIND of operation
+
+16–19 are `shmcreate`/`shmgrant`/`shmmap`/`shmdrop`. Three of those are ordinary. **`shmgrant` is
+not:** it is the first syscall in this kernel that changes *another process's* state — it writes a
+capability into the peer's slot. Everything before it acted on the caller.
+
+GAP-0201 recommended precisely this ("either the region grant is a fourth syscall that the kernel
+*does* interpret … the first keeps `chan.dart` as simple as it is and is the recommendation"), so it
+is not unilateral in substance. What this unit decided alone is the **shape**:
+
+* **four syscalls rather than two.** `shmdrop` could have been folded into a flag, and `shmgrant`
+  into `chansend`. Both were kept separate for `file.dart`'s stated reason — a call whose meaning
+  depends on an argument is one somebody eventually calls wrong — at the cost of four registry
+  numbers on a machine that has used twenty.
+* **a grant is READ-ONLY and cannot be anything else** (§6.2). This is the single most load-bearing
+  choice in the design: it is what makes "exactly one writer" a structural fact rather than a
+  convention, and it is what makes the absence of any lock defensible. It also means a
+  producer/consumer pair is the *only* topology this primitive supports. Two peers that both need to
+  write need two regions, or a different primitive.
+* **`shmgrant` names its target through a channel endpoint** rather than by process id, so a process
+  can only grant to somebody it is already talking to. That couples `shm.dart` to `chan.dart` by one
+  function, and it means capability transfer is impossible without a channel.
+
+**None of these is hard to reverse in the kernel.** All of them are hard to reverse once a compositor
+protocol is written on top, which is the next rung.
+
+---
+
+## 11. What this unlocks
 
 The ladder was: input to ring 3 → `argv` (M19) → one IPC primitive (M20) → **a shared frame region
 (this)** → PS/2 mouse → a compositor process.
