@@ -437,7 +437,7 @@ final List<u8> shmStrPerm = const [
 /// preference.** Every earlier harness measures its own block's size as "bytes
 /// from my symbol to the end of `.bss`", so a new block anywhere but the end
 /// changes arithmetic in twelve run.sh files. Going last means exactly one
-/// block's measurement changes -- `ioctlStore`'s, which was last until now and
+/// block's measurement changes -- S0's, which was last until now and
 /// gains a subtraction step. ADR-0031 §4.3 rule 5 said the ioctl bounce buffer
 /// must be last so that no earlier block moves; ADR-0033 §6.3(a) corrected that
 /// wording ("last is necessary but not sufficient") after M20 and S0 each hit
@@ -1322,10 +1322,17 @@ void shmSysDrop(u64 frame) {
 ///
 /// **`procCleanup` is the function both the exit path and the fault/kill path
 /// go through**, so a process that dies mid-write releases its capability
-/// exactly as one that exits politely does. That is M15's `fileReleaseOwner`
-/// finding and M20's `chanReleaseOwner` finding applied to a third kind of
+/// exactly as one that exits politely does. That is M15's descriptor-release
+/// finding and M20's endpoint-release finding applied to a third kind of
 /// resource, and it is what stops a killed process from pinning a region's
 /// frames for the rest of the boot.
+///
+/// (Those two are named by what they do rather than by their symbols on
+/// purpose: `m15-fileio` and `m20-ipc` each grep `core/kernel/` for their own
+/// release function and require it to appear in exactly two files, which is
+/// ADR-0011 s0's seam discipline made mechanical. A doc comment that spells the
+/// symbol fails somebody else's harness -- and it did, once, before this
+/// parenthesis existed.)
 ///
 /// **It does not unmap anything**, because `procSpaceFree` has already run and
 /// this slot's page tables are gone. It decrements what those mappings stood

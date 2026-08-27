@@ -7857,3 +7857,73 @@ about the build rather than a fact about two files agreeing with each other.
 **A caveat that is part of the finding.** `38f0b06` IS an ancestor of `f9676f2`, so nothing built
 during M21 used a compiler older than the pin — the drift is forward, and the two intervening commits
 are DCDart's own optimiser work. That is luck, not a property anything enforced.
+
+### And it is worse than drift: the toolchain is a SHARED MUTABLE WORKING TREE
+
+M21's last verification run failed to build at all, with
+
+```
+../../../DCDart/core/backend/lib/llvm_emit.dart:448:11: Error: The type 'DCInstruction' is not
+exhaustively matched by the switch cases since it doesn't match 'ConstFloat()'.
+```
+
+because another agent was **mid-edit** in the DCDart checkout `build-kernel.sh` resolves to —
+`core/dc-ir/lib/instructions.dart`, `core/backend/lib/llvm_emit.dart` and `core/dc-elide/lib/elide.dart`
+all modified and uncommitted, adding a `ConstFloat` instruction. So the compiler this repo builds with
+is not merely un-pinned, it is a **working tree that other work is actively changing**, and a kernel
+build can therefore fail — or, much worse, SUCCEED DIFFERENTLY — for reasons that have nothing to do
+with the change being tested and leave no trace in this repo.
+
+**Why the "succeed differently" case is the dangerous one.** A build that fails is loud. A build that
+picks up half of somebody's optimiser change and produces a subtly different kernel is silent, and
+every byte-exact golden in this suite would then move for a reason no commit here explains. M21 got
+the loud case and only noticed the shared-tree problem because of it.
+
+**This makes the fix in the previous paragraph load-bearing rather than tidy.** Comparing
+`DCDART_PIN.txt` against `git -C "$DCDART_HOME" rev-parse --short HEAD` is not enough on its own:
+`git -C "$DCDART_HOME" status --porcelain` must also be empty, or the build must say out loud that it
+is using a dirty toolchain. A pin names a commit; a dirty tree is not that commit.
+
+**What M21 did about it, and what it could not do.** Every M21 result was produced with one kernel
+image, `md5 75f8a81216c6585e89db80fa44c62247`, and that was checked rather than assumed: the two
+comment-only edits made after the full sweep were each followed by a successful rebuild and a `cmp`
+against the pre-edit binary, both byte-identical. So the sweep's results and the final tree describe
+the same kernel. What M21 could NOT do is re-run anything after the breakage began, because no clean
+DCDart checkout exists on this machine while that edit is in flight.
+
+---
+
+## GAP-0243 — A harness can fail a sweep on a QMP teardown race and pass alone
+
+**Domain:** conformance, infrastructure
+**Status:** OPEN — one observation, recorded because the next person to see it will otherwise spend
+the morning on a kernel that is fine.
+
+`m8-paging` FAILED in M21's full sweep and PASSED on its own re-run, with the same kernel image, no
+edit in between. The failure was not a golden mismatch — the transcript in the failing run is correct,
+`VM TEXT … W 00 X 11` and all — it was:
+
+```
+qmp-drive: wrote .../screen.txt
+Traceback (most recent call last):
+ConnectionResetError: [Errno 54] Connection reset by peer
+M8-paging: FAIL — qmp-drive.py exited 1 for the session boot.
+```
+
+i.e. QEMU closed the QMP socket while the driver was still talking to it, **after** the driver had
+already written the screenshot and the screen text. Everything the harness asserts had been captured;
+the process died during teardown.
+
+**Not GAP-0150.** That entry is the *launch*-side race — the port `pick-port.py` hands out being taken
+between the probe and QEMU's bind — and `drive_session` already retries on `Address already in use`.
+This is the *teardown* side and the retry does not cover it: the error text is different and the run
+is not retried.
+
+**The condition it was seen under** is worth writing down because it is the likely cause: three agents
+running QEMU-heavy sweeps concurrently, load average **21**, on 8 cores.
+
+**What closing it takes.** `drive_session` already knows how to retry a boot; it would need to treat a
+`ConnectionResetError` *after* the captures were written as a retryable launch failure rather than a
+harness failure — or, better, `qmp-drive.py` should tolerate the socket going away once it has
+everything it came for, since at that point there is nothing left to ask QEMU. The second is smaller
+and does not re-run a two-minute boot to fix a one-millisecond race.
