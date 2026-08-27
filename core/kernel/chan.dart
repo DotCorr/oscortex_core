@@ -716,7 +716,7 @@ u64 chanOwnsRead(u64 ptr, u64 len) {
   if (ptr < u64(vmProgBase)) {
     return u64(0);
   }
-  if (ptr >= u64(vmProgEnd)) {
+  if (ptr >= u64(vmUserEnd)) {
     return u64(0);
   }
   if (len < u64(1)) {
@@ -725,7 +725,7 @@ u64 chanOwnsRead(u64 ptr, u64 len) {
   if (len > u64(chanMsgBytes)) {
     return u64(0);
   }
-  if ((ptr + len) > u64(vmProgEnd)) {
+  if ((ptr + len) > u64(vmUserEnd)) {
     return u64(0);
   }
   u64 a = ptr & u64(0xFFFFFFFFFFFFF000);
@@ -759,7 +759,7 @@ u64 chanOwnsWrite(u64 ptr, u64 len) {
   if (ptr < u64(vmProgBase)) {
     return u64(0);
   }
-  if (ptr >= u64(vmProgEnd)) {
+  if (ptr >= u64(vmUserEnd)) {
     return u64(0);
   }
   if (len < u64(1)) {
@@ -768,7 +768,7 @@ u64 chanOwnsWrite(u64 ptr, u64 len) {
   if (len > u64(chanMsgBytes)) {
     return u64(0);
   }
-  if ((ptr + len) > u64(vmProgEnd)) {
+  if ((ptr + len) > u64(vmUserEnd)) {
     return u64(0);
   }
   u64 a = ptr & u64(0xFFFFFFFFFFFFF000);
@@ -797,6 +797,53 @@ u64 chanCallerId() {
     return u64(0);
   }
   return procGet(procCurrent(), u64(procSlotId));
+}
+
+/// The process id on the OTHER side of endpoint [ep], or a `chanRet*` refusal.
+///
+/// **M21's single point of contact with this file, and it deliberately conveys a
+/// NAME rather than an authority.** `shmgrant(ep, h)` needs to answer "who am I
+/// granting to", and the honest answer on this machine is "whoever is on the
+/// other end of a channel I already hold an endpoint of". That reuses M20's
+/// ownership check verbatim -- the caller must own [ep], tested against
+/// [chanCallerId] and therefore against the scheduler's own state -- so a
+/// process cannot grant across a channel it is not party to.
+///
+/// **This does NOT weaken ADR-0027 §3's "a message is bytes; it cannot convey
+/// authority" (GAP-0201), and the distinction is the whole of M21's capability
+/// story.** Nothing here reads or writes a ring. A grant is a syscall that
+/// installs a capability in the peer's own table; the 64-byte message that
+/// follows carries only the NUMBER the kernel assigned. Bytes still cannot
+/// convey authority -- which is why a forged number in a forged message reaches
+/// nothing (ADR-0035 §4).
+///
+/// Returns above [chanRetFloor] on refusal so the caller can test one bound, and
+/// prints nothing: the refusal belongs to the `shm` syscall that asked, and is
+/// reported there with that syscall's number.
+@bare
+u64 chanPeerId(u64 ep, u64 id) {
+  if (id < u64(1)) {
+    return u64(chanRetNoProc);
+  }
+  if (ep >= u64(chanEndpoints)) {
+    return u64(chanRetBadEp);
+  }
+  final u64 port = ep >> u64(1);
+  final u64 side = ep & u64(1);
+  if (chanPort(port, chanOwnerWord(side)) != id) {
+    return u64(chanRetNotOwner);
+  }
+  if (chanPort(port, u64(chanPortState)) != u64(chanPortOpen)) {
+    // chanPortHalf: nobody has taken the other side yet. chanPortHalfClosed:
+    // somebody did and has gone. Both mean "there is no peer to grant to", and
+    // both are the caller's problem rather than a kernel error.
+    return u64(chanRetNoPeer);
+  }
+  final u64 peer = chanPort(port, chanOwnerWord(u64(1) - side));
+  if (peer < u64(1)) {
+    return u64(chanRetNoPeer);
+  }
+  return peer;
 }
 
 // ---------------------------------------------------------------------------

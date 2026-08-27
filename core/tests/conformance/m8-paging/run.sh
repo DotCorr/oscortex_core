@@ -94,7 +94,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=232
+ASSERTIONS_REQUIRED=234
 
 
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
@@ -321,10 +321,30 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # sufficient: the previously-last block's own to-the-end measurement is exactly
 # the one a new block after it changes. M19's number went 256 -> 768 and twelve
 # harnesses said so. ADR-0033 §6.4.
+# M21 (ADR-0035) added a block AFTER S0's, and it is now the LAST one in .bss:
+# `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
+# records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
+# says whether a live region owns that frame. The plane is what makes the guard
+# at the top of `freeFrame` O(1) instead of a linear scan on all 32768 calls of
+# `frames refill` (`docs/design/memory.md` §2.4).
+#
+# Subtracted FIRST, before S0's, exactly as M14, M15, M16, M19 and S0 each were
+# in turn -- so that every earlier milestone's number continues to mean what it
+# meant when it was written. This is the THIRD application of ADR-0033 §6.4's
+# correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
+# the previously-last block's own to-the-end measurement is exactly the one a
+# new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
+# is measured to shmStore's start rather than to the end of .bss -- which is the
+# line below, and which is why it still reads 512.
+M21_OFF_HEX=$(bssoff shmStore)
+ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0035) is missing"
+M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
+ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0035, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
 S0_BSS=$(( KDATA_BSS - 16#$S0_OFF_HEX ))
-ck; [[ "$S0_BSS" -eq 512 ]] || fail "the bytes from S0's ioctlStore to the end of .bss are $S0_BSS, expected 512. If that block changed size, change it in ADR-0033, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$S0_BSS" -eq 512 ]] || fail "the bytes from S0's ioctlStore to M21's shmStore are $S0_BSS, expected 512. If that block changed size, change it in ADR-0033, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - S0_BSS ))
 # M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
 # `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and

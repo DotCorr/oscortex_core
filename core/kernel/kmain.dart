@@ -63,6 +63,22 @@ part 'chan.dart';
 // harness that subtracts it.
 part 'ioctl.dart';
 
+// M21 (ADR-0035) -- shared memory regions and capability transfer.
+//
+// **LAST, AND `ioctlStore` YIELDS THE POSITION IT HELD.** ADR-0033 s6.4 stated
+// the rule this file is the third instance of: "last is necessary but not
+// sufficient" -- the block that WAS last has a to-the-end measurement of its
+// own, and a new block after it changes exactly that one. So `ioctlStore`'s
+// measured 512 becomes 4800 in every harness that subtracts it, exactly as
+// `chanStore`'s 2624 became 3136 when `ioctl.dart` landed behind it.
+//
+// ADR-0031 s4.3 rule 5's REASON -- that no EARLIER block's arithmetic should
+// move -- is unchanged by this: the bounce buffer is still after every block
+// that existed when that rule was written, and this block is after it.
+// `m21-shmem/run.sh` and `drm-abi/run.sh` both read `core/build/kernel.map` and
+// check the ordering rather than trusting this comment.
+part 'shm.dart';
+
 /// Kernel entry point.
 ///
 /// [mbInfo] is the Multiboot1 information-structure pointer the loader left
@@ -253,6 +269,7 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   chanInit();
+  shmInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

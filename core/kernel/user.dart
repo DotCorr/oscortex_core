@@ -1668,6 +1668,31 @@ void userSyscall(u64 frame) {
     chanSysRecv(frame);
     return;
   }
+  // M21: `shmcreate`, `shmgrant`, `shmmap` and `shmdrop` (syscalls 16..19 --
+  // the first free numbers after the registry's 11 `fdwait` reservation, 12
+  // `ioctl` and M20's 13..15; see docs/syscall-registry.md and GAP-0213).
+  //
+  // NO GUARD HERE, exactly as M20's three have none: each handler asks
+  // [shmCallerId] itself and refuses with [shmRetNoProc], so "the caller is not
+  // a process" arrives at ring 3 as a NAMED value rather than as M9's opaque
+  // all-ones. A capability table, an endpoint and a page directory all belong
+  // to a process slot, and an M9 payload has none of the three.
+  if (no == u64(shmSysCreateNo)) {
+    shmSysCreate(frame);
+    return;
+  }
+  if (no == u64(shmSysGrantNo)) {
+    shmSysGrant(frame);
+    return;
+  }
+  if (no == u64(shmSysMapNo)) {
+    shmSysMap(frame);
+    return;
+  }
+  if (no == u64(shmSysDropNo)) {
+    shmSysDrop(frame);
+    return;
+  }
 
   // S0 (ADR-0033): `ioctl` (syscall 12). It sits with the file syscalls and
   // not with `sbrk` and `yield`, because it needs what THEY need: a descriptor

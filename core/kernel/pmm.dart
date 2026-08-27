@@ -1134,6 +1134,40 @@ u64 freeFrame(u64 addr) {
     pmmError();
     return u64(pmmFreeAlign);
   }
+  // ---- M21: THE ONE BRANCH THAT MAKES SHARING SAFE ----
+  //
+  // A frame that belongs to a LIVE SHARED REGION is not this caller's to give
+  // back, however it reached this function. `docs/design/memory.md` §2.1 works
+  // the hazard through: A and B both map frame F, A exits, `procSpaceFree(A)`
+  // sees F present in A's table and releases it, F is handed to somebody else,
+  // and B is still writing it. The double-free check below catches B's LATER
+  // free and reports it loudly -- but the corruption happened between the two,
+  // and nothing detects that. So the fix is not to catch the second free; it is
+  // to stop the FIRST from releasing a frame somebody still maps.
+  //
+  // HERE AND NOWHERE ELSE, because five paths give a frame back -- procSpaceFree,
+  // heapRollback, elfUnload, shellFree and `frames refill` -- and all five
+  // funnel through this function. Putting the guard in `procSpaceFree` would
+  // need the same change in four more places and would still miss one
+  // (memory.md §2.2).
+  //
+  // AFTER `ready` and AFTER the alignment check, which is also memory.md §2.2's
+  // instruction and is not stylistic: the guard is keyed by frame number, and
+  // an unaligned address must never be allowed to compute one. `free 1001` has
+  // to keep being `pmmFreeAlign`, which `m7-frames` asserts.
+  //
+  // RETURNS `pmmFreeOk` AND FREES NOTHING. It cannot return a new code: every
+  // caller in this kernel ADDS this status to a running error counter, which
+  // works only because `pmmFreeOk == 0` (ADR-0011 §4, memory.md §2.3). A
+  // distinct code would silently start adding a non-zero number to
+  // `procHeadErrors` at four call sites. The retention is made visible in the
+  // shared-memory subsystem's own counters instead -- and `procSpaceFree` asks
+  // `shmFrameShared` itself, BEFORE calling this, so that it does not COUNT
+  // what it did not free.
+  if (shmFrameShared(addr) > u64(0)) {
+    shmBumpMeta(u64(shmMetaRetained));
+    return u64(pmmFreeOk);
+  }
   final u64 f = addr >> u64(pmmFrameShift);
   if (f >= pmmMeta(u64(pmmMetaManaged))) {
     pmmError();
