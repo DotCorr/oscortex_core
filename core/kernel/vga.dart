@@ -44,6 +44,15 @@
 // and `tests/conformance/m2-console/run.sh` asserts the emitted stores survive
 // -O2 rather than trusting the changelog. See docs/known-gaps.md GAP-0052.
 //
+// DCDart ADR-0069 then SPLIT the types: `Pointer<T>` is ordinary memory again
+// (plain, optimizable loads/stores) and `Volatile<T>` is the MMIO type. So the
+// screen-cell accesses below -- and ONLY those; the cursor word and the M2
+// phase word are ordinary `.bss` RAM -- are spelled `Volatile<u16>`, and
+// `core/scripts/verify-mmio-volatile.sh` asserts per site that the access
+// survives -O2 in the emitted object. An ordinary `Pointer<u16>` here would
+// compile clean and then let the optimizer delete or coalesce device stores
+// (the exact GAP-0006 failure mode ADR-0041 first fixed).
+//
 // Port I/O (the CRTC cursor writes below) goes through a different backend
 // path -- `asm sideeffect` inline assembly, not `Load`/`Store` -- and is
 // therefore covered by inline-asm semantics rather than by ADR-0041.
@@ -149,14 +158,14 @@ u64 vgaCellAddr(u64 index) {
 /// today's palette (everything is 0x0F) and free to get right now.
 @bare
 void vgaPutCellAt(u64 index, u8 c) {
-  Pointer<u16>.fromAddress(vgaCellAddr(index)).value =
+  Volatile<u16>.fromAddress(vgaCellAddr(index)).value =
       u16(vgaAttrCell) | c.toU16();
 }
 
 /// Blanks cell [index].
 @bare
 void vgaBlankAt(u64 index) {
-  Pointer<u16>.fromAddress(vgaCellAddr(index)).value = u16(vgaBlankCell);
+  Volatile<u16>.fromAddress(vgaCellAddr(index)).value = u16(vgaBlankCell);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,8 +211,8 @@ void vgaScroll() {
   u64 i = u64(0);
   final u64 last = u64(vgaCells) - u64(vgaCols);
   while (i < last) {
-    Pointer<u16>.fromAddress(vgaCellAddr(i)).value =
-        Pointer<u16>.fromAddress(vgaCellAddr(i + u64(vgaCols))).value;
+    Volatile<u16>.fromAddress(vgaCellAddr(i)).value =
+        Volatile<u16>.fromAddress(vgaCellAddr(i + u64(vgaCols))).value;
     i = i + u64(1);
   }
   while (i < u64(vgaCells)) {

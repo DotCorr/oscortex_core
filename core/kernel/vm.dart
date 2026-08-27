@@ -1657,8 +1657,13 @@ void vmTestRw() {
   uartSpace();
   uartPutHex(want, u64(16));
   uartSpace();
-  Pointer<u64>.fromAddress(a).value = want;
-  if (Pointer<u64>.fromAddress(a).value == want) {
+  // `Volatile<u64>` for the same reason `vmtest ro`'s store is: this pair
+  // is a control whose value IS the memory access. Written ordinary, -O2
+  // forwards the store to the load and prints OK without ever touching the
+  // page. Volatile forces the store to land and the read-back to really
+  // read.
+  Volatile<u64>.fromAddress(a).value = want;
+  if (Volatile<u64>.fromAddress(a).value == want) {
     uartWrite(Rodata.addressOf(pmmStrOk), u64(2));
   } else {
     uartWrite(Rodata.addressOf(pmmStrFail), u64(4));
