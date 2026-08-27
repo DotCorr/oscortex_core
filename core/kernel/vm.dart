@@ -1592,7 +1592,20 @@ void vmTestRo() {
   // finding, recorded as docs/known-gaps.md GAP-0082. The check was NOT relaxed
   // to accommodate it: an assertion that a milestone weakens in order to pass
   // is not an assertion.
-  Pointer<u8>.fromAddress(a).value = u8(0xFF);
+  //
+  // `Volatile<u8>`, and here of all places the type is LOAD-BEARING twice
+  // over. This is not MMIO — it is a store whose PURPOSE is to fault, i.e.
+  // the access itself is the assertion. Since DCDart ADR-0069 made ordinary
+  // `Pointer` stores optimizable, LLVM sees this store aiming at a global it
+  // knows is `constant`, concludes it is undefined behaviour, and DELETES it
+  // — measured, not assumed: built ordinary against the post-split toolchain,
+  // `vmtest ro` produces NO fault and the boot's `VM FAULTS` total drops from
+  // 2 to 1 (the GAP-0006 shape exactly: the output that says "the probe ran"
+  // vanishes with it, so nothing looks wrong). `Volatile` is the spelling for
+  // "this access happens, exactly as written", which is the entire point of a
+  // probe. `core/scripts/verify-mmio-volatile.sh` asserts this store survives
+  // -O2 per site.
+  Volatile<u8>.fromAddress(a).value = u8(0xFF);
   uartWrite(Rodata.addressOf(vmStrTestRoOops), u64(40));
 }
 
@@ -1640,8 +1653,14 @@ void vmTestRw() {
   uartSpace();
   uartPutHex(want, u64(16));
   uartSpace();
-  Pointer<u64>.fromAddress(a).value = want;
-  if (Pointer<u64>.fromAddress(a).value == want) {
+  // `Volatile<u64>` for the same reason `vmtest ro`'s store is: this pair is
+  // a control whose value IS the memory access. Written ordinary, -O2
+  // forwards the store to the load and prints OK without ever touching the
+  // page — the control would then "pass" even on a kernel whose writable
+  // mapping was broken. Volatile forces the store to land and the read-back
+  // to really read.
+  Volatile<u64>.fromAddress(a).value = want;
+  if (Volatile<u64>.fromAddress(a).value == want) {
     uartWrite(Rodata.addressOf(pmmStrOk), u64(2));
   } else {
     uartWrite(Rodata.addressOf(pmmStrFail), u64(4));

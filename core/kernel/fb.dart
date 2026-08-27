@@ -410,9 +410,15 @@ u64 fbPixelAddr(u64 x, u64 y) {
 
 /// Writes one pixel. No bounds check: every caller derives its coordinates
 /// from the glyph grid, which is derived from [fbWidth]/[fbHeight].
+///
+/// `Volatile<u32>`, not `Pointer<u32>`: the framebuffer is an aperture into
+/// the adapter's video RAM (see `conPutc`'s note on 0xB8000), not ordinary
+/// memory, and since DCDart ADR-0069 an ordinary `Pointer` store is legally
+/// deletable/coalescible at -O2. `core/scripts/verify-mmio-volatile.sh`
+/// asserts this store survives in the emitted object.
 @bare
 void fbPutPixel(u64 x, u64 y, u64 color) {
-  Pointer<u32>.fromAddress(fbPixelAddr(x, y)).value = color.toU32();
+  Volatile<u32>.fromAddress(fbPixelAddr(x, y)).value = color.toU32();
 }
 
 /// Fills one scanline segment of [w] pixels starting at ([x], [y]).

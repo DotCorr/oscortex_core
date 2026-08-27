@@ -7940,3 +7940,52 @@ separately. Here that means comparing the two processes' line-sets rather than t
 keeping `switches == yields + exits + preemptions` as its own check — which `m18-preempt` already
 makes. The byte-exact compare should cover the parts that ARE deterministic and stop pretending the
 interleaving is one of them.
+
+## GAP-0263 — three goldens embed the kernel's own section boundaries, so they CANNOT be green across the ADR-0069 pin move; their regen must ride the pin-move/migration merge commit
+
+**Domain:** conformance (M8/M9/M10) / toolchain coupling
+**Status:** OPEN — deliberately left failing on branch `mmio-volatile-migration` (and the three
+`*-volatile` sibling branches), because fixing it here would hide the drift the pin exists to
+surface. Numbered 0263: 0262 (branch `b1-live-console`) is the highest GAP claimed on any branch,
+worktree, or uncommitted tree at assignment time.
+
+**Found:** during the `Volatile<T>` migration (ADR-0044), 2026-08-28. The full 24-harness sweep on
+the migrated tree, built against the post-ADR-0069 DCDart working tree, fails `m8-paging`,
+`m9-ring3` and `m10-elf` on one line class:
+
+```
+expected  VM SECT 0000000000100000 0000000000135EA0 ... 000000000013A2FC ...
+captured  VM SECT 0000000000100000 0000000000135680 ... 000000000013A32A ...
+```
+
+`VM SECT` prints `kernel_text_end`/`kernel_rodata_end` — the kernel's OWN layout, not behaviour.
+Three independent movements stack in it, separated by building an UNMIGRATED baseline
+(`milestones-m1-m6` @ 45b9c7a) against the same new toolchain:
+
+1. **Blanket-volatile removal** (the big one): the pinned 38f0b06 made every `Pointer` access
+   volatile; the post-split toolchain makes ordinary access plain and the same kernel source
+   compiles ~2.7KiB smaller (`__text_end` 0x135EA0 → 0x1353E0, unmigrated).
+2. **This migration**: +0x2A0 of `.text` back (one `movw` per cell in the VGA loops; the probe
+   sites).
+3. **On `b1-live-console`**, whose goldens were freshly re-recorded with its own vmTestRo fix
+   (8a72cb7): the sibling `b1-live-console-volatile` still moves `__text_end` 0x138350 → 0x1386D0,
+   same cause, behaviour byte-identical elsewhere.
+
+The `VM FAULTS 2 → 1` half of the original m8 failure was a REAL regression (the deleted W^X probe
+store, see ADR-0044 and b1's GAP-0261) and is FIXED by the migration — after it, only the
+section-address lines differ.
+
+**Why not fixed here:** the migration's ground rules forbid regenerating goldens, and rightly — a
+regen against a toolchain the pin does not name makes the drift invisible. The regen belongs to
+the single commit that moves `DCDART_PIN.txt` to `neon-round3` @ 7669e77 and merges the migration
+branches (ADR-0044 "The coupled step").
+
+**Also observed during the same sweep, NOT this migration's, tracked separately:** the DCDart
+working tree's `@rodata` constant-merging regression deletes one-byte tables' symbols
+(`argsStrSp`, `fbStrBy`), failing `m19-argv` and `m5-pci` on unmigrated and migrated trees alike —
+recorded as GAP-0262 on `b1-live-console` and being fixed on the DCDart side.
+
+**The wart that survives the regen:** any golden that freezes the kernel's own section addresses
+re-breaks on EVERY code-size change, toolchain or source. Deriving those fields at run time from
+`core/build/kernel.map` (as `m21-shmem/run.sh` already does for ordering) would assert the same
+property without freezing the layout. Left open for the harness owner.
