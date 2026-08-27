@@ -38,6 +38,7 @@ oscortex> free zz
 free: usage: free <physical address in hex>
 oscortex> frames zz
 frames: usage: frames | frames test | frames drain | frames refill
+        frames leave <n>
 oscortex> frames
 PMM BASE 000000000014A1C8 STORE 00001240 BITMAP 00001000 META 00000040 LEDGER 00000200
 PMM BOUND 00008000 FRAME 00001000 LIMIT 00000080 MIB

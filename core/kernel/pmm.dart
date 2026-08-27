@@ -435,6 +435,31 @@ final List<u8> pmmStrTook = const [
   u8(0x54), u8(0x4F), u8(0x4F), u8(0x4B), u8(0x20),
 ];
 
+/// Line label for the partial drain.
+///
+/// `"PMM LEAVE "` -- 10 bytes.
+@rodata
+final List<u8> pmmStrLeave = const [
+  u8(0x50), u8(0x4D), u8(0x4D), u8(0x20), u8(0x4C), u8(0x45), u8(0x41), u8(0x56), u8(0x45), u8(0x20),
+];
+
+/// Field label: how many free frames the caller asked to be left.
+///
+/// `"WANT "` -- 5 bytes.
+@rodata
+final List<u8> pmmStrWant = const [
+  u8(0x57), u8(0x41), u8(0x4E), u8(0x54), u8(0x20),
+];
+
+/// Field separator. Distinct from [pmmStrTook], which has no leading
+/// space because `frames drain` prints it immediately after its own label.
+///
+/// `" TOOK "` -- 6 bytes.
+@rodata
+final List<u8> pmmStrTookL = const [
+  u8(0x20), u8(0x54), u8(0x4F), u8(0x4F), u8(0x4B), u8(0x20),
+];
+
 /// Drain: sum of every frame index handed out.
 ///
 /// `" SUM "` -- 5 bytes.
@@ -500,9 +525,14 @@ final List<u8> pmmStrGave = const [
   u8(0x47), u8(0x41), u8(0x56), u8(0x45), u8(0x20),
 ];
 
-/// `frames` with an argument this shell does not know.
+/// The usage line, printed for `frames <anything this shell cannot parse>`.
 ///
-/// `"frames: usage: frames | frames test | frames drain | frames refill\n"` -- 67 bytes.
+/// TWO LINES since the shakedown added `frames leave <n>`: one line carrying
+/// five forms would be 85 columns, and this shell is read on an 80-column VGA
+/// text console. The continuation is indented to the width of `frames: usage: `
+/// so the forms line up, which is the shape `procStrUsage2` already uses.
+///
+/// `"frames: usage: frames | frames test | frames drain | frames refill\n        frames leave <n>\n"` -- 92 bytes.
 @rodata
 final List<u8> pmmStrUsage = const [
   u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x3A), u8(0x20), u8(0x75), u8(0x73), u8(0x61), u8(0x67),
@@ -510,7 +540,9 @@ final List<u8> pmmStrUsage = const [
   u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x20), u8(0x74), u8(0x65), u8(0x73), u8(0x74), u8(0x20),
   u8(0x7C), u8(0x20), u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x20), u8(0x64), u8(0x72), u8(0x61),
   u8(0x69), u8(0x6E), u8(0x20), u8(0x7C), u8(0x20), u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x20),
-  u8(0x72), u8(0x65), u8(0x66), u8(0x69), u8(0x6C), u8(0x6C), u8(0x0A),
+  u8(0x72), u8(0x65), u8(0x66), u8(0x69), u8(0x6C), u8(0x6C), u8(0x0A), u8(0x20), u8(0x20), u8(0x20), u8(0x20), u8(0x20),
+  u8(0x20), u8(0x20), u8(0x20), u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x20), u8(0x6C), u8(0x65),
+  u8(0x61), u8(0x76), u8(0x65), u8(0x20), u8(0x3C), u8(0x6E), u8(0x3E), u8(0x0A),
 ];
 
 /// `free` with no argument or an unparseable one.
@@ -546,6 +578,15 @@ final List<u8> pmmCmdTest = const [
 @rodata
 final List<u8> pmmCmdDrain = const [
   u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x20), u8(0x64), u8(0x72), u8(0x61), u8(0x69), u8(0x6E),
+];
+
+/// Command name matched as a PREFIX -- a hex frame count follows it.
+///
+/// `"frames leave "` -- 13 bytes.
+@rodata
+final List<u8> pmmCmdLeaveSp = const [
+  u8(0x66), u8(0x72), u8(0x61), u8(0x6D), u8(0x65), u8(0x73), u8(0x20), u8(0x6C), u8(0x65), u8(0x61), u8(0x76), u8(0x65),
+  u8(0x20),
 ];
 
 /// Whole-line command name.
@@ -1646,8 +1687,63 @@ void shellFramesRefill() {
   uartNewline();
 }
 
+/// `frames leave <n>` — allocate frames until exactly `<n>` are free.
+///
+///     PMM LEAVE WANT 00000003 TOOK 00007E89 FREE 00000003
+///
+/// **A PARTIAL DRAIN, AND IT EXISTS BECAUSE A REFUSAL CODE HAD NO REACHABLE
+/// CALLER WITHOUT ONE.** `frames drain` takes every frame there is, and a
+/// machine with NO frames at all cannot reach the ELF loader's own
+/// out-of-memory refusal: ADR-0034 put `procCreate` in front of the loader, so
+/// the process layer's five allocations (`procSpaceBuild`'s PML4, PDPT and PD,
+/// plus the header and scratch frames `procCreate` takes) fail first and the
+/// answer is always `PROC REFUSED 04`. `elfErrNoFrames` stayed a live guard
+/// that nothing could reach — the same accident, from the same commit, as
+/// GAP-0214's `chanRetNoProc`.
+///
+/// Leaving *some* frames free splits the two apart: enough for the process
+/// layer's five and not enough for the loader's first reaches `ELF REFUSED 03`,
+/// which is the boot `m10-elf/run.sh` now takes. The number is DERIVED there
+/// from `proc.dart`'s own `allocFrame` count rather than written down twice.
+/// docs/decisions/0039-four-guards-adr-0034-left-behind.md.
+///
+/// **The count is a target, not a quota.** The loop stops when the free count
+/// reaches `<n>` OR when the allocator refuses, so `frames leave 0` is
+/// `frames drain` without the folds and `frames leave FFFFFFFF` takes nothing.
+/// `frames refill` is the way back from either.
+@bare
+void shellFramesLeave(u64 from) {
+  if (pmmHexOk(from) < u64(1)) {
+    shellFramesUsage();
+    return;
+  }
+  final u64 want = pmmHexValue(from);
+  u64 took = u64(0);
+  u64 more = u64(1);
+  while (more > u64(0)) {
+    if (pmmMeta(u64(pmmMetaFree)) <= want) {
+      more = u64(0);
+    } else {
+      final u64 a = allocFrame();
+      if (a < u64(1)) {
+        more = u64(0);
+      } else {
+        took = took + u64(1);
+      }
+    }
+  }
+  uartWrite(Rodata.addressOf(pmmStrLeave), u64(10));
+  uartWrite(Rodata.addressOf(pmmStrWant), u64(5));
+  uartPutHex(want, u64(8));
+  uartWrite(Rodata.addressOf(pmmStrTookL), u64(6));
+  uartPutHex(took, u64(8));
+  uartWrite(Rodata.addressOf(pmmStrFreeL), u64(6));
+  uartPutHex(pmmMeta(u64(pmmMetaFree)), u64(8));
+  uartNewline();
+}
+
 /// `frames` with an argument this shell does not know.
 @bare
 void shellFramesUsage() {
-  uartWrite(Rodata.addressOf(pmmStrUsage), u64(67));
+  uartWrite(Rodata.addressOf(pmmStrUsage), u64(92));
 }

@@ -550,7 +550,7 @@ check_table() {
   ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M9 depends on was not emitted (a table with no call site is dropped by the linker)"
   ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 2224
+check_table shellStrHelp 2511
 check_table userStrTss 9
 check_table userStrRsp0 6
 check_table userStrGdt 5

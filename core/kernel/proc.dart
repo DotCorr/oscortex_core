@@ -284,7 +284,15 @@ const int procErrNoFrames = 4;
 const int procErrBadLba = 5;
 const int procErrLoad = 6;
 const int procErrNoSse = 7;
-const int procErrElfLive = 8;
+// 8 was `procErrElfLive` -- DELETED. See docs/decisions/0039-four-guards-adr-0034-left-behind.md.
+//
+// It guarded `procCreate` against building a process while an M10 `run`
+// program owned page-directory entry 128 of the KERNEL's directory. ADR-0034
+// deleted the only code that ever made such a program, and with it the only
+// assignment of a non-zero value to `elfMetaLive` -- so `elfLive()` has been a
+// compile-time zero ever since and this guard could not fire. The number is not
+// reused: a refusal code that changes meaning is worse than a gap in the
+// sequence, because a transcript from an older kernel is still readable.
 const int procErrSameLba = 9;
 
 /// M20: [argsBuild] would not fit `argc`, the pointer vector and the argument
@@ -765,17 +773,6 @@ final List<u8> procStrE07 = const [
 
 /// Refusal text.
 ///
-/// `'a `run` program from M10 is still live\n'` -- 39 bytes.
-@rodata
-final List<u8> procStrE08 = const [
-  u8(0x61), u8(0x20), u8(0x60), u8(0x72), u8(0x75), u8(0x6E), u8(0x60), u8(0x20), u8(0x70), u8(0x72), u8(0x6F), u8(0x67),
-  u8(0x72), u8(0x61), u8(0x6D), u8(0x20), u8(0x66), u8(0x72), u8(0x6F), u8(0x6D), u8(0x20), u8(0x4D), u8(0x31), u8(0x30),
-  u8(0x20), u8(0x69), u8(0x73), u8(0x20), u8(0x73), u8(0x74), u8(0x69), u8(0x6C), u8(0x6C), u8(0x20), u8(0x6C), u8(0x69),
-  u8(0x76), u8(0x65), u8(0x0A),
-];
-
-/// Refusal text.
-///
 /// `'the two programs must be at different LBAs\n'` -- 43 bytes.
 @rodata
 final List<u8> procStrE09 = const [
@@ -1229,14 +1226,19 @@ u64 procPickNext(u64 cur) {
 //     pages, in its own address space, user-accessible.
 //
 //     **AND NOTHING CAN CURRENTLY MAKE IT MATTER, WHICH WAS MEASURED RATHER
-//     THAN ARGUED.** `shellProcRun` refuses to start while an M10 program is
-//     live (`procErrElfLive`), so the kernel's own `PD[128]` is always zero at
-//     the moment this copy happens. A kernel built with this line DELETED
-//     passed the whole of `m11-proc/run.sh`. It is the second of two locks on
-//     a door the first lock already holds shut, it is kept because the day the
-//     first lock is relaxed is not the day to discover the second one was
-//     never there, and docs/known-gaps.md GAP-0100 records that no test can
-//     currently fail because of it.
+//     THAN ARGUED.** `shellProcRun` used to refuse to start while an M10
+//     program was live (`procErrElfLive`), so the kernel's own `PD[128]` was
+//     always zero at the moment this copy happened. A kernel built with this
+//     line DELETED passed the whole of `m11-proc/run.sh`. It is the second of
+//     two locks on a door the first lock already held shut, and
+//     docs/known-gaps.md GAP-0100 records that no test can currently fail
+//     because of it.
+//
+//     **ADR-0034 THEN REMOVED THE FIRST LOCK BY REMOVING THE DOOR.** There is
+//     no longer any code that starts an M10 window program, `elfLive()` is a
+//     compile-time zero, and `procErrElfLive` is deleted (ADR-0039). So this
+//     line is now the ONLY thing standing between a process and a stale
+//     `PD[128]`, and it stays for that reason rather than as a second lock.
 //
 // WHY NOT SHARE THE PML4 ENTRY AND GIVE EACH PROCESS A DIFFERENT WINDOW.
 // Because that is not isolation, it is address allocation. Sharing `PML4[0]`
@@ -1935,6 +1937,12 @@ u64 procCreate(u64 lba, u64 named) {
   final u64 rsp = argsBuild(elfMeta(u64(elfMetaStackFrame)));
   if (rsp < u64(1)) {
     procCleanup(s);
+    // UNREACHABLE BY ARITHMETIC, NOT MERELY BY THIS SHELL. `args.dart` caps
+    // staging at `argsMaxCount` arguments and `argsMaxBytes` bytes, whose worst
+    // case is 240 bytes against a 4KiB page less `argsMinStack` — so
+    // `argsBuild` is total and no caller of this function can produce the
+    // failure. `m19-argv/run.sh` §2g multiplies the four numbers out and fails
+    // the day one of them changes. GAP-0245.
     return u64(procErrArgs);
   }
   procSet(s, u64(procSlotRsp), rsp);
@@ -2288,10 +2296,6 @@ void procRefuse(u64 code) {
     uartWrite(Rodata.addressOf(procStrE07), u64(58));
     return;
   }
-  if (code == u64(procErrElfLive)) {
-    uartWrite(Rodata.addressOf(procStrE08), u64(39));
-    return;
-  }
   if (code == u64(procErrArgs)) {
     uartWrite(Rodata.addressOf(procStrE10), u64(46));
     return;
@@ -2478,22 +2482,36 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross, u64 policy, u64 budget) {
     procRefuse(u64(procErrNoSse));
     return;
   }
+  // TWO RE-ENTRANCY GUARDS THAT NOTHING IN THIS KERNEL CAN REACH, KEPT ANYWAY.
+  //
+  // `shellMain` is the only caller of this function and it is not re-entrant:
+  // `proc run` does not return the prompt until the session has ended and
+  // `procSessionReset` has run, and a program that never exits never returns
+  // the prompt either (GAP-0085). So `procLive()` and `userMetaLive` are both 0
+  // at every moment control can arrive here.
+  //
+  // They are NOT deleted, and that is a decision rather than an oversight
+  // (ADR-0039 §4). Deleting a re-entrancy guard because today's only caller
+  // happens to be synchronous trades a real property for a test result; any
+  // asynchronous launch reaches both at once. This is a different case from the
+  // `elfLive()` guard that used to stand between them, which branched on a flag
+  // NO CODE WRITES and so could not fire under any caller — that one is gone.
+  //
+  // docs/known-gaps.md GAP-0243 records them as live guards with no reaching
+  // test, in the words GAP-0214 uses for `chanRetNoProc`.
   if (procLive() > u64(0)) {
     procRefuse(u64(procErrBusy));
-    return;
-  }
-  // An M10 `run` program owns page-directory entry 128 of the KERNEL's page
-  // directory, and `procSpaceBuild` copies that directory. The copy clears the
-  // entry, so a process could not inherit the window — but a live program would
-  // then be running with its own tables half-torn-down under it. Refused.
-  if (elfLive() > u64(0)) {
-    procRefuse(u64(procErrElfLive));
     return;
   }
   if (userMeta(u64(userMetaLive)) > u64(0)) {
     procRefuse(u64(procErrBusy));
     return;
   }
+  // AND TWO THE SHELL ANSWERS FIRST, ON PURPOSE. `shellProcArgs` caps both
+  // fields at `ataLba28Max` and prints its usage line, which is correct: the
+  // shell should refuse a line it knows is malformed rather than build a
+  // process to find out. These are the second line of defence for a caller that
+  // is not the shell — and there is not one yet. GAP-0245.
   if (lbaA > u64(ataLba28Max)) {
     procRefuse(u64(procErrBadLba));
     return;

@@ -5172,7 +5172,12 @@ returns to the shell through `user_return`.
 ## GAP-0142 — `help` does not mention M18's three commands, and that is GAP-0105 being obeyed
 
 **Domain:** kernel + conformance (M18)
-**Status:** OPEN — a documentation gap accepted deliberately to avoid moving five byte-exact goldens.
+**Status:** **CLOSED by the shakedown commit — see GAP-0246.** The three lines are in `shellStrHelp`,
+which goes 2224 → 2511, and the five goldens moved with them, each required to differ from its
+predecessor in the help text alone. The paragraph below is kept as written because the deferral was
+correct at M18 and the reasoning is what a future `help` line has to answer to. **It was the T1 sweep
+that forced the issue**: the three commands were booted, shown working, and found to be documented
+only on `procStrUsage2` — a table a user reaches by typing `proc` wrong.
 
 `proc sched`, `proc spin <a> <b> <quanta>` and `proc coop <a> <b>` are not in `shellStrHelp`. They are
 on a second usage table (`procStrUsage2`), printed by `proc` with an argument it cannot parse.
@@ -5185,10 +5190,11 @@ moves five goldens for a milestone that has nothing to do with the shell.
 session exists. `m18-preempt/run.sh` asserts `shellStrHelp` is **unchanged at 2147** so that the
 decision is visible rather than forgotten, and the usage line is at least reachable by typo.
 
-**What closes it:** one commit that adds the three lines and regenerates the five goldens, with each
-regenerated golden required to differ from its predecessor **in the help text alone**. It is
-mechanical; it is separate; doing it inside M18 would have mixed it with a change that already had to
-regenerate nine goldens for address drift.
+**What closed it:** one commit that adds the three lines and regenerates the five goldens, with each
+regenerated golden required to differ from its predecessor **in the help text alone**. It was
+mechanical; it was separate; doing it inside M18 would have mixed it with a change that already had
+to regenerate nine goldens for address drift. `m18-preempt/run.sh` no longer asserts `shellStrHelp` is
+*unchanged* — it asserts it is 2511 and that the three commands are in it.
 
 ---
 
@@ -7189,10 +7195,48 @@ claim to — which is why the discipline is asserted **structurally**, by readin
 **Domain:** kernel, IPC (M20)
 **Status:** OPEN — an honest hole in an otherwise well-exercised refusal set.
 
-`chan.dart` declares **fourteen** refusal-and-status codes above one floor. `m20-ipc`'s program
-provokes **twelve** of them from ring 3 and checks each as a return value. `chanRetCorrupt` is one of
-the two it does not: it is returned when a ring's `head < tail`, a state nothing in this kernel can
-produce. (The other is `chanRetBusy` — GAP-0207.)
+`chan.dart` declares **fourteen** refusal-and-status codes above one floor. `chanRetCorrupt` is
+returned when a ring's `head < tail`, a state nothing in this kernel can produce, so no boot exercises
+it.
+
+**THE NUMBER IN THIS ENTRY WAS WRONG AND IS CORRECTED HERE.** It used to say the program "provokes
+**twelve** of them from ring 3 and checks each as a return value", and named `chanRetBusy` (GAP-0207)
+as the only other absentee. Those are two different claims and only the first was ever true of twelve:
+
+| | codes | which |
+|---|---|---|
+| provoked from ring 3 | 12 | everything except `chanRetCorrupt` (unreachable by construction) and `chanRetBusy` (GAP-0207) |
+| **checked** by `m20-ipc/run.sh` | **11** | the twelve, less `chanRetNoPeer` — see below |
+| checked before the shakedown | 10 | the eleven, less `chanRetNoProc`, whose behavioural half GAP-0214 abolished |
+
+Two things went wrong at once, and they are different kinds of wrong.
+
+* **Honest drift.** ADR-0034 made every ring-3 program a process, so nothing reachable from the shell
+  can be a caller without a slot. `m20-ipc`'s CHECK 13 became structural (GAP-0214) and this entry's
+  "twelve" was not decremented with it.
+* **A claim that was never true.** `chanRetNoPeer` was **provoked and unasserted**. `prog.c`'s
+  `spinSend` retries on exactly the two answers meaning "not yet", counts every `CHAN_NOPEER` in
+  `sawNoPeer`, and prints a ` NOPEER <n> ` field — and `run.sh` never looked at that field.
+  `grep -n NOPEER run.sh` returned nothing. The code fired on every run, the harness saw the number,
+  and nothing compared it to anything. **A provoked-but-unchecked code has the appearance of coverage
+  and none of the protection**, which is strictly worse than an honest hole, because the hole is not
+  in the list of holes.
+
+**MEASURED, on the boot that settles it.** `m20-ipc`'s transcript carries four ` NOPEER <n> ` fields
+— two processes in each of two sessions — reading `01 00 01 00`, and the kernel printed exactly two
+`CHAN REFUSE C 0E EP ... R FFFFFFFFFFFFFFF4` lines. So the code is REACHED, once per session, on the
+requester's first send before the responder has opened its end. It belongs in the fourth row this
+tier counts separately: **reached and unasserted** — not GAP-0206's "cannot happen", and not
+GAP-0214's "could happen, nothing makes it happen".
+
+**CLOSED for `chanRetNoPeer`.** `m20-ipc/run.sh` CHECK 14 now asserts three independent things: that
+`prog.c`'s `CHAN_NOPEER` is read out of `chan.dart` rather than typed twice; that the KERNEL narrated
+that value on the send path (`CHAN REFUSE C 0E ... R FFFFFFFFFFFFFFF4`); and that ring 3's own count
+of it, summed across both processes, equals the number of lines the kernel printed. The last of those
+is what a "count is non-zero" check would not have given: a program counting a *different* refusal
+into the same field would fail it.
+
+**This entry stays OPEN for `chanRetCorrupt` alone**, which is the thing it was always about.
 
 **It is not decoration.** DCDart traps on *underflow* as well as overflow, so `head - tail` on a
 corrupted pair would emit a real `ud2` and the kernel would execute an undefined instruction inside a
@@ -7515,3 +7559,305 @@ an exit — plus its mode wiring, and then the golden churn above taken delibera
 kernel prints `CHAN REFUSE C 0D EP 0000000000000000 R FFFFFFFFFFFFFFFD` itself when it refuses, so
 the payload needs to report nothing: the existing transcript assertion works unchanged the moment
 something can reach the path.
+
+---
+
+## GAP-0243 — `procErrBusy` and `elfErrLive` are LIVE re-entrancy guards that nothing can reach, because this shell is synchronous
+
+**Domain:** kernel (proc, elf), conformance (surfaced by the shakedown campaign's T3 sweep)
+**Status:** **OPEN — live but unreachable; deliberately kept and deliberately untested. ADR-0039 §4.**
+
+**This is GAP-0214's category, with four more instances from the same commit.** ADR-0034's blast
+radius on refusal coverage was never measured; the shakedown booted for it and found these.
+
+`procErrBusy` — *"a process session is already running"* — guards three sites:
+
+| file:what it asks | |
+|---|---|
+| `proc.dart` `shellProcRun`, `procLive() > 0` | is a process on the CPU? |
+| `proc.dart` `shellProcRun`, `userMeta(userMetaLive) > 0` | is an M9 payload on the CPU? |
+| `elf.dart` `shellElfLoadAndEnter`, `procLive() > 0` | is a process on the CPU? |
+
+and `elfErrLive` — *"a program is already running"* — survives on one site, `shellElfLoadAndEnter`'s
+`userMeta(userMetaLive) > 0`. (Its `elfLive()` twin is DELETED — ADR-0039 §2, and GAP-0244.)
+
+**Why nothing reaches them, and why that is a fact about the shell rather than about the guards.**
+`shellMain` is the only caller of every launcher and it is not re-entrant. `run` and `proc run` do not
+return the prompt until the program has exited and `PROC KILL` has reclaimed it, so a second command
+cannot overlap the first. Every exit path — including the fault path through `procOnFault` and
+`userOnFault` — calls `procSessionReset` / `userTeardown` before `shellMain` runs again. The one thing
+that stays live is a program that never exits, and such a run never returns the prompt either
+(GAP-0085, which is why `user hold` is the last command of its session), so the second command cannot
+be typed at all.
+
+There is no non-shell caller. Every launcher in this kernel is reached from `shellExecute` and from
+nowhere else.
+
+**Why they are not deleted.** Deleting a re-entrancy guard because today's only caller happens to be
+synchronous trades a real property for a test result. Any asynchronous launch — a `spawn` syscall, a
+second shell, job control — reaches all four sites at once, and the day that lands is not the day to
+discover the guard was removed for tidiness. The three ADR-0039 deleted are a different case
+entirely: those branched on a flag **no code writes**, so they could not fire under any caller.
+
+**What IS asserted.** `m11-proc`'s and `m10-elf`'s refusal censuses still require each code to be
+returned from a live line with its own distinct sentence. That proves the guard has not been deleted.
+It does not prove it works. **This is stated as the weaker claim it is, the same way GAP-0214 states
+its own.**
+
+**What closing it takes.** An asynchronous launch — the shell returning its prompt while a program
+runs. All four sites become reachable at once, from the shell, with no new refusal vocabulary and no
+new payload. Until then they are live guards waiting for a test, not dead code filed away.
+
+---
+
+## GAP-0244 — `elfLive()` has no writer: the M10 window-program concept survives only as four dispatch branches that always answer "no"
+
+**Domain:** kernel (elf, user, file)
+**Status:** OPEN — measured, bounded, and deliberately out of the shakedown's scope. ADR-0039 §2a.
+
+ADR-0034 deleted the M10 window-program launch. With it went the only assignment of a **non-zero**
+value to `elfMetaLive`:
+
+```
+$ grep -rn "elfSetMeta(u64(elfMetaLive)" core/kernel/
+core/kernel/elf.dart:1525:  elfSetMeta(u64(elfMetaLive), u64(0));
+```
+
+`elfInit` zeroes it, `elfTeardown` zeroes it, nothing writes 1. **`elfLive()` is a compile-time zero.**
+
+Two REFUSAL guards branched on it and are deleted (ADR-0039 §2). **Five** *dispatch* sites remain,
+and they are a different thing — they ask "which of the three things that can be in ring 3 is
+running", and the answer is now permanently "not that one":
+
+| site | what the dead branch would have done |
+|---|---|
+| `user.dart` `userOwns` | validate a pointer against `elfOwns` instead of the payload window |
+| `user.dart` `userSyscall` (×2) | admit a caller with no process slot and no payload; the nested `elfLive() < 1` that stands in for a boolean `\|\|` (GAP-0023) |
+| `user.dart` `userOnFault` | tear down through `elfTeardown` instead of `userTeardown` |
+| `file.dart` `fileOwnsWrite` | the same ownership dispatch, one layer up |
+
+**Why they are not removed here.** Removing them deletes a *concept* from four files, changes what
+`elfMetaLive` and `elfTeardown` are for, and moves the `.bss` layout that six harnesses pin. That is
+a unit of its own. A refusal audit is not the place to do it, and doing it half way — deleting the
+branches and leaving the flag — would be worse than either end.
+
+**What is asserted instead.** `m10-elf/run.sh` §2i requires that `elfMetaLive` has no non-zero writer
+**and** that no *refusal* guard branches on `elfLive()`. It counts the dispatch sites and prints the
+number rather than failing on them, so the day someone makes the flag live again, the check tells
+them the guards were removed on the assumption that it never would be.
+
+**What closing it takes.** Either delete the concept — `elfMetaLive`, `elfLive`, `elfOwns`'s dispatch,
+`elfTeardown`'s fault path — in one commit with the `.bss` and golden churn that implies; or give the
+flag a writer again, which means a second kind of thing in ring 3, which ADR-0034 exists to prevent.
+
+---
+
+## GAP-0245 — `procErrArgs` and `procErrBadLba` are shadowed ON PURPOSE, and the missing thing is a test rather than a fix
+
+**Domain:** kernel (proc, args), conformance
+**Status:** OPEN as a record. Two guards, two different reasons, neither a defect in the kernel.
+ADR-0039 §5.
+
+The shakedown's T3 sweep found six shadowed guards and they split 4/2. Four were accidents
+(GAP-0243, GAP-0244, ADR-0039). **These two are defence in depth working as designed**, and filing
+them with the accidents would be wrong.
+
+### `procErrBadLba` (05) — *"that is not a pair of LBAs"*
+
+`shellProcArgs` caps both fields at `ataLba28Max` and answers the usage line, which is correct: the
+shell should refuse a line it knows is malformed rather than build a process to find out. The kernel
+guard behind it is the second line of defence **for a caller that is not the shell**, and there is no
+such caller — `shellProcRun` is reached from `shellExecute` and from nowhere else.
+
+It is squeezed from both sides, which is why the sweep could not corner it: malformed argument text
+hits the shell's usage line, and well-formed text naming a bad sector reaches the *loader* and gets
+`ELF REFUSED 05` / `PROC REFUSED 06` instead.
+
+**Why a test was not added.** The obvious one is a second shell command that calls `shellProcRun`
+without pre-checking. That is circular — the thing under test is what happens when the shell is not
+in the way, and a shell command is the shell being in the way with its checks removed. The
+non-circular version is a real second caller (a `spawn` syscall), which is a feature and belongs in
+its own unit with its own ADR.
+
+### `procErrArgs` (0A) — *"the arguments do not fit on the initial stack"*
+
+Stronger than shell-unreachable: **unreachable by any caller of the launch API**, by arithmetic.
+`argsBuild` fails only if the block it must write plus `argsMinStack` exceeds one stack page, and
+`args.dart` caps staging at `argsMaxCount` = 8 arguments and `argsMaxBytes` = 128 bytes of text
+including terminators. Worst case is 240 bytes against 4096 − 1024 = 3072 available. There is no
+input to `argsStage` that reaches it.
+
+So it is a **cross-file consistency guard** — the same kind `argsErrNoRoom` already is, and already
+says it is, in its own comment: *"Not reachable with the bounds above — the worst case is 240 bytes —
+and checked anyway, because the bounds and the page size are two numbers in two files."*
+
+**The test that fits it is arithmetic, not a boot.** `m19-argv/run.sh` now multiplies the four numbers
+out and fails if a change to any one of them would make `argsBuild` able to fail. That is exactly when
+someone needs to be told, and it is a stronger statement than a boot could make: a boot proves the
+guard fires for one input, and this proves no input exists.
+
+---
+
+## GAP-0246 — `help` grew to 2511 bytes: GAP-0142 paid, and the recurring golden cost paid with it
+
+**Domain:** kernel (shell), conformance
+**Status:** OPEN — the same recurring cost GAP-0059, GAP-0065, GAP-0069, GAP-0072, GAP-0075,
+GAP-0078, GAP-0087, GAP-0093, GAP-0095, GAP-0106 and GAP-0115 record, at the twelfth change that has
+paid it. **GAP-0142 is CLOSED by this entry.**
+
+`shellStrHelp` goes 2224 → **2511**, by five lines:
+
+* `proc sched`, `proc coop <lbaA> <lbaB>` and `proc spin <lbaA> <lbaB> <quanta>` — **GAP-0142's three.**
+  That entry said exactly what closing it would take (*"one commit that adds the three lines and
+  regenerates the five goldens, with each regenerated golden required to differ from its predecessor
+  in the help text alone"*) and this is that commit. They were dispatched, booted and shown working,
+  and the only place they appeared was `procStrUsage2` — which a user sees **only by typing `proc`
+  wrong**. Discovering a feature by making a mistake is not discoverability.
+* `frames leave <n>` — new, and it exists because `elfErrNoFrames` had no reachable caller without it
+  (ADR-0039 §3).
+* the `fb` line is rewritten in place. It said `800x600x32`; the command prints `0320x0258x20`; and
+  nothing said which base either was in. It now carries the bytes the command actually prints and the
+  decimal beside them, labelled — the only place in the shell's listing where a stated value did not
+  textually appear in the command's output.
+
+**What moved, and how.** `m3-shell`, `m4-fault`, `m5-pci` and `m6-disk` have no `--regen`; their
+serial goldens were moved by **mechanical substitution** of the old 2224-byte block for the new
+2511-byte one, and `m3-shell`'s 80x25 screen golden by taking the last 24 lines of the new listing —
+both then required to be reproduced by the kernel byte-for-byte, which they were, first try. Every
+other golden in the suite moved anyway, because the kernel image grew past a 4KiB boundary and
+`__kernel_end` took every downstream address with it (GAP-0078's mitigation, for the tenth time).
+
+**Cost:** unchanged and still real. Whoever adds the next shell command pays the substitution for
+four harnesses and the `--regen` for the rest, and the twelve pinned copies of the number
+`shellStrHelp` is asserted at.
+
+---
+
+## GAP-0247 — `m7-frames` asserted a DCDart pin that commit 71cf08f had already moved, and was red on the pristine tree
+
+**Domain:** conformance (M7)
+**Status:** CLOSED by the same commit that found it, and recorded because of what it says about the
+"24 harnesses green" claim.
+
+`m7-frames/run.sh` asserted `DCDART_PIN.txt` began with `8713298`. Commit **71cf08f** — *"...and
+DCDART_PIN moves to 38f0b06 now that the sweep is green"* — changed the pin file and did not change
+the literal. So from that commit onwards `m7-frames` failed on a clean checkout, with a message that
+reads like a toolchain problem and is a two-place-edit problem:
+
+```
+M7-frames: FAIL — DCDART_PIN.txt says 38f0b06; the tree is built against 8713298
+```
+
+**Nothing about the kernel was wrong.** The shakedown found it by running the suite rather than by
+reading the commit, which is the only way this class of thing is ever found.
+
+**What it says about the surrounding claim.** The pin bump was made *because* a sweep was green; the
+sweep that proved it green necessarily ran before the bump. A change whose whole content is "the
+suite passes" is the one change most likely to be committed without re-running the suite after it.
+
+**The fix** is the literal, moved to `38f0b06` with both facts the pin is load-bearing for still named
+beside it (`e3cfe18`, nested while-loops, GAP-0068; `8713298`, `@bss`, ADR-0051) so a future bump has
+to answer to both. **The underlying shape is not fixed:** the pin is a value in one file and a literal
+in another, and nothing derives the second from the first. Deriving it would defeat the check, which
+exists to catch a silent revert to an older toolchain; so it stays a two-place edit, now with a
+comment at the second place saying so.
+
+---
+
+## GAP-0248 — the sibling DCDart checkout is not at `DCDART_PIN.txt`'s commit, and nothing notices
+
+**Domain:** toolchain, build (surfaced by the shakedown campaign)
+**Status:** OPEN — measured and benign **today**, and the measurement is the point.
+
+`core/scripts/build-kernel.sh` compiles with whatever `dcc` is in `$DCDART_HOME` (default: the sibling
+`DCDart` checkout). `DCDART_PIN.txt` records **38f0b06**. During this campaign the sibling checkout was
+at **f9676f2** — three commits past the pin, because DCDart is being worked on at the same time. So
+every harness run here, and every golden regenerated here, was produced by a compiler the pin does not
+name, and **nothing in the build or the suite says so.**
+
+**It was checked rather than assumed, because the goldens depend on it.** A byte-exact golden carries
+frame addresses derived from `__kernel_end`; a codegen change of one instruction moves them. The
+control:
+
+```
+git archive HEAD | tar -x -C /tmp/headtree      # the PRISTINE kernel at 71cf08f
+cd /tmp/headtree && bash core/scripts/build-kernel.sh          # with dcc f9676f2
+bash core/tests/conformance/m8-paging/run.sh                   # against HEAD's OWN goldens
+  -> M8-paging: PASS, 238 checks, 3445-byte serial match
+```
+
+`m8-paging` was chosen because its golden is byte-exact **and** contains the six page-table frame
+addresses the allocator hands out immediately above the kernel image — the numbers that move first if
+codegen moves at all. `__kernel_end` came out at `0x14e470` and `pmmStore` at `0x14a1c8`, which are
+the values HEAD's own goldens carry. **So f9676f2 and 38f0b06 are codegen-equivalent for this kernel,
+and the goldens in this commit are trustworthy.**
+
+**What is still wrong.** That was luck, established after the fact. Three things make it a gap:
+
+1. **No check enforces the pin at build time.** `m7-frames` asserts the *contents of the pin file*
+   (and GAP-0247 records that even that assertion went stale). Nothing compares the pin against the
+   `HEAD` of the checkout actually being compiled with.
+2. **The pinned commit could not be built in isolation**, which is why the first attempt at this
+   control failed. `git archive 38f0b06` produces a tree that `dart pub get` refuses: `dcc_lower`
+   depends on `core/frontend/vendor/dart-sdk`, which is **not in git**. Reproducing an old toolchain
+   therefore needs the live checkout's vendored SDK symlinked in — i.e. the pin is not sufficient to
+   reconstruct the compiler it names.
+3. Even with that symlinked, `dcc` at 38f0b06 rejected the current `kmain.dart` with
+   `no @bare top-level function found`, which is more likely a broken reconstruction than a real
+   incompatibility — and *not being able to tell which* is exactly the cost of item 2.
+
+**What closing it takes.** `build-kernel.sh` printing (and a harness asserting)
+`git -C "$DCDART_HOME" rev-parse HEAD` against `DCDART_PIN.txt`, so building against an unpinned
+toolchain is a visible fact rather than an invisible one. Item 2 is DCDart's to fix — vendoring a
+compiler by reference to a gitignored directory means no commit of this repo names a reproducible
+compiler — and by rule 3 of `CLAUDE.md` that is a DCDart-repo decision, not this repo's.
+
+---
+
+## GAP-0249 — m12-heap's byte-exact golden pins the INTERLEAVING of two preemptive processes, and that is not deterministic
+
+**Domain:** conformance (M12)
+**Status:** OPEN — observed twice on the same kernel, once green and once red, under different machine
+load. **Distinct from GAP-0212**, which was RFLAGS bit 16 and is closed.
+
+`m12-heap` runs two processes under `proc run` — a **preemptive** policy since M18 — and compares the
+whole serial capture byte-for-byte. The capture therefore encodes **the order in which two
+independently-scheduled processes reached each `write` syscall**, and that order depends on where the
+timer interrupt lands.
+
+Observed during the shakedown, with a **byte-identical kernel**:
+
+```
+09:0x  M12-heap: PASS
+11:17  M12-heap: FAIL — captured serial output did not exactly match expected.txt
+         PROC END SWITCHES 00000003   (golden)
+         PROC END SWITCHES 00000004   (capture)
+       ...and slot 01's whole H1 block moved to before slot 00's exit, with
+       SYSCALLS 0000003B where the golden has 00000044 and LEFT 00000001 where
+       it has 00000000.
+```
+
+One extra involuntary switch reorders two processes' output relative to each other. `--regen` does not
+fix it, for GAP-0212's reason: it records whichever interleaving that boot produced and the golden
+becomes a coin flip that stays flipped.
+
+**Re-run alone at load 4.5 it PASSED**, 152 checks, with no change to the kernel or the golden
+between the two runs. Three observations on one binary: green, red, green.
+
+**Why it surfaced now.** Three agents were running full conformance sweeps on one 8-core machine;
+load average reached ~25. The harness types on a wall clock and the guest schedules on another one,
+and the window in which the two processes' quanta line up the way the golden records narrows as the
+host gets busier. That is the same underlying shape as GAP-0105 — **every timing constant in this
+suite is a guess that gets worse as the machine gets busier** — arriving from the guest side instead
+of the driver side.
+
+**What it costs.** A green suite is not reproducible on a loaded machine, and the failure names a
+scheduler counter, so it reads as a kernel regression rather than as a harness one. That is the worst
+shape a flake can have and it is exactly what GAP-0105 says about its own.
+
+**What closing it takes.** The same shape GAP-0212's fix used: normalise the thing that is genuinely
+non-deterministic in **both** the capture and the golden before comparing, and assert the invariants
+separately. Here that means comparing the two processes' line-sets rather than their interleaving, and
+keeping `switches == yields + exits + preemptions` as its own check — which `m18-preempt` already
+makes. The byte-exact compare should cover the parts that ARE deterministic and stop pretending the
+interleaving is one of them.

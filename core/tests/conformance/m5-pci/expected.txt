@@ -33,12 +33,13 @@ commands:
   ticks         prove the PIT tick counter advances
   cpu           CPUID vendor, brand and leaf limits
   pci           enumerate the PCI bus
-  fb            framebuffer console: BAR0, 800x600x32, 8x16 font
+  fb            framebuffer console: BAR0, mode 0320x0258x20 hex = 800x600x32
   disk id       ATA PIO IDENTIFY: model and sector count
   disk read <n> read one 512-byte sector, hexdumped as it arrives
   frames        physical frame allocator: totals and its own footprint
   frames test   allocate 64 frames, prove them distinct, give them back
   frames drain  allocate every free frame, then prove the next one fails
+  frames leave  <n>: allocate until exactly <n> frames are free
   frames refill free every frame drain took, back to the baseline count
   alloc         allocate one 4KiB frame, print its physical address
   free <addr>   free one frame by physical address
@@ -60,6 +61,9 @@ commands:
   proc          the process table, the CR4 SSE bits, and each slot
   proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
   proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
+  proc coop     <lbaA> <lbaB>: cooperative -- only `yield` switches
+  proc spin     <lbaA> <lbaB> <quanta>: preemptive, ends after <quanta>
+  proc sched    the scheduler's policy, quantum and per-slot counters
   crash ud      fault on purpose (#UD) and come back
   crash div     fault on purpose (#DE) and come back
   echo <rest>   print the rest of the line

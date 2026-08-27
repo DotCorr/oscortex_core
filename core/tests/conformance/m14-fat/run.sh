@@ -357,9 +357,9 @@ echo "STRUCTURAL: pass  every M14 @rodata table equals the string its doc commen
 
 # 2d. THE HELP TEXT GREW BY EXACTLY THE FOUR COMMANDS THIS MILESTONE ADDS.
 HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
-ck; [[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2224 (1871 at M11-M13, plus 276 for \`run <name>\`, \`fs\`, \`ls\` and \`cat <name>\`). A command that is not in \`help\` is undiscoverable — docs/known-gaps.md GAP-0115."
-ck; grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64(2224));" "$CORE_DIR/kernel/shell.dart" \
-  || fail "shellHelp() does not pass 2224 — the table and the literal disagree, which is GAP-0060 happening again"
+ck; [[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511 (2147 at M14, 2224 at M19, plus 287 for `proc coop`, `proc spin`, `proc sched`, `frames leave <n>` and the corrected `fb` line). A command that is not in \`help\` is undiscoverable — docs/known-gaps.md GAP-0115, GAP-0142."
+ck; grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64(2511));" "$CORE_DIR/kernel/shell.dart" \
+  || fail "shellHelp() does not pass 2511 — the table and the literal disagree, which is GAP-0060 happening again"
 ck; python3 - "$CORE_DIR/kernel/shell.dart" <<'PY' || fail "the help text does not list all four new commands, or a line is too wide for an 80-column screen"
 import re, sys
 src = open(sys.argv[1]).read()
@@ -376,7 +376,7 @@ for x in bad:
     print("    - " + x, file=sys.stderr)
 sys.exit(1 if bad else 0)
 PY
-echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, lists all four new commands, and no line exceeds 78 columns"
+echo "STRUCTURAL: pass  shellStrHelp is 2511 bytes, lists all four of M14's commands, and no line exceeds 78 columns"
 
 # 2e. THIRTY-TWO REFUSAL CODES, EACH REACHABLE AND EACH WITH ITS OWN SENTENCE.
 #

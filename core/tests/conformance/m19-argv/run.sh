@@ -91,7 +91,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=148
+ASSERTIONS_REQUIRED=159
 
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
@@ -343,6 +343,82 @@ ck; [[ -n "$HELP_SIZE" ]] || fail "shellStrHelp not found in kmain.o"
 ck; grep -q "uartWrite(Rodata.addressOf(shellStrHelp), u64($HELP_SIZE));" "$CORE_DIR/kernel/shell.dart" \
   || fail "shellHelp() does not pass $HELP_SIZE — the table and the literal disagree, which is GAP-0060"
 echo "STRUCTURAL: pass  shellStrHelp is $HELP_SIZE bytes and its call site agrees"
+
+# ---------------------------------------------------------------------------
+# 2g. `procErrArgs` IS UNREACHABLE BY ARITHMETIC, AND THIS IS THE TEST THAT
+#     SAYS SO — the one that fits a guard no input can fire.
+#
+# `procCreate` returns `procErrArgs` when `argsBuild` cannot fit its block into
+# the stack page while leaving `argsMinStack` bytes below it. The shakedown's
+# T3 sweep set out to reach that refusal from ring 0 and could not, and the
+# reason is not "the shell checks first" -- it is stronger than that: NO CALLER
+# OF THE LAUNCH API CAN REACH IT, because `args.dart`'s own staging bounds make
+# `argsBuild` total.
+#
+# The worst case is `argsMaxCount` arguments whose text is `argsMaxBytes` bytes
+# including terminators. `argsBuild` then writes, from the top of the page down:
+# `argsMaxBytes` of text (8-aligned down), then `argsMaxCount + 5` words (argc,
+# argv[0..n-1], the argv NULL, the envp NULL and the AT_NULL pair), 16-aligned
+# down. Both alignments can cost at most 8 and 16 bytes. The block must clear
+# `argsMinStack`.
+#
+# A BOOT COULD NOT MAKE THIS STATEMENT. A boot proves the guard fires for one
+# input; this proves no input exists — and it fails on the day someone changes
+# one of the four numbers, which is exactly the day the guard stops being
+# decoration and somebody needs to know.
+#
+# It is the same shape `argsErrNoRoom`'s own comment already claims for itself
+# in prose ("Not reachable with the bounds above -- the worst case is 240 bytes
+# -- and checked anyway, because the bounds and the page size are two numbers in
+# two files"). This turns the prose into a check. docs/known-gaps.md GAP-0245.
+# ---------------------------------------------------------------------------
+ck; python3 - "$CORE_DIR/kernel/args.dart" "$CORE_DIR/kernel/vm.dart" "$CORE_DIR/kernel/proc.dart" <<'PY' || fail "argsBuild's failure branch is reachable with args.dart's own bounds, or the four numbers could not be read — docs/known-gaps.md GAP-0245"
+import re, sys
+args_src, vm_src, proc_src = (open(p).read() for p in sys.argv[1:4])
+
+def const(src, name):
+    m = re.search(r"^const int %s = (0x[0-9A-Fa-f]+|\d+);" % name, src, re.M)
+    if not m:
+        sys.stderr.write("could not read %s\n" % name)
+        sys.exit(1)
+    return int(m.group(1), 0)
+
+max_count = const(args_src, "argsMaxCount")
+max_bytes = const(args_src, "argsMaxBytes")
+min_stack = const(args_src, "argsMinStack")
+stack_top = const(vm_src, "vmProgStackTop")
+stack_page = const(vm_src, "vmProgStackPage")
+
+fails = []
+# The guard must still EXIST and still be the thing procCreate turns into
+# procErrArgs -- an unreachable guard that has been deleted is a different fact.
+if "argsSetMeta(u64(argsMetaStatus), u64(argsErrNoRoom));" not in args_src:
+    fails.append("argsBuild no longer records argsErrNoRoom when the block does "
+                 "not fit")
+if "return u64(procErrArgs);" not in proc_src:
+    fails.append("procCreate no longer turns a failed argsBuild into procErrArgs")
+
+# argsBuild's own arithmetic, worst case, reproduced here from the source's
+# constants rather than from its code.
+str_va = (stack_top - max_bytes) & ~7
+words = max_count + 5
+rsp = (str_va - (words << 3)) & ~15
+floor = stack_page + min_stack
+margin = rsp - floor
+if margin <= 0:
+    fails.append("argsBuild CAN fail with args.dart's own bounds: worst-case rsp "
+                 "0x%X is not above the floor 0x%X. procErrArgs has become "
+                 "reachable, GAP-0245 is out of date, and it now needs a boot "
+                 "that reaches it." % (rsp, floor))
+if fails:
+    for f in fails:
+        print("    - " + f, file=sys.stderr)
+    sys.exit(1)
+print("    (%d args x %d bytes worst case leaves %d bytes of margin above the "
+      "%d-byte floor; argsBuild is total and procErrArgs cannot fire)"
+      % (max_count, max_bytes, margin, min_stack))
+PY
+echo "STRUCTURAL: pass  argsBuild cannot fail with args.dart's own staging bounds, so procErrArgs is unreachable by ANY caller of the launch API — asserted as arithmetic because no boot can make that statement (GAP-0245)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — build the two programs, and check what was built.

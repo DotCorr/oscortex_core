@@ -90,7 +90,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=61
+ASSERTIONS_REQUIRED=65
 
 
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
@@ -252,7 +252,7 @@ check_table shellStrPrompt 10
 # is the table's real size and both it and the literal in shellHelp() are
 # maintained by hand (GAP-0060) — the first M4 build printed 237 bytes of the
 # 395-byte table because only one of the two had been updated.
-check_table shellStrHelp 2224  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` and three filesystem lines; GAP-0060
+check_table shellStrHelp 2511  # M5 added `pci`/`fb`, M6 two `disk` lines, M7 six frame-allocator lines, M8 `vm`/`vmtest`, M9 seven `user` lines, M10 `run <lba>`, M11 three `proc` lines, M14 `run <name>` and three filesystem lines; GAP-0060
 check_table shellStrUnknown 27
 echo "STRUCTURAL: pass  all 8 shell @rodata tables are exactly the sizes the dispatcher compares"
 
@@ -346,6 +346,15 @@ echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o, every one named i
 SESSION_KEYS="h,e,l,q,backspace,p,ret,wait:800"
 SESSION_KEYS="$SESSION_KEYS,m,e,m,ret"
 SESSION_KEYS="$SESSION_KEYS,f,r,o,b,n,i,c,a,t,e,ret"
+# THE TWO TYPO CASES, AND THEY ARE A DIFFERENT ANSWER FROM THE ONE ABOVE.
+# `frobnicate` is genuinely unknown. `help now` and `ls -l` are commands this
+# shell KNOWS, with words after them that are not theirs -- and until ADR-0040
+# both of those were reported as `unknown command: help now`, naming the whole
+# line as if the most basic command there is did not exist. They are typed here
+# rather than at the end so the 80x25 screen golden, which is the tail of the
+# final `help` listing, does not move with them.
+SESSION_KEYS="$SESSION_KEYS,h,e,l,p,spc,n,o,w,ret"
+SESSION_KEYS="$SESSION_KEYS,l,s,spc,minus,l,ret"
 SESSION_KEYS="$SESSION_KEYS,e,c,h,o,spc,h,e,l,l,o,spc,w,o,r,l,d,ret"
 SESSION_KEYS="$SESSION_KEYS,c,l,e,a,r,ret"
 SESSION_KEYS="$SESSION_KEYS,backspace,backspace,backspace,up,down,left,right"
@@ -454,6 +463,22 @@ then
   fail "three backspaces and four arrow presses at an empty prompt produced bytes on COM1 — either backspace erased past the prompt, or the 0xE0 extended-key prefix is being translated as an ordinary key again (docs/known-gaps.md GAP-0055 item 2)"
 fi
 echo "ASSERT: pass  3 backspaces + 4 arrow keys at an empty prompt emitted ZERO bytes (prompt uneraseable, GAP-0055 item 2 fixed)"
+
+# ADR-0040: A KNOWN COMMAND WITH JUNK AFTER IT IS NOT AN UNKNOWN COMMAND.
+#
+# Both lines are already inside the byte-exact golden above, so this is a
+# SECOND, named statement of the same fact -- worth having because the golden
+# says "these bytes" and this says "and these bytes rather than those".
+ck; grep -q '^oscortex: help takes no argument$' "$SERIAL_CAPTURE" \
+  || fail "\`help now\` did not produce 'oscortex: help takes no argument' -- ADR-0040"
+ck; grep -q '^oscortex: ls takes no argument$' "$SERIAL_CAPTURE" \
+  || fail "\`ls -l\` did not produce 'oscortex: ls takes no argument' -- the space rule (a name, a space, then something) is what separates it from \`lsx\`, which must stay unknown"
+ck; if grep -q 'unknown command: help now' "$SERIAL_CAPTURE"; then
+  fail "\`help now\` is still reported as an unknown command, which is the T1 finding ADR-0040 closes"
+fi
+ck; grep -q '^oscortex: unknown command: frobnicate$' "$SERIAL_CAPTURE" \
+  || fail "a genuinely unknown command no longer reports itself as unknown -- ADR-0040's new path has swallowed the old one"
+echo "ASSERT: pass  a known command with words after it says so ('help takes no argument', 'ls takes no argument') while a genuinely unknown one is still named as unknown -- ADR-0040"
 
 # 5d. THE `mem` RE-WALK EQUALS THE BOOT-TIME DUMP.
 #

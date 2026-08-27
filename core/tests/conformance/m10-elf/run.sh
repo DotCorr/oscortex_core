@@ -98,7 +98,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=240
+ASSERTIONS_REQUIRED=255
 
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
@@ -553,7 +553,7 @@ check_table() {
   ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M10 depends on was not emitted (a table with no call site is dropped by the linker)"
   ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 2224
+check_table shellStrHelp 2511
 check_table elfStrDisk 13
 check_table elfStrImage 7
 check_table elfStrBytes 7
@@ -678,6 +678,70 @@ print("    (%d refusal codes, %d distinct sentences, read out of kmain.o's "
       ".rodata)" % (len(codes), len(texts)))
 PY
 echo "STRUCTURAL: pass  25 refusal codes, 25 distinct sentences, each naming the field that was wrong"
+
+# ---------------------------------------------------------------------------
+# 2i. `elfLive()` HAS NO WRITER, SO NOTHING MAY REFUSE ON IT.
+#
+# ADR-0034 deleted the M10 window-program launch. With it went the only code
+# that ever set `elfMetaLive` to a non-zero value: `elfInit` writes 0 and
+# `elfTeardown` writes 0, and there is no third assignment anywhere in the
+# kernel. So `elfLive()` is a compile-time zero.
+#
+# Two refusal guards were still branching on it -- `elfErrLive` in
+# `shellElfLoadAndEnter` and `procErrElfLive` in `shellProcRun` -- and both were
+# therefore dead code wearing the shape of a safety check. THAT IS THE WORST
+# STATE FOR A GUARD TO BE IN: it reads as protection, it passes every
+# "reachable from a return" census, and it cannot fire. Both are deleted
+# (docs/decisions/0039-four-guards-adr-0034-left-behind.md).
+#
+# This check is the thing that would have failed BEFORE that deletion, and it
+# is the thing that fails again if either half comes back: a guard on
+# `elfLive()`, or a writer that would make such a guard meaningful. Whichever
+# appears first, the other one is now required with it.
+# ---------------------------------------------------------------------------
+ck; python3 - "$CORE_DIR/kernel" <<'PY' || fail "elfLive() is guarded on but never set, or set but not guarded on — see docs/decisions/0039-four-guards-adr-0034-left-behind.md"
+import os, re, sys
+kdir = sys.argv[1]
+writers, guards = [], []
+for name in sorted(os.listdir(kdir)):
+    if not name.endswith(".dart"):
+        continue
+    for i, line in enumerate(open(os.path.join(kdir, name)), 1):
+        code = line.split("//")[0] if not line.lstrip().startswith("//") else ""
+        if not code.strip():
+            continue
+        m = re.search(r"elfSetMeta\(u64\(elfMetaLive\),\s*u64\((\w+)\)\)", code)
+        if m and m.group(1) != "0":
+            writers.append("%s:%d" % (name, i))
+        # a REFUSAL guard: `if (elfLive() ...)` whose body reports a refusal.
+        if re.search(r"if \(elfLive\(\)", code):
+            guards.append((name, i))
+fails = []
+if writers and not guards:
+    fails.append("elfMetaLive is written non-zero at %s but nothing guards on it"
+                 % ", ".join(writers))
+if guards and not writers:
+    # Only refusal guards are the defect; dispatch sites (userOwns, userOnFault,
+    # userSyscall, fileOwns) legitimately ask "which of the three is running"
+    # and answer 'not this one'. Those are listed, not failed -- GAP-0244.
+    src = {}
+    bad = []
+    for name, i in guards:
+        lines = open(os.path.join(kdir, name)).read().split("\n")
+        body = "\n".join(lines[i - 1:i + 4])
+        if "elfReportError" in body or "procRefuse" in body:
+            bad.append("%s:%d" % (name, i))
+    if bad:
+        fails.append("a refusal guard branches on elfLive(), which no code sets: "
+                     + ", ".join(bad))
+    print("    (elfLive() has no non-zero writer; %d dispatch site(s) still ask "
+          "it and none of them REFUSES on it)" % len(guards))
+if fails:
+    for f in fails:
+        print("    - " + f, file=sys.stderr)
+    sys.exit(1)
+PY
+echo "STRUCTURAL: pass  elfLive() has no non-zero writer anywhere in the kernel, and no refusal guard branches on it (ADR-0039)"
 
 # ---------------------------------------------------------------------------
 # Step 4 — verify-freestanding.sh (CLAUDE.md rule 1).
@@ -1675,6 +1739,110 @@ then
   fail "NEGATIVE CONTROL FAILED: with no free frames, 'run' did not refuse cleanly"
 fi
 echo "ASSERT: pass  negative control — with every frame drained, 'run' refuses with a diagnostic instead of loading, twice, and leaves the shell alive"
+
+# ---------------------------------------------------------------------------
+# Step 9b — BOOT E: NEGATIVE CONTROL 3. *ALMOST* NO FRAMES.
+#
+# THIS BOOT EXISTS BECAUSE BOOT D SHADOWS A GUARD.
+#
+# ADR-0034 put `procCreate` in front of the loader. The process layer allocates
+# FIVE frames -- procSpaceBuild's PML4, PDPT and page directory, plus the
+# header and scratch frames procCreate takes -- before `elfLoadImage` is
+# called at all, so on a machine with NO free frames the
+# answer is always `PROC REFUSED 04` and the loader's own out-of-memory
+# refusal, `elfErrNoFrames` (03), can never be reached. It stayed a live guard
+# with no reachable caller: the same accident, from the same commit, that
+# GAP-0214 records for `chanRetNoProc`.
+#
+# `frames leave 5` leaves EXACTLY what the process layer needs and not one more:
+# `procSpaceBuild`'s three (PML4, PDPT, PD) and `procCreate`'s two (the header
+# frame and the loader's scratch frame). The address space is built, the loader
+# is entered, and its very first `allocFrame` -- the program window's page
+# table -- fails.
+# So this boot separates two refusals that boot D cannot tell apart, and it is
+# the test `elfErrNoFrames` did not have.
+#
+# The number is not a guess and it was not guessed right the first time: the
+# first draft of this boot used 3 and got `PROC REFUSED 04` again, because
+# `procCreate` takes two frames of its own after `procSpaceBuild` returns. The
+# check below re-derives it from the source, and refuses to derive it at all if
+# `procCreate` grows an allocation after the loader call.
+# ---------------------------------------------------------------------------
+# How many frames the PROCESS layer takes before the loader is entered at all:
+# procSpaceBuild's PML4/PDPT/PD, plus the header and scratch frames procCreate
+# takes for itself. DERIVED from the source, and required to be all of
+# procCreate's allocations rather than merely some of them -- an allocFrame()
+# that appeared AFTER the loader call would make this number a lie and the
+# boot below would silently go back to testing procErrNoFrames.
+PROC_SPACE_ALLOCS=$(python3 - "$CORE_DIR/kernel/proc.dart" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+def body(fn):
+    i = src.index("u64 %s(" % fn)
+    return src[i:src.index("\n}\n", i)]
+sb, cr = body("procSpaceBuild"), body("procCreate")
+allocs = [m.start() for m in re.finditer(r"allocFrame\(\)", cr)]
+loader = min(m.start() for m in re.finditer(r"elfLoad\w*\(", cr))
+if any(a > loader for a in allocs):
+    sys.stderr.write("procCreate allocates a frame AFTER calling the loader\n")
+    sys.exit(1)
+print(len(re.findall(r"allocFrame\(\)", sb)) + len(allocs))
+PY
+)
+ck; [[ "$PROC_SPACE_ALLOCS" -eq 5 ]] || fail "the process layer takes $PROC_SPACE_ALLOCS frames before the loader runs, not 5 — the partial drain below leaves the wrong number and would test procErrNoFrames again instead of elfErrNoFrames"
+
+drive_session "$WORKDIR/partial" \
+  "$(typekeys "frames leave $PROC_SPACE_ALLOCS"),ret,wait:16000,$(typekeys "run $LBA_GOOD"),ret,wait:2000" \
+  "$WORKDIR/partial/shot.png" "partial-drain" 63 128M
+
+ck; if ! python3 - "$WORKDIR/partial/serial.txt" "$PROC_SPACE_ALLOCS" <<'PY'
+import re, sys
+cap = open(sys.argv[1], "rb").read().decode("latin-1")
+want = int(sys.argv[2])
+fails = []
+m = re.search(r"^PMM LEAVE WANT [0-9A-F]{8} TOOK [0-9A-F]{8} FREE ([0-9A-F]{8})$",
+              cap, re.M)
+if not m:
+    fails.append("`frames leave` printed no report, so the machine was not put "
+                 "into the state this control needs")
+elif int(m.group(1), 16) != want:
+    fails.append("the partial drain left %d free frames, not %d — the boot below "
+                 "proves nothing about which layer refused"
+                 % (int(m.group(1), 16), want))
+after = cap.split("PMM LEAVE")[-1]
+# THE WHOLE POINT. The PROCESS layer must get its three frames and SUCCEED,
+# and the LOADER must then be the thing that runs out.
+if "PROC REFUSED 04" in after:
+    fails.append("the allocator ran out inside the PROCESS layer, so this boot "
+                 "is boot D again and elfErrNoFrames is still unreached")
+if "ELF REFUSED 03 no free frame" not in after:
+    fails.append("`run` did not reach the loader's own out-of-memory refusal. "
+                 "Captured: %r" % after[:600])
+# ...and the launcher must then report the failure in its own vocabulary.
+if "PROC REFUSED 06 the program could not be loaded" not in after:
+    fails.append("the loader refused and the launcher did not say so — a "
+                 "refusal that reaches ring 0 and stops there is GAP-0214 "
+                 "happening one layer up")
+if "ELF ENTER" in after:
+    fails.append("`run` entered ring 3 despite the loader having refused")
+if "FAULT " in after:
+    fails.append("a fault was reported — the refusal path must leave a running "
+                 "kernel")
+if not cap.rstrip().endswith("oscortex>"):
+    fails.append("the partial-drain boot does not end at a live prompt")
+if fails:
+    print("m10-elf: partial-drain control FAILED", file=sys.stderr)
+    for f in fails:
+        print("    - " + f, file=sys.stderr)
+    sys.exit(1)
+print("    (exactly %d frames left free: the process layer takes all of them "
+      "and succeeds, the loader's first allocFrame fails, ELF REFUSED 03 and "
+      "then PROC REFUSED 06)" % want)
+PY
+then
+  fail "NEGATIVE CONTROL FAILED: a partial drain did not reach the loader's own out-of-memory refusal"
+fi
+echo "ASSERT: pass  negative control — with exactly the five frames the process layer needs, the ADDRESS SPACE is built and the LOADER is the layer that runs out: ELF REFUSED 03, then PROC REFUSED 06, shell alive (ADR-0039)"
 
 # GAP-0168: the PASS line below describes work; this refuses to print it
 # unless that many checks actually executed. An abort, a loop that iterated

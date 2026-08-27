@@ -92,7 +92,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=218
+ASSERTIONS_REQUIRED=225
 
 
 for tool in qemu-system-x86_64 python3 x86_64-elf-objdump x86_64-elf-readelf llvm-nm; do
@@ -413,7 +413,14 @@ echo "STRUCTURAL: pass  pmmInit's compiled code carries the 0x8000-frame bound"
 # the pin is load-bearing for are named so a future bump has to answer to both:
 # nested while-loops (e3cfe18, M7) and `@bss` (8713298, M17).
 PIN=$(awk '{print $1; exit}' "$CORE_DIR/../DCDART_PIN.txt")
-ck; [[ "$PIN" == 8713298* ]] || fail "DCDART_PIN.txt says $PIN; the tree is built against 8713298 — DCDart's ADR-0051, which M17 needs for @bss (pmm.dart's storage seam) and which is itself past e3cfe18, the nested-while-loop commit M7 needs (GAP-0068)"
+# 38f0b06 SINCE 71cf08f, AND THIS LINE WAS NOT MOVED WITH IT. That commit bumped
+# DCDART_PIN.txt and left the literal here at 8713298, so this harness has been
+# RED on the pristine tree ever since — the only one of the twenty-four that
+# was, and the shakedown found it by running the suite rather than by reading
+# the commit. Recorded in docs/known-gaps.md GAP-0247: a pin assertion that is
+# a literal in one file and a value in another is a two-place edit, and the
+# second place was missed the first time it mattered.
+ck; [[ "$PIN" == 38f0b06* ]] || fail "DCDART_PIN.txt says $PIN; the tree is built against 38f0b06 — which is past 8713298 (DCDart's ADR-0051, which M17 needs for @bss, pmm.dart's storage seam) and past e3cfe18 (nested while-loops, which M7 needs — GAP-0068). Both facts the pin is load-bearing for are still named here so a future bump has to answer to both."
 ck; grep -q 'while (f < lastEx)' "$CORE_DIR/kernel/pmm.dart" || fail "pmm.dart's inner frame loop is gone — if it was decomposed into a helper, the pin bump is no longer justified and GAP-0068 needs updating"
 echo "STRUCTURAL: pass  DCDART_PIN.txt is $PIN and pmm.dart's memory-map walk is still a genuine nested loop"
 
@@ -435,7 +442,7 @@ check_table() {
   ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M7 depends on was not emitted"
   ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 2224  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
+check_table shellStrHelp 2511  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table pmmStrBase 9
 check_table pmmStrStore 7
 check_table pmmStrBitmap 8
@@ -480,7 +487,33 @@ check_table pmmStrTouch 6
 check_table pmmStrNextL 5
 check_table pmmStrRefill 11
 check_table pmmStrGave 5
-check_table pmmStrUsage 67
+check_table pmmStrUsage 92   # 67 until the shakedown added `frames leave <n>` on a second line (ADR-0039 §3)
+# ...AND IT LISTS THE COMMAND, which is the half a size check cannot make. A
+# usage line that grew by 25 bytes of anything would satisfy the number above.
+# `frames leave <n>` exists so that `elfErrNoFrames` has a reachable caller
+# (ADR-0039 §3); a sub-command that is not in its own family's usage line is
+# undiscoverable exactly as one that is not in `help` is (GAP-0115).
+ck; python3 - "$CORE_DIR/kernel/pmm.dart" <<'PY' || fail "pmmStrUsage does not list \`frames leave <n>\`, or pmm.dart no longer dispatches it"
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"final List<u8> pmmStrUsage = const \[(.*?)\];", src, re.S)
+text = bytes(int(x, 16) for x in re.findall(r"u8\(0x([0-9A-Fa-f]{2})\)", m.group(1))).decode("ascii")
+fails = []
+if "frames leave <n>" not in text:
+    fails.append("pmmStrUsage does not mention `frames leave <n>`: %r" % text)
+for line in text.rstrip("\n").split("\n"):
+    if len(line) > 78:
+        fails.append("a usage line is %d columns, and this shell is read on an "
+                     "80-column console: %r" % (len(line), line))
+if "void shellFramesLeave(" not in src:
+    fails.append("shellFramesLeave is gone, so the usage line advertises a "
+                 "command that does not exist")
+if fails:
+    for f in fails:
+        print("    - " + f, file=sys.stderr)
+    sys.exit(1)
+print("    (pmmStrUsage lists five forms on two lines, none over 78 columns)")
+PY
 check_table pmmStrFreeUsage 44
 check_table pmmCmdFrames 6
 check_table pmmCmdTest 11
@@ -539,9 +572,13 @@ EXEMPT = {
                         "and vm.dart is required below to still do so",
     ("vm.dart", "f"): "vmInit's six frames are zeroed by vmBuild's own loop, "
                       "`vmZeroFrame(vmFrame(i))`, before a single entry is written",
-    ("pmm.dart", "a"): "the allocator's own `alloc`, `frames self` and `frames "
-                       "drain` shell commands. Nothing is mapped, nothing reaches "
-                       "ring 3, and the drain writes one word of its own by hand",
+    ("pmm.dart", "a"): "the allocator's own `alloc`, `frames self`, `frames "
+                       "drain` and `frames leave <n>` shell commands. Nothing is "
+                       "mapped, nothing reaches ring 3, and the drain writes one "
+                       "word of its own by hand. `frames leave` (ADR-0039 §3) "
+                       "reads nothing at all from the frames it takes: they exist "
+                       "to be MISSING from the free pool, which is the whole "
+                       "point of a partial drain",
     ("pmm.dart", "next"): "the allocation `frames drain` attempts AFTER exhaustion. "
                           "It is required to be 0 and there is no frame to zero",
 }
@@ -586,7 +623,7 @@ if "vmZeroFrame(vmFrame(i));" not in vmsrc:
     bad.append("vmBuild no longer zeroes vmInit's six frames, and vm.dart's `f` "
                "is exempted here on the grounds that it does")
 
-if sites != 17:
+if sites != 18:
     bad.append("there are %d allocFrame() call sites and this check was written "
                "against 17. A new one is not a failure -- an unaccounted one is. "
                "Add it, or its exemption, and move this number." % sites)
@@ -597,7 +634,7 @@ print("    (%d allocFrame() call sites; %d exempted with a reason)"
       % (sites, len(EXEMPT)))
 sys.exit(1 if bad else 0)
 PYEOF
-echo "STRUCTURAL: pass  all 17 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
+echo "STRUCTURAL: pass  all 18 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).

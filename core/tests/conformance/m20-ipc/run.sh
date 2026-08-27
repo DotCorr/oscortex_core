@@ -429,8 +429,8 @@ echo "STRUCTURAL: pass  all 17 of M20's @rodata tables are exactly the sizes the
 # m14. M20 adds three SYSCALLS and NO shell command -- IPC is something programs
 # do, not something a prompt does -- so this number must not move.
 HELP_SIZE=$(symsize shellStrHelp)
-[[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2224 — UNCHANGED from M14. M20 adds three syscalls and no help line; if that changed, five byte-exact goldens move with it."
-echo "STRUCTURAL: pass  shellStrHelp is unchanged at 2224 bytes — M20 adds no shell command, so no help-text golden moves"
+[[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511. M20 adds three syscalls and no help line; the number moved in the shakedown commit."
+echo "STRUCTURAL: pass  shellStrHelp is 2511 bytes — M20 itself adds no shell command"
 
 # 2h. THE EXIT REPORT AND THE INIT ARE SILENT ON A BOOT THAT OPENS NO CHANNEL.
 #
@@ -804,7 +804,7 @@ echo "CHECK 12: pass  the first $M1_BYTES bytes are m1-interrupts' golden, byte 
 # it. This is not that: an M9-style payload runs with no process slot and would
 # reach these three lines today. What is missing is a payload that issues
 # `chanopen`, and adding one is not a merge's work -- `shellStrHelp` enumerates
-# every `user` mode, three harnesses pin it at 2224 bytes, and GAP-0105 and
+# every `user` mode, three harnesses pin it at 2511 bytes, and GAP-0105 and
 # GAP-0115 both record that moving it moves m3-m6's goldens by substitution.
 # GAP-0214 carries that, worded so the next person knows it is a live guard
 # waiting for a test rather than dead code filed away.
@@ -821,8 +821,56 @@ CALLER_ID=$(grep -c 'final u64 id = chanCallerId();' "$CORE_DIR/kernel/chan.dart
 grep -q 'if (procLive() < u64(1)) {' "$CORE_DIR/kernel/chan.dart" || fail "chanCallerId no longer returns 0 when no process is live, which is the condition chanRetNoProc exists to answer"
 echo "STRUCTURAL: pass  all three channel syscalls still ask chanCallerId() and still refuse with chanRetNoProc, and chanCallerId still answers 0 when procLive() is 0 — asserted STRUCTURALLY, because ADR-0034 removed the only way the shell could reach this path. The guard is live and untested, not dead: an M9-style payload with no process slot would still hit it (GAP-0214)"
 
+# ---- CHECK 14: chanRetNoPeer IS PROVOKED ON EVERY RUN, AND NOW ASSERTED ----
+#
+# THE DEFECT THIS CLOSES: GAP-0206 claimed the program "provokes twelve of
+# [chan.dart's fourteen codes] from ring 3 and checks each as a return value".
+# It provokes twelve; it CHECKED ten. `chanRetNoPeer` (F4) was the difference
+# and it is the worse kind of hole, because it does not look like one:
+# `spinSend` (prog.c:212) retries on exactly the two answers that mean "not
+# yet", counts every CHAN_NOPEER it gets in `sawNoPeer`, and PRINTS the count
+# in its ` NOPEER <n> ` field -- and nothing in this file ever read that field.
+# The code fired on every run, the harness saw the number, and nothing compared
+# it to anything. A provoked-but-unchecked code has the appearance of coverage
+# and none of the protection.
+#
+# Three independent statements, because "the count is non-zero" alone would be
+# satisfied by a program that counted a DIFFERENT refusal into the same field:
+#
+#   1. the C constant the program compares against IS the kernel's own value;
+#   2. the KERNEL narrated that value, on the send path, in its own words;
+#   3. both processes' NOPEER counters are non-zero, so the race the retry
+#      loop exists for really happened in both directions.
+C_NOPEER=$(sed -n 's/^#define CHAN_NOPEER \(0x[0-9A-Fa-f]*\)UL.*/\1/p' "$SCRIPT_DIR/prog.c")
+K_NOPEER=$(sed -n 's/^const int chanRetNoPeer = \(0x[0-9A-Fa-f]*\);.*/\1/p' "$CORE_DIR/kernel/chan.dart")
+[[ -n "$C_NOPEER" && -n "$K_NOPEER" ]] || fail "could not read CHAN_NOPEER out of prog.c ($C_NOPEER) or chanRetNoPeer out of chan.dart ($K_NOPEER)"
+[[ "$(printf '%u' "$C_NOPEER")" == "$(printf '%u' "$K_NOPEER")" ]] \
+  || fail "prog.c's CHAN_NOPEER is $C_NOPEER and chan.dart's chanRetNoPeer is $K_NOPEER — the program has been counting a value the kernel does not return"
+NOPEER_HEX=$(printf '%016X' "$(printf '%u' "$K_NOPEER")")
+# The kernel's own line. `chanRefuse` prints one per refusal, so this is the
+# kernel saying it, not the program.
+NOPEER_KERNEL=$(grep -c "CHAN REFUSE C 0E EP .* R $NOPEER_HEX" "$SERIAL" | tr -d ' ')
+[[ "$NOPEER_KERNEL" -ge 1 ]] \
+  || { grep -F "CHAN REFUSE" "$SERIAL" | head -20 >&2; fail "the kernel never printed a send refused with $NOPEER_HEX. chanRetNoPeer is provoked by spinSend on every run — if it stopped being returned, or started being returned as a different value, this is the assertion that says so."; }
+# And the program's own count of it, from BOTH sides and BOTH sessions.
+#
+# Every `IPC A DONE` / `IPC B DONE` line in the capture, not the first of each:
+# this boot runs the session TWICE (CHECK 11), so a `head -1` here would compare
+# one session's ring-3 count against two sessions' kernel lines. That is not a
+# hypothetical -- it is what the first draft of this check did, and the
+# mismatch it reported (1 against 2) is what said so.
+NOPEER_FIELDS=$(sed -n 's/.*IPC [AB] DONE EP [0-9A-F]* NOPEER \([0-9A-F]*\) .*/\1/p' "$SERIAL")
+[[ -n "$NOPEER_FIELDS" ]] || { grep -F "DONE EP" "$SERIAL" >&2; fail "no ' NOPEER <n> ' field on any IPC A/B DONE line — the program did not report its retry count"; }
+NOPEER_TOTAL=0
+for f in $NOPEER_FIELDS; do NOPEER_TOTAL=$(( NOPEER_TOTAL + 0x$f )); done
+[[ "$NOPEER_TOTAL" -ge 1 ]] \
+  || fail "both processes report NOPEER 0, so chanRetNoPeer was NOT provoked on this run. That is a real change: GAP-0206 is then wrong by two for a second reason and the code belongs in GAP-0207's category instead."
+[[ "$NOPEER_TOTAL" -eq "$NOPEER_KERNEL" ]] \
+  || { grep -F "DONE EP" "$SERIAL" >&2; grep -F "R $NOPEER_HEX" "$SERIAL" >&2; fail "ring 3 counted $NOPEER_TOTAL CHAN_NOPEER answers across both sessions and the kernel printed $NOPEER_KERNEL send refusals with that code — the two sides of the boundary disagree about how many times it happened"; }
+echo "CHECK 14: pass  chanRetNoPeer ($NOPEER_HEX) was returned $NOPEER_TOTAL time(s) across both sessions of this boot, the kernel narrated every one of them on the send path, both ring-3 processes counted them, and the constant the program compares against is read out of chan.dart rather than typed twice — the code GAP-0206 counted as checked and never was"
+
 # ---- The exit criterion, stated once more against what actually happened. --
 SERIAL_BYTES=$(wc -c <"$SERIAL" | tr -d ' ')
 echo
-echo "M20-ipc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build ONE freestanding static ELF64 program which make-image.py writes to TWO BYTE-IDENTICAL disk slots (it refuses to build an image where they differ) -> 8 structural checks (chanStore 2624 bytes and the second-to-last block in .bss, immediately before S0's ioctlStore with its regions tiling exactly and the ring depth a power of two, chanMsgBytes HARD-CAPPED at 64 in the kernel with both validators bounding the length before touching the pointer and only the WRITE one requiring the W bit, the single-producer discipline and the publication order read out of chanSysSend/chanSysRecv, a 3-call-site storage seam named nowhere else with exactly one release site which is procCleanup, $CODE_COUNT distinct refusal-and-status codes all above one floor (12 of them provoked from ring 3 in this run) and three syscall numbers colliding with nothing, 17 @rodata tables against their call sites, shellStrHelp UNCHANGED at 2224, and chanInit/chanExitReport both silent on a boot that opens no channel) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M20 added no assembly) -> ONE real QEMU boot, M1's ${M1_BYTES}-byte golden a byte-exact prefix of it. ${SERIAL_BYTES} bytes of transcript in which TWO RING-3 PROCESSES IN TWO DIFFERENT ADDRESS SPACES EXCHANGED SIXTEEN MESSAGES: the SAME BINARY took the requester role and the responder role because \`chanopen\` told it which it was, four requests of four different lengths ($(d req_lens)) crossed one way and four replies of four more ($(d rep_lens)) came back DERIVED FROM THE BYTES THAT ARRIVED, and each process EXITED WITH A 64-BIT FNV-1a HASH OF EVERY PAYLOAD BYTE IT RECEIVED — $(d a_hash) and $(d b_hash), both computed on the host from the protocol's formulas BEFORE the machine booted, both reproduced exactly by a SECOND session on the same port number with a new generation and two new process ids; the ring filled to exactly $(d burst) messages and refused the ninth; EIGHT MESSAGES SENT BY A PROCESS THAT THEN EXITED WERE DELIVERED IN FULL to a survivor whose peer no longer existed, in that order, with CHAN_PEERGONE arriving only once the last of them was drained; nineteen refusal outcomes observed from ring 3 as return values, among them a receive into the program's own read-only page and a send with a pointer of 0xFFFFFFFFFFFFFFFF; the frame allocator's free count identical to the frame across both sessions because a channel is @bss and costs it nothing. The no-process control is GONE and is not quietly missing: ADR-0034 made every ring-3 program a process, so the shell can no longer produce a caller without a slot, and the CHAN_NOPROC guard is now asserted STRUCTURALLY ONLY -- live, reachable by an M9-style payload, and untested until one exists (GAP-0214). Screenshot at $SHOT_PNG"
+echo "M20-ipc: PASS — dcc build -> assemble -> link -> clang + x86_64-elf-ld build ONE freestanding static ELF64 program which make-image.py writes to TWO BYTE-IDENTICAL disk slots (it refuses to build an image where they differ) -> 8 structural checks (chanStore 2624 bytes and the second-to-last block in .bss, immediately before S0's ioctlStore with its regions tiling exactly and the ring depth a power of two, chanMsgBytes HARD-CAPPED at 64 in the kernel with both validators bounding the length before touching the pointer and only the WRITE one requiring the W bit, the single-producer discipline and the publication order read out of chanSysSend/chanSysRecv, a 3-call-site storage seam named nowhere else with exactly one release site which is procCleanup, $CODE_COUNT distinct refusal-and-status codes all above one floor (12 of them provoked from ring 3 in this run) and three syscall numbers colliding with nothing, 17 @rodata tables against their call sites, shellStrHelp UNCHANGED at 2511, and chanInit/chanExitReport both silent on a boot that opens no channel) -> verify-freestanding pass ($EXTERN_COUNT declared externs, UNCHANGED — M20 added no assembly) -> ONE real QEMU boot, M1's ${M1_BYTES}-byte golden a byte-exact prefix of it. ${SERIAL_BYTES} bytes of transcript in which TWO RING-3 PROCESSES IN TWO DIFFERENT ADDRESS SPACES EXCHANGED SIXTEEN MESSAGES: the SAME BINARY took the requester role and the responder role because \`chanopen\` told it which it was, four requests of four different lengths ($(d req_lens)) crossed one way and four replies of four more ($(d rep_lens)) came back DERIVED FROM THE BYTES THAT ARRIVED, and each process EXITED WITH A 64-BIT FNV-1a HASH OF EVERY PAYLOAD BYTE IT RECEIVED — $(d a_hash) and $(d b_hash), both computed on the host from the protocol's formulas BEFORE the machine booted, both reproduced exactly by a SECOND session on the same port number with a new generation and two new process ids; the ring filled to exactly $(d burst) messages and refused the ninth; EIGHT MESSAGES SENT BY A PROCESS THAT THEN EXITED WERE DELIVERED IN FULL to a survivor whose peer no longer existed, in that order, with CHAN_PEERGONE arriving only once the last of them was drained; nineteen refusal outcomes observed from ring 3 as return values, among them a receive into the program's own read-only page and a send with a pointer of 0xFFFFFFFFFFFFFFFF; the frame allocator's free count identical to the frame across both sessions because a channel is @bss and costs it nothing. The no-process control is GONE and is not quietly missing: ADR-0034 made every ring-3 program a process, so the shell can no longer produce a caller without a slot, and the CHAN_NOPROC guard is now asserted STRUCTURALLY ONLY -- live, reachable by an M9-style payload, and untested until one exists (GAP-0214). Screenshot at $SHOT_PNG"
 exit 0

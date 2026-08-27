@@ -85,7 +85,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=100
+ASSERTIONS_REQUIRED=103
 
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
@@ -268,17 +268,38 @@ check_table procCmdCoopSp 10
 check_table procCmdSched 10
 echo "STRUCTURAL: pass  all 16 M18 message/command tables are exactly the sizes their call sites pass"
 
-# 3f. shellStrHelp IS UNCHANGED, SO NOT ONE EARLIER GOLDEN MOVES.
+# 3f. M18's THREE COMMANDS ARE IN `help`, WHICH THEY WERE NOT UNTIL THE
+#     SHAKEDOWN. GAP-0142, CLOSED.
 #
-# GAP-0105: `shellStrHelp` is inside the byte-exact goldens of m3, m4, m5, m6
-# and m14, and its size is asserted by m4, m10, m11, m12, m13 and m15. M18 adds
-# THREE shell commands and documents them on a SECOND usage table
-# (`procStrUsage2`) reached from `proc` with a bad argument, precisely so that
-# this number does not move. That is a real cost -- `help` does not mention
-# `proc spin` -- and ADR-0022 §7 records it.
+# THIS CHECK USED TO ASSERT THE OPPOSITE and said so in its own title:
+# "shellStrHelp IS UNCHANGED, SO NOT ONE EARLIER GOLDEN MOVES". GAP-0105 is
+# why -- `shellStrHelp` is inside the byte-exact goldens of m3, m4, m5, m6 and
+# m14 -- and at M18 that deferral was correct: three help lines for a milestone
+# with nothing to do with the shell would have moved five goldens.
+#
+# The cost was real and GAP-0142 named it: somebody typing `help` at this
+# kernel's prompt was not told a preemptive session exists. The three commands
+# lived only on `procStrUsage2`, a table you reach by typing `proc` WRONG, and
+# discovering a feature by making a mistake is not discoverability. The T1
+# sweep booted all three, found them working, and filed them as undocumented.
+#
+# So the assertion is INVERTED, not deleted: the size still cannot drift
+# silently, and the three lines are now required to be there. A size check
+# alone would be satisfied by 287 bytes of anything.
 HELP_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk '$8=="shellStrHelp"{print $3; exit}')
-ck; [[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M18 adds three commands and no help line; if that changed, five byte-exact goldens move with it."
-echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged — M18 moves no earlier golden"
+ck; [[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511 (2224 before the shakedown added M18's three commands, \`frames leave <n>\` and the corrected \`fb\` line). GAP-0142."
+ck; python3 - "$CORE_DIR/kernel/shell.dart" <<'PY' || fail "shellStrHelp does not list all three of M18's commands -- GAP-0142 has come undone"
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"final List<u8> shellStrHelp = const \[(.*?)\];", src, re.S)
+text = bytes(int(x, 16) for x in re.findall(r"u8\(0x([0-9A-Fa-f]{2})\)", m.group(1))).decode("ascii")
+missing = [c for c in ("  proc sched", "  proc coop", "  proc spin") if c not in text]
+if missing:
+    print("    - `help` does not list: %s" % ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+print("    (`help` lists proc sched, proc coop and proc spin, on their own lines)")
+PY
+echo "STRUCTURAL: pass  shellStrHelp is 2511 bytes AND lists all three of M18's commands on their own lines — GAP-0142 closed, and the five byte-exact goldens they move were regenerated in the same commit"
 
 # 3g. THE TIMER IS UNMASKED BY A PREEMPTIVE SESSION AND MASKED AGAIN ON EVERY
 #     EXIT FROM ONE.

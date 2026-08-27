@@ -393,7 +393,7 @@ check_table() {
   ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o — a @rodata table M6 depends on was not emitted"
   ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060: the length is a hand-maintained literal)"
 }
-check_table shellStrHelp 2224  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
+check_table shellStrHelp 2511  # M10 added `run <lba>`, M11 three `proc` lines, M14 `run <name>` + `fs`/`ls`/`cat`; GAP-0060
 check_table ataCmdName 4
 check_table ataCmdIdName 7
 check_table ataCmdReadName 10

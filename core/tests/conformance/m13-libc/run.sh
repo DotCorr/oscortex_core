@@ -420,10 +420,10 @@ check_table() {
   ck; [[ -n "$got" ]] || fail "$sym not found in kmain.o"
   ck; [[ "$got" -eq "$want" ]] || fail "$sym is $got bytes but its call site passes $want (known-gaps GAP-0060)"
 }
-check_table shellStrHelp 2224
+check_table shellStrHelp 2511
 check_table heapStrLine 10
 check_table procStrPages 7
-echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes — M13 added no shell command; M14 added four, and moved m3-m6's goldens by substitution (GAP-0115)"
+echo "STRUCTURAL: pass  shellStrHelp is 2511 bytes — M13 added no shell command; the number is maintained by whoever does (GAP-0115)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1). 58 externs, unchanged.

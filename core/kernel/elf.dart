@@ -1854,10 +1854,21 @@ void shellElfLoadAndEnter(u64 headerLba, u64 named) {
     elfReportError(u64(elfErrNotReady));
     return;
   }
-  if (elfLive() > u64(0)) {
-    elfReportError(u64(elfErrLive));
-    return;
-  }
+  // THE `elfLive()` GUARD THAT USED TO STAND HERE IS DELETED. ADR-0039.
+  //
+  // It asked whether an M10 window program was already running. ADR-0034
+  // deleted the only code that started one, and with it the only assignment of
+  // a non-zero value to `elfMetaLive` -- `elfInit` and `elfTeardown` both write
+  // 0 and nothing writes anything else -- so `elfLive()` is a compile-time zero
+  // and the branch was dead. `m10-elf/run.sh` §2i now asserts that no such
+  // guard comes back while the flag has no writer, because a guard on a
+  // constant is indistinguishable from a guard that works.
+  //
+  // The `userMetaLive` question below is a DIFFERENT question and is NOT dead:
+  // `shellUser` really does set that flag, so an M9 payload really can be in
+  // ring 3. It is unreachable from this shell only because the shell is
+  // synchronous (docs/known-gaps.md GAP-0243), and it is kept for the caller
+  // that is not this shell.
   if (userMeta(u64(userMetaLive)) > u64(0)) {
     elfReportError(u64(elfErrLive));
     return;
@@ -1870,6 +1881,8 @@ void shellElfLoadAndEnter(u64 headerLba, u64 named) {
     procRefuse(u64(procErrNoSse));
     return;
   }
+  // Live, and unreachable for the reason `shellProcRun`'s twin is: this shell is
+  // synchronous. ADR-0039 §4, docs/known-gaps.md GAP-0243.
   if (procLive() > u64(0)) {
     procRefuse(u64(procErrBusy));
     return;

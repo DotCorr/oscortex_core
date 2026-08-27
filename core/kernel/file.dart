@@ -149,6 +149,21 @@ final List<u8> fileStrRefused = const [
   u8(0x20), u8(0x52), u8(0x45), u8(0x46), u8(0x55), u8(0x53), u8(0x45), u8(0x44), u8(0x20),
 ];
 
+/// Per-refusal line label — the one [fileRefuse] prints, once per refusal.
+///
+/// **Not the same string as [fileStrRefused], deliberately.** That one is a
+/// FIELD SEPARATOR on the exit aggregate (` REFUSED 0000000E`), which says how
+/// many refusals happened and nothing about which. This one begins a LINE that
+/// names the code, and the two are kept apart so that a transcript's per-call
+/// evidence and its total are never the same bytes.
+///
+/// `'FILE REFUSED '` -- 13 bytes.
+@rodata
+final List<u8> fileStrRefuseLine = const [
+  u8(0x46), u8(0x49), u8(0x4C), u8(0x45), u8(0x20), u8(0x52), u8(0x45), u8(0x46), u8(0x55), u8(0x53), u8(0x45), u8(0x44),
+  u8(0x20),
+];
+
 /// Field separator.
 ///
 /// `' BYTES '` -- 7 bytes.
@@ -842,7 +857,8 @@ void fileCopyOut(u64 dst, u64 from, u64 n) {
   }
 }
 
-/// Records a refusal and hands [code] back to ring 3 in RAX.
+/// Records a refusal, NAMES IT ON THE CONSOLE, and hands [code] back to ring 3
+/// in RAX.
 ///
 /// Counted, always, so that "the program said it was refused" and "the kernel
 /// refused" are two independent statements a transcript can compare.
@@ -851,10 +867,54 @@ void fileCopyOut(u64 dst, u64 from, u64 n) {
 /// only place the filesystem's own account of what was wrong survives. Writing
 /// this file's value into it would make `FSERR` print the same number the
 /// program already has.
+///
+/// **THE `uartWrite` IS THE FIX FOR A DEFECT, NOT DECORATION.** Until it was
+/// added this function's whole body was the two lines above it, and all 43 call
+/// sites (file.dart:1258-1716) were silent. Ring 3 could tell the fourteen
+/// codes apart — each is a distinct 64-bit value in RAX — but the OPERATOR
+/// reading the serial transcript could not: the only thing the kernel said
+/// about a refusal was the aggregate ` REFUSED <n>` at exit, and the `FSERR`
+/// field beside it carries the FAT-level code rather than this one. Three of
+/// the fourteen had never appeared in any golden in the repository.
+///
+/// The line is `FILE REFUSED <16 hex>` because that is the shape
+/// [ioctlRefuse] already prints (`IOCTL REFUSED <16 hex>`), and consistency
+/// with the module that already got this right is worth more than a shorter
+/// line. docs/decisions/0038-a-refusal-that-does-not-name-itself.md.
 @bare
 void fileRefuse(u64 frame, u64 code) {
   fileBump(u64(fileMetaRefusals));
+  uartWrite(Rodata.addressOf(fileStrRefuseLine), u64(13));
+  uartPutHex(code, u64(16));
+  uartNewline();
   userSetFrame(frame, u64(userFrameRax), code);
+}
+
+/// Records a FAT-level failure in [fileMetaStatus] **and narrates it**.
+///
+/// The second half is the other end of the same defect [fileRefuse]'s comment
+/// describes. Four of `fat.dart`'s codes — `fatErrFull` (1D),
+/// `fatErrNoDirSlot` (1E), `fatErrDiskWrite` (1F) and `fatErrReadOnly` (20) —
+/// are reached ONLY through this file's syscalls, and this file translates them
+/// into its own vocabulary before ring 3 ever sees them. That translation is
+/// lossy in both directions:
+///
+///   * `fatErrFull` and `fatErrNoDirSlot` BOTH become [fileRetNoSpace], so the
+///     file-level code cannot tell a full volume from a full directory;
+///   * `fatErrDiskWrite` becomes [fileRetIo], which eight other conditions also
+///     become; and
+///   * a SHORT write reports a byte count and refuses nothing at all, so
+///     `fatErrFull` can be reached on a call that never calls [fileRefuse].
+///
+/// So the FAT code has to name itself where it is RECORDED rather than where it
+/// is returned. [fatReportError] is the function `fat.dart` already uses for
+/// exactly this, with a distinct sentence for all 32 codes, and calling it here
+/// puts the same `FS ERR <hh> <sentence>` line in the transcript whether the
+/// failure arrived through `cat` or through `fdwrite`.
+@bare
+void fileFatStatus(u64 code) {
+  fileSetMeta(u64(fileMetaStatus), code);
+  fatReportError(code);
 }
 
 /// Turns a `fatErr*` code into this file's vocabulary, keeping the FAT-level
@@ -1057,13 +1117,13 @@ u64 fileFlushFd(u64 row, u64 fd) {
   }
   final u64 m = fatMount();
   if (m > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), m);
+    fileFatStatus(m);
     return m;
   }
   final u64 w = fatDirWrite(fileFd(row, fd, u64(fileFdEntry)),
       fileFd(row, fd, u64(fileFdFirst)), fileFd(row, fd, u64(fileFdSize)));
   if (w > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), w);
+    fileFatStatus(w);
     return w;
   }
   fileBump(u64(fileMetaFlushes));
@@ -1095,7 +1155,7 @@ u64 fileMakeEmpty() {
   if (fs == u64(fatErrNotFound)) {
     final u64 cr = fatDirCreate();
     if (cr > u64(fatErrOk)) {
-      fileSetMeta(u64(fileMetaStatus), cr);
+      fileFatStatus(cr);
       if (cr == u64(fatErrNoDirSlot)) {
         return u64(fileRetNoSpace);
       }
@@ -1112,7 +1172,7 @@ u64 fileMakeEmpty() {
     return u64(0);
   }
   if (fs == u64(fatErrIsDir)) {
-    fileSetMeta(u64(fileMetaStatus), fs);
+    fileFatStatus(fs);
     return u64(fileRetIsDir);
   }
   // [fatErrOk] is a file with a chain and [fatErrEmpty] is an entry without a
@@ -1120,7 +1180,7 @@ u64 fileMakeEmpty() {
   // other code means the lookup itself failed and is handed back.
   if (fs > u64(fatErrOk)) {
     if (fs != u64(fatErrEmpty)) {
-      fileSetMeta(u64(fileMetaStatus), fs);
+      fileFatStatus(fs);
       return fileFromFat(fs);
     }
   }
@@ -1139,7 +1199,7 @@ u64 fileMakeEmpty() {
   // file only translates the answer into the vocabulary ring 3 sees.
   final u64 ro = fatWritable();
   if (ro > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), ro);
+    fileFatStatus(ro);
     return fileFromFat(ro);
   }
   final u64 entry = fatMeta(u64(fatMetaFileEntry));
@@ -1147,12 +1207,12 @@ u64 fileMakeEmpty() {
   fatClose();
   final u64 tr = fatTruncate(first);
   if (tr > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), tr);
+    fileFatStatus(tr);
     return u64(fileRetIo);
   }
   final u64 dw = fatDirWrite(entry, u64(0), u64(0));
   if (dw > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), dw);
+    fileFatStatus(dw);
     return u64(fileRetIo);
   }
   fatSetMeta(u64(fatMetaFileEntry), entry);
@@ -1180,7 +1240,7 @@ u64 fileMakeEmpty() {
 u64 fileWriteChunk(u64 row, u64 fd, u64 from, u64 remaining) {
   final u64 cbytes = fatClusterBytes();
   if (cbytes < u64(1)) {
-    fileSetMeta(u64(fileMetaStatus), u64(fatErrClusterSize));
+    fileFatStatus(u64(fatErrClusterSize));
     return u64(0);
   }
   final u64 pos = fileFd(row, fd, u64(fileFdPos));
@@ -1188,7 +1248,7 @@ u64 fileWriteChunk(u64 row, u64 fd, u64 from, u64 remaining) {
     final u64 c = fatAlloc(fileFd(row, fd, u64(fileFdLast)));
     final u64 ae = fatAllocError(c);
     if (ae > u64(fatErrOk)) {
-      fileSetMeta(u64(fileMetaStatus), ae);
+      fileFatStatus(ae);
       return u64(0);
     }
     if (fileFd(row, fd, u64(fileFdLast)) < u64(fatFirstCluster)) {
@@ -1204,7 +1264,7 @@ u64 fileWriteChunk(u64 row, u64 fd, u64 from, u64 remaining) {
   final u64 k = (pos - base) >> u64(fatSectorShift);
   final u64 lba = fatClusterSector(fileFd(row, fd, u64(fileFdLast)), k);
   if (lba < u64(1)) {
-    fileSetMeta(u64(fileMetaStatus), u64(fatErrChainRange));
+    fileFatStatus(u64(fatErrChainRange));
     return u64(0);
   }
   final u64 inSec = pos & u64(511);
@@ -1219,7 +1279,7 @@ u64 fileWriteChunk(u64 row, u64 fd, u64 from, u64 remaining) {
     // and a driver that skipped this would zero everything the previous call
     // had put in the same sector.
     if (fatReadSector(lba, fileSecBase()) > u64(0)) {
-      fileSetMeta(u64(fileMetaStatus), u64(fatErrDiskData));
+      fileFatStatus(u64(fatErrDiskData));
       return u64(0);
     }
   } else {
@@ -1227,7 +1287,7 @@ u64 fileWriteChunk(u64 row, u64 fd, u64 from, u64 remaining) {
   }
   fileSplice(inSec, from, n);
   if (fatWriteSector(lba, fileSecBase()) > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), u64(fatErrDiskWrite));
+    fileFatStatus(u64(fatErrDiskWrite));
     return u64(0);
   }
   fileBump(u64(fileMetaWSectors));
@@ -1289,7 +1349,7 @@ void fileSysWrite(u64 frame) {
   fileCopyIn(src, len);
   final u64 m = fatMount();
   if (m > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), m);
+    fileFatStatus(m);
     fileRefuse(frame, u64(fileRetIo));
     return;
   }
@@ -1493,7 +1553,7 @@ void fileSysOpen(u64 frame) {
   }
   final u64 pn = fatParseAt(buf, len);
   if (pn > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), pn);
+    fileFatStatus(pn);
     fileRefuse(frame, u64(fileRetBadName));
     return;
   }
@@ -1526,7 +1586,7 @@ void fileSysOpen(u64 frame) {
   }
   final u64 fs = fatLookup();
   if (fs > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), fs);
+    fileFatStatus(fs);
     fileRefuse(frame, fileFromFat(fs));
     return;
   }
@@ -1608,7 +1668,7 @@ void fileSysRead(u64 frame) {
   }
   final u64 cs = fileChainFor(row, fd);
   if (cs > u64(fatErrOk)) {
-    fileSetMeta(u64(fileMetaStatus), cs);
+    fileFatStatus(cs);
     fileRefuse(frame, u64(fileRetIo));
     return;
   }
@@ -1622,12 +1682,12 @@ void fileSysRead(u64 frame) {
     }
     final u64 lba = fatFileSector(off >> u64(fatSectorShift));
     if (lba < u64(1)) {
-      fileSetMeta(u64(fileMetaStatus), u64(fatErrChainRange));
+      fileFatStatus(u64(fatErrChainRange));
       fileRefuse(frame, u64(fileRetIo));
       return;
     }
     if (fatReadSector(lba, fileBufBase()) > u64(0)) {
-      fileSetMeta(u64(fileMetaStatus), u64(fatErrDiskData));
+      fileFatStatus(u64(fatErrDiskData));
       fileRefuse(frame, u64(fileRetIo));
       return;
     }

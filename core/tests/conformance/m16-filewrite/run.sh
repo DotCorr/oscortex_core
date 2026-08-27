@@ -119,7 +119,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=268
+ASSERTIONS_REQUIRED=281
 
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
@@ -651,8 +651,8 @@ echo "STRUCTURAL: pass  all 26 of oslibc.h's file numbers read back out of core/
 # move and neither does any golden that contains it. If a later milestone adds
 # `write` or `rm` to the shell, this is where the budget is.
 HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
-ck; [[ "$HELP_SIZE" == "2224" ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — M16 was not supposed to add a shell command, and every harness that asserts a help-text golden moves with this number"
-echo "STRUCTURAL: pass  shellStrHelp is unchanged at 2147 bytes — M16 adds no shell command, so no help-text golden moves"
+ck; [[ "$HELP_SIZE" == "2511" ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511 — M16 adds no shell command; the number moved in the shakedown commit, which added five help lines and regenerated every golden that carries them"
+echo "STRUCTURAL: pass  shellStrHelp is 2511 bytes — M16 itself adds no shell command"
 
 # 2g. EVERY @rodata TABLE EQUALS THE STRING ITS DOC COMMENT RECORDS.
 #
@@ -1368,6 +1368,93 @@ ck; grep -qF -- "JUNK    .BIN" "$JSER" \
   && { sed -n '/M1 END/,$p' "$JSER" >&2; fail "\`ls\` printed JUNK.BIN — the entry past the directory's end marker survived, so fatDirTerminate did not run"; }
 fsck_clean "$DIRJUNK_RUN" "dirjunk after"
 echo "CHECK 12c: pass  on a volume with a live-looking entry ONE SLOT PAST the directory's end marker — which fsck_msdos refuses as built — the guest consumed the marker slot, re-established the marker, and left a volume fsck_msdos calls CLEAN with no JUNK.BIN in \`ls\`: $FSCK_SUMMARY"
+
+# ---------------------------------------------------------------------------
+# Step 12d — CHECK 13: THE SEVEN CODES THAT USED TO BE REACHED AND OBSERVABLE
+#            NOWHERE.
+#
+# THE DEFECT THIS CLOSES (ADR-0038). Before this commit, every run of this
+# harness fired all of these and the transcript said only
+#
+#     FILE OPENS 0000000B ... REFUSED 0000000F ... PEAK 02 FSERR 20
+#
+# -- fifteen refusals, and one FAT-level code, and nothing about WHICH. Three of
+# the seven had never appeared in ANY golden in this repository:
+#
+#     $ grep -rl 'fffffff3' core/tests/conformance/*/expected*.txt   -> nothing
+#     $ grep -rl 'fffffff2' core/tests/conformance/*/expected*.txt   -> nothing
+#     $ grep -rl 'fffffff1' core/tests/conformance/*/expected*.txt   -> nothing
+#
+# AND THIS HARNESS WAS GREEN. It exercised all seven and would have stayed green
+# if any of them had started returning a different code, or the same code for a
+# different reason, or stopped being returned at all. A test that passes against
+# a code while proving nothing about it is the thing the shakedown campaign
+# exists to detect, and it is why this check is written per-BOOT: each code is
+# required to appear in the capture of the boot that provokes it, and not merely
+# somewhere in seven transcripts.
+#
+# The file-level codes are the LOSSY half and the FAT-level ones are why the
+# second funnel exists: `fatErrFull` and `fatErrNoDirSlot` BOTH become
+# `fileRetNoSpace`, so `FILE REFUSED ...F2` alone cannot tell a full volume from
+# a full directory. `FS ERR 1D` and `FS ERR 1E` can, and they come from
+# different boots.
+# ---------------------------------------------------------------------------
+codehave() {  # <capture> <label> <string>
+  ck; grep -qF -- "$3" "$1" \
+    || { sed -n '/M1 END/,$p' "$1" | tail -60 >&2; fail "the $2 boot's transcript does not contain \"$3\" — that refusal is reached on every run of this harness and this is the assertion that it says which one it is (ADR-0038)"; }
+}
+# 1+2. fileRetReadOnly (F1) and fatErrReadOnly (20), main boot: the read-only
+#      file the guest was refused permission to empty. GAP-0152's refusal.
+codehave "$SERIAL" main "FS ERR 20 the file is marked read-only"
+codehave "$SERIAL" main "FILE REFUSED FFFFFFFFFFFFFFF1"
+# 3. fileRetBadMode (F3), main boot: a write on a read descriptor, a read on a
+#    write descriptor, and a seek on a write descriptor.
+codehave "$SERIAL" main "FILE REFUSED FFFFFFFFFFFFFFF3"
+# 4+5. fileRetNoSpace (F2) and fatErrFull (1D), the FULL-VOLUME boot: the write
+#      goes short and the next call is refused.
+codehave "$FSER" full-volume "FS ERR 1D"
+codehave "$FSER" full-volume "FILE REFUSED FFFFFFFFFFFFFFF2"
+# 6. fatErrNoDirSlot (1E), the DIRFULL boot: 512 root entries in use, so
+#    create() fails for a reason a full VOLUME could not produce. Same
+#    file-level code as above, different FAT-level one -- which is exactly the
+#    distinction `FILE REFUSED` alone cannot make.
+codehave "$DSER" dirfull "FS ERR 1E"
+codehave "$DSER" dirfull "FILE REFUSED FFFFFFFFFFFFFFF2"
+# 7. fatErrDiskWrite (1F) — THE ONE OF THE SEVEN THAT IS NOT REACHED, AND THE
+#    SHAKEDOWN'S OWN WRITE-UP HAD IT WRONG. It is produced ONLY by a failing
+#    `ataWriteFrom` (fat.dart:1784, 1821, 1893, 1954) — a drive that does not
+#    take the sector. QEMU's IDE model on a writable image never does that, so
+#    no variant this harness builds can provoke it: it is not "reached and
+#    unobservable", it is unreachable while the hardware works, which is a
+#    different row of the census. Asserted as its ABSENCE, which is a real
+#    claim: if a healthy volume ever started reporting device write failures,
+#    every write in this harness would be suspect.
+ck; if grep -qF -- "FS ERR 1F" "$SERIAL"; then
+  sed -n '/M1 END/,$p' "$SERIAL" | tail -40 >&2
+  fail "the main boot reported a DEVICE WRITE FAILURE (FS ERR 1F) on a healthy QEMU volume — every write this harness then checks is suspect"
+fi
+# AND THE KERNEL'S OWN ARITHMETIC AGREES WITH ITSELF on the main boot: the
+# number of per-refusal lines equals the aggregate its exit line reports. A
+# funnel that narrated some refusals and not others would satisfy every grep
+# above and fail this.
+ck; python3 - "$SERIAL" <<'PY' || fail "the kernel printed a different number of FILE REFUSED lines from the number its own exit line counts"
+import re, sys
+cap = open(sys.argv[1], "rb").read().decode("latin-1")
+lines = re.findall(r"^FILE REFUSED ([0-9A-F]{16})$", cap, re.M)
+m = re.search(r"^FILE OPENS [0-9A-F]+ READS [0-9A-F]+ CLOSES [0-9A-F]+ "
+              r"SEEKS [0-9A-F]+ REFUSED ([0-9A-F]+) ", cap, re.M)
+if not m:
+    print("    - no `FILE OPENS ... REFUSED <n>` exit line", file=sys.stderr)
+    sys.exit(1)
+agg = int(m.group(1), 16)
+if agg != len(lines):
+    print("    - the exit line counts %d refusals and the kernel printed %d "
+          "`FILE REFUSED` lines" % (agg, len(lines)), file=sys.stderr)
+    sys.exit(1)
+print("    (%d `FILE REFUSED` lines on the main boot, %d distinct codes, equal "
+      "to the kernel's own aggregate)" % (len(lines), len(set(lines))))
+PY
+echo "CHECK 13: pass  all SIX of the seven codes this harness actually provokes now name themselves in the boot that provokes them — fatErrReadOnly/fileRetReadOnly and fileRetBadMode on the main boot, fatErrFull/fileRetNoSpace on the full-volume boot, and fatErrNoDirSlot on the dirfull boot, which is the one FILE-REFUSED code alone could never separate from fatErrFull — and the count of per-refusal lines equals the kernel's own aggregate. The seventh, fatErrDiskWrite, is asserted ABSENT: it needs a drive that refuses a sector, which is a different category from the other six (ADR-0038)"
 
 # ---------------------------------------------------------------------------
 # Step 13 — the byte-exact goldens.

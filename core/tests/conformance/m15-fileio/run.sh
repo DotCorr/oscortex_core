@@ -94,7 +94,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=205
+ASSERTIONS_REQUIRED=210
 
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
@@ -443,7 +443,7 @@ echo "STRUCTURAL: pass  M15's nineteen file numbers still read back out of core/
 # milestone that moved it would move five goldens. M15's whole surface is
 # syscalls, so it moves nothing.
 HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
-ck; [[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2147 — UNCHANGED from M14. M15 adds SYSCALLS, not commands; if it needed a command that is a different change and five goldens move with it."
+ck; [[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511. M15 adds SYSCALLS, not commands; the number moved in the shakedown commit, which added five help lines and regenerated every golden that carries them."
 echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged from M14 — M15 added four syscalls and no shell command"
 
 # 2f. M15's SESSION STILL WRITES NOTHING — AND THAT IS NOW CHECKED BY RUNNING.
@@ -750,6 +750,68 @@ have "M15 REFUSE READ $(d ret_badptr) $(d ret_badptr) $(d ret_badlen) $(d ret_ba
 # not a hypothesis: it was a surviving mutant until this line existed.
 have "M15 REFUSE STRADDLE $(d ret_badptr)"
 echo "CHECK 7f: pass  fourteen refusals came back to ring 3 as return values: a fifth open, a seek past the end, a missing name, a subdirectory, a malformed 8.3 name, an over-long name, a NAME POINTER into kernel memory, a real zero-length file, a read into read-only memory, a read into KERNEL memory, an over-long read, a read on a descriptor nothing opened, and a close of the same, and a range STRADDLING the last mapped page of the image and the unmapped one after it"
+
+# 7f-ter. AND THE KERNEL SAID SO ITSELF, WHICH IT DID NOT USED TO.
+#
+# THE DEFECT THIS CLOSES (ADR-0038). `fileRefuse` is the single funnel through
+# which all fourteen `fileRet*` refusals pass, and until this commit its whole
+# body was a counter bump and a write to the caller's RAX. It printed NOTHING.
+# 43 call sites, none of them audible.
+#
+# CHECK 7f above passes without it, and that is the point: it asserts on the
+# RING-3 PROGRAM's output. prog.c prints the codes itself, so this harness has
+# always tested the ABI and never the transcript -- and the transcript is where
+# an operator without a purpose-built program has to look. All such an operator
+# got was the aggregate ` REFUSED 0000000E` on the exit line, plus an `FSERR`
+# field carrying the FAT-level code and not this one.
+#
+# So: every code the PROGRAM reports must also appear on a line the KERNEL
+# printed, and the two accounts must agree on the COUNT as well as the values.
+# The count is the half a per-value grep would miss -- a funnel that narrated
+# some refusals and not others would satisfy the greps and fail this.
+ck; python3 - "$SERIAL" <<'PY' || fail "the kernel's own transcript does not name the file refusals its own aggregate counts -- docs/decisions/0038-a-refusal-that-does-not-name-itself.md"
+import re, sys
+cap = open(sys.argv[1], "rb").read().decode("latin-1")
+fails = []
+
+lines = re.findall(r"^FILE REFUSED ([0-9A-F]{16})$", cap, re.M)
+if not lines:
+    fails.append("not one `FILE REFUSED <code>` line in the whole capture. "
+                 "fileRefuse is silent again (ADR-0038).")
+
+# The aggregate the kernel prints at exit, and the number of lines it printed.
+m = re.search(r"^FILE OPENS [0-9A-F]+ READS [0-9A-F]+ CLOSES [0-9A-F]+ "
+              r"SEEKS [0-9A-F]+ REFUSED ([0-9A-F]+) ", cap, re.M)
+if not m:
+    fails.append("no `FILE OPENS ... REFUSED <n>` exit line to compare against")
+else:
+    agg = int(m.group(1), 16)
+    if agg != len(lines):
+        fails.append("the kernel's exit line counts %d refusals and it printed "
+                     "%d `FILE REFUSED` lines. One of the 43 call sites is "
+                     "reaching the counter without reaching the narration."
+                     % (agg, len(lines)))
+
+# Every value ring 3 reported must be one the kernel named. prog.c prints them
+# in lower case and 8 digits; the kernel prints 16 upper-case.
+seen = set(lines)
+prog = set()
+for m in re.finditer(r"^USER WRITE M15 REFUSE \w+ ((?:[0-9a-f]{8} ?)+)$", cap, re.M):
+    for tok in m.group(1).split():
+        prog.add(("FFFFFFFF" + tok.upper()))
+missing = sorted(v for v in prog if v not in seen)
+if missing:
+    fails.append("ring 3 was given %s and the kernel never named %s"
+                 % (", ".join(sorted(prog)), ", ".join(missing)))
+if fails:
+    for f in fails:
+        print("    - " + f, file=sys.stderr)
+    sys.exit(1)
+print("    (%d `FILE REFUSED` lines, equal to the kernel's own aggregate, and "
+      "every one of the %d distinct values ring 3 was given is named on one of "
+      "them)" % (len(lines), len(prog)))
+PY
+echo "CHECK 7f-ter: pass  the KERNEL's own transcript names every file refusal it made, one FILE-REFUSED line each, and the number of those lines equals the aggregate its own exit line reports — the half CHECK 7f could not test, because CHECK 7f reads the program's output and not the kernel's (ADR-0038)"
 
 # 7g. THE W^X PROPERTY SURVIVED THE READ THAT WAS AIMED AT IT.
 have "M15 SELF AGAIN $(d self_fnv_hex) SAME 1"

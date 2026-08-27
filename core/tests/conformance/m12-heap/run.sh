@@ -466,8 +466,8 @@ check_table heapStrBase 6
 check_table heapStrTop 5
 check_table procStrPages 7
 check_table vmStrErr 5
-check_table shellStrHelp 2224
-echo "STRUCTURAL: pass  M12's six new message tables, the two it reuses, and shellStrHelp (2147 — the heap is a syscall and added none; M14 added four) are all exactly the sizes their call sites pass"
+check_table shellStrHelp 2511
+echo "STRUCTURAL: pass  M12's six new message tables, the two it reuses, and shellStrHelp (2511 — the heap is a syscall and added no help line) are all exactly the sizes their call sites pass"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).
