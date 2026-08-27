@@ -7893,7 +7893,7 @@ DCDart checkout exists on this machine while that edit is in flight.
 
 ---
 
-## GAP-0243 — A harness can fail a sweep on a QMP teardown race and pass alone
+## GAP-0258 — A harness can fail a sweep on a QMP teardown race and pass alone
 
 **Domain:** conformance, infrastructure
 **Status:** OPEN — one observation, recorded because the next person to see it will otherwise spend
