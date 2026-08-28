@@ -489,7 +489,7 @@ echo "STRUCTURAL: pass  M15's nineteen file numbers still read back out of core/
 # syscalls, so it moves nothing.
 HELP_SIZE=$(symsize "$CORE_DIR/build/kmain.o" shellStrHelp)
 ck; [[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511. M15 adds SYSCALLS, not commands; the number moved in the shakedown commit, which added five help lines and regenerated every golden that carries them."
-echo "STRUCTURAL: pass  shellStrHelp is 2147 bytes, unchanged from M14 — M15 added four syscalls and no shell command"
+echo "STRUCTURAL: pass  shellStrHelp is $HELP_SIZE bytes — M15 added four syscalls and no shell command"
 
 # 2f. M15's SESSION STILL WRITES NOTHING — AND THAT IS NOW CHECKED BY RUNNING.
 #

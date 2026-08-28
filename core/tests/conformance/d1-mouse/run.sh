@@ -197,13 +197,13 @@ echo "STRUCTURAL: pass  mouseStore is $MOUSE_SIZE bytes at .bss+0x$MOUSE_OFF, im
 # verbatim (GAP-0105, GAP-0115), and M18 and M20 each declined to move them for
 # the same reason. GAP-0254 records what that costs.
 HELP_SIZE=$(symsize shellStrHelp)
-ck; [[ "$HELP_SIZE" -eq 2224 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2224 — UNCHANGED on THIS branch. D1 adds a command and a syscall and no help line; if that changed, six goldens move with it. NOTE: a concurrent branch is paying GAP-0142 and takes this number to 2511; when the two are merged this pin moves with it, and the check below is the half of this assertion that does NOT move."
+ck; [[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511. D1 itself adds a command and a syscall and NO help line — the half of this assertion that does not move is the check below, that no help-shaped mouse line exists. The number moved from 2224 to 2511 on the merge, exactly as the note here predicted it would: B1 paid GAP-0142 and listed M18's three commands. Every other harness in this suite already pins 2511; this was the last one holding the pre-merge value."
 # THE HALF THAT SURVIVES A MERGE. A byte count is a pin and pins get re-pinned;
 # what D1 is actually claiming is that IT added no line, and that stays true
 # whatever else the help text grows to.
 ck; ! grep -qF "  mouse " <(x86_64-elf-objdump -s -j .rodata "$CORE_DIR/build/kmain.o" | cut -c53-) \
   || fail "the kernel's .rodata contains a help-shaped \"  mouse \" line — D1 added a help entry after all, and six goldens moved with it"
-echo "STRUCTURAL: pass  shellStrHelp is unchanged at $HELP_SIZE bytes and the kernel's .rodata carries no help-shaped mouse line — no help-text golden moves"
+echo "STRUCTURAL: pass  shellStrHelp is $HELP_SIZE bytes and the kernel's .rodata carries no help-shaped mouse line — no help-text golden moves"
 
 # --- 2c. THE BOOT PATH IS SILENT ------------------------------------------
 #
