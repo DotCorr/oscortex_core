@@ -12,7 +12,7 @@
  * It is loaded with `run <lba>`, which is the M10 path: an ELF off a raw disk,
  * its own address space, and -- deliberately -- the weakest caller in the
  * system. It has no channel, no file descriptor and nothing but `write` and
- * `exit` besides the one syscall under test, so "syscall 16 answered" cannot be
+ * `exit` besides the one syscall under test, so "syscall 20 answered" cannot be
  * confused with "some other subsystem was already set up for it".
  *
  * WHAT IT REPORTS

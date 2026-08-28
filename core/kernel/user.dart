@@ -1707,7 +1707,7 @@ void userSyscall(u64 frame) {
     ioctlSysIoctl(frame);
     return;
   }
-  // D1 (ADR-0042): `mouse` (syscall 16). It sits with `who` rather than with
+  // D1 (ADR-0042): `mouse` (syscall 20). It sits with `who` rather than with
   // `yield`, `sbrk` or the file syscalls, and the reason is stated in
   // [mouseSysRead]: it reads GLOBAL device state and writes nothing, so there is
   // no per-caller resource to look up and no owner to invent. Every one of the

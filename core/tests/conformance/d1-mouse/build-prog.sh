@@ -6,11 +6,11 @@
 # to what this milestone's program has to be:
 #
 #   * IT ISSUES EXACTLY THE THREE SYSCALLS IT DECLARES -- 0 (exit), 1 (write)
-#     and 16 (mouse) -- and no others. Read by walking backwards from every
+#     and mouse.dart's own `mouseSysNo` -- and no others. Read by walking backwards from every
 #     `int $0x80` to the last thing that wrote RAX, which is m18's technique and
 #     is here for m18's reason: collecting every immediate ever moved into RAX
 #     reports data as syscall numbers.
-#   * IT ACTUALLY ISSUES 16. A program that never called the syscall under test
+#   * IT ACTUALLY ISSUES THAT NUMBER. A program that never called the syscall under test
 #     would still print two well-formed lines -- of zeroes -- and the harness's
 #     ring-3 check would then be asserting the value of a variable this program
 #     never asked the kernel for. This is the control for that.
@@ -152,32 +152,41 @@ for i, l in enumerate(insns):
         if re.search(r",%(e|r)ax\b", p) or re.search(r"\bcall\b", p):
             break
     nums.add(num)
-allowed = {0, 1, 16}
+# THE SYSCALL NUMBER IS DERIVED, NEVER TYPED HERE.
+#
+# It used to be the literal 16 in five places in this file. When the merge
+# moved `mouse` from 16 to 20 (GAP-0264), the program was rebuilt correctly
+# from mouse.dart and THIS SCRIPT still failed it, because the checker was the
+# one place that had not moved -- the same two-place-edit defect the
+# DCDART_PIN literal had. The kernel constant is the allocation; this reads it.
+_kern = open(mouse_dart).read()
+_m = re.search(r"^const int mouseSysNo = (\d+);", _kern, re.M)
+if not _m:
+    print("build-prog: FAIL - mouse.dart declares no `const int mouseSysNo`", file=sys.stderr)
+    sys.exit(1)
+SYSNO = int(_m.group(1))
+
+allowed = {0, 1, SYSNO}
 extra = nums - allowed
 if extra:
     fails.append("issues syscall number(s) %s; it declares only 0 (exit), 1 (write) "
-                 "and 16 (mouse). UNKNOWN means the number reaching RAX is not a "
-                 "constant this script can read, which is itself a reason to look."
-                 % ", ".join(str(n) for n in sorted(extra, key=str)))
-if 16 not in nums:
-    fails.append("never loads 16 into RAX -- IT NEVER CALLS THE SYSCALL UNDER TEST, "
-                 "and would still print two well-formed lines of zeroes")
+                 "and %d (mouse, read from mouse.dart). UNKNOWN means the number "
+                 "reaching RAX is not a constant this script can read, which is "
+                 "itself a reason to look."
+                 % (", ".join(str(n) for n in sorted(extra, key=str)), SYSNO))
+if SYSNO not in nums:
+    fails.append("never loads %d into RAX -- IT NEVER CALLS THE SYSCALL UNDER TEST, "
+                 "and would still print two well-formed lines of zeroes" % SYSNO)
 
 # ---------------------------------------------------------------------------
 # prog.c's PRIVATE COPY OF THE SYSCALL NUMBER IS THE KERNEL'S.
 # ---------------------------------------------------------------------------
-kern = open(mouse_dart).read()
-m = re.search(r"^const int mouseSysNo = (\d+);", kern, re.M)
-if not m:
-    fails.append("mouse.dart declares no `const int mouseSysNo`")
-else:
-    kv = int(m.group(1))
-    mp = re.search(r"^#define SYS_MOUSE (\d+)$", open(prog_c).read(), re.M)
-    if not mp:
-        fails.append("prog.c has no `#define SYS_MOUSE`")
-    elif int(mp.group(1)) != kv:
-        fails.append("prog.c's SYS_MOUSE is %s and mouse.dart's mouseSysNo is %d"
-                     % (mp.group(1), kv))
+mp = re.search(r"^#define SYS_MOUSE (\d+)$", open(prog_c).read(), re.M)
+if not mp:
+    fails.append("prog.c has no `#define SYS_MOUSE`")
+elif int(mp.group(1)) != SYSNO:
+    fails.append("prog.c's SYS_MOUSE is %s and mouse.dart's mouseSysNo is %d"
+                 % (mp.group(1), SYSNO))
 
 if fails:
     print("build-prog: the built program is wrong:", file=sys.stderr)
@@ -186,7 +195,7 @@ if fails:
     sys.exit(1)
 
 print("    (ptr.elf: ET_EXEC EM_X86_64, entry 0x%X, R+X %d/%d at 0x%X, R+W %d/%d at 0x%X, "
-      "no relocations, %d syscall site(s), numbers %s -- 16 among them)"
+      "no relocations, %d syscall site(s), numbers %s -- the kernel's among them)"
       % (entry, loads[0]["filesz"], loads[0]["memsz"], loads[0]["vaddr"],
          loads[1]["filesz"], loads[1]["memsz"], loads[1]["vaddr"],
          len(sites), sorted(nums, key=str)))
