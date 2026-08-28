@@ -228,6 +228,24 @@ KDATA_BSS=$DART_BSS
 # new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
+# D4 (ADR-0050) added a block AFTER M21's, and it is now the LAST one in .bss:
+# `wmStore`, 320 bytes -- nineteen compositor state words (counters, the drag
+# and its grab offset, the painted pointer position, and the re-entrancy guard)
+# in a 24-word block, then two 64-byte window records, one per shared region,
+# because a window's pixels live in a region and `shmMax` is 2.
+#
+# Subtracted FIRST, before M21's, exactly as M14, M15, M16, M19, S0 and M21 each
+# were in turn -- so that every earlier milestone's number continues to mean what
+# it meant when it was written. This is the FOURTH application of ADR-0033 §6.4's
+# correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
+# the previously-last block's own to-the-end measurement is exactly the one a new
+# block after it changes. M21's number below still reads 4352 for that reason --
+# it is measured to wmStore's start rather than to the end of .bss.
+D4_OFF_HEX=$(bssoff wmStore)
+ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
+D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
+ck; [[ "$D4_BSS" -eq 320 ]] || fail "the bytes from D4's wmStore to the end of .bss are $D4_BSS, expected 320. If that block changed size, change it in ADR-0050, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))

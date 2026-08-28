@@ -1,0 +1,22 @@
+# The second pointer script, injected only after the third composition pass has
+# been printed -- so it runs while BOTH surfaces are live, inside the clients'
+# bounded hold, with the shell not running. That is the only window in which a
+# drag can happen at all (see wm.dart's D5b section), and `wait:` cannot know
+# when it opens.
+#
+#   rel <dx> <dy>   a pointer motion in device units
+#   grab            left button DOWN
+#   drop            left button UP
+#
+# Four steps back from (620,420) to (150,160), which is inside window A and is
+# NOT covered by window B -- so the click lands on the BOTTOM window and the
+# raise it causes is observable. Then three drag steps of (+40,+30).
+rel -118 -65
+rel -118 -65
+rel -117 -65
+rel -117 -65
+grab
+rel 40 30
+rel 40 30
+rel 40 30
+drop

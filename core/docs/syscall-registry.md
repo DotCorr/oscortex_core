@@ -36,8 +36,9 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 18 | `shmmap` | `shmSysMapNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 19 | `shmdrop` | `shmSysDropNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 20 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0042 |
+| 23 | `wmsurface` | `wmSysSurfaceNo` | `core/kernel/wm.dart` | *(none)* | 0051 |
 
-**Sixteen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
+**Seventeen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
 so the allocated set is 0-10 and 12-16. **That gap is the registry working, not a bug in it**:
 `ioctl` was implemented after `fdwait` was named and took the next free number rather than the next
 number, and M20's three channel calls did the same thing again on the next merge -- they had claimed
@@ -74,6 +75,26 @@ moment this kernel can set a mode wider than 800x600 (GAP-0252). `d1-mouse`'s pr
 places — `core/kernel/mouse.dart` and that harness — and both are listed here. When the pointer gets
 a real ring-3 interface it will be an `ioctl` on a device node or a `read` of an event queue
 (`docs/design/display-protocol.md` D2), not a wider version of this.
+
+**Why `wmsurface` is 23 and not 21, and this table settling the same collision a fourth time.**
+ADR-0051. `wmsurface(descPtr)` is the compositor's whole ring-3 surface: `op = wmOpAttach` gets a
+window and **returns the address the caller's own address space has its region at**, and
+`op = wmOpCommit` says the frame is ready and returns when the compositor is done reading it.
+
+20 is `mouse`. 21 and 22 were free on this branch's fork point and are not free in this repo: 21 is
+`shmaddr` (ADR-0045) and 22 is `shmpublish` (ADR-0046), on `integrate-shmaddr` and
+`m21-writable-grants` respectively — two lines that had not merged when this one forked, and which
+this one can see only because it went and looked. **The kernel constants would have merged clean
+again**, because `wmSysSurfaceNo` lives in a file neither of those branches has; only this table
+would have conflicted. Taking 23 up front is the same move the registry has now recorded four times,
+for the same reason: *the cheaper move is the correct one, and the number is not the interface.*
+
+**23 has no `oslibc.h` name**, for the channel's reason and one of its own. The libc has no binding
+for a pointer-to-descriptor call, and a `wmsurface()` in `oslibc.h` would be a public interface to
+an eight-word struct whose damage-rectangle words are not yet used by the compositor at all
+(GAP-0301). `d2-compositor/prog.c` declares `SYS_WMSURFACE` itself, the way `m20-ipc`'s program
+declares its three and `d1-mouse`'s declares `SYS_MOUSE`, so the number lives in exactly two places
+— `core/kernel/wm.dart` and that harness — and both are listed here.
 
 **Why the channel syscalls are 13, 14, 15 and not 11, 12, 13.** They were 11, 12 and 13 in ADR-0027,
 chosen on a branch that forked from `d4e768c` — before this file existed. This registry landed in

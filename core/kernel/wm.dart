@@ -511,12 +511,12 @@ const int wmRetTwice = 0xFFFFFFFFFFFFFFF4;
 /// after M20 and S0 each hit it. `shmStore` was last until now; `part 'wm.dart'`
 /// comes after `part 'shm.dart'` in `kmain.dart` for exactly this reason, and
 /// `d2-compositor/run.sh` asserts the total rather than trusting it.
-const int wmMetaWords = 8;
-const int wmMetaBytes = 64;
+const int wmMetaWords = 24;
+const int wmMetaBytes = 192;
 const int wmWinWords = 8;
 const int wmWinBytes = 64;
-const int wmWinOffset = 64;
-const int wmStoreBytes = 192; // 64 + 2 * 64
+const int wmWinOffset = 192;
+const int wmStoreBytes = 320; // 192 + 2 * 64
 
 @bss
 final Bss wmStore = const Bss(bytes: wmStoreBytes);
@@ -544,6 +544,52 @@ const int wmMetaTop = 6;
 
 /// Live windows.
 const int wmMetaLive = 7;
+
+// --- D5b: the pointer, and what it is doing to a window -------------------
+
+/// The window being dragged, PLUS ONE, so that 0 means "none" and window 0 is
+/// expressible. The idiom `procCurrent` uses for the same reason.
+const int wmMetaDrag = 8;
+
+/// Where inside the dragged window the pointer grabbed it. The window origin is
+/// `pointer - grab` for the whole drag, which is what stops the window jumping
+/// under the cursor on the first motion.
+const int wmMetaGrabX = 9;
+const int wmMetaGrabY = 10;
+
+/// Where the pointer was when this compositor last painted it. **Not the same
+/// as `mouseWordX/Y`**, which is where the pointer IS: the difference between
+/// the two is the rectangle that has to be repainted, and keeping the painted
+/// position here rather than reading the live one twice is what makes the
+/// erase-then-draw pair use the same coordinates.
+const int wmMetaCurX = 11;
+const int wmMetaCurY = 12;
+
+/// Drag steps applied, and raises performed. Counters, so `wm` can report that
+/// the pointer did something rather than that it could have.
+const int wmMetaMoves = 13;
+const int wmMetaRaises = 14;
+
+/// The button bitmap at the last tick, so a PRESS can be told from being HELD.
+/// A grab must happen on the edge; a grab on every packet would re-grab the
+/// window under the pointer mid-drag and the drag would slip.
+const int wmMetaButtons = 15;
+
+/// **The re-entrancy guard.** Held for the whole of a frame by the two painter
+/// ENTRY POINTS -- [wmCompose] and [wmPointerTick] -- and checked by
+/// [wmPointerTick]. Everything they call runs underneath it. See the D5b section header for why one word is a real
+/// mutual exclusion on this kernel and what it becomes on two cores.
+const int wmMetaBusy = 16;
+
+/// Pixels written by the last PARTIAL repaint, as [wmMetaPixels] is for a full
+/// frame. The number D6 exists to make small, measured on the path that already
+/// makes it small.
+const int wmMetaRectPixels = 17;
+
+/// Pointer ticks dropped because a composition was in progress. **A dropped
+/// tick is a dropped FRAME, not a lost event** -- `mouseApplyX/Y` have already
+/// moved the pointer, so the next tick sees the accumulated position.
+const int wmMetaDropped = 18;
 
 // Window record word indices.
 const int wmWinState = 0;
@@ -731,7 +777,7 @@ void wmBlitRow(u64 wI, u64 py) {
 /// on top, in pixels, at a coordinate a harness can name.
 @bare
 u64 wmDrawWindow(u64 wI, u64 focus) {
-  if (wmWin(wI, u64(wmWinState)) != u64(wmWinLive)) {
+  if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
@@ -740,10 +786,11 @@ u64 wmDrawWindow(u64 wI, u64 focus) {
   final u64 w = wmGeomW(g);
   final u64 h = wmGeomH(g);
   final u64 b = u64(wmBorder);
-  u64 c = u64(wmColorUnfocus);
-  if (focus > u64(0)) {
-    c = u64(wmColorFocus);
-  }
+  // [wmBorderColor], not a second copy of the same two constants: the partial
+  // repaint path resolves the same pixel through the same function, and a seam
+  // between a composed frame and a repainted rectangle is exactly what two
+  // copies of this would produce.
+  final u64 c = wmBorderColor(focus);
   wmFillRect(x - b, y - b, w + b + b, b, c); // top edge
   wmFillRect(x - b, y + h, w + b + b, b, c); // bottom edge
   wmFillRect(x - b, y, b, h, c); // left edge
@@ -778,6 +825,11 @@ void wmCompose() {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return;
   }
+  // THE RE-ENTRANCY GUARD, held for the whole frame. IRQ12 can fire in the
+  // middle of this -- a commit composes inside a syscall with interrupts on --
+  // and [wmPointerTick] returns without painting while it is set.
+  wmSetMeta(u64(wmMetaBusy), u64(1));
+  wmReap();
   fbFill(u64(wmColorDesktop));
   u64 px = u64(fbWidth) * u64(fbHeight);
   final u64 top = wmMeta(u64(wmMetaTop));
@@ -797,6 +849,9 @@ void wmCompose() {
   final u64 cx = mouseState(u64(mouseWordX));
   final u64 cy = mouseState(u64(mouseWordY));
   mouseDrawCursor(cx, cy);
+  wmSetMeta(u64(wmMetaCurX), cx);
+  wmSetMeta(u64(wmMetaCurY), cy);
+  wmSetMeta(u64(wmMetaBusy), u64(0));
   wmSetMeta(u64(wmMetaPixels), px);
   wmBumpMeta(u64(wmMetaFrames));
   uartWrite(Rodata.addressOf(wmStrFrame), u64(11));
@@ -1199,6 +1254,7 @@ void wmOff() {
 /// one line per live window.
 @bare
 void wmReport() {
+  wmReap();
   uartWrite(Rodata.addressOf(wmStrState), u64(11));
   uartPutHex(wmActive(), u64(1));
   uartWrite(Rodata.addressOf(wmStrWins), u64(6));
@@ -1207,6 +1263,12 @@ void wmReport() {
   uartPutHex(wmMeta(u64(wmMetaPixels)), u64(8));
   uartWrite(Rodata.addressOf(wmStrTop), u64(5));
   uartPutHex(wmMeta(u64(wmMetaTop)), u64(1));
+  uartWrite(Rodata.addressOf(wmStrMoves), u64(7));
+  uartPutHex(wmMeta(u64(wmMetaMoves)), u64(8));
+  uartWrite(Rodata.addressOf(wmStrRaises), u64(8));
+  uartPutHex(wmMeta(u64(wmMetaRaises)), u64(8));
+  uartWrite(Rodata.addressOf(wmStrDrops), u64(7));
+  uartPutHex(wmMeta(u64(wmMetaDropped)), u64(8));
   uartNewline();
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
@@ -1276,4 +1338,558 @@ void wmRefuseOff() {
 @bare
 void wmUsage() {
   uartWrite(Rodata.addressOf(wmStrUsage), u64(25));
+}
+///
+/// `'WM MOVE W '` -- 10 bytes.
+@rodata
+final List<u8> wmStrMove = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4D), u8(0x4F), u8(0x56), u8(0x45), u8(0x20), u8(0x57),
+  u8(0x20),
+];
+
+///
+/// `'WM REAP W '` -- 10 bytes.
+@rodata
+final List<u8> wmStrReap = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x52), u8(0x45), u8(0x41), u8(0x50), u8(0x20), u8(0x57),
+  u8(0x20),
+];
+
+/// `'WM RAISE W '` -- 11 bytes.
+@rodata
+final List<u8> wmStrRaise = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x52), u8(0x41), u8(0x49), u8(0x53), u8(0x45), u8(0x20),
+  u8(0x57), u8(0x20),
+];
+
+///
+/// `' FROM '` -- 6 bytes.
+@rodata
+final List<u8> wmStrFrom = const [
+  u8(0x20), u8(0x46), u8(0x52), u8(0x4F), u8(0x4D), u8(0x20),
+];
+
+///
+/// `' MOVES '` -- 7 bytes.
+@rodata
+final List<u8> wmStrMoves = const [
+  u8(0x20), u8(0x4D), u8(0x4F), u8(0x56), u8(0x45), u8(0x53), u8(0x20),
+];
+
+///
+/// `' RAISES '` -- 8 bytes.
+@rodata
+final List<u8> wmStrRaises = const [
+  u8(0x20), u8(0x52), u8(0x41), u8(0x49), u8(0x53), u8(0x45), u8(0x53), u8(0x20),
+];
+
+///
+/// `' DROPS '` -- 7 bytes.
+@rodata
+final List<u8> wmStrDrops = const [
+  u8(0x20), u8(0x44), u8(0x52), u8(0x4F), u8(0x50), u8(0x53), u8(0x20),
+];
+
+
+// ---------------------------------------------------------------------------
+// D5b -- WINDOW MOVE AND RAISE, DRIVEN BY THE POINTER.
+//
+// ---------------------------------------------------------------------------
+// WHERE THIS RUNS, AND WHY IT COULD NOT RUN ANYWHERE ELSE
+// ---------------------------------------------------------------------------
+// [wmPointerTick] is called from [mouseComplete], which is called from the
+// IRQ12 handler. That is not where anybody would put a compositor by choice;
+// it is the only place a drag can be noticed on this machine.
+//
+// The shell is NOT RUNNING while a client is. `shellProcRun` calls `procStart`
+// and does not return until every process it launched has exited, so between
+// "two surfaces are on the screen" and "the clients are gone" there is no
+// command loop to poll a pointer from. Timer and pointer interrupts are the
+// only code that runs in that window. A compositor that could only act from a
+// shell command could only move a window when there was nothing on the screen
+// to move.
+//
+// **So this is a partial repaint or it is nothing.** A full frame is 480,000
+// pixel stores plus the windows (GAP-0301) and a pointer emits packets at
+// roughly 100 Hz. [wmRepaintRect] exists for that reason, and the drag path
+// repaints TWO window-sized rectangles -- where the window was and where it now
+// is -- rather than the screen.
+//
+// ---------------------------------------------------------------------------
+// THE ONE RE-ENTRANCY HAZARD, AND THE ONE WORD THAT CLOSES IT
+// ---------------------------------------------------------------------------
+// IRQ12 can fire while [wmCompose] is halfway through a frame, because a
+// commit's composition runs in a syscall with interrupts ON. Two painters in
+// one framebuffer produce a torn frame; worse, a pointer tick that changed
+// [wmMetaTop] or a window's geometry mid-compose would have the second half of
+// the frame drawn against a different stacking order than the first.
+//
+// [wmMetaBusy] is held for the whole of a frame by the two painter ENTRY POINTS
+// -- [wmCompose] and [wmPointerTick] -- and checked by [wmPointerTick], which
+// returns immediately if it is set. **On this single-core kernel that is a real
+// mutual exclusion and not an approximation**: the interrupt gate clears IF, so
+// the tick's test-and-return cannot itself be interrupted, and there is no
+// second CPU to observe a stale value. GAP-0307 records what it becomes on two
+// cores, which is the same thing `chan.dart`'s publication point becomes
+// (GAP-0205): a real acquire/release pair.
+//
+// **A dropped tick is a dropped MOVE, not a lost EVENT.** `mouseApplyX/Y` have
+// already updated the pointer position by the time this is called, so the next
+// packet's tick sees the accumulated position and the window catches up. What
+// is lost is an intermediate frame.
+// ---------------------------------------------------------------------------
+
+/// "no window covers this pixel". A colour is 24 bits, so all-ones cannot be
+/// one; the alternative shape -- an out-parameter -- is not expressible in
+/// `@bare` DCDart (GAP-0023's family) and `vmWalk` and `fbFindVgaBar` already
+/// use a sentinel for the same reason.
+const int wmNoPixel = 0xFFFFFFFFFFFFFFFF;
+
+/// 1 if window [wI] is live AND the region it was attached to is still that
+/// region.
+///
+/// **THIS IS NOT DEFENSIVE PROGRAMMING, IT IS A LIFETIME.** A region dies with
+/// its LAST CAPABILITY (`shm.dart`), and a client's capability goes when the
+/// client does -- `procCleanup` drops it on the exit path and on the fault path
+/// alike. This compositor holds no capability of its own (ADR-0050 §4: it reads
+/// the frame vector, it does not map the region), so **the instant a client
+/// exits, its window's pixels are gone and the frames are back in the
+/// allocator.** Reading `shmRegVec` of a dead region then is reading a freed
+/// page as a table of physical addresses, and the first thing it produced when
+/// this was missing was a `FAULT 0D` at the shell prompt, from a pointer packet
+/// that arrived one second after `PROC END`.
+///
+/// The GENERATION is checked and not only the state, because a region slot is
+/// reused: a window still naming slot 0 after slot 0 has died and been recreated
+/// by somebody else would render a stranger's pixels.
+@bare
+u64 wmWindowUsable(u64 wI) {
+  // THE BOUND, and it is here rather than at the call sites because this is the
+  // one function every painter goes through. `wmMetaTop` is `wmMaxWindows` when
+  // nothing is on top, `wmGrab` reads that into `was`, and one path then passes
+  // it here; `wmStore` is the LAST block in .bss, so an unbounded index reads
+  // off the end of the kernel's mutable statics. Found by reading the code.
+  if (wI >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  if (wmWin(wI, u64(wmWinState)) != u64(wmWinLive)) {
+    return u64(0);
+  }
+  final u64 r = wmWin(wI, u64(wmWinReg));
+  if (r >= u64(shmMax)) {
+    return u64(0);
+  }
+  if (shmReg(r, u64(shmRegState)) != u64(shmRegLive)) {
+    return u64(0);
+  }
+  if (shmReg(r, u64(shmRegGen)) != wmWin(wI, u64(wmWinGen))) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// Closes every window whose region has died, and is called at the top of every
+/// painter.
+///
+/// **Lazily, at paint time, rather than from `procCleanup`.** Hooking the
+/// teardown path would be the tidier design and it is the wrong trade here:
+/// `proc.dart` is a file three other lines are editing, the hook would have to
+/// fire on the exit path AND the fault path AND the kill path, and the property
+/// wanted is not "the window is closed promptly" but "nothing ever paints from
+/// a dead region". A check at the top of the painters is exactly that property,
+/// in one place, and it cannot be bypassed by a teardown path nobody hooked.
+@bare
+void wmReap() {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    wmReapOne(i);
+    i = i + u64(1);
+  }
+}
+
+/// One window's half of [wmReap].
+@bare
+void wmReapOne(u64 i) {
+  if (wmWin(i, u64(wmWinState)) != u64(wmWinLive)) {
+    return;
+  }
+  if (wmWindowUsable(i) > u64(0)) {
+    return;
+  }
+  wmSetWin(i, u64(wmWinState), u64(wmWinFree));
+  wmSetMeta(u64(wmMetaLive), wmMeta(u64(wmMetaLive)) - u64(1));
+  if (wmMeta(u64(wmMetaTop)) == i) {
+    wmSetMeta(u64(wmMetaTop), u64(wmMaxWindows));
+  }
+  if (wmMeta(u64(wmMetaDrag)) == (i + u64(1))) {
+    wmSetMeta(u64(wmMetaDrag), u64(0));
+  }
+  uartWrite(Rodata.addressOf(wmStrReap), u64(10));
+  uartPutHex(i, u64(1));
+  uartWrite(Rodata.addressOf(wmStrR), u64(3));
+  uartPutHex(wmWin(i, u64(wmWinReg)), u64(1));
+  uartWrite(Rodata.addressOf(wmStrGen), u64(5));
+  uartPutHex(wmWin(i, u64(wmWinGen)), u64(8));
+  uartNewline();
+}
+
+/// The colour window [wI] puts at ([x], [y]), or [wmNoPixel] if it does not
+/// cover that pixel.
+///
+/// **The comparisons are written to survive unsigned arithmetic.** `x + b < wx`
+/// rather than `x < wx - b`: `wx - b` where `wx < b` is not a small negative
+/// number, it is 2^64 minus something, and the whole rectangle would test as
+/// covering the screen. [wmFits] refuses a geometry with `x < wmBorder` so the
+/// bad case cannot arise, but a bound that is only correct because of a check
+/// somewhere else is a bound that breaks when that check moves.
+@bare
+u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
+  if (wmWindowUsable(wI) < u64(1)) {
+    return u64(wmNoPixel);
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 wx = wmGeomX(g);
+  final u64 wy = wmGeomY(g);
+  final u64 ww = wmGeomW(g);
+  final u64 wh = wmGeomH(g);
+  final u64 b = u64(wmBorder);
+  if (x + b < wx) {
+    return u64(wmNoPixel);
+  }
+  if (y + b < wy) {
+    return u64(wmNoPixel);
+  }
+  if (x >= wx + ww + b) {
+    return u64(wmNoPixel);
+  }
+  if (y >= wy + wh + b) {
+    return u64(wmNoPixel);
+  }
+  // Inside the decorated rectangle. Border or content?
+  if (x < wx) {
+    return wmBorderColor(focus);
+  }
+  if (y < wy) {
+    return wmBorderColor(focus);
+  }
+  if (x >= wx + ww) {
+    return wmBorderColor(focus);
+  }
+  if (y >= wy + wh) {
+    return wmBorderColor(focus);
+  }
+  final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
+  final u64 off = wmWin(wI, u64(wmWinOffsetW)) +
+      ((y - wy) * wmWin(wI, u64(wmWinStride))) + ((x - wx) << u64(2));
+  return wmRegionPixel(vec, off);
+}
+
+/// Bright for the window on top, dim for everything under it.
+@bare
+u64 wmBorderColor(u64 focus) {
+  if (focus > u64(0)) {
+    return u64(wmColorFocus);
+  }
+  return u64(wmColorUnfocus);
+}
+
+/// What belongs at ([x], [y]) with the current stack: the topmost window that
+/// covers it, or the desktop.
+///
+/// **This is the same picture [wmCompose] paints, resolved one pixel at a time
+/// instead of one window at a time**, and the two must agree or a partial
+/// repaint leaves a seam. They agree by construction rather than by inspection:
+/// both read the border colour from [wmBorderColor], both read content through
+/// [wmRegionPixel], and `d2-compositor/run.sh` probes pixels inside a repainted
+/// rectangle against the same host model it probes a composed frame with.
+@bare
+u64 wmPixelAt(u64 x, u64 y) {
+  final u64 top = wmMeta(u64(wmMetaTop));
+  u64 c = u64(wmNoPixel);
+  if (top < u64(wmMaxWindows)) {
+    c = wmWindowPixel(top, x, y, u64(1));
+  }
+  if (c != u64(wmNoPixel)) {
+    return c;
+  }
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (i != top) {
+      c = wmWindowPixel(i, x, y, u64(0));
+      if (c != u64(wmNoPixel)) {
+        return c;
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmColorDesktop);
+}
+
+/// Repaints one scanline segment from [wmPixelAt].
+@bare
+void wmRepaintRow(u64 x, u64 y, u64 w) {
+  u64 i = u64(0);
+  while (i < w) {
+    fbPutPixel(x + i, y, wmPixelAt(x + i, y));
+    i = i + u64(1);
+  }
+}
+
+/// Repaints the rectangle ([x], [y], [w], [h]), clipped to the screen, and
+/// returns how many pixels it wrote.
+///
+/// **Clipped rather than refused**, unlike everything in `wmAttach`: a repaint
+/// rectangle is not a caller's argument, it is a rectangle this file computed
+/// from a window that has just moved, and the honest thing to do with the part
+/// of it that is off-screen is not to draw it.
+@bare
+u64 wmRepaintRect(u64 x, u64 y, u64 w, u64 h) {
+  if (x >= u64(fbWidth)) {
+    return u64(0);
+  }
+  if (y >= u64(fbHeight)) {
+    return u64(0);
+  }
+  u64 ww = w;
+  if (x + ww > u64(fbWidth)) {
+    ww = u64(fbWidth) - x;
+  }
+  u64 hh = h;
+  if (y + hh > u64(fbHeight)) {
+    hh = u64(fbHeight) - y;
+  }
+  u64 j = u64(0);
+  while (j < hh) {
+    wmRepaintRow(x, y + j, ww);
+    j = j + u64(1);
+  }
+  return ww * hh;
+}
+
+/// Repaints the whole of window [wI]'s DECORATED rectangle -- border included.
+@bare
+u64 wmRepaintWindow(u64 wI) {
+  if (wmWindowUsable(wI) < u64(1)) {
+    return u64(0);
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 b = u64(wmBorder);
+  return wmRepaintRect(wmGeomX(g) - b, wmGeomY(g) - b,
+      wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+}
+
+/// The topmost live window covering ([x], [y]), or [wmMaxWindows].
+///
+/// **"Topmost window under the cursor" is the whole of this compositor's input
+/// policy**, and `display-protocol.md` §0.1 is explicit that window management
+/// is compositor policy rather than protocol. There is no focus that survives
+/// the pointer leaving, no click-to-focus versus focus-follows-mouse, and no
+/// keyboard focus at all -- the keyboard still belongs to the shell.
+@bare
+u64 wmHit(u64 x, u64 y) {
+  final u64 top = wmMeta(u64(wmMetaTop));
+  if (top < u64(wmMaxWindows)) {
+    if (wmWindowPixel(top, x, y, u64(1)) != u64(wmNoPixel)) {
+      return top;
+    }
+  }
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (i != top) {
+      if (wmWindowPixel(i, x, y, u64(0)) != u64(wmNoPixel)) {
+        return i;
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// Clamps a proposed window origin so the window stays wholly on screen WITH
+/// its border, and returns it packed as `(x << 32) | y`.
+///
+/// Packed because `@bare` DCDart has no tuples and no out-parameters, and two
+/// functions returning half an answer each would read the drag state twice.
+@bare
+u64 wmClampOrigin(u64 x, u64 y, u64 w, u64 h) {
+  final u64 b = u64(wmBorder);
+  u64 cx = x;
+  u64 cy = y;
+  if (cx < b) {
+    cx = b;
+  }
+  if (cy < b) {
+    cy = b;
+  }
+  if (cx + w + b > u64(fbWidth)) {
+    cx = u64(fbWidth) - b - w;
+  }
+  if (cy + h + b > u64(fbHeight)) {
+    cy = u64(fbHeight) - b - h;
+  }
+  return (cx << u64(32)) | cy;
+}
+
+/// A left-button PRESS: raise the window under the pointer and start a drag.
+///
+/// The grab offset is `cursor - origin`, so the window does not jump: the point
+/// under the pointer stays under the pointer for the whole drag, which is the
+/// one behaviour a person notices immediately when it is wrong.
+@bare
+void wmGrab(u64 x, u64 y) {
+  final u64 hit = wmHit(x, y);
+  if (hit >= u64(wmMaxWindows)) {
+    return;
+  }
+  final u64 was = wmMeta(u64(wmMetaTop));
+  final u64 g = wmWin(hit, u64(wmWinGeom));
+  wmSetMeta(u64(wmMetaGrabX), x - wmGeomX(g));
+  wmSetMeta(u64(wmMetaGrabY), y - wmGeomY(g));
+  wmSetMeta(u64(wmMetaDrag), hit + u64(1));
+  if (was == hit) {
+    return; // already on top: nothing changed on screen
+  }
+  wmSetMeta(u64(wmMetaTop), hit);
+  wmBumpMeta(u64(wmMetaRaises));
+  // RAISING CHANGES BOTH WINDOWS: the one coming up, and the one whose border
+  // just went from bright to dim. Repainting both decorated rectangles is the
+  // smallest correct answer with two windows and it is what `wmMaxWindows`
+  // being 2 buys.
+  u64 px = wmRepaintWindow(was);
+  px = px + wmRepaintWindow(hit);
+  wmSetMeta(u64(wmMetaRectPixels), px);
+  uartWrite(Rodata.addressOf(wmStrRaise), u64(11));
+  uartPutHex(hit, u64(1));
+  uartWrite(Rodata.addressOf(wmStrFrom), u64(6));
+  uartPutHex(was, u64(1));
+  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
+  uartPutHex(px, u64(8));
+  uartNewline();
+}
+
+/// One drag step: move the dragged window so the grabbed point follows the
+/// pointer, and repaint where it WAS and where it now IS.
+@bare
+void wmDragStep(u64 x, u64 y) {
+  final u64 drag = wmMeta(u64(wmMetaDrag));
+  if (drag < u64(1)) {
+    return;
+  }
+  final u64 wI = drag - u64(1);
+  if (wmWindowUsable(wI) < u64(1)) {
+    wmSetMeta(u64(wmMetaDrag), u64(0));
+    return;
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 w = wmGeomW(g);
+  final u64 h = wmGeomH(g);
+  final u64 gx = wmMeta(u64(wmMetaGrabX));
+  final u64 gy = wmMeta(u64(wmMetaGrabY));
+  // UNSIGNED: a pointer left of the grab offset means the window wants a
+  // negative origin, which is 0 here and then the clamp's minimum.
+  u64 nx = u64(0);
+  if (x > gx) {
+    nx = x - gx;
+  }
+  u64 ny = u64(0);
+  if (y > gy) {
+    ny = y - gy;
+  }
+  final u64 packed = wmClampOrigin(nx, ny, w, h);
+  final u64 cx = packed >> u64(32);
+  final u64 cy = packed & u64(0xFFFFFFFF);
+  if (cx == wmGeomX(g)) {
+    if (cy == wmGeomY(g)) {
+      return; // the clamp put it back where it was: nothing to repaint
+    }
+  }
+  // REPAINT WHERE IT WAS FIRST, WITH THE NEW GEOMETRY ALREADY INSTALLED. The
+  // order matters and it is the opposite of the obvious one: [wmPixelAt] asks
+  // where the window IS, so a repaint of the vacated rectangle done BEFORE the
+  // move would paint the window back into it.
+  final u64 b = u64(wmBorder);
+  final u64 ox = wmGeomX(g) - b;
+  final u64 oy = wmGeomY(g) - b;
+  wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
+  u64 px = wmRepaintRect(ox, oy, w + b + b, h + b + b);
+  px = px + wmRepaintWindow(wI);
+  wmSetMeta(u64(wmMetaRectPixels), px);
+  wmBumpMeta(u64(wmMetaMoves));
+  uartWrite(Rodata.addressOf(wmStrMove), u64(10));
+  uartPutHex(wI, u64(1));
+  uartWrite(Rodata.addressOf(wmStrX), u64(3));
+  uartPutHex(cx, u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(cy, u64(4));
+  uartWrite(Rodata.addressOf(wmStrFrom), u64(6));
+  uartPutHex(wmGeomX(g), u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(wmGeomY(g), u64(4));
+  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
+  uartPutHex(px, u64(8));
+  uartNewline();
+}
+
+/// Called from [mouseComplete], on the IRQ12 path, once per decoded packet.
+///
+/// **Silent and immediate when the compositor is off**, which is every boot
+/// that never types `wm on`: one load of [wmMetaActive] and a return. `d1-mouse`
+/// injects twelve packets through this path and its byte-exact transcript does
+/// not move.
+@bare
+void wmPointerTick() {
+  if (wmActive() < u64(1)) {
+    return;
+  }
+  if (fbState(u64(fbStateBase)) < u64(1)) {
+    return;
+  }
+  // THE RE-ENTRANCY GUARD. See this section's header: a commit's composition
+  // runs in a syscall with interrupts on, and two painters in one framebuffer
+  // is a torn frame drawn against two different stacking orders.
+  if (wmMeta(u64(wmMetaBusy)) > u64(0)) {
+    wmBumpMeta(u64(wmMetaDropped));
+    return;
+  }
+  wmSetMeta(u64(wmMetaBusy), u64(1));
+  // THE LIFETIME CHECK, before anything reads a frame vector. See [wmReap].
+  wmReap();
+  final u64 x = mouseState(u64(mouseWordX));
+  final u64 y = mouseState(u64(mouseWordY));
+  final u64 btn = mouseState(u64(mouseWordButtons)) & u64(1);
+  final u64 was = wmMeta(u64(wmMetaButtons));
+  if (btn > u64(0)) {
+    if (was < u64(1)) {
+      wmGrab(x, y);
+    }
+  } else {
+    wmSetMeta(u64(wmMetaDrag), u64(0));
+  }
+  wmSetMeta(u64(wmMetaButtons), btn);
+  wmDragStep(x, y);
+  // THE POINTER ITSELF. The rectangle it vacated is repainted from
+  // [wmPixelAt] -- there is no save-under, so what was under the arrow is
+  // recomputed rather than remembered, and an arrow that moved over a window
+  // leaves the window rather than a hole.
+  final u64 ox = wmMeta(u64(wmMetaCurX));
+  final u64 oy = wmMeta(u64(wmMetaCurY));
+  //
+  // The count is BOUND rather than discarded, because `dcc` refuses a
+  // non-void call as a statement -- and the rule is right here: the erase is
+  // the one repaint whose pixel count nobody would otherwise look at, and it is
+  // the one that runs on every packet.
+  u64 erased = u64(0);
+  if (ox != x) {
+    erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));
+  } else {
+    if (oy != y) {
+      erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));
+    }
+  }
+  wmSetMeta(u64(wmMetaRectPixels),
+      wmMeta(u64(wmMetaRectPixels)) + erased);
+  mouseDrawCursor(x, y);
+  wmSetMeta(u64(wmMetaCurX), x);
+  wmSetMeta(u64(wmMetaCurY), y);
+  wmSetMeta(u64(wmMetaBusy), u64(0));
 }

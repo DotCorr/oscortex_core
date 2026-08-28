@@ -156,16 +156,28 @@ ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{
 ASM_BSS=$((16#$ASM_BSS_HEX))
 [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o donates $ASM_BSS bytes of .bss, expected exactly 96"
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 22016 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 22016 — 14368 through M19, plus chanStore's 2624, plus S0's ioctlStore 512 (ADR-0033), plus D1's mouseStore 160 (ADR-0042), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
+[[ "$KDATA_BSS" -eq 22336 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 22336 — 14368 through M19, plus chanStore's 2624, plus S0's ioctlStore 512 (ADR-0033), plus D1's mouseStore 160 (ADR-0042), plus M21's shmStore 4352 (ADR-0041), plus D4's wmStore 320 (ADR-0050). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
 
 # M21 (ADR-0041) added a block AFTER S0's and is the last one in .bss now, so it
 # is subtracted FIRST -- exactly the accounting S0 itself gave M20.
+# D4 (ADR-0050) added a block AFTER M21's and is the last one in .bss now, so it
+# is subtracted FIRST -- exactly the accounting M21 itself gave S0, and S0 gave
+# M20. ADR-0033 s6.4's correction, applied a fourth time.
+WM_STORE_SIZE=$(bsssize wmStore)
+[[ "$WM_STORE_SIZE" == "320" ]] || fail "wmStore is ${WM_STORE_SIZE:-missing} bytes, expected 320 (ADR-0050)"
+WM_OFF=$(bssoff wmStore)
+[[ -n "$WM_OFF" ]] || fail "wmStore has no .bss offset in kmain.o"
+[[ $(( 16#$WM_OFF + WM_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "wmStore ends at $(( 16#$WM_OFF + WM_STORE_SIZE )) and kmain.o's .bss is $DART_BSS -- D4's block is NOT the last one"
+DART_BSS=$(( DART_BSS - WM_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - WM_STORE_SIZE ))
+
 SHM_STORE_SIZE=$(bsssize shmStore)
 [[ "$SHM_STORE_SIZE" == "4352" ]] || fail "shmStore is ${SHM_STORE_SIZE:-missing} bytes, expected 4352 (ADR-0041)"
 SHM_OFF=$(bssoff shmStore)
 [[ -n "$SHM_OFF" ]] || fail "shmStore has no .bss offset in kmain.o"
 [[ $(( 16#$SHM_OFF + SHM_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_STORE_SIZE )) and kmain.o's .bss is $DART_BSS — M21's block is NOT the last one"
+  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_STORE_SIZE )) and kmain.o's .bss less D4's wmStore is $DART_BSS — M21's block is not immediately before D4's"
 DART_BSS=$(( DART_BSS - SHM_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - SHM_STORE_SIZE ))
 

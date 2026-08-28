@@ -643,6 +643,13 @@ M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, �
 port records) = **16992 at M20**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte
 `ioctl` bounce buffer) = **17504 at S0**, + 4352 (`shmStore`, ADR-0041 — 16 global counter words,
 two 64-byte shared-region records and a 4096-byte one-bit-per-frame plane) = **21856 at M21**.
+**+ 320 (`wmStore`, ADR-0050 — nineteen compositor state words in a 24-word block and two 64-byte
+window records, one per shared region) = the D1/M21 merge total of 22016 becomes 22336 at D4.** `wmStore` is now the LAST
+block, `shmStore` the one immediately before it, `ioctlStore` before that. **Sixteen harnesses
+subtract `wmStore` first**, then `shmStore`, then `ioctlStore`, then `chanStore` — the fourth
+application of ADR-0033 §6.4's correction, and it moved `shmStore`'s own to-the-end number in exactly
+the way that correction predicts, which is why every harness now measures `shmStore` to `wmStore`'s
+START rather than to the end of the section.
 **`shmStore` is the LAST block** in `kmain.o`'s `.bss`, `ioctlStore` is the one immediately before it,
 and `chanStore` before that. `m19-argv` asserts that `shmStore` ends exactly at the end of the
 section, that `ioctlStore` ends where `shmStore` begins, that `chanStore` ends where `ioctlStore`
@@ -9081,3 +9088,197 @@ plays that role for GAP or ADR numbers — they are allocated by reading the tai
 branch. The check that found #2 and #3 was written for this merge and is not committed anywhere: for
 every number, collect its heading across every branch and every worktree and require agreement. That
 is a small script and it belongs beside the syscall one.
+
+---
+
+## GAP-0300 — The compositor is in the kernel, and it is there because D3 does not exist
+
+ADR-0050. `docs/design/display-protocol.md` §0.1 defines a compositor as *"the one **process**
+allowed to touch the framebuffer"*, and §6 says that until **D3** lands — a process that outlives the
+shell command that started it — *"there is nowhere for a compositor to live."* D3 is not built, so
+`core/kernel/wm.dart` is kernel code.
+
+**What that actually costs, itemised, because "it should be a process" is easy to say and the cost is
+not obvious:**
+
+* **Compositor policy is kernel policy.** Stacking order is "the newest surface is on top", it is one
+  line in `wmAttach`, and ring 3 cannot change it. `display-protocol.md` §0.1 is explicit that window
+  management is compositor policy and not protocol — so this is policy in the wrong *place*, not
+  policy in the protocol. See GAP-0302.
+* **A misbehaving compositor is a kernel bug**, not a dead process. There is no restart.
+* **The composition loop runs with the caller's page tables installed.** It does not use them — it
+  reads a region's frames by physical address through `shmRegVec` — but it is on the caller's stack
+  and inside the caller's syscall, so a compositor fault is a ring-3 process's fault.
+
+**What it does NOT cost, and this is the part worth keeping visible:** nothing about the *protocol*.
+The descriptor is a legal `chan` message carrying no address (ADR-0051 §2, §3), so moving the
+compositor to ring 3 under D3 changes who reads the eight words and nothing else. **The final blit
+was always going to be a kernel operation** — ring 3 cannot execute `out`, `m9-ring3` asserts the TSS
+has no I/O bitmap, and `display-protocol.md` §3.1 settled that before any of this existed.
+
+---
+
+## GAP-0301 — Damage is carried, validated and printed, and then a full frame is composed anyway
+
+Every `wmOpCommit` supplies a damage rectangle. `wmCommit` reads it, echoes it into the transcript
+(`WM COMMIT W 0 SEQ … DMG X … Y … W … H …`) and then calls `wmCompose`, which fills the desktop and
+redraws **every** window. **Composition is 561,672 pixel stores for two 240×160 windows on an
+800×600 screen, and moving a mouse should not cost that.**
+
+This is D6 in `docs/design/display-protocol.md` and it is deliberately not built here: D6's exit
+criterion is *a pixels-per-frame count that must come out small*, and shipping the mechanism without
+the harness that makes the number mean something is how a milestone becomes unfalsifiable.
+**`wmMetaPixels` is that number and it is printed on every frame** — `d2-compositor/run.sh` asserts
+all three of `00075300`, `0007F284` and `00089208` against values derived on the host — so the
+milestone that makes it small has something to make smaller and a harness that can see it happen.
+
+`display-protocol.md` §3.5 also records the trap waiting there: **damage is per-buffer**, so once
+there are two buffers a compositor that composes only the current damage into the buffer it is about
+to show leaves the previous frame's damage unrepaired. That section calls it *"the single most likely
+bug in the first implementation"*, and it belongs to the ADR that builds D6, not to this one.
+
+---
+
+## GAP-0302 — Window move exists; what does NOT is anything else a window manager does
+
+Superseded in part. A left click raises the window under the pointer and a drag moves it, from the
+IRQ12 path, with a damage-limited repaint (`wmGrab`, `wmDragStep`, `wmPointerTick`; ADR-0050 §D5b).
+`d2-compositor` asserts the raise and the drag as **pixels in a second framebuffer dump taken from the
+same boot**, with the moved origin derived on the host from the grab offset and the clamp.
+
+**What is still missing, and it is most of a window manager:**
+
+* **No close, no resize, no minimise, no keyboard focus.** The keyboard still belongs to the shell
+  and nothing routes a keystroke to a surface. A client is never told it was moved, clicked, or
+  raised — GAP-0308.
+* **Only the LEFT button, and only bit 0 of the bitmap.** Right and middle are decoded by D1 and
+  ignored here.
+* **A drag is bounded by the client's hold.** `shellProcRun` does not return until every process it
+  started has exited, and a window whose client has exited is reaped (GAP-0306), so the window that
+  can be dragged is a window whose client is still alive. In practice that means a drag must happen
+  inside the bounded busy spin `d2-compositor/prog.c` does after committing. **That is a consequence
+  of D3 not existing, not of the drag design** — with a compositor that outlives its shell command,
+  and clients that do too, the same code path works with no change.
+* **The repaint is a rectangle, not a region.** A drag step paints where the window was and where it
+  is, as two full rectangles, so a one-pixel move costs two window-sized repaints (81,672 pixels for
+  a 240×160 window). The harness asserts only that this is *less than a full frame*. A real
+  implementation subtracts the intersection; that is region algebra, and `display-protocol.md` §3.5
+  says an exact region needs a data structure `@bare` DCDart cannot express yet.
+
+## GAP-0303 — A client pays for its own composite, inside its own syscall
+
+`wmOpCommit` composes and then returns, and the return **is** the release (ADR-0051 §1.1). That is
+the only shape available: nothing on this machine can block (GAP-0141), so telling a client later
+needs a queue, a wakeup and a sixth process state, none of which exist.
+
+The cost is that a `wmsurface` commit is the longest syscall in this kernel by a wide margin —
+561,672 `Volatile<u32>` stores plus a `shmVec` lookup per source pixel — executed **on the calling
+process's time**, on its stack, with interrupts on but the scheduler not consulted. A preemptive
+quantum expiring inside it is handled the way it is anywhere else in the kernel; a client that
+committed in a tight loop would starve its peer without ever yielding, and nothing stops it.
+
+The honest fix is D6 (compose the damage, not the frame) plus a compositor that is not a syscall,
+which is D3. Neither is here.
+
+---
+
+## GAP-0304 — `wm` is not in `help`, so it is undiscoverable from the shell
+
+The same choice D1 made for `mouse`, for the same reason and with the same cost. `shellStrHelp` is
+2511 bytes and appears verbatim inside five byte-exact serial goldens plus `m3-shell`'s screen
+golden (GAP-0105, GAP-0115), so one line moves six goldens by substitution. M18 added three commands
+with no help line and M20 added none at all.
+
+`wm`, `wm on`, `wm off` and `wm draw` are therefore documented in ADR-0050, in `wm.dart`'s header and
+in this file, and nowhere a person sitting at the machine can find them. `d2-compositor/run.sh`
+asserts the *absence* of a help line, so adding one is a deliberate act that moves six goldens rather
+than an accident that moves them silently.
+
+---
+
+## GAP-0305 — `m21-shmem/build-progs.sh`'s syscall detector reads a stale `%eax`
+
+Not a kernel gap; a harness one, found by copying the check and having it fail.
+
+`m21-shmem/build-progs.sh` decides which syscalls a program issues by tracking the most recent
+`mov $imm,%eax` before each `int $0x80`. **`xor %eax,%eax` is `mov $0,%eax`** and clang emits it for
+`SYS_EXIT`; the regex does not match it, so the detector reads the syscall number off whatever *last*
+wrote `%eax` — which in `d2-compositor/prog.c` is a 32-bit diagnostic code an exit-on-failure path
+builds, and the check reported the program issuing "syscall 3523215363".
+
+`d2-compositor/build-progs.sh` recognises the `xor` form. **`m21-shmem`'s copy has not been changed**,
+because it is green as it stands: M21's program happens to get a literal `mov $0x0,%eax` from clang
+at that site, so its detector is correct by luck rather than by construction. It will report a
+nonsense number the first time that codegen changes, and the failure mode is a build check that
+*rejects* a correct program rather than one that accepts a wrong one — loud, not silent, which is why
+this is recorded rather than fixed across a file another line is editing.
+
+---
+
+## GAP-0306 — A window dies with its client, because the compositor holds no capability
+
+`wmWindowUsable` checks, on every painter, that the region a window was attached to is still live
+**and still the same generation**; `wmReap` closes the window if it is not. Without it the first
+pointer packet after `PROC END` read a freed page as a frame vector and the machine took a
+`FAULT 0D` at the shell prompt. That was found by running a drag past the end of the clients' hold,
+and it is the reason the check is at the top of every painter rather than on a teardown path.
+
+**The gap is not the check, it is what the check reveals: this compositor cannot outlive its
+clients' pixels.** A region dies with its last capability (`shm.dart`), the compositor holds none —
+ADR-0050 §4 records that reading the frame vector rather than mapping the region was a deliberate
+choice — so the instant a client exits, its window's pixels are back in the frame allocator.
+
+Three ways out, none of them free, and the choice belongs with D3 rather than here:
+
+1. **The compositor takes a capability.** It would need a process identity to hold one in
+   (`shmgrant` installs into a process slot), which is D3.
+2. **The compositor keeps a copy.** 153,600 bytes per window against a kernel mutable-static total of
+   22,336 — so it is a frame-allocator allocation with a lifetime nobody has designed.
+3. **The window closes, which is what happens now.** Honest, and it is what a compositor does when a
+   client disconnects. What is missing is that nothing *tells* anyone: the screen still shows the
+   composed pixels until the next paint, because the framebuffer is not repainted on reap.
+
+**That last sentence is a real inconsistency and it is deliberate.** `wmReap` closes the window and
+does NOT repaint, so a boot that ends with two windows on screen keeps showing them after both
+clients have exited — which is what `d2-compositor`'s screenshots are taken during, and it is why the
+harness's second dump happens while the clients are still holding. Repainting on reap would be one
+line and would make the screen go blank at the end of every run; leaving the last frame up is what a
+person looking at the QEMU window wants, and it is recorded here rather than defended as a design.
+
+---
+
+## GAP-0307 — The compositor's re-entrancy guard is one word, and on two cores it is a lock
+
+`wmMetaBusy` is set by every painter and checked by `wmPointerTick`, which returns without painting
+if it is set. On this single-core kernel that is a real mutual exclusion: the interrupt gate clears
+IF, so the tick's test-and-return cannot itself be interrupted, and there is no second CPU to observe
+a stale value.
+
+**On two cores it is a data race**, in exactly the shape `chan.dart`'s publication point is
+(GAP-0205): the store that sets the flag and the loads that follow it need release/acquire ordering,
+and the test-and-set needs to be atomic. It becomes a real lock — one `lock cmpxchg` — and the
+interesting part is that the *pointer tick must still not block on it*, because it runs in an
+interrupt handler. A tick that could not take the lock would still have to drop the frame, so the
+behaviour this gap describes is the behaviour a correct SMP version keeps; only the mechanism
+changes.
+
+`wmMetaDropped` counts the ticks that were dropped, and `wm` prints it, so "how often does this
+actually happen" is a number rather than a worry. In `d2-compositor`'s boot it is 0.
+
+---
+
+## GAP-0308 — A client is never told anything: no configure, no enter, no click
+
+The protocol (ADR-0051) is entirely client-to-compositor. There is no message in the other direction
+at all: a client is not told where it was placed, is not told when it is moved, is not told when the
+pointer enters it, and is not told when it is clicked. `d2-compositor`'s clients ask for a position
+and get it, so the question has not arisen yet — but `display-protocol.md` §1.1 says position is
+*compositor policy, not client property*, and a compositor that can refuse or override a requested
+position must be able to say so.
+
+**The mechanism is already there and is deliberately unused.** A descriptor is a legal 64-byte
+channel message and `chanrecv` exists; an event to a client is the same eight words travelling the
+other way. What is missing is that the compositor is in the kernel and has no endpoint to send from
+(ADR-0050 §4), which is D3 again. Until then the honest statement is that this is a **one-way**
+protocol, and D7 — a click reaching the surface under the pointer — is blocked on it and on D2's
+input queue, not on anything in this file.

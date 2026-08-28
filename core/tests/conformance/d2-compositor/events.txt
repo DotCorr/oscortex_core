@@ -1,0 +1,9 @@
+# The pointer script. One `rel <dx> <dy>` per line, in device units.
+# Five equal steps rather than one big one: a PS/2 packet carries a 9-bit
+# signed delta, and a single move of 620 would be clamped by QEMU's own
+# device model rather than by the kernel, which is not what this is testing.
+rel 124 84
+rel 124 84
+rel 124 84
+rel 124 84
+rel 124 84

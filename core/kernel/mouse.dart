@@ -887,6 +887,21 @@ void mouseComplete() {
   }
   mouseBump(u64(mouseWordPackets));
   mouseReportPacket();
+  // D5b (ADR-0050): the compositor's pointer tick. **The only place on this
+  // machine where a drag can be noticed** -- the shell is not running while a
+  // client is (`shellProcRun` does not return until every process it launched
+  // has exited), so between "two surfaces are on the screen" and "the clients
+  // are gone" there is no command loop to poll a pointer from.
+  //
+  // It costs one load of `wmMetaActive` and a return on every boot that never
+  // types `wm on`, which is every boot before this one: `d1-mouse` drives
+  // twelve packets through here and its byte-exact transcript does not move.
+  //
+  // AFTER `mouseReportPacket`, deliberately. The packet line is D1's account of
+  // what the device said and the compositor's lines are an account of what was
+  // done about it; a reader following a drag wants them in that order, and a
+  // repaint that faulted would otherwise take the packet report down with it.
+  wmPointerTick();
 }
 
 /// One byte of the mouse's byte stream, wherever it came from.
