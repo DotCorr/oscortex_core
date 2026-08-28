@@ -445,7 +445,9 @@ void m2Enter() {
   // 544-byte golden is untouched and so is every screen golden -- what happened
   // is in the flags word the `mouse` command reports.
   mouseEnable();
-
+  // B1: arm COM1's receive interrupt in the same breath as the PIC unmask, so
+  // the device and the controller are never out of step with each other.
+  uartEnableRx();
   picUnmaskKeyboardOnly();
 
   vgaWrite(Rodata.addressOf(shellStrPrompt), u64(10));

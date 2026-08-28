@@ -8797,3 +8797,218 @@ otherwise, with the override spelled out for the agent who is deliberately bumpi
 about fifteen lines and one new failure mode ("your DCDart is dirty"), and it would have turned
 forty minutes of confusion into one sentence. The `.dart_tool` half needs a per-checkout
 `--packages` or a `dart pub get` in the pinned tree, and is the harder half.
+
+---
+
+## GAP-0260 — DCDart now emits SSE for `.bss` zeroing, and this kernel's FPU story forbids it
+
+**Domain:** toolchain, kernel correctness (cross-repo: the fix is DCDart's)
+**Status:** **RESOLVED IN DCDart, same day, by the unit that caused it.** Kept as a record because
+the mechanism is worth not re-deriving, and because §"what unblocks it" became a real fix rather than
+a wish. Not a defect in any oscortex commit at any point.
+
+**The fix, in DCDart:** `compileToObject` gained a `noFpRegs` flag that passes
+**`-mgeneral-regs-only`**, wired from `target.isFreestanding && !options.allowFp` in `pipeline.dart`
+— derived from the target exactly as `noRedZone`/`-mno-red-zone` already was (ADR-0039's shape), with
+`--allow-fp` as the deliberate opt-in for a `@bare` program that genuinely wants floating point and
+accepts the FPU-state obligation.
+
+**Their measurement is worth carrying here**, because it kills the fix I would have reached for first:
+
+```
+(baseline)                          xmm=9
+-fno-vectorize -fno-slp-vectorize   xmm=5     <- NOT enough
+-mprefer-vector-width=0             xmm=9     <- does nothing
+-mgeneral-regs-only                 xmm=0
+```
+
+Disabling the vectorisers leaves the `memset` that loop-idiom recognition forms, which is then
+expanded with vector stores anyway. **Only forbidding the register class removes all of it.**
+
+**Verified from this side**: `kernel.elf` rebuilt with the fixed toolchain contains **0** `%xmm`
+instructions and `m11-proc` PASSES again. The kernel's md5 moved a third time
+(`75f8a81…` → `32a2425…` broken → `ff9a4ca…` fixed), because `-mgeneral-regs-only` changes
+instruction selection throughout — so the byte-exact goldens moved legitimately this time and were
+regenerated against the fixed compiler, not the broken one.
+
+**The one thing that did NOT get fixed by this** is GAP-0242: the toolchain is still an untracked,
+mutable working tree, and this whole episode — a correctness regression appearing and disappearing in
+one afternoon with no commit in either repo naming it — is what that entry is about. The SSE bug is
+closed; the reason nobody noticed it for a whole rebuild cycle is not.
+
+**What happened, measured rather than inferred.** Commit `d2bfef7` — M21, unchanged, which passed a
+full 24/24 sweep this morning — was rebuilt this afternoon with no edit of any kind:
+
+| | this morning | this afternoon |
+|---|---|---|
+| `kernel.elf` md5 | `75f8a81216c6585e89db80fa44c62247` | `32a24251928fbf4f926ce61820b11f19` |
+| `%xmm` instructions in the linked kernel | **0** | **275** |
+| `m11-proc` | PASS | FAIL |
+
+The only thing that changed is the DCDart working tree `build-kernel.sh` resolves to, which another
+unit is editing in place (floating point: `ConstFloat` in DCIR, `f64`/`f32` in the prelude, ADR-0065).
+
+**What the 275 instructions are, and why they appear.** `170 movups`, `58 movaps`, `47 xorps` — the
+shape LLVM produces when it **vectorises a zeroing loop**:
+
+```
+chanInit:
+    xorps  %xmm0,%xmm0
+    movups %xmm0,0x0(%rax)
+    movups %xmm0,0x0(%rax)
+```
+
+That is `chanInit` clearing its own `@bss` block. Every subsystem's `*Init` does the same loop, which
+is why the count is in the hundreds and spread across `argsCollect`, `chanInit`, `elfInit`,
+`fatDirCreate` and the rest. **No oscortex source changed**; the backend simply started allowing SSE
+where it previously emitted integer stores only.
+
+**Why it is a correctness failure here and not a performance question.** `m11-proc` asserts the
+kernel contains **zero** `%xmm` references, and ADR-0015 §2 is why: `procYield` saves a process's FPU
+state **after several hundred instructions of kernel code have already run**. That is only sound while
+the kernel itself never touches an XMM register. With 275 of them — in `chanInit`, in `elfInit`, on
+paths a syscall reaches — a process's FPU state can be clobbered by the kernel between the trap and
+the save. The harness is right and the kernel is now wrong.
+
+**The fix is DCDart's, not this repo's** (CLAUDE.md rule 3: never build a workaround here for a
+DCDart-language gap). A `@bare` freestanding target must not emit SSE at all — the backend needs the
+equivalent of `-mno-sse` / soft-float for bare mode, or at minimum a way for this kernel to say so.
+Working around it here would mean hand-writing every `*Init` to defeat the vectoriser, which is both
+fragile and exactly the kind of workaround rule 3 forbids.
+
+**What this repo did about it.** Nothing that would hide it:
+
+* the regenerated goldens were **thrown away, not committed**. Regenerating against this toolchain
+  would have written a kernel with 275 SSE instructions into twelve byte-exact goldens and turned a
+  loud failure into a silent one — which is the exact failure `--regen` is most able to cause
+  (GAP-0095's warning, and the reason `--regen` still runs every derived check);
+* the regen sweep was stopped as soon as the cause was known, so only `m7`–`m15` were touched and
+  all were reverted;
+* `build-kernel.sh` already prints the toolchain's commit and dirtiness on every build (GAP-0242),
+  which is how this was caught in one step instead of being blamed on B1's IRQ4 work.
+
+**This is GAP-0242's "dangerous case", and it has now happened.** That entry said: *"The loud case is
+a broken build. The dangerous case is a build that succeeds against half of somebody's compiler change
+and produces a subtly different kernel, and every byte-exact golden in this suite would then move for
+a reason no commit here explains."* It did, they would have, and the only reason it was not written
+into the goldens is that `m11-proc` fails loudly on an invariant that has nothing to do with
+addresses. **Without that one check, this would have been a silent 12-golden regeneration.**
+
+**What unblocks it:** DCDart stops emitting SSE in `@bare` mode, or `DCDART_PIN.txt` is honoured by a
+toolchain that does not — and per GAP-0242 there is currently no way to reconstruct such a checkout
+from a commit hash, which is why that entry is the prerequisite for this one.
+
+---
+
+## GAP-0261 — A security test evaporated: `vmtest ro`'s faulting store was optimised away, and this kernel uses `Volatile` nowhere
+
+**Domain:** kernel, conformance, toolchain seam
+**Status:** **FIXED for `vmTestRo`. OPEN as an audit** — the one instance was found by a harness; the
+class was not searched for.
+
+**What happened.** DCDart's ADR-0069 split device access (`Volatile<T>`) from ordinary access
+(`Pointer<T>`) and made the latter **plain**, so `-O2` may now delete, reorder or coalesce it. The
+first oscortex build after that change deleted this line outright:
+
+```dart
+Pointer<u8>.fromAddress(a).value = u8(0xFF);   // vmTestRo
+```
+
+It is a store nothing reads — the canary is checked through a different path — so as an ordinary
+store it is dead and LLVM removed it. `vmtest ro` then printed **SURVIVED with the canary INTACT**:
+the fault never happened *and* the write never landed.
+
+**Why that is the worst possible failure shape.** Those two facts together read as "W^X is broken"
+and are in fact "the test evaporated". `m8-paging` is the harness that proves GAP-0050 closed and
+ADR-0012's W^X real; a deleted store makes it prove nothing while still looking like a test. Had the
+store been deleted in a build where nobody ran `m8-paging`, the suite would have gone green with the
+W^X demonstration silently absent.
+
+**The fix is in this repo and it is not a workaround.** The store exists ONLY for its side effect —
+taking a #PF — which is exactly what `Volatile` means: *this access IS the observable behaviour*. So
+`vmTestRo` now uses `Volatile<u8>`. Verified: the `movb` is back in `vmTestRo`'s codegen and
+`m8-paging` PASSES.
+
+**What was NOT done, and is the open half.** **This kernel contains no other use of `Volatile<T>`
+anywhere** — `grep -rn "Volatile<" core/kernel/` found exactly the one line this entry adds. Every
+memory-mapped access in the kernel predates ADR-0069 and is therefore an *ordinary* access that the
+optimiser is now free to delete, reorder or coalesce. The obvious candidates:
+
+* **`fb.dart`'s framebuffer writes.** Pixels are written and never read back by the kernel, which is
+  the same dead-store shape as `vmTestRo`. They appear to survive today (`m5-pci` reads pixels back
+  out of guest memory over QMP and passes), most likely because the addresses vary through a loop —
+  but "the optimiser did not happen to do it" is not the same as "it may not".
+* Anything else writing to a device or to memory whose reader is the hardware.
+
+**What closing it takes:** an audit of every `Pointer<T>` access in `core/kernel/` against the
+question ADR-0069 actually asks — *is the ACCESS the observable behaviour, or the VALUE?* — and
+`Volatile<T>` wherever the answer is the access. That is a reading task over ~20 files and it is
+worth doing deliberately rather than one harness failure at a time, because the failure mode is a
+test or a device write that silently stops happening.
+
+**And a note on how this was found**, because it argues for the practice: it was not found by
+reading the ADR-0069 change and reasoning about consequences. It was found because a byte-exact
+harness with a two-sided control (`SURVIVED` must not appear; the canary must not change) failed in a
+way that could not be explained by addresses moving.
+
+---
+
+## GAP-0262 — One-byte `@rodata` tables are constant-merged away, and two harnesses assert them by name
+
+**Domain:** toolchain seam, conformance
+**Status:** OPEN — narrow, precisely bounded, and NOT a defect in any kernel source.
+
+**Measured.** After the DCDart change of 2026-08-27, `x86_64-elf-readelf -sW kmain.o` no longer
+contains `argsStrSp` or `fbStrBy`. Both are **one byte long**:
+
+```
+argsStrSp   args.dart   1 byte   0x20  (a space)
+fbStrBy     fb.dart     1 byte
+```
+
+LLVM has constant-merged them into an identical byte elsewhere in `.rodata`. The BEHAVIOUR is
+unaffected — `Rodata.addressOf(argsStrSp)` still resolves to an address holding `0x20` — but the
+SYMBOL is gone, and two harnesses look the symbol up by name to check its size:
+
+* `m19-argv`  → `argsStrSp not found in kmain.o`
+* `m5-pci`    → `fbStrBy not found in kmain.o — a @rodata table M5 depends on was not emitted`
+
+**The blast radius is exactly three tables and it was enumerated rather than guessed.** Of every
+`@rodata` table in `core/kernel/`, ten are 1–2 bytes and only the **three one-byte** ones can merge:
+`procStrGap`, `argsStrSp`, `fbStrBy`. The two-byte tables survive. `m1-interrupts` — which asserts
+that every table is in `.rodata` and that they abut with no padding — **PASSES**, so this is not a
+general breakdown of the `@rodata` contract; `m3-shell` and `m13-libc` pass too.
+
+**Why the check being defeated matters, rather than just being noisy.** `check_table` exists for
+GAP-0060: a table and the length its `uartWrite` call site passes are two numbers, and a table that
+grew without its call site growing prints the NEXT table's bytes. For a merged table that check can
+no longer run at all — so those two tables lose a guard, silently, and the harness reports it as
+"not emitted" which is the wrong diagnosis and would send the next reader looking in the wrong place.
+
+**AND DCDART ALREADY DECIDED THIS SHOULD NOT HAPPEN**, which changes what kind of entry this is.
+`core/backend/lib/llvm_emit.dart`'s `_emitGlobal` says, in a comment written long before today:
+
+> Deliberately NOT `unnamed_addr`. That moves a global into a mergeable section (verified:
+> `.section .rodata.cst8,"aM",@progbits,8`), which lets the linker collapse two byte-identical
+> globals to ONE ADDRESS. Harmless for name strings; **catastrophic for anything whose address
+> means something**.
+
+So the merging is **a regression against DCDart's own stated intent**, not a design choice this
+repo has to accommodate. Whatever is collapsing these globals is doing it despite `unnamed_addr`
+being withheld on purpose — which means the cause is somewhere else (a `-O2`/globalopt pass, or the
+linker) and is worth finding rather than working around. That reframes option 1 below from "please
+change your design" to "your design says this, and it is no longer true".
+
+**Three ways to close it, and the preference is the first:**
+
+1. **DCDart stops merging `@rodata` tables** — they are a load-bearing named ABI in this project
+   (harnesses assert them by name and by size), so the symbols should survive. This is the right fix
+   and it is DCDart's, because `@rodata`'s contract is DCDart's.
+2. Pad every one-byte table to two. Cheap, and it makes the fix invisible to anyone reading the
+   kernel later — a table whose size is a workaround for a linker behaviour is a trap.
+3. Teach `check_table` to skip tables it cannot find AND say so loudly. Weakens two guards and is the
+   worst of the three; recorded only so nobody reaches for it thinking it is the easy one.
+
+**Not fixed here** because the choice belongs with whoever owns `@rodata`'s contract, and because
+patching two harnesses to accommodate a compiler behaviour that may itself be transient is how a
+suite stops meaning what it says.

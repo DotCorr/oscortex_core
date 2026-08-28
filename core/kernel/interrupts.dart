@@ -566,6 +566,23 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     return;
   }
 
+  // --- COM1 (IRQ4, remapped to 0x24) — B1 ---
+  //
+  // The serial port is a second keyboard. Unmasked at the same moment IRQ1 is
+  // (picUnmaskKeyboardOnly) and armed at the same moment by `uartEnableRx`, so
+  // like the arm above it is unreachable during M0/M1 and the byte-exact serial
+  // goldens are unaffected by its existence.
+  //
+  // It exists because the shell idles in `sti; hlt` with only IRQ1 unmasked, so
+  // a polled serial read in that loop never executes -- see `shellSerialIrq`.
+  //
+  // EOI last, for the keyboard arm's stated reason.
+  if (vector == u64(vectorSerial)) {
+    shellSerialIrq();
+    picEoiMaster();
+    return;
+  }
+
   // --- The syscall (int 0x80) — M9 ---
   //
   // The only vector in this kernel whose gate has DPL 3, and therefore the only

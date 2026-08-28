@@ -47,6 +47,9 @@ const int kbdStatus = 0x64;
 /// Vector the remapped master PIC delivers IRQ1 on (0x20 + 1).
 const int vectorKeyboard = 0x21;
 
+/// B1: COM1's IRQ, remapped. IRQ4 -> 0x20 + 4.
+const int vectorSerial = 0x24;
+
 // ---------------------------------------------------------------------------
 // Scan-code set 1 -> ASCII.
 // ---------------------------------------------------------------------------
@@ -182,8 +185,18 @@ void kbdInit() {
 /// which is why no earlier milestone's behaviour moves.
 @bare
 void picUnmaskKeyboardOnly() {
+  // B1 + D1: IRQ1 AND IRQ4 (COM1), as two read-modify-writes of one bit each
+  // rather than the whole-byte 0xED this arrived as. A whole-byte write also
+  // re-masks the slave, which is precisely the cross-cutting defect this
+  // function's doc comment above records (an IRQ12 unmasked at boot dying at
+  // the next `ticks`). The timer stays masked, which is what the name is about.
+  //
+  // UNMASKING IRQ4 IS SAFE ONLY BECAUSE A HANDLER EXISTS FOR IT: interrupts.dart
+  // dispatches 0x24 to `shellSerialIrq`, and `uartEnableRx` is what makes the
+  // device raise it. All three land together or none of them do.
   picMaskLine(u64(0));
   picUnmaskLine(u64(1));
+  picUnmaskLine(u64(4));
 }
 
 /// Unmasks IRQ0 (the PIT) as well as IRQ1. Mask byte 0xFC = bits 0 and 1
@@ -204,8 +217,10 @@ void picUnmaskKeyboardOnly() {
 /// not.
 @bare
 void picUnmaskTimerAndKeyboard() {
+  // B1 + D1: IRQ0, IRQ1 and IRQ4, per-line for [picUnmaskKeyboardOnly]'s reason.
   picUnmaskLine(u64(0));
   picUnmaskLine(u64(1));
+  picUnmaskLine(u64(4));
 }
 
 /// Handles one IRQ1: read the scancode, translate it, hand it to the line
