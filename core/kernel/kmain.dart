@@ -116,6 +116,15 @@ part 'ioctl.dart';
 // check the ordering rather than trusting this comment.
 part 'shm.dart';
 
+// D4/D5 (ADR-0050, ADR-0051). THE COMPOSITOR, and it is LAST for the reason the
+// block above it was last until now: `wmStore` is `.bss`, ADR-0031 s4.3 rule 5
+// asks for the newest block to be last so no earlier block's arithmetic moves,
+// and ADR-0033 s6.3(a) corrected that wording to "last is necessary but not
+// sufficient". This is the fourth block to arrive under that rule.
+// `d2-compositor/run.sh` reads `core/build/kernel.map` and checks the ordering
+// rather than trusting this comment, exactly as `m21-shmem/run.sh` does.
+part 'wm.dart';
+
 /// Kernel entry point.
 ///
 /// [mbInfo] is the Multiboot1 information-structure pointer the loader left
@@ -307,6 +316,15 @@ void kmain(u64 mbInfo) {
   // capture).
   chanInit();
   shmInit();
+
+  // D4/D5: the compositor's own `.bss`, for the fifth time the same argument
+  // `vgaInit`, `shellInit`, `fbInit` and `shmInit` all make. A garbage
+  // `wmMetaActive` would suppress the framebuffer console from the first byte
+  // of the boot, on a machine where nothing had asked for a compositor; a
+  // garbage window record would have the first composition pass read a frame
+  // vector at an address nothing chose. Prints nothing -- `m1-interrupts`
+  // asserts the entire 544-byte boot capture.
+  wmInit();
 
   // D1: the mouse driver's state, and the same argument for the tenth time --
   // with a sharper edge than most of them, because this block is read by an

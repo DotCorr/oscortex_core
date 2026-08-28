@@ -1500,6 +1500,37 @@ void shellExecute() {
     shellMouseUsage();
     return;
   }
+  // D4/D5 (ADR-0050). The compositor. Whole-line matches first, longest first,
+  // then the bare `wm` exact match, then the bare `wm` PREFIX last so that an
+  // unknown argument lands on the usage line rather than on the
+  // unknown-command path -- `wm` IS a command, it just needs to be told what to
+  // do. Same shape as `frames`, `vmtest`, `user`, `disk` and `mouse`, and for
+  // the same reason: there is still no tokenizer (GAP-0057 item 3).
+  //
+  // **`wm draw` is matched BEFORE `wm on`** even though neither is a prefix of
+  // the other, because the ordering rule here is "longest whole line first" and
+  // a reader who checks it should find it obeyed rather than find it did not
+  // matter this time.
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdDraw), u64(7)) > u64(0)) {
+    wmDrawCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdOff), u64(6)) > u64(0)) {
+    wmOff();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdOn), u64(5)) > u64(0)) {
+    wmOn();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmd), u64(2)) > u64(0)) {
+    wmReport();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(wmStrCmd), u64(2)) > u64(0)) {
+    wmUsage();
+    return;
+  }
   // M6. `disk id` and `disk read <lba>` -- the first command in this shell
   // that reads bytes off a storage device, over ATA PIO
   // (core/kernel/ata.dart). `disk read` is a PREFIX match because it takes a

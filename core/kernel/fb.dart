@@ -536,6 +536,25 @@ void fbPutc(u8 c) {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return; // no framebuffer: this is the state on every boot until `fb` runs
   }
+  // D4 (ADR-0050). **THE COMPOSITOR OWNS THE FRAMEBUFFER WHILE IT IS ON, AND
+  // THIS IS THE ONE PLACE THAT IS ENFORCED.**
+  //
+  // A compositor and a text console cannot both draw into one framebuffer: the
+  // console blits glyphs at a cursor it advances itself, over whatever is
+  // underneath, and every line the shell prints while windows are composed
+  // would land on top of them. ADR-0050 weighed three answers -- the compositor
+  // takes it exclusively, the console gets a region of its own, or the two
+  // alternate by mode -- and took the third. This is the mode.
+  //
+  // **Nothing about the serial contract changes and that is the point.**
+  // `conPutc` has already written the byte to COM1 before it reaches here
+  // (vga.dart), so every byte-exact golden from M1 onwards is produced by the
+  // same code in the same order it always was. What stops is GLYPHS, not
+  // OUTPUT. On a boot where `wm on` is never typed, `wmActive` is 0 from
+  // `wmInit` and this costs one load and one compare per character.
+  if (wmActive() > u64(0)) {
+    return;
+  }
   final u64 row = fbState(u64(fbStateRow));
   if (row > u64(fbRows) - u64(1)) {
     return; // the console is full; see the note above

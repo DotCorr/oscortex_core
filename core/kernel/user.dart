@@ -1723,6 +1723,22 @@ void userSyscall(u64 frame) {
     mouseSysRead(frame);
     return;
   }
+  // D4/D5 (ADR-0051): `wmsurface` (syscall 23). It sits with the channel and
+  // shared-memory calls and NOT with `yield` or `sbrk`, and has no guard here
+  // for their reason exactly: a window is owned by a process id and a
+  // capability table belongs to a process slot, so [wmSysSurface] asks
+  // [shmCallerId] itself and refuses with [wmRetNoProc] -- a NAMED value rather
+  // than M9's opaque all-ones.
+  //
+  // **23 and not 21.** 20 is `mouse`, and docs/syscall-registry.md records 21
+  // (`shmaddr`, ADR-0045) and 22 (`shmpublish`, ADR-0046) as taken by two lines
+  // that had not merged when this one forked. The registry has now settled four
+  // collisions the same way and the rule has not changed: the cheaper move is
+  // the correct one, and the number is not the interface.
+  if (no == u64(wmSysSurfaceNo)) {
+    wmSysSurface(frame);
+    return;
+  }
   if (no == u64(userSysWhoNo)) {
     userSysWho(frame);
     return;
