@@ -672,7 +672,7 @@ if "vmZeroFrame(vmFrame(i));" not in vmsrc:
     bad.append("vmBuild no longer zeroes vmInit's six frames, and vm.dart's `f` "
                "is exempted here on the grounds that it does")
 
-if sites != 20:
+if sites != 21:
     bad.append("there are %d allocFrame() call sites and this check was written "
                "against 20. A new one is not a failure -- an unaccounted one is. "
                "Add it, or its exemption, and move this number." % sites)
@@ -683,7 +683,7 @@ print("    (%d allocFrame() call sites; %d exempted with a reason)"
       % (sites, len(EXEMPT)))
 sys.exit(1 if bad else 0)
 PYEOF
-echo "STRUCTURAL: pass  all 20 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
+echo "STRUCTURAL: pass  all 21 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).
