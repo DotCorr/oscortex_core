@@ -1391,7 +1391,7 @@ void shellMouseUsage() {
 // ---------------------------------------------------------------------------
 
 /// Syscall 16 -- `mouse`. See docs/syscall-registry.md.
-const int mouseSysNo = 16;
+const int mouseSysNo = 20;
 
 /// Packs the pointer into the one `u64` a syscall can return.
 ///

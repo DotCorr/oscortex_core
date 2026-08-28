@@ -430,9 +430,9 @@ capture REG_OUT REG_STATUS -- bash "$CORE_DIR/scripts/verify-syscall-registry.sh
 echo "$REG_OUT"
 ck; [[ $REG_STATUS -eq 0 ]] || fail "verify-syscall-registry.sh exited $REG_STATUS — D1 took a number without a row, or took one that was already taken"
 MOUSE_SYSNO=$(dartconst mouseSysNo mouse.dart)
-ck; [[ "$MOUSE_SYSNO" == "16" ]] || fail "mouseSysNo is ${MOUSE_SYSNO:-missing}, expected 16"
-ck; grep -q '^| 16 | `mouse` | `mouseSysNo` |' "$CORE_DIR/docs/syscall-registry.md" \
-  || fail "docs/syscall-registry.md has no row allocating 16 to mouseSysNo"
+ck; [[ "$MOUSE_SYSNO" == "20" ]] || fail "mouseSysNo is ${MOUSE_SYSNO:-missing}, expected 20"
+ck; grep -q '^| 20 | `mouse` | `mouseSysNo` |' "$CORE_DIR/docs/syscall-registry.md" \
+  || fail "docs/syscall-registry.md has no row allocating 20 to mouseSysNo"
 echo "STRUCTURAL: pass  syscall 16 is allocated to \`mouse\` by a row in the registry, and the registry, the kernel and oslibc.h agree"
 
 # ===========================================================================

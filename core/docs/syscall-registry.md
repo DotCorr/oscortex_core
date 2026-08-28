@@ -35,7 +35,7 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 17 | `shmgrant` | `shmSysGrantNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 18 | `shmmap` | `shmSysMapNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 19 | `shmdrop` | `shmSysDropNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
-| 16 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0035 |
+| 20 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0035 |
 
 **Sixteen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
 so the allocated set is 0-10 and 12-16. **That gap is the registry working, not a bug in it**:

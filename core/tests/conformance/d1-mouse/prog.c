@@ -42,7 +42,7 @@
  * `docs/syscall-registry.md` records that this number therefore lives in
  * exactly two places -- core/kernel/mouse.dart and this file -- and lists both.
  * `build-prog.sh` checks that these two agree. */
-#define SYS_MOUSE 16
+#define SYS_MOUSE 20
 
 typedef unsigned long u64;
 
