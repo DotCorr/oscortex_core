@@ -16,7 +16,7 @@ byte, resets the device, performs the IntelliMouse knock and **asks the device w
 reporting, and unmasks IRQ12 — which is the first line this kernel has ever taken from the slave
 8259. A packet state machine decodes three- or four-byte packets with 9-bit signed deltas, an
 explicit resynchronisation rule and an overflow discard; the accumulated position, buttons and wheel
-are readable from ring 3 through syscall 16; and an arrow can be drawn on the 800×600 framebuffer by
+are readable from ring 3 through syscall 20; and an arrow can be drawn on the 800×600 framebuffer by
 the `mouse` command.
 
 Six decisions inside that are not obvious, and one of them is a change to a file the mouse does not
@@ -165,7 +165,7 @@ deltas imply, and requires the two to be equal before dumping twelve pixels ther
 
 ---
 
-## 7. Syscall 16 returns one packed register, and what that costs
+## 7. Syscall 20 returns one packed register, and what that costs
 
 `mouse` returns `x | y<<16 | buttons<<32 | packets<<40`.
 

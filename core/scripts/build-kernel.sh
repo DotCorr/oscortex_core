@@ -64,9 +64,11 @@ command -v dart >/dev/null 2>&1 || setup_error "dart not found on PATH (source e
 # that is not theirs. Set OSCORTEX_REQUIRE_PIN=1 to make it fatal -- and that
 # should become the default the moment the pin and the toolchain agree.
 DCDART_DESC="(not a git checkout)"
+DCDART_FULL=""
 DCDART_DIRTY=""
 if command -v git >/dev/null 2>&1 && git -C "$DCDART_HOME" rev-parse --git-dir >/dev/null 2>&1; then
   DCDART_DESC="$(git -C "$DCDART_HOME" rev-parse --short HEAD 2>/dev/null)"
+  DCDART_FULL="$(git -C "$DCDART_HOME" rev-parse HEAD 2>/dev/null)"
   if [[ -n "$(git -C "$DCDART_HOME" status --porcelain 2>/dev/null)" ]]; then
     DCDART_DIRTY=" +DIRTY"
   fi
@@ -75,7 +77,12 @@ PIN_FILE="$REPO_DIR/DCDART_PIN.txt"
 PIN_WANT="(no DCDART_PIN.txt)"
 [[ -f "$PIN_FILE" ]] && PIN_WANT="$(awk '{print $1; exit}' "$PIN_FILE")"
 echo "build-kernel: toolchain $DCDART_HOME @ ${DCDART_DESC}${DCDART_DIRTY}; DCDART_PIN.txt says $PIN_WANT"
-if [[ "$DCDART_DESC" != "$PIN_WANT"* && "$PIN_WANT" != "(no DCDART_PIN.txt)" ]]; then
+# Compare the FULL hash against the pin as a prefix, not the abbreviated one.
+# `rev-parse --short` picks its own length, so a pin recorded at eight characters
+# against a seven-character abbreviation compared unequal and warned on a
+# correctly pinned tree -- a guard that cries wolf exactly when it is satisfied
+# gets ignored, which is the failure mode this whole check exists to remove.
+if [[ -n "$DCDART_FULL" && "$DCDART_FULL" != "$PIN_WANT"* && "$PIN_WANT" != "(no DCDART_PIN.txt)" ]]; then
   echo "build-kernel: WARNING — the toolchain is NOT the pinned commit. This kernel is being built" >&2
   echo "              against $DCDART_DESC and DCDART_PIN.txt claims $PIN_WANT. Either bump the pin" >&2
   echo "              deliberately after a green sweep, or point DCDART_HOME at the pinned commit." >&2

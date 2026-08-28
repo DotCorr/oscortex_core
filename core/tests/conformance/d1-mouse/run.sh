@@ -187,7 +187,7 @@ ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 TOTAL_BSS=$(( 16#$DART_BSS_HEX + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 17664 ]] || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 17664 — 17504 through S0 plus D1's 160. If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
+ck; [[ "$TOTAL_BSS" -eq 22016 ]] || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 22016 — 17504 through S0, plus D1's mouseStore 160 (ADR-0042) and M21's shmStore 4352 (ADR-0041), the two branches this merge brought together. If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 echo "STRUCTURAL: pass  mouseStore is $MOUSE_SIZE bytes at .bss+0x$MOUSE_OFF, immediately before ioctlStore at 0x$IOCTL_OFF; total .bss $TOTAL_BSS"
 
 # --- 2b. NO GOLDEN MOVES --------------------------------------------------

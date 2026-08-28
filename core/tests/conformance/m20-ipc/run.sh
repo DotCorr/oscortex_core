@@ -156,7 +156,7 @@ ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{
 ASM_BSS=$((16#$ASM_BSS_HEX))
 [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o donates $ASM_BSS bytes of .bss, expected exactly 96"
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 21856 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 21856 — 14368 through M19, plus chanStore's 2624, plus S0's ioctlStore 512 (ADR-0033), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
+[[ "$KDATA_BSS" -eq 22016 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 22016 — 14368 through M19, plus chanStore's 2624, plus S0's ioctlStore 512 (ADR-0033), plus D1's mouseStore 160 (ADR-0042), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
 
 # M21 (ADR-0041) added a block AFTER S0's and is the last one in .bss now, so it
 # is subtracted FIRST -- exactly the accounting S0 itself gave M20.

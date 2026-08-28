@@ -220,8 +220,8 @@ SHM_OFF=$(bssoff shmStore)
 ck; [[ $(( 16#$SHM_OFF + SHM_SIZE )) -eq "$DART_BSS" ]] \
   || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_SIZE )) and kmain.o's .bss is $DART_BSS — M21's block is not last, so every earlier harness's 'bytes from my block to the end' arithmetic has silently moved"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 21856 ]] \
-  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 21856 — 17504 at S0 plus M21's 4352. If that changed deliberately, move GAP-0053's running total and every harness that subtracts a later block with it."
+ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 22016 ]] \
+  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 22016 — 17504 through S0, plus D1's mouseStore 160 (ADR-0042) and M21's shmStore 4352 (ADR-0041), the two branches this merge brought together. If that changed deliberately, move GAP-0053's running total and every harness that subtracts a later block with it."
 
 # 2e. THE STORAGE SEAM. ADR-0011 §0: the symbol is named in its accessors and
 # nowhere else in the kernel.

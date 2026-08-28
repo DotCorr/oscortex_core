@@ -8548,12 +8548,12 @@ why the first was not built.
 
 ---
 
-## GAP-0252 — Syscall 16 returns a packed `u64` whose coordinates are 16 bits, and that stops working above 65535 pixels
+## GAP-0252 — Syscall 20 returns a packed `u64` whose coordinates are 16 bits, and that stops working above 65535 pixels
 
 **Domain:** kernel (D1)
 **Status:** **OPEN — and it is a shape that is meant to be replaced, not widened.**
 
-`mouse` (syscall 16) returns `x | y<<16 | buttons<<32 | packets<<40`. One register, no arguments, no
+`mouse` (syscall 20) returns `x | y<<16 | buttons<<32 | packets<<40`. One register, no arguments, no
 pointer, no failure mode.
 
 **What is fine about it.** 800×600 is the only mode `fb.dart` sets, the coordinates are clamped to it
@@ -8575,7 +8575,7 @@ shape:
 **What closing it takes, and it is not "make the fields wider".** `docs/design/display-protocol.md`
 D2 is the milestone: a ring buffer of input events in `@bss`, and either a `read` of a device
 descriptor or an `ioctl` on one (S0's `ioctl` already exists and ADR-0031 already has the bounce
-buffer). At that point syscall 16 is deleted, not extended, and `docs/syscall-registry.md`'s row for
+buffer). At that point syscall 20 is deleted, not extended, and `docs/syscall-registry.md`'s row for
 it goes with it.
 
 ---
@@ -9012,3 +9012,72 @@ change your design" to "your design says this, and it is no longer true".
 **Not fixed here** because the choice belongs with whoever owns `@rodata`'s contract, and because
 patching two harnesses to accommodate a compiler behaviour that may itself be transient is how a
 suite stops meaning what it says.
+
+## GAP-0264 — Three numbering collisions in one merge: syscall 16, GAP-0263, and a citation to a GAP that does not exist
+
+**Domain:** docs (syscall-registry, known-gaps), kernel (mouse.dart), conformance (d1-mouse)
+**Status:** **syscall 16 RESOLVED here; GAP-0263 OPEN against `b1-live-console`; the dangling citation OPEN against `merge-d1-m21`.**
+
+Four branches forked from `71cf08f` and were merged here in one pass. Each allocated numbers from
+the same free pool without being able to see the others, and three of those allocations collided.
+They are recorded together because they are one defect with three faces: **a number is an
+allocation, and this repo allocates on branches that cannot see each other.**
+
+### 1. Syscall 16, claimed twice — RESOLVED
+
+`d1-ps2-mouse` gave `mouse` 16 (ADR-0042). `m21-shared-frame` gave `shmcreate` 16, `shmgrant` 17,
+`shmmap` 18 and `shmdrop` 19 (ADR-0041). Both were correct on their own line; 15 was the highest
+allocated number at the fork.
+
+**The kernel constants MERGED CLEAN.** `const int mouseSysNo = 16;` lives in `mouse.dart` and
+`const int shmSysCreateNo = 16;` lives in `shm.dart`, so git had no textual conflict to report. Only
+`docs/syscall-registry.md` conflicted, and only because both branches happened to edit the same
+table. This is precisely the shape `docs/design/hot-files.md` §5.1 records: **a duplicate syscall
+number merges clean, builds clean, boots clean and mis-dispatches.**
+
+`core/scripts/verify-syscall-registry.sh` is what caught it, on a tree that had already built:
+
+```
+syscall 16 is in the registry twice
+core/kernel/shm.dart declares shmSysCreateNo = 16 and the registry has no row for it
+verify-syscall-registry: FAIL — the syscall registry, the kernel and oslibc.h disagree
+```
+
+**Resolution: M21's contiguous block of four keeps 16–19 and D1's single call moves to 20** — the
+same rule M20's three moved under, *the cheaper move is the correct one and the number is not the
+interface*. Moved together, and `verify-syscall-registry.sh` is the proof they moved together:
+`mouseSysNo`, `d1-mouse/prog.c`'s private `SYS_MOUSE`, `d1-mouse/run.sh`'s two assertions, the
+registry row, ADR-0042 §7 and GAP-0252.
+
+**This was resolved independently and identically on `merge-d1-m21`,** by another agent that hit the
+same collision on a different integration line. Two lines reaching 20 by the same argument is the
+registry doing its job.
+
+### 2. GAP-0263, claimed twice — OPEN against `b1-live-console`
+
+| branch | GAP-0263 |
+|---|---|
+| `mmio-volatile-migration` (merged here) | three goldens embed the kernel's own section boundaries |
+| `b1-live-console` (**unmerged, live**) | `recv` works and is not in `help` |
+
+`b1-live-console-volatile` — the branch merged here — does **not** carry GAP-0263; it was added to
+`b1-live-console` afterwards, in `b6aa027`. So this tree is self-consistent and the collision has
+not landed yet. **It will the moment `b1-live-console` merges.** The migration's GAP-0263 is the
+earlier claim and is now merged, so `b1-live-console`'s must become **GAP-0265** on the way in.
+Recorded here rather than fixed there because `b1-live-console` is another session's live branch and
+rewriting it underneath that session is how the next collision gets made.
+
+### 3. A citation to a GAP that does not exist — OPEN against `merge-d1-m21`
+
+`merge-d1-m21`'s `syscall-registry.md` says *"GAP-0260 records the collision itself"*. That branch
+has no `## GAP-0260` heading. On **this** line GAP-0260 is already taken (DCDart emits SSE for
+`.bss` zeroing), which is why the collision is recorded here as GAP-0264 instead. A citation is a
+reference to an allocation, and it can dangle the same way a number can collide.
+
+### What would have caught these earlier
+
+`verify-syscall-registry.sh` caught #1 and is the model: **an allocator with a checker.** Nothing
+plays that role for GAP or ADR numbers — they are allocated by reading the tail of a file on one
+branch. The check that found #2 and #3 was written for this merge and is not committed anywhere: for
+every number, collect its heading across every branch and every worktree and require agreement. That
+is a small script and it belongs beside the syscall one.

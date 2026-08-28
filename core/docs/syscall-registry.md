@@ -35,7 +35,7 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 17 | `shmgrant` | `shmSysGrantNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 18 | `shmmap` | `shmSysMapNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 19 | `shmdrop` | `shmSysDropNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
-| 20 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0035 |
+| 20 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0042 |
 
 **Sixteen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
 so the allocated set is 0-10 and 12-16. **That gap is the registry working, not a bug in it**:
@@ -53,7 +53,20 @@ channel binding yet. `m20-ipc`'s program declares `SYS_CHANOPEN`/`SYS_CHANSEND`/
 the way it declares `SYS_EXIT` and `SYS_WRITE`, so those numbers live in exactly two places — the
 kernel and that harness — and both are listed here.
 
-**16 has no `oslibc.h` name for the channel's reason and one of its own.** The libc has no pointer
+**Why `mouse` is 20 and not 16 - the same thing happening a second time.** `d1-ps2-mouse` and
+`m21-shared-frame` both forked from `71cf08f`, when 15 was the highest allocated number, and both
+took the next one: D1 gave `mouse` 16 and M21 gave `shmcreate` 16, `shmgrant` 17, `shmmap` 18 and
+`shmdrop` 19. Neither branch could see the other and neither was wrong on its own line. **The two
+kernel constants merged CLEAN** - they live in different files, so git had nothing to report; only
+this table conflicted, and only because both branches edited it. That is exactly the shape
+`docs/design/hot-files.md` 5.1 records, and `verify-syscall-registry.sh` is what caught it. On the
+merge M21's contiguous block of four kept 16-19 and D1's single call moved to 20, for the reason
+M20's three moved rather than displacing `fdwait`: **the cheaper move is the correct one, and the
+number is not the interface.** `mouseSysNo`, `prog.c`'s private `SYS_MOUSE`, `d1-mouse/run.sh`'s two
+assertions, ADR-0042 7 and GAP-0252 all moved with it, and `verify-syscall-registry.sh` is what
+proves they moved together. GAP-0264 records the collision itself.
+
+**20 has no `oslibc.h` name for the channel's reason and one of its own.** The libc has no pointer
 binding, and D1 (ADR-0042) deliberately did not invent one: a `mouse()` in `oslibc.h` would be a
 public interface to a packed `u64` whose sixteen-bit coordinate fields stop being wide enough the
 moment this kernel can set a mode wider than 800x600 (GAP-0252). `d1-mouse`'s program declares

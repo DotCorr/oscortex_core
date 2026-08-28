@@ -188,9 +188,9 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 21856 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 21856 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 22016 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 22016 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033), plus D1's mouseStore 160 (ADR-0042), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
-# The three later blocks, subtracted NEWEST FIRST, so that every assertion below
+# The four later blocks, subtracted NEWEST FIRST, so that every assertion below
 # means what it meant when M19 wrote it.
 SHM_STORE_SIZE=$(bsssize shmStore)
 ck; [[ "$SHM_STORE_SIZE" == "4352" ]] || fail "shmStore is ${SHM_STORE_SIZE:-missing} bytes, expected 4352 — M21's shared-memory block (ADR-0041)"
