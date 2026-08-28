@@ -182,12 +182,27 @@ IOCTL_OFF=$(bssoff ioctlStore)
 DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
 
+# D1 (ADR-0042) landed BEFORE S0's block, because ADR-0031 §4.3 rule 5 requires
+# the ioctl bounce buffer to stay last: `mouseStore`, 160 bytes of PS/2 mouse
+# driver state. It is subtracted SECOND, which is the same accounting this
+# harness gave M14, M15, M16 and M19 -- and it is the reason CHAN_OFF's
+# adjacency check below still means "chanStore is immediately before the block
+# that came after it" rather than silently becoming a check on nothing.
+MOUSE_STORE_SIZE=$(bsssize mouseStore)
+[[ "$MOUSE_STORE_SIZE" == "160" ]] || fail "mouseStore is ${MOUSE_STORE_SIZE:-missing} bytes, expected 160 (ADR-0042)"
+MOUSE_OFF=$(bssoff mouseStore)
+[[ -n "$MOUSE_OFF" ]] || fail "mouseStore has no .bss offset in kmain.o"
+[[ $(( 16#$MOUSE_OFF + MOUSE_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "mouseStore ends at $(( 16#$MOUSE_OFF + MOUSE_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS — D1's block is NOT immediately before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+DART_BSS=$(( DART_BSS - MOUSE_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - MOUSE_STORE_SIZE ))
+
 CHAN_STORE_SIZE=$(bsssize chanStore)
 [[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624"
 CHAN_OFF=$(bssoff chanStore)
 [[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
 [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS — M20's block is not immediately before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore and D1's mouseStore is $DART_BSS — M20's block is not immediately before D1's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
 [[ $(( KDATA_BSS - CHAN_STORE_SIZE )) -eq 14368 ]] \
   || fail "the .bss outside chanStore is $(( KDATA_BSS - CHAN_STORE_SIZE )), not M19's 14368 — M20 moved storage it does not own"
 

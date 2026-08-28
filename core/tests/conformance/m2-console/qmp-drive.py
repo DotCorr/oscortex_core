@@ -189,8 +189,14 @@ def main():
     ap.add_argument("--png", required=True)
     ap.add_argument("--screen-text", required=True)
     ap.add_argument("--keys", required=True,
-                    help="comma-separated QEMU qcodes to inject, in order; "
-                         "a `wait:<ms>` element pauses instead of typing")
+                    help="comma-separated script of input events, in order. An "
+                         "element is a QEMU qcode (typed), `wait:<ms>` (a "
+                         "pause), `rel:<dx>:<dy>` (a POINTER MOTION of dx,dy "
+                         "device units, injected with `input-send-event`), or "
+                         "`btn:<name>:<down|up>` (a pointer BUTTON edge, e.g. "
+                         "`btn:left:down`). The last two are D1's addition and "
+                         "are what drives an emulated PS/2 mouse: `send-key` "
+                         "cannot reach the auxiliary port at all.")
     ap.add_argument("--monitor-command", action="append", default=None,
                     help="optional HMP command to run after the keystrokes "
                          "(e.g. 'info pci', or an `xp` memory dump). May be "
@@ -234,7 +240,54 @@ def main():
 
     keys = [k for k in args.keys.split(",") if k]
     typed = 0
+    pointed = 0
     for qcode in keys:
+        # --- D1: POINTER MOTION -------------------------------------------
+        #
+        # `input-send-event` batches its events and delivers ONE sync at the
+        # end, which is what makes a two-axis motion a single PS/2 packet
+        # rather than two. `send-key` has no equivalent and cannot reach the
+        # auxiliary device at all.
+        #
+        # The axis convention is QEMU's and is stated here because a harness
+        # deriving expected packet bytes depends on it: a REL x of +v moves the
+        # pointer right and reaches the guest as `mouse_dx += v`, while a REL y
+        # of +v moves the pointer DOWN the screen and reaches the guest as
+        # `mouse_dy -= v` -- because a PS/2 mouse reports Y positive UPWARD.
+        # So the byte the guest decodes for a downward motion is negative.
+        if qcode.startswith("rel:"):
+            parts = qcode.split(":")
+            if len(parts) != 3:
+                die("malformed pointer element %r -- want rel:<dx>:<dy>" % qcode)
+            dx, dy = int(parts[1]), int(parts[2])
+            events = []
+            if dx:
+                events.append({"type": "rel", "data": {"axis": "x", "value": dx}})
+            if dy:
+                events.append({"type": "rel", "data": {"axis": "y", "value": dy}})
+            if not events:
+                die("rel:0:0 would send no event at all")
+            qmp.cmd("input-send-event", events=events)
+            pointed += 1
+            time.sleep(0.05)
+            continue
+        # --- D1: POINTER BUTTONS ------------------------------------------
+        #
+        # A separate call per edge, deliberately: press and release must be two
+        # packets for a harness to assert them separately, and two events in one
+        # `input-send-event` would be one sync and therefore one packet in which
+        # the button was never seen down.
+        if qcode.startswith("btn:"):
+            parts = qcode.split(":")
+            if len(parts) != 3 or parts[2] not in ("down", "up"):
+                die("malformed button element %r -- want btn:<name>:<down|up>"
+                    % qcode)
+            qmp.cmd("input-send-event", events=[
+                {"type": "btn",
+                 "data": {"button": parts[1], "down": parts[2] == "down"}}])
+            pointed += 1
+            time.sleep(0.05)
+            continue
         # `wait:<ms>` is a PAUSE, not a key. It exists because a shell runs
         # commands, and a command that takes longer than the inter-key gap
         # would otherwise have keys injected into it while it runs. The M3
@@ -249,7 +302,7 @@ def main():
         # one-byte output buffer from being overrun before IRQ1 is serviced.
         time.sleep(0.05)
         typed += 1
-    print(f"qmp-drive: injected {typed} keystroke(s)")
+    print(f"qmp-drive: injected {typed} keystroke(s) and {pointed} pointer event(s)")
 
     if not wait_for_quiet(args.serial, quiet_for=0.5, timeout=10):
         die("serial output never went quiet after the keystrokes")

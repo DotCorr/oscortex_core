@@ -534,6 +534,38 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     return;
   }
 
+  // --- Mouse (IRQ12, remapped to 0x2C) -- D1 (ADR-0042) ---
+  //
+  // THE FIRST LINE THIS KERNEL HAS EVER TAKEN FROM THE SLAVE PIC. Everything
+  // before it -- the timer, the keyboard, the syscall, every fault -- arrives
+  // on the master or from the CPU itself, and the slave has been masked 0xFF at
+  // every point in the kernel's life. Two consequences, both of them in
+  // `mouse.dart` rather than here:
+  //
+  //   * unmasking IRQ12 alone does nothing, because the slave reaches the CPU
+  //     through the master's IRQ2 cascade and that was masked too
+  //     ([mouseEnable] unmasks both);
+  //   * the acknowledgement is to BOTH chips, in slave-then-master order
+  //     ([picEoiSlave]), because the master has the cascade in service as well.
+  //     `picEoiMaster()` alone would leave the slave's in-service bit set and
+  //     IRQ12 would fire exactly once per boot.
+  //
+  // The EOI is sent AFTER the decode, matching the keyboard arm above and for
+  // its reason: the gate is an INTERRUPT gate, so IF is clear for the whole
+  // handler and the PIC cannot re-deliver into a half-finished packet either
+  // way, and "acknowledge the device once you are actually done with it" is the
+  // rule worth keeping true.
+  //
+  // Unreachable during M0/M1 -- the mouse is not unmasked until `m2Enter()` --
+  // so the three byte-exact serial goldens are unaffected by its existence, and
+  // unreachable in any boot where nothing moves a pointer, which is every
+  // harness in this suite but one.
+  if (vector == u64(vectorMouse)) {
+    mouseHandle();
+    picEoiSlave();
+    return;
+  }
+
   // --- The syscall (int 0x80) — M9 ---
   //
   // The only vector in this kernel whose gate has DPL 3, and therefore the only

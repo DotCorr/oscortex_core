@@ -658,6 +658,17 @@ from my block to the end' arithmetic unchanged"; last is necessary but not suffi
 that WAS last has a to-the-end measurement of its own. `ioctlStore`'s number did not change here only
 because twelve harnesses measure it to `shmStore`'s START rather than to the end of the section —
 which is the fix ADR-0033 put in, working.
+`ioctl` bounce buffer) = **17504 at S0**, + 160 (`mouseStore`, ADR-0042 — twenty words of PS/2 mouse
+driver state: the packet being assembled, the accumulated pointer, five counters, the DETECTED packet
+size and device id, and the init-progress bitmap) = **17664 at D1**. **`ioctlStore` is still the LAST
+block** in `kmain.o`'s `.bss` — ADR-0031 §4.3 rule 5 requires it — so D1's block went in FRONT of it
+rather than after it, and `chanStore` is now the one immediately before `mouseStore` rather than
+before `ioctlStore`. `m19-argv` asserts that `ioctlStore` ends exactly
+at the end of the section, that `chanStore` ends where `ioctlStore` begins, and that nothing sits
+between `argsStore` and `chanStore` — the same convention M14, M15, M16 and M19 each followed in
+turn, so that every earlier harness's "the donated bytes from MY block to the end of `.bss`" keeps
+meaning what it meant when it was written, by subtracting each later milestone's block first. Twelve
+harnesses subtract `ioctlStore` first, `mouseStore` second and `chanStore` third.
 
 **14368 at M19**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte `ioctl` bounce
 buffer) = **14880 at S0**. **`ioctlStore` is now the LAST block** in `kmain.o`'s `.bss`, and
@@ -8478,3 +8489,311 @@ and says so.
 harness failure — or, better, `qmp-drive.py` should tolerate the socket going away once it has
 everything it came for, since at that point there is nothing left to ask QEMU. The second is smaller
 and does not re-run a two-minute boot to fix a one-millisecond race.
+## GAP-0250 — Every mouse packet prints a line on COM1, and that is a milestone artefact rather than a design
+
+**Domain:** kernel (D1)
+**Status:** **OPEN — deliberate, and it is the evidence D1 is made of.**
+
+`mouseComplete` calls `mouseReportPacket` on every decoded packet, so a boot in which somebody moves
+the pointer produces one 62-byte serial line per packet. At a PS/2 mouse's default 100 samples per
+second that is about 6 KB/s of COM1 traffic, and `uartPutc` polls the transmit-holding register with
+an **unbounded** spin (GAP-0001) — so a fast enough pointer would spend most of an interrupt handler
+waiting on a serial port.
+
+**Why it is there anyway.** This is the first device whose whole purpose is *visible*, and the
+milestone's binary exit criterion is that the kernel decoded *exactly* the movement it was given.
+That claim is only checkable if the decode is written down somewhere a byte-exact assertion can read,
+and COM1 is the only such place this kernel has. `d1-mouse` asserts twelve of these lines byte for
+byte against a model derived on the host before the boot; without them the harness could assert the
+accumulated position and nothing about how it got there.
+
+**What closing it takes.** A trace flag in `mouseStore` (one word, already allocated as spare
+capacity is not — the block is exactly twenty words and full), defaulting off, with `mouse trace on`
+turning it on. That is one more word, one more `@rodata` command name, and a harness change to turn
+tracing on before it injects anything. It was not done at D1 because the flag would have been a
+switch with exactly one setting anybody used, and a switch nobody has ever flipped the other way is
+not a tested switch.
+
+**What it does NOT affect.** No harness other than `d1-mouse` injects a pointer event, so on the other
+twenty-four this code never runs and no golden moves. The no-pointer control boot asserts exactly
+that.
+
+---
+
+## GAP-0251 — The cursor does not track; it is drawn by the `mouse` command and left behind
+
+**Domain:** kernel (D1)
+**Status:** **OPEN — a real limitation, and ADR-0042 §6 is the reasoning.**
+
+`mouseHandle` updates numbers. `shellMouse` draws pixels. So the arrow appears where the pointer was
+when you typed `mouse`, it does not follow the pointer, and every `mouse` leaves an arrow behind at
+the position it was drawn at — there is no erase.
+
+**Why.** Blitting a cursor that tracks needs the pixels under the previous position saved and
+restored. **There is no allocation in an interrupt handler**, the compiler forbids it, and this driver
+does not work around it (CLAUDE.md rule 3's spirit: the honest fix is not a workaround here). A fixed
+save buffer would be 12 × 16 × 4 = 768 bytes — 96 more `u64` words of `.bss`, nearly five times the
+whole driver's state — for a feature no compositor will want, because a compositor composites rather
+than blitting a cursor over a console.
+
+**The cost, measured rather than asserted.** A screenshot of a session with several `mouse` commands
+has several arrows on it. `d1-mouse` works around this by running `fb` — which repaints the whole
+framebuffer — immediately before the single `mouse` that draws the arrow it asserts, so the twelve
+pixels it reads back are the only cursor on the screen.
+
+**What closing it takes.** Either the save buffer above, or — better and the direction
+`docs/design/display-protocol.md` points — a compositor that owns the frame and draws the pointer as
+part of composition, at which point this whole function is deleted rather than fixed. The second is
+why the first was not built.
+
+---
+
+## GAP-0252 — Syscall 16 returns a packed `u64` whose coordinates are 16 bits, and that stops working above 65535 pixels
+
+**Domain:** kernel (D1)
+**Status:** **OPEN — and it is a shape that is meant to be replaced, not widened.**
+
+`mouse` (syscall 16) returns `x | y<<16 | buttons<<32 | packets<<40`. One register, no arguments, no
+pointer, no failure mode.
+
+**What is fine about it.** 800×600 is the only mode `fb.dart` sets, the coordinates are clamped to it
+in the driver, and one register means the kernel never has to validate a ring-3 address for this call
+— `chan.dart`'s fourteen refusal codes are the evidence for how much work that honestly is.
+
+**What is not.** Three things a real pointer interface has are missing and cannot be added to this
+shape:
+
+1. **A wider screen.** Sixteen bits per axis is 65535, which is far away, but a `u64` with four fields
+   in it has no room for a timestamp, a wheel delta, or a modifier state, and those are wanted long
+   before the resolution is.
+2. **The wheel.** `WU`/`WD` are in the state block and are reported by the `mouse` command, and ring 3
+   cannot see them at all. A program that wanted to scroll would have to be given another syscall.
+3. **Events, not state.** This is a *poll* of a *level*. A program cannot see a click that happened
+   and ended between two polls — only that the packet counter moved, which says something changed
+   without saying what.
+
+**What closing it takes, and it is not "make the fields wider".** `docs/design/display-protocol.md`
+D2 is the milestone: a ring buffer of input events in `@bss`, and either a `read` of a device
+descriptor or an `ioctl` on one (S0's `ioctl` already exists and ADR-0031 already has the bounce
+buffer). At that point syscall 16 is deleted, not extended, and `docs/syscall-registry.md`'s row for
+it goes with it.
+
+---
+
+## GAP-0253 — Every ring-3 program can see the pointer; there is no input focus
+
+**Domain:** kernel (D1)
+**Status:** **OPEN — and the decision it needs is not this file's to make.**
+
+`mouseSysRead` refuses nobody. An M9 payload, an M10 `run` program and a process can all call syscall
+16 and all get the same global device state. There is no notion of which program input belongs to.
+
+**Why it was not invented here.** `docs/design/display-protocol.md` §4.3 asks the question directly —
+whether the compositor should be the *only* recipient of input, or whether the kernel should keep
+delivering to the shell when no compositor is running — and says plainly that it is worth an owner's
+answer, because the second option means the kernel has a notion of "input goes here now", which is a
+piece of policy in ring 0. Inventing an answer inside a device driver would settle a design question
+in the worst possible place.
+
+**What this costs today, stated rather than implied.** Nothing yet: one program runs at a time and
+there is no compositor to steal from. It becomes real the moment two ring-3 programs are live and one
+of them is drawing a window — which is D3 in that document, two milestones away.
+
+**What closing it takes.** An owner's answer to §4.3, and then a word saying who input goes to, set
+by whatever creates that relationship. Not a driver change.
+
+---
+
+## GAP-0254 — The `mouse` command is not in `help`, so it is undiscoverable from the shell
+
+**Domain:** kernel (D1), documentation
+**Status:** **OPEN — deliberate, for the reason M18 and M20 each declined the same line.**
+
+`shellExecute` dispatches `mouse` and `mouse feed <hex>`, and `help` lists neither. Somebody sitting
+at this shell has no way to find out the commands exist.
+
+**Why.** `shellStrHelp` is **2224 bytes**, three harnesses pin that number, and **five byte-exact
+serial goldens plus `m3-shell`'s screen golden contain the help text verbatim** (GAP-0105,
+GAP-0115). One line moves six goldens by substitution. M18 added three commands with no help line and
+M20 added none at all, both for this reason, so D1 following the same rule keeps the debt in one
+place rather than paying a sixth of it.
+
+**The debt is now five commands deep** (`proc`'s three from M18, and D1's `mouse` and
+`mouse feed`), and that is worth saying out loud: the argument "one line is not worth six goldens"
+gets weaker every time it is made, because the thing it is protecting — a help text that describes
+the shell — is getting less true.
+
+**AND SOMEBODY ELSE IS PAYING IT WHILE THIS WAS BEING WRITTEN, WHICH CHANGES WHAT CLOSING THIS
+MEANS.** A concurrent branch is settling GAP-0142 and takes `shellStrHelp` from 2224 bytes to 2511,
+regenerating the six goldens by substitution. So the mechanical work this entry describes is being
+done once, by that branch, for its own commands — and D1's two lines are then **a two-line addition
+to a text that has just been re-pinned**, not a sixth of a golden regeneration. The sequencing
+matters: adding them here first would have collided with that branch in six goldens and one pinned
+constant.
+
+**What closing it takes, after that merge.** Two lines in `shellStrHelp`, a re-pin of whatever
+`shellStrHelp` then measures, and the six goldens regenerated by substitution one more time. The
+kernel is then required to reproduce the result byte-for-byte, which is what makes the substitution
+safe. Sequence it AFTER the GAP-0142 work lands, never beside it.
+
+**What `d1-mouse` asserts in the meantime, so this does not rot into a lie.** Two things: that
+`shellStrHelp` is exactly 2224 bytes ON THIS BRANCH — a pin that MOVES at the merge described above —
+and, separately, that the kernel's `.rodata` contains no help-shaped `  mouse ` line at all. The
+second is the half that survives the merge, because the claim D1 is making is that *it* added no
+line, not that nobody ever will.
+
+---
+
+## GAP-0255 — One IRQ12 per boot arrives with the 8042's output buffer empty
+
+**Domain:** kernel (D1)
+**Status:** **OPEN — understood, harmless, and NOT hidden.**
+
+`mouse` reports `IRQ <n>` and `PKT <m>`, and on every boot measured so far **n is exactly
+`4 * m + 1`**: one interrupt more than there were bytes to read. Measured on QEMU 11.0.0: 17 IRQs for
+4 packets, 53 for 13.
+
+**What it is.** `mouseEnable` sends `0xF4` (enable reporting) and *then* unmasks IRQ12. Between those
+two, the device is free to put a byte in the controller's output buffer; the 8042 asserts the line,
+the 8259 latches the edge while the line is masked, and when the mask is lifted the interrupt is
+delivered — for a byte that `mouseEnable`'s own last `mouseRead` had already consumed. The handler
+reads the status, sees OBF clear, and returns without reading the data port.
+
+**Why that path is right rather than merely tolerated.** An unconditional `in` from 0x60 with OBF
+clear returns *the previous byte again*, and the decoder would consume it a second time — which is one
+byte of stream offset, i.e. exactly the desynchronisation the framing rule exists to recover from,
+manufactured by the driver on every boot. The guard is the fix; the count is the evidence it fires.
+
+**Why the count is reported instead of the guard being silent.** A spurious interrupt is a real event
+on real and emulated hardware alike, and a driver that silently swallowed them could not tell one from
+a thousand. `d1-mouse` therefore asserts `IRQ` is *present and hexadecimal* rather than exact, and
+asserts `STRAY 00000000` exactly — because a **stray** (a byte that arrived with the AUX status bit
+clear, i.e. a keyboard byte on the mouse's line) is a genuine defect and an empty-buffer interrupt is
+not.
+
+**What closing it takes.** Draining the controller between `0xF4` and the unmask, the way `kbdDrain`
+does for the keyboard — which trades a known, counted, harmless interrupt for a bounded poll that
+could itself swallow a real first packet. Not obviously an improvement, which is why it was measured
+and recorded rather than "fixed".
+
+---
+
+## GAP-0256 — `m7-frames` was already red at `71cf08f`: it pins a DCDart commit that commit had moved
+
+**Domain:** conformance harness (M7), pre-existing
+**Status:** **OPEN, NOT D1'S, AND NOT D1'S TO FIX — recorded here because D1's sweep is where this
+agent met it.**
+
+`core/tests/conformance/m7-frames/run.sh` asserts `[[ "$PIN" == 8713298* ]]`. `DCDART_PIN.txt` at
+`71cf08f` says `38f0b06`. The assertion cannot pass, and it fails four seconds into the harness —
+before any boot, and **after** the `.bss` arithmetic, so everything a milestone-integration reviewer
+would want from it still runs and still reports.
+
+**Established without booting anything**, on the pristine `/private/tmp/oscortex-demo/src-71cf08f`
+worktree: the pin file says `38f0b06` and the harness's own text says `8713298`. It is not
+intermittent, it is not environmental, and it has nothing to do with the mouse: D1 changed neither
+file's assertion, and `git diff` against `71cf08f` shows this harness gained exactly the twelve-line
+`mouseStore` subtraction stanza and its assertion-floor bump and nothing else.
+
+**So "24 harnesses green at `71cf08f`" is 23.** That is worth saying plainly rather than folding into
+a pass count, because the premise every branch forked from is one harness weaker than it was
+believed to be.
+
+**Somebody else is already fixing it.** A concurrent branch working on recorded defects has this in
+its own known-gaps as "m7-frames asserted a DCDart pin that commit 71cf08f had already moved, and was
+red on the pristine tree", so the fix belongs there and D1 deliberately did not touch it — two
+branches editing the same three lines of the same harness is exactly the collision
+`docs/design/hot-files.md` warns about.
+
+**One thing the fix should not miss.** The assertion appears **twice** in that file, at two different
+line numbers, with the same text and the same hard-coded hash. Changing one of them leaves the other,
+and the harness fails in the same way at a later line — which reads like a different defect.
+
+---
+
+## GAP-0257 — A new kernel file moves every golden that prints an absolute address, and D1 moved 23
+
+**Domain:** conformance harnesses (every milestone with an address in a golden)
+**Status:** **OPEN — structural, and it gets worse with every driver this OS gains.**
+
+`core/kernel/mouse.dart` is ~1450 lines and 31 `@rodata` tables, so the kernel image grew by **three
+4KiB pages**. Nothing about the mouse appears in any earlier milestone's transcript. These do:
+
+* `VM SECT`, which prints `.text`, `.rodata` and image-end **absolute addresses**;
+* `VM TEST RW/RO/NX ADDR` and the `PF CR2` lines under them — addresses of kernel objects;
+* `PMM BASE`, and `PMM FREE`/`USED`, because the frame bitmap reserves the image and a bigger image
+  reserves **three more frames**;
+* every `ELF PAGE ... PA`, `PROC NEW ... PML4/PD/PT`, `VM CR3` and `ELF STACK FRAME`, because those
+  are frames the allocator hands out **after** the image.
+
+**Measured, not estimated.** `PMM BASE 0x14A1C8 -> 0x14D1C8`; `PMM FREE 0x7E8B -> 0x7E88` and
+`USED 0x175 -> 0x178` — exactly three frames, exactly the three pages. **23 goldens across 12
+harnesses moved, 376 lines in total, and not one line changed meaning.**
+
+**That last clause is a CHECKED claim, not an assurance.** Regenerating a golden from a wrong kernel
+enshrines the wrong output — `m11-proc`'s own comment says exactly that — so the regeneration was
+gated: every removed/added line pair had every run of two or more hex digits masked out, and the two
+were required to be **identical afterwards**. All 376 passed. A line that had changed *meaning*
+rather than *address* would have failed that gate and been read by a human before anything was
+accepted. The gate is in this milestone's working notes rather than in a harness, and **that is
+itself a gap**: the next agent to regenerate has to rebuild it.
+
+**Two harnesses could not be regenerated by their own `--regen` and needed handling.**
+`m19-argv` has a `.bss` grand-total assertion that no other harness's shape matches, so it failed
+before its boot until D1's block was added to its accounting (this was a real miss: D1's first pass
+found the twelve harnesses that share one stanza and not this one). `m7-frames` failed on GAP-0256's
+stale DCDart pin, four seconds in and before its own boot; its goldens were regenerated through a
+temporary copy with **only** that one assertion removed, and the copy was deleted afterwards. With
+that pin bypassed `m7-frames` passes in full — which is independent evidence that GAP-0256 is the
+only thing wrong with it.
+
+**What this costs the project, plainly.** Any new kernel `.dart` file of any size moves this set. A
+driver is therefore never a self-contained change here, and the cost is a **merge hazard rather than
+a correctness one**: two branches that each add a kernel file both regenerate the same 23 goldens,
+and the merge cannot take either side — it has to rebuild from the merged kernel and regenerate once.
+
+**What would close it, and it is not "stop printing addresses".** The addresses are load-bearing:
+`m8-paging` reads back the page tables the kernel says it built, and `m10-elf`'s whole claim is that
+the loader mapped the frames it named. What would close it is printing them **relative to a base the
+same transcript reports** — which is exactly what `d1-mouse` does for the cursor, asserting the
+pixels at `base + derived offset` rather than at a pinned absolute address, so its own golden does
+not move when the image does. That is a per-harness change to roughly forty lines of kernel
+diagnostics and their goldens, and it is a unit of its own.
+
+---
+
+## GAP-0259 — The kernel builds against whatever DCDart is at a fixed relative PATH, not against `DCDART_PIN.txt`
+
+**Domain:** build (all milestones), toolchain discipline
+**Status:** **OPEN — and it stopped a build dead during D1, which is how it was found.**
+
+`DCDART_PIN.txt` says `38f0b06 2026-08-26`. `core/scripts/build-kernel.sh` resolves the compiler as
+`DCDART_HOME="${DCDART_HOME:-$REPO_DIR/../DCDart}"` — **a path, not a commit**. So the pin is a claim
+this repo makes about a toolchain it never checks, and the compiler actually used is whatever happens
+to be sitting in that directory.
+
+**Observed, not theorised.** During D1's final verification the sibling DCDart checkout was at
+`f9676f2` — seventeen commits past the pin — **with six files modified in the working tree**
+(`prelude.dart`, `llvm_emit.dart`, `lower.dart`, `elide.dart`, `instructions.dart`, `c_header.dart`),
+because another agent was mid-edit on the compiler. The kernel had built and passed a full 25-harness
+sweep against that directory forty minutes earlier and would not build against it at all afterwards.
+Nothing in this repo changed between those two facts.
+
+**Checking out the pinned commit is NOT a workaround, and that is the sharp part.** A `git worktree`
+at `38f0b06` still fails, because Dart resolves `package:dc_ir` and friends through a
+`.dart_tool/package_config.json` whose paths point back at the *shared* checkout — so a pristine
+source tree is compiled with the dirty tree's packages, and the mixture fails in a way that looks
+like the pinned commit being broken. `MEMORY.md`'s "stale `.dart_tool` cache" note is the same trap
+seen from the other end.
+
+**What is and is not affected.** Nothing about this repo's correctness: the kernel binary D1's sweep
+tested is on disk and every boot result stands. What is affected is **reproducibility** — "verified
+against `38f0b06`" is not something any check in this repo can establish, and a green sweep is
+evidence about the compiler that happened to be in a directory at the time.
+
+**What closing it takes.** `build-kernel.sh` reading `DCDART_PIN.txt` and asserting
+`git -C "$DCDART_HOME" rev-parse HEAD` starts with it, **and** that the tree is clean — refusing
+otherwise, with the override spelled out for the agent who is deliberately bumping the pin. That is
+about fifteen lines and one new failure mode ("your DCDart is dirty"), and it would have turned
+forty minutes of confusion into one sentence. The `.dart_tool` half needs a per-checkout
+`--packages` or a `dart pub get` in the pinned tree, and is the harder half.

@@ -1707,6 +1707,22 @@ void userSyscall(u64 frame) {
     ioctlSysIoctl(frame);
     return;
   }
+  // D1 (ADR-0042): `mouse` (syscall 16). It sits with `who` rather than with
+  // `yield`, `sbrk` or the file syscalls, and the reason is stated in
+  // [mouseSysRead]: it reads GLOBAL device state and writes nothing, so there is
+  // no per-caller resource to look up and no owner to invent. Every one of the
+  // syscalls that refuses a caller refuses it because it would otherwise have to
+  // invent a heap, a descriptor table or an endpoint for something that has
+  // none.
+  //
+  // So all three things that can be in ring 3 on this machine can call it: an M9
+  // payload, an M10 `run` program, and a process. `d1-mouse` uses the second,
+  // because that is the one with no process slot and therefore the strongest
+  // demonstration that nothing was quietly required.
+  if (no == u64(mouseSysNo)) {
+    mouseSysRead(frame);
+    return;
+  }
   if (no == u64(userSysWhoNo)) {
     userSysWho(frame);
     return;

@@ -210,12 +210,25 @@ ck; [[ $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) -eq "$DART_BSS" ]] \
 DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
 
+# D1 (ADR-0042) put its block in FRONT of S0's, because ADR-0031 §4.3 rule 5
+# requires the ioctl bounce buffer to stay last. Subtracted SECOND, so that
+# `chanStore`'s adjacency check below still means "immediately before the block
+# that came after it" rather than silently becoming a check on nothing.
+MOUSE_STORE_SIZE=$(bsssize mouseStore)
+ck; [[ "$MOUSE_STORE_SIZE" == "160" ]] || fail "mouseStore is ${MOUSE_STORE_SIZE:-missing} bytes, expected 160 — D1's PS/2 mouse block (ADR-0042)"
+MOUSE_OFF=$(bssoff mouseStore)
+ck; [[ -n "$MOUSE_OFF" ]] || fail "mouseStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$MOUSE_OFF + MOUSE_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "mouseStore ends at $(( 16#$MOUSE_OFF + MOUSE_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS bytes — D1's block is not immediately before S0's"
+DART_BSS=$(( DART_BSS - MOUSE_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - MOUSE_STORE_SIZE ))
+
 CHAN_STORE_SIZE=$(bsssize chanStore)
 ck; [[ "$CHAN_STORE_SIZE" == "2624" ]] || fail "chanStore is ${CHAN_STORE_SIZE:-missing} bytes, expected 2624 — M20's IPC channel block (ADR-0027)"
 CHAN_OFF=$(bssoff chanStore)
 ck; [[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore is $DART_BSS bytes — M20's block is not immediately before S0's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
+  || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore and D1's mouseStore is $DART_BSS bytes — M20's block is not immediately before D1's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
 DART_BSS=$(( DART_BSS - CHAN_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - CHAN_STORE_SIZE ))
 M19_TOTAL=$KDATA_BSS

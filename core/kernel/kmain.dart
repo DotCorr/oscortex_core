@@ -70,6 +70,14 @@ part 'args.dart';
 // which is ADR-0011 s0's seam discipline made mechanical.)
 part 'chan.dart';
 
+// D1 (ADR-0042): the PS/2 mouse. SECOND-TO-LAST in `.bss`, immediately before
+// S0's block, for the reason chan.dart's comment above gives and ADR-0033 s6.4
+// spells out: every harness from M2 onward measures "the donated bytes from MY
+// block to the end of `.bss`", so a new block subtracts after S0's and before
+// M20's, and the previously-second-to-last block's own measurement moves by
+// exactly this block's size.
+part 'mouse.dart';
+
 // S0 (ADR-0033) -- `ioctl`, syscall 12, and the device namespace.
 //
 // **LAST ON PURPOSE.** ADR-0031 s4.3 rule 5 requires the ioctl bounce buffer to
@@ -299,6 +307,23 @@ void kmain(u64 mbInfo) {
   // capture).
   chanInit();
   shmInit();
+
+  // D1: the mouse driver's state, and the same argument for the tenth time --
+  // with a sharper edge than most of them, because this block is read by an
+  // INTERRUPT HANDLER rather than by a command. A garbage byte index would make
+  // the first mouse byte of the boot land in a slot the decoder then treats as a
+  // finished packet, and a garbage packet size would read a three-byte device's
+  // stream four bytes at a time, which desynchronises permanently on the first
+  // packet and never recovers. It also sets the packet size to its UNDETECTED
+  // default of 3; the 4 is only ever written by a device that answered 0x03.
+  //
+  // It touches no hardware -- the auxiliary port is not enabled until
+  // `mouseEnable()`, from `m2Enter()`, alongside the keyboard's own unmask.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  mouseInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

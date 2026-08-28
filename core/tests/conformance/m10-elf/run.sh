@@ -291,6 +291,19 @@ ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- 
 S0_BSS=$(( KDATA_BSS - 16#$S0_OFF_HEX ))
 ck; [[ "$S0_BSS" -eq 512 ]] || fail "the bytes from S0's ioctlStore to M21's shmStore are $S0_BSS, expected 512. If that block changed size, change it in ADR-0033, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - S0_BSS ))
+# D1 (ADR-0042) added a block BEFORE S0's, because ADR-0031 s4.3 rule 5 requires
+# the ioctl bounce buffer to stay LAST: `mouseStore`, 160 bytes -- twenty words
+# of PS/2 mouse driver state, of which the first five are the packet being
+# assembled and the rest are the accumulated pointer, five counters, the DETECTED
+# packet size and device id, and the init-progress bitmap. Subtracted SECOND,
+# after S0's block and before M20's, exactly as M14, M15, M16, M19, M20 and S0
+# each were in turn, so that every earlier milestone's number continues to mean
+# what it meant when it was written.
+D1_OFF_HEX=$(bssoff mouseStore)
+ck; [[ -n "$D1_OFF_HEX" ]] || fail "mouseStore has no .bss offset in kmain.o -- D1's PS/2 mouse block (ADR-0042) is missing"
+D1_BSS=$(( KDATA_BSS - 16#$D1_OFF_HEX ))
+ck; [[ "$D1_BSS" -eq 160 ]] || fail "the bytes from D1's mouseStore to S0's ioctlStore are $D1_BSS, expected 160. If that block changed size, change it in ADR-0042, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D1_BSS ))
 # M19 (ADR-0023) added a block AFTER M16's, and it is the LAST one in .bss:
 # `argsStore`, 256 bytes -- eight metadata words, eight per-argument offsets and
 # 128 bytes of argument text, which is where a command line is staged before it
@@ -309,7 +322,7 @@ KDATA_BSS=$(( KDATA_BSS - S0_BSS ))
 M20_OFF_HEX=$(bssoff chanStore)
 ck; [[ -n "$M20_OFF_HEX" ]] || fail "chanStore has no .bss offset in kmain.o -- M20's IPC channel block (ADR-0027) is missing"
 M20_BSS=$(( KDATA_BSS - 16#$M20_OFF_HEX ))
-ck; [[ "$M20_BSS" -eq 2624 ]] || fail "the bytes from M20's chanStore to S0's ioctlStore are $M20_BSS, expected 2624. If that block changed size, change it in ADR-0027, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M20_BSS" -eq 2624 ]] || fail "the bytes from M20's chanStore to D1's mouseStore are $M20_BSS, expected 2624. If that block changed size, change it in ADR-0027, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M20_BSS ))
 M19_OFF_HEX=$(bssoff argsStore)
 ck; [[ -n "$M19_OFF_HEX" ]] || fail "argsStore has no .bss offset in kmain.o -- M19's argument block (ADR-0023) is missing"

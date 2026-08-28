@@ -35,9 +35,10 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 17 | `shmgrant` | `shmSysGrantNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 18 | `shmmap` | `shmSysMapNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 19 | `shmdrop` | `shmSysDropNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
+| 16 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0035 |
 
-**Fifteen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
-so the allocated set is 0-10 and 12-15. **That gap is the registry working, not a bug in it**:
+**Sixteen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
+so the allocated set is 0-10 and 12-16. **That gap is the registry working, not a bug in it**:
 `ioctl` was implemented after `fdwait` was named and took the next free number rather than the next
 number, and M20's three channel calls did the same thing again on the next merge -- they had claimed
 11, 12 and 13 on a branch that forked before this file existed, and moved to 13, 14 and 15 rather
@@ -51,6 +52,15 @@ it away. **13, 14 and 15 have no `oslibc.h` name either, for a different reason*
 channel binding yet. `m20-ipc`'s program declares `SYS_CHANOPEN`/`SYS_CHANSEND`/`SYS_CHANRECV` itself,
 the way it declares `SYS_EXIT` and `SYS_WRITE`, so those numbers live in exactly two places — the
 kernel and that harness — and both are listed here.
+
+**16 has no `oslibc.h` name for the channel's reason and one of its own.** The libc has no pointer
+binding, and D1 (ADR-0042) deliberately did not invent one: a `mouse()` in `oslibc.h` would be a
+public interface to a packed `u64` whose sixteen-bit coordinate fields stop being wide enough the
+moment this kernel can set a mode wider than 800x600 (GAP-0252). `d1-mouse`'s program declares
+`SYS_MOUSE` itself, the way `m20-ipc`'s declares its three, so the number lives in exactly two
+places — `core/kernel/mouse.dart` and that harness — and both are listed here. When the pointer gets
+a real ring-3 interface it will be an `ioctl` on a device node or a `read` of an event queue
+(`docs/design/display-protocol.md` D2), not a wider version of this.
 
 **Why the channel syscalls are 13, 14, 15 and not 11, 12, 13.** They were 11, 12 and 13 in ADR-0027,
 chosen on a branch that forked from `d4e768c` — before this file existed. This registry landed in

@@ -160,18 +160,30 @@ void kbdInit() {
   vgaUpdateHwCursor();
 }
 
-/// Unmasks IRQ1 (and only IRQ1) on the master PIC; the slave stays fully
-/// masked.
+/// Masks the PIT and unmasks the keyboard, LEAVING EVERY OTHER LINE ALONE.
 ///
-/// Mask byte 0xFD = every line masked except bit 1. The PIT (IRQ0) stays
-/// MASKED deliberately: `kmain()` masked it before M1's deliberate fault so a
-/// tick could not interleave output into the middle of a diagnostic, and
-/// re-enabling it here would restart a 100 Hz interrupt that has nothing left
-/// to do and would only add jitter to the console.
+/// The PIT (IRQ0) stays MASKED deliberately: `kmain()` masked it before M1's
+/// deliberate fault so a tick could not interleave output into the middle of a
+/// diagnostic, and re-enabling it here would restart a 100 Hz interrupt that
+/// has nothing left to do and would only add jitter to the console.
+///
+/// **D1 (ADR-0042) CHANGED HOW, NOT WHAT.** This used to be
+/// `outb(0x21, 0xFD); outb(0xA1, 0xFF)` -- two WHOLE-BYTE writes, which
+/// re-masked every line they did not name and re-masked the entire slave PIC
+/// every time. `docs/design/display-protocol.md` s4.4 identified that as a
+/// cross-cutting blocker on every interrupt-driven device this OS will ever
+/// have: an IRQ12 unmasked at boot survived until the next `ticks` command and
+/// then stopped, silently, with no diagnostic anywhere. It is now two
+/// read-modify-writes of one bit each ([picMaskLine]/[picUnmaskLine] in
+/// mouse.dart), so IRQ2 and IRQ12 come through this function unchanged.
+///
+/// **The port traffic it produces with no mouse present is identical to what it
+/// always produced**: from a mask of 0xFE this still leaves the master at 0xFD,
+/// which is why no earlier milestone's behaviour moves.
 @bare
 void picUnmaskKeyboardOnly() {
-  Port.outb(u16(picMasterData), u8(0xFD));
-  Port.outb(u16(picSlaveData), u8(0xFF));
+  picMaskLine(u64(0));
+  picUnmaskLine(u64(1));
 }
 
 /// Unmasks IRQ0 (the PIT) as well as IRQ1. Mask byte 0xFC = bits 0 and 1
@@ -185,10 +197,15 @@ void picUnmaskKeyboardOnly() {
 /// with it masked at rest, the tick counter holds still, which is what lets
 /// `ticks` print a value a byte-exact golden can assert. See
 /// docs/known-gaps.md GAP-0058.
+/// D1 (ADR-0042): two read-modify-writes rather than two whole-byte writes,
+/// for [picUnmaskKeyboardOnly]'s reason exactly. With no mouse present it still
+/// takes a master mask of 0xFD to 0xFC, so `ticks` behaves as it always has;
+/// with one present, IRQ12 SURVIVES a `ticks` command, which before this it did
+/// not.
 @bare
 void picUnmaskTimerAndKeyboard() {
-  Port.outb(u16(picMasterData), u8(0xFC));
-  Port.outb(u16(picSlaveData), u8(0xFF));
+  picUnmaskLine(u64(0));
+  picUnmaskLine(u64(1));
 }
 
 /// Handles one IRQ1: read the scancode, translate it, hand it to the line
