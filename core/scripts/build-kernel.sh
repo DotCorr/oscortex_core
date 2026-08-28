@@ -41,6 +41,53 @@ DCDART_HOME="${DCDART_HOME:-$REPO_DIR/../DCDart}"
 # below.
 command -v dart >/dev/null 2>&1 || setup_error "dart not found on PATH (source env.sh)"
 
+# ---------------------------------------------------------------------------
+# SAY WHICH COMPILER THIS IS. (M21, GAP-0242.)
+#
+# `DCDART_PIN.txt` exists to record the DCDart commit this kernel is verified
+# against. Until now the ONLY thing that checked it was `m7-frames`, which
+# compares the FILE against a LITERAL IN A SHELL SCRIPT -- so the pin could
+# only ever catch somebody editing one of two files, and never noticed what the
+# build actually used. M21 was built and verified end-to-end against a commit
+# two past the pin, in a working tree another agent was editing at the time,
+# and nothing anywhere said so.
+#
+# So the identity of the compiler is now PRINTED ON EVERY BUILD and lands in
+# every harness log. Three facts, because all three can differ independently:
+# where the toolchain is, what commit it is on, and whether that commit is what
+# is actually on disk (a dirty tree is NOT the commit it claims to be, which is
+# the case a hash alone cannot catch).
+#
+# A MISMATCH IS A WARNING, NOT A FAILURE, AND THAT IS DELIBERATE FOR NOW: the
+# pin is currently behind the only toolchain on this machine that can build the
+# kernel at all, so failing here would take all 24 harnesses red for a reason
+# that is not theirs. Set OSCORTEX_REQUIRE_PIN=1 to make it fatal -- and that
+# should become the default the moment the pin and the toolchain agree.
+DCDART_DESC="(not a git checkout)"
+DCDART_DIRTY=""
+if command -v git >/dev/null 2>&1 && git -C "$DCDART_HOME" rev-parse --git-dir >/dev/null 2>&1; then
+  DCDART_DESC="$(git -C "$DCDART_HOME" rev-parse --short HEAD 2>/dev/null)"
+  if [[ -n "$(git -C "$DCDART_HOME" status --porcelain 2>/dev/null)" ]]; then
+    DCDART_DIRTY=" +DIRTY"
+  fi
+fi
+PIN_FILE="$REPO_DIR/DCDART_PIN.txt"
+PIN_WANT="(no DCDART_PIN.txt)"
+[[ -f "$PIN_FILE" ]] && PIN_WANT="$(awk '{print $1; exit}' "$PIN_FILE")"
+echo "build-kernel: toolchain $DCDART_HOME @ ${DCDART_DESC}${DCDART_DIRTY}; DCDART_PIN.txt says $PIN_WANT"
+if [[ "$DCDART_DESC" != "$PIN_WANT"* && "$PIN_WANT" != "(no DCDART_PIN.txt)" ]]; then
+  echo "build-kernel: WARNING — the toolchain is NOT the pinned commit. This kernel is being built" >&2
+  echo "              against $DCDART_DESC and DCDART_PIN.txt claims $PIN_WANT. Either bump the pin" >&2
+  echo "              deliberately after a green sweep, or point DCDART_HOME at the pinned commit." >&2
+  [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]] && setup_error "toolchain $DCDART_DESC != pinned $PIN_WANT (OSCORTEX_REQUIRE_PIN=1)"
+fi
+if [[ -n "$DCDART_DIRTY" ]]; then
+  echo "build-kernel: WARNING — the toolchain working tree is DIRTY, so '$DCDART_DESC' does not identify it." >&2
+  echo "              A build that picks up somebody's in-flight compiler change can move every" >&2
+  echo "              byte-exact golden in this suite for a reason no commit in THIS repo explains." >&2
+  [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]] && setup_error "toolchain working tree is dirty (OSCORTEX_REQUIRE_PIN=1)"
+fi
+
 if ! command -v clang >/dev/null 2>&1; then
   setup_error "clang not found on PATH"
 fi

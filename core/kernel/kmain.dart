@@ -86,6 +86,28 @@ part 'chan.dart';
 // harness that subtracts it.
 part 'ioctl.dart';
 
+// M21 (ADR-0041) -- shared memory regions and capability transfer.
+//
+// **LAST, AND S0's BLOCK YIELDS THE POSITION IT HELD.** ADR-0033 s6.4 stated
+// the rule this file is the third instance of: "last is necessary but not
+// sufficient" -- the block that WAS last has a to-the-end measurement of its
+// own, and a new block after it changes exactly that one. So S0's
+// measured 512 becomes 4800 in every harness that subtracts it, exactly as M20's
+// block went from 2624 to 3136 when `ioctl.dart` landed behind it.
+//
+// (M20's block is referred to by MILESTONE and not by NAME on purpose:
+// `m20-ipc/run.sh` greps `core/kernel/` for that symbol and requires `chan.dart`
+// to be the only file that says it, which is ADR-0011 s0's seam discipline made
+// mechanical. The same rule applies to this block's own name, which is why the
+// paragraph above does not spell it either.)
+//
+// ADR-0031 s4.3 rule 5's REASON -- that no EARLIER block's arithmetic should
+// move -- is unchanged by this: the bounce buffer is still after every block
+// that existed when that rule was written, and this block is after it.
+// `m21-shmem/run.sh` and `drm-abi/run.sh` both read `core/build/kernel.map` and
+// check the ordering rather than trusting this comment.
+part 'shm.dart';
+
 /// Kernel entry point.
 ///
 /// [mbInfo] is the Multiboot1 information-structure pointer the loader left
@@ -276,6 +298,7 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   chanInit();
+  shmInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

@@ -254,6 +254,35 @@ const int procSlotPreempts = 20;
 /// that the switches it performed were not asked for.
 const int procSlotYields = 21;
 
+/// M21: physical frame of this slot's SHARED-REGION page table (`PD[129]`), or
+/// 0 if it has never mapped a shared region.
+///
+/// Allocated lazily by `shmEnsureTable` on the first `shmcreate`/`shmmap` this
+/// process performs, so a program that never touches shared memory is not
+/// charged a frame for a table it will not use. Remembered here rather than
+/// recovered from the page directory for one reason `procSpaceFree` cares
+/// about: it is freed on a path that has already cleared `PD[129]`, and a
+/// teardown that had to walk a directory it has just emptied would find
+/// nothing. `procSpaceFree` still recovers the PAGES from the table itself,
+/// which is the invariant that matters (the tables are what the CPU obeys).
+const int procSlotShmPt = 22;
+
+/// M21: first of [shmCapsPerProc] SHARED-REGION CAPABILITY words — 24..27.
+///
+/// **This is where "a capability cannot be forged" is actually true, and the
+/// reason is the address of this table rather than the contents of a handle.**
+/// The table lives inside the process slot, which is reached only through
+/// `procGet(procCurrent(), ...)` — the scheduler's own state, which no syscall
+/// argument reaches (`chanCallerId`'s discipline, ADR-0027 §4 item 1). A
+/// ring-3 handle names an INDEX INTO THE CALLER'S OWN TABLE, so guessing one
+/// can only ever reach a capability the kernel itself installed there. See
+/// ADR-0041 §4.
+///
+/// Word layout is `shm.dart`'s [shmCapPack]; the words are zero for "no
+/// capability", which is what `procSlotWipe` leaves behind and what a slot
+/// reused by a later process therefore starts with.
+const int procSlotShmCaps = 24;
+
 /// First word of the saved 22-word interrupt frame.
 const int procSlotSaved = 32;
 
@@ -1305,6 +1334,14 @@ u64 procSpaceBuild(u64 s) {
   vmSetEntry(pml4, u64(0), pdpt | pwu);
   vmSetEntry(pdpt, u64(0), pd | pwu);
   vmSetEntry(pd, u64(vmProgPdIndex), u64(0));
+  // M21: and the SHARED-REGION window, for exactly the same reason one line up.
+  // The 512 entries above were copied from the kernel's page directory by value,
+  // and if a previous boot-time or kernel mapping had ever installed `PD[129]`
+  // this process would INHERIT it -- a brand-new address space silently able to
+  // reach another process's shared region. `docs/design/memory.md` §1.3's own
+  // warning, and it costs one line to be structurally impossible instead of
+  // merely unlikely. `m21-shmem/run.sh` asserts both clears are present.
+  vmSetEntry(pd, u64(vmShmPdIndex), u64(0));
   return u64(procErrOk);
 }
 
@@ -1345,6 +1382,48 @@ u64 procSpaceFree(u64 s) {
         freed = freed + u64(1);
       }
     }
+    // M21: THE SHARED-REGION WINDOW, torn down the same way and counted the
+    // same way -- with one difference that is the entire point of the
+    // milestone.
+    //
+    // The leaves here point at frames a REGION owns, not frames this process
+    // owns, and a peer may still be reading them. They are still handed to
+    // `freeFrame`, deliberately: `freeFrame` consults `shmFrameShared` and
+    // gives a region's frame back to the region rather than to the allocator
+    // (`docs/design/memory.md` §2.2 -- the guard belongs at the top of
+    // `freeFrame` and nowhere else, because five teardown paths funnel through
+    // it and putting it in this function would miss the other four). So this
+    // loop is written exactly as the one above it, and the frames it must not
+    // release are the ones it does not count.
+    final u64 se = vmGetEntry(pd, u64(vmShmPdIndex));
+    if ((se & u64(vmPresent)) > u64(0)) {
+      final u64 spt = vmEntryAddr(se);
+      u64 j = u64(0);
+      while (j < u64(vmEntries)) {
+        final u64 sle = vmGetEntry(spt, j);
+        if ((sle & u64(vmPresent)) > u64(0)) {
+          final u64 pa = vmEntryAddr(sle);
+          // Asked BEFORE the call, because the call is what may clear the bit.
+          // This is the one place the count and the guard have to agree: a
+          // frame the guard RETAINS was not given back, and `procSpaceFree`'s
+          // contract is "frames actually given back" (`docs/design/memory.md`
+          // §2.3). Counting a retained frame would make the free-count bracket
+          // nine harnesses assert come out right for the wrong reason.
+          final u64 shared = shmFrameShared(pa);
+          if (freeFrame(pa) == u64(pmmFreeOk)) {
+            if (shared < u64(1)) {
+              freed = freed + u64(1);
+            }
+          }
+        }
+        j = j + u64(1);
+      }
+      vmSetEntry(pd, u64(vmShmPdIndex), u64(0));
+      // The TABLE, by contrast, is this process's own and is always freed.
+      if (freeFrame(spt) == u64(pmmFreeOk)) {
+        freed = freed + u64(1);
+      }
+    }
     if (freeFrame(pd) == u64(pmmFreeOk)) {
       freed = freed + u64(1);
     }
@@ -1365,11 +1444,43 @@ u64 procSpaceFree(u64 s) {
   procSet(s, u64(procSlotPdpt), u64(0));
   procSet(s, u64(procSlotPd), u64(0));
   procSet(s, u64(procSlotPt), u64(0));
+  procSet(s, u64(procSlotShmPt), u64(0));
   procSet(s, u64(procSlotPages), u64(0));
   // M12: the heap's pages were present leaves in the page table this function
   // just walked, so they have ALREADY gone back. This clears the bookkeeping.
   heapReset(s);
   return freed;
+}
+
+/// The slot index holding the LIVE process whose id is [id], or
+/// [procMax] if there is none.
+///
+/// **[procMax] rather than 0 for "not found", because 0 is a valid slot.** The
+/// caller tests `>= procMax`, which is the same shape `chanOwnerWord`'s callers
+/// use and cannot be confused with a result.
+///
+/// Ids are monotonic (`procHeadCreated`) and slots are reused, which is exactly
+/// why M21 stores a capability's owner as a SLOT and its authority check as an
+/// id: `shmgrant` is handed a peer id by `chanPeerId` and has to reach that
+/// process's capability table, and the only honest way to do that is to find
+/// the slot that currently holds that id. A dead process's id matches nothing,
+/// so a grant to a peer that has exited refuses rather than writing into
+/// whatever took its slot.
+@bare
+u64 procSlotOfId(u64 id) {
+  if (id < u64(1)) {
+    return u64(procMax);
+  }
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (procGet(s, u64(procSlotState)) != u64(procStateFree)) {
+      if (procGet(s, u64(procSlotId)) == id) {
+        return s;
+      }
+    }
+    s = s + u64(1);
+  }
+  return u64(procMax);
 }
 
 /// Physical address of slot [s]'s window page table, read out of its OWN page
@@ -1780,6 +1891,21 @@ void procCleanup(u64 s) {
   // handles the load-refusal path, where this slot's ID word is still the
   // previous occupant's or has never been written at all.
   chanReleaseOwner(procGet(s, u64(procSlotId)));
+  // M21: and this slot's SHARED-REGION CAPABILITIES, here for the third time
+  // for the same reason and with one difference worth stating.
+  //
+  // By SLOT rather than by id, unlike the line above it, because a capability
+  // table IS slot storage (`procSlotShmCaps`) rather than a record keyed by
+  // owner -- so "release what this slot holds" is the literal operation, and
+  // there is no window in which an id lookup could find the wrong slot.
+  //
+  // AFTER `procSpaceFree`, deliberately: the mappings are already gone, so this
+  // has only to drop the capabilities and the reference counts they stood for.
+  // A region whose last capability this releases is destroyed here, and THAT is
+  // where its frames actually go back to the allocator -- which is why the free
+  // count is asserted across the LAST exit rather than each one
+  // (`docs/design/memory.md` §2.3, ADR-0041 §5).
+  shmReleaseOwner(s);
   procSet(s, u64(procSlotState), u64(procStateFree));
   uartWrite(Rodata.addressOf(procStrKill), u64(15));
   uartPutHex(s, u64(2));

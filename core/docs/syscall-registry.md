@@ -31,6 +31,10 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 13 | `chanopen` | `chanSysOpenNo` | `core/kernel/chan.dart` | *(none)* | 0027 |
 | 14 | `chansend` | `chanSysSendNo` | `core/kernel/chan.dart` | *(none)* | 0027 |
 | 15 | `chanrecv` | `chanSysRecvNo` | `core/kernel/chan.dart` | *(none)* | 0027 |
+| 16 | `shmcreate` | `shmSysCreateNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
+| 17 | `shmgrant` | `shmSysGrantNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
+| 18 | `shmmap` | `shmSysMapNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
+| 19 | `shmdrop` | `shmSysDropNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 
 **Fifteen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
 so the allocated set is 0-10 and 12-15. **That gap is the registry working, not a bug in it**:

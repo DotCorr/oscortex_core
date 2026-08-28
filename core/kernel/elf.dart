@@ -1539,12 +1539,27 @@ void elfTeardown() {
 /// So every page the range touches is checked against the LIVE tables for the
 /// user bit. The bound on [ptr] comes first, before any arithmetic on it, for
 /// `userOwns`' exact reason (ADR-0013 §5).
+///
+/// **M21 moved the upper bound from [vmProgEnd] to [vmUserEnd], and the ONLY
+/// reason that is safe is the per-page walk below.** Ring 3 can now reach a
+/// second window, `[vmShmBase, vmShmEnd)`, and between the load region and it
+/// there is nothing -- a 512-page span that is mapped only where a shared
+/// region has been mapped in. A validator that tested lo/hi would now accept
+/// every address in that span and the kernel would fault dereferencing one.
+/// This one asks [vmEffective] about every page, so an unmapped page in the new
+/// span is refused exactly as an unmapped page in the load region's gaps
+/// already was. That is the property M16's mutation round established
+/// (GAP-0124) -- the two mutations that survived a lo/hi test and died against
+/// the walk were "a page inside the window that is not mapped" and "a range
+/// whose first page is mapped and whose second is not", which is precisely this
+/// case -- and `m21-shmem/run.sh` re-reads all six validator bodies and fails
+/// if any one of them stops walking.
 @bare
 u64 elfOwns(u64 ptr, u64 len) {
   if (ptr < u64(vmProgBase)) {
     return u64(0);
   }
-  if (ptr >= u64(vmProgEnd)) {
+  if (ptr >= u64(vmUserEnd)) {
     return u64(0);
   }
   if (len < u64(1)) {
@@ -1553,7 +1568,7 @@ u64 elfOwns(u64 ptr, u64 len) {
   if (len > u64(userWriteMax)) {
     return u64(0);
   }
-  if ((ptr + len) > u64(vmProgEnd)) {
+  if ((ptr + len) > u64(vmUserEnd)) {
     return u64(0);
   }
   u64 a = ptr & u64(0xFFFFFFFFFFFFF000);

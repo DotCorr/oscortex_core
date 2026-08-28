@@ -74,7 +74,7 @@ and the two open ones are real, un-started work correctly scoped out of M0.
 
 **Domain:** kernel (blocked on DCDart repo changes, not this repo's to fix directly)
 **Status:** LARGELY RESOLVED — bitwise operators (DCDart ADR-0030), the complete integer operator set
-including `u8 operator <` (ADR-0035), explicit width conversions (ADR-0037), extern FFI (ADR-0038) and
+including `u8 operator <` (ADR-0041), explicit width conversions (ADR-0037), extern FFI (ADR-0038) and
 no-red-zone on freestanding targets (ADR-0039) have all landed and are all in use here. `@naked`,
 general inline `asm()`, and `@interrupt` enforcement remain unstarted — and M1 shipping without them
 is the evidence that the first two were never actually required. Tracked here so it's visible from
@@ -641,13 +641,23 @@ M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, �
 14048 + 64 (M18's scheduler header, ADR-0022) = **14112 at M18**, + 256 (`argsStore`, ADR-0023) =
 **14368 at M19**, + 2624 (`chanStore`, ADR-0027 — eight global counter words and two 1280-byte channel
 port records) = **16992 at M20**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte
-`ioctl` bounce buffer) = **17504 at S0**. **`ioctlStore` is the LAST block** in `kmain.o`'s `.bss`,
-and `chanStore` is the one immediately before it. `m19-argv` asserts that `ioctlStore` ends exactly
-at the end of the section, that `chanStore` ends where `ioctlStore` begins, and that nothing sits
-between `argsStore` and `chanStore` — the same convention M14, M15, M16 and M19 each followed in
-turn, so that every earlier harness's "the donated bytes from MY block to the end of `.bss`" keeps
-meaning what it meant when it was written, by subtracting each later milestone's block first. Twelve
-harnesses subtract `ioctlStore` first and `chanStore` second.
+`ioctl` bounce buffer) = **17504 at S0**, + 4352 (`shmStore`, ADR-0041 — 16 global counter words,
+two 64-byte shared-region records and a 4096-byte one-bit-per-frame plane) = **21856 at M21**.
+**`shmStore` is the LAST block** in `kmain.o`'s `.bss`, `ioctlStore` is the one immediately before it,
+and `chanStore` before that. `m19-argv` asserts that `shmStore` ends exactly at the end of the
+section, that `ioctlStore` ends where `shmStore` begins, that `chanStore` ends where `ioctlStore`
+begins, and that nothing sits between `argsStore` and `chanStore` — the same convention M14, M15,
+M16, M19 and S0 each followed in turn, so that every earlier harness's "the donated bytes from MY
+block to the end of `.bss`" keeps meaning what it meant when it was written, by subtracting each
+later milestone's block first. Twelve harnesses subtract `shmStore` first, `ioctlStore` second and
+`chanStore` third.
+
+**M21 is the third instance of ADR-0033 §6.4's correction and it went exactly as that correction
+predicts.** ADR-0031 §4.3 rule 5 said putting a block last leaves "every existing harness's 'bytes
+from my block to the end' arithmetic unchanged"; last is necessary but not sufficient, and the block
+that WAS last has a to-the-end measurement of its own. `ioctlStore`'s number did not change here only
+because twelve harnesses measure it to `shmStore`'s START rather than to the end of the section —
+which is the fix ADR-0033 put in, working.
 
 **14368 at M19**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte `ioctl` bounce
 buffer) = **14880 at S0**. **`ioctlStore` is now the LAST block** in `kmain.o`'s `.bss`, and
@@ -3008,12 +3018,22 @@ vagueness starts.
 3. ~~**There is no way for one process to affect another.** No signals, no kill, no shared memory, no
    pipe, no message. The only interaction two processes have is that yielding lets the other one run.~~
    **NARROWED at M20 (ADR-0027).** There is now a **message**: `chanopen`/`chansend`/`chanrecv`
-   (syscalls 11-13) give two processes a two-endpoint channel with a bounded ring in each direction,
+   (syscalls 13-15) give two processes a two-endpoint channel with a bounded ring in each direction,
    carrying messages of at most 64 bytes, verified by `tests/conformance/m20-ipc/run.sh` — two
    processes in two address spaces exchanging sixteen messages and each exiting with a hash of the
-   bytes it received. **Still true:** no signals, no kill, no shared memory and no pipe. A message is
-   opaque bytes and cannot convey authority (GAP-0161), so one process still cannot make another *do*
-   anything — it can only tell it something the other has chosen to listen for.
+   bytes it received.
+   **NARROWED AGAIN at M21 (ADR-0041).** There is now **shared memory and a capability that can be
+   handed to a peer**: `shmcreate`/`shmgrant`/`shmmap`/`shmdrop` (syscalls 16-19), verified by
+   `tests/conformance/m21-shmem/run.sh` — two processes in two address spaces mapping one set of
+   physical frames, read-write to the creator and read-only to the grantee, with the reader exiting
+   on a hash of the 16384 bytes it read through the mapping. **Still true:** no signals, no kill and
+   no pipe. A message is still opaque bytes and still cannot convey authority (GAP-0201, now closed
+   the other way — the AUTHORITY moved to a syscall and the message kept carrying only a NAME).
+
+   *(This item cited GAP-0161 for "a message cannot convey authority" until M21. GAP-0161 is the DRM
+   ABI's per-driver ioctl range; the gap meant is **GAP-0201**. Corrected here rather than left,
+   because a wrong cross-reference in a narrowing note is how a closed gap gets re-opened against the
+   wrong entry.)*
 4. **`exit` status goes nowhere.** It is printed and kept in the slot for `proc` to show. No process
    can collect another's, because there is no `wait` and no parent.
 5. **The stack is one page and it does not grow.** A process gets exactly the page at
@@ -7163,7 +7183,28 @@ than hang, which is `procBudgetEnd`'s existing shape.
 ## GAP-0201 — A message cannot convey authority
 
 **Domain:** kernel, IPC (M20)
-**Status:** OPEN — the boundary of M20, and a prerequisite for the shared-frame milestone.
+**Status:** **CLOSED at M21 (ADR-0041)** — and closed the way this entry recommended, which is worth
+saying because the recommendation was the load-bearing part.
+
+**What was built.** `shmgrant(ep, h)` is the fourth syscall this entry proposed: the kernel
+interprets it, installs a READ-ONLY capability in the peer's own capability table, and returns the
+handle THAT process will use. The message stayed opaque — `chan.dart` is unchanged apart from one
+read-only accessor, `chanPeerId`, which names the peer and touches no ring. So "a message is bytes and
+cannot convey authority" is **still true**, and it is now true *and sufficient*: the descriptor
+carries the NAME, the grant carried the AUTHORITY, and a forged name reaches nothing because a handle
+is an index into the caller's own table (ADR-0041 §4).
+
+The alternative this entry named — messages growing a typed header the kernel parses — was not taken,
+for the reason given here: it would have made `chan.dart` interpret its payload, and every argument in
+ADR-0027 §2.3 for the ring being opaque would have had to be re-made.
+
+Verified by `tests/conformance/m21-shmem/run.sh`, which sends a 64-byte frame descriptor down the
+channel and requires the receiving process to map the region it names and hash all 16384 bytes of it.
+
+*(Historical: the original text follows.)*
+
+**Domain:** kernel, IPC (M20)
+**Status:** was OPEN — the boundary of M20, and a prerequisite for the shared-frame milestone.
 
 A message is 64 opaque bytes. The kernel copies them and looks at none, so a message **cannot carry a
 capability, a handle, an endpoint, or a page**. Two processes that share a channel can say things to
@@ -7989,3 +8030,451 @@ recorded as GAP-0262 on `b1-live-console` and being fixed on the DCDart side.
 re-breaks on EVERY code-size change, toolchain or source. Deriving those fields at run time from
 `core/build/kernel.map` (as `m21-shmem/run.sh` already does for ordering) would assert the same
 property without freezing the layout. Left open for the harness owner.
+## GAP-0233 — There is no involuntary revocation, and the two mechanisms it would take
+
+**Domain:** kernel, shared memory (M21, ADR-0041 §7)
+**Status:** OPEN — a stated design boundary, not a defect. `shmdrop` releases the CALLER'S OWN
+capability; a grantor cannot take one back from a grantee.
+
+**Why it is not simply missing.** Revoking a capability in another address space means unmapping
+pages in page tables the kernel can reach **only while that process's CR3 is loaded**. Every mapping
+function in `vm.dart` walks from CR3 (`vmProgPd` → `vmLivePml4` → `cr3_read`) and that is
+deliberate — M11's design note says the loader runs with the target's CR3 already in the register.
+
+**The two mechanisms, priced.**
+
+1. **A cross-address-space unmap**, the `procPtOf(s)` shape: edit the victim slot's tables directly
+   through `vmSetEntry`. It is correct on one core *because a CR3 write on the next switch flushes
+   everything and this kernel never enables PGE* — `procSpaceFree`'s comment says so explicitly. It is
+   **wrong on two cores** without a TLB shootdown, which needs an IPI, which needs an APIC this
+   kernel does not program. It also bypasses `vmShmMap`'s NX-always and busy checks, so the W^X
+   argument would have to be re-made at a second site.
+2. **A deferred revoke**: a flag on the victim's slot, checked at the next `procSwitchTo`. Cheap and
+   correct on one core, and it puts a new field and a new step in the scheduler's hot path — surgery
+   on `proc.dart` that M21 would then be shipping untested.
+
+**What is NOT missing, and the distinction matters.** The part of revocation that is load-bearing for
+*safety* is present: a capability dies with its holder on the fault path as well as the exit path
+(`procCleanup`), and a handle to a dead region is refused by generation (`shmRetStale`) rather than
+dangling. What is absent is revocation as a *policy* tool — "I have changed my mind about you".
+
+**Who needs it.** Not the client this exists for: a compositor revokes by asking the client to drop,
+or by outliving it. It becomes real the day a region is granted to something untrusted that will not
+cooperate.
+
+---
+
+## GAP-0234 — A capability names a whole region and maps it whole
+
+**Domain:** kernel, shared memory (M21)
+**Status:** OPEN — a scope boundary.
+
+There is no partial map, no offset map and no resize. `shmmap` maps every page of the region at the
+region's own address, and `shmdrop` unmaps all of them. A client that wants to share one tile of a
+surface shares a region that is one tile.
+
+**Cost:** a compositor with many small surfaces needs many regions, and `shmMax` is 2 (GAP-0237). The
+frame-vector page already indexes pages individually, so a partial map is a bounded change to
+`shmMapPages`/`shmUnmapPages` and a wider capability word — not a redesign.
+
+---
+
+## GAP-0235 — No file backing, no `MAP_FIXED`, no `mprotect`, no demand paging
+
+**Domain:** kernel, shared memory (M21)
+**Status:** OPEN — recorded so it is not inferred from the word "shared memory".
+
+A region is anonymous, eagerly allocated and eagerly mapped. There is no page cache to back a file
+with (`docs/design/memory.md` §2.5 declined `mmap` for this reason and ADR-0016 §1 declined it once
+before for `sbrk`). Addresses are chosen by the kernel and a caller cannot propose one. Permissions
+are fixed at map time: there is no `mprotect`, so a creator cannot downgrade itself to read-only after
+publishing, which is the one of these four a compositor client might actually want.
+
+---
+
+## GAP-0236 — There is no atomicity across a shared region, and no atomic would give one
+
+**Domain:** kernel, shared memory, concurrency (M21, ADR-0041 §6)
+**Status:** OPEN — the honest boundary of the one-writer design, and **the place a single-core
+assumption stops being safe first**.
+
+**This is deliberately NOT filed as "the same as GAP-0205".** GAP-0205 records that `chan.dart` runs
+with `IF` clear on one core and that its ring is therefore a critical section by construction. That
+argument covers M21's **metadata** — `shmStore`, capability words, page-table entries — which is
+touched only inside syscalls, and DCDart's atomics (its ADR-0055/0056) are deliberately not used
+there for GAP-0205's exact reason: on one core with `IF` clear they are pure cost and would disguise
+the dependency rather than remove it. On the day this kernel has two cores, `shmRegRefs` is the one
+word here that needs a real atomic — `shmgrant` increments it and `shmdrop`/`shmReleaseOwner`
+decrement it, which is a genuine multi-writer counter and the only one.
+
+**It does not cover region CONTENTS, and that is the gap.** A channel's data is only ever touched by
+the kernel with `IF` clear; a region's data is touched by **ring 3, with no syscall involved at all**.
+Two things make that survivable today:
+
+* **exactly one writer, by construction.** `shmgrant` conveys read-only and takes no permission
+  argument, and `shmmap` refuses to widen a read-only capability. There is no writer-writer race in
+  this design on any number of cores;
+* `proc coop` does not preempt, so the harness's interleaving is exactly the two programs' yields.
+
+**What remains is real:** under M18's preemption a reader can be scheduled in the middle of the
+writer's update and observe a **half-written region**. `m21-shmem` cannot demonstrate it, because it
+runs under `proc coop`.
+
+**No atomic fixes this and adding one would be worse than useless.** The unit of tearing is a frame or
+a whole buffer, not a word; a `lock cmpxchgq` on one `u64` of a 16 KB update buys nothing and
+advertises a guarantee that does not exist. The answer is a **sequence number the writer bumps last
+and the reader re-reads after copying**, or double buffering — both of which live in the client's
+protocol, above this primitive. Closing this gap means writing that protocol down and testing it under
+`proc run` rather than `proc coop`.
+
+---
+
+## GAP-0237 — A region is capped at 256 pages, and a full-screen frame is 469
+
+**Domain:** kernel, shared memory (M21, ADR-0041 §7.1)
+**Status:** OPEN — a configuration choice with the numbers attached, and the one number a compositor
+will hit first.
+
+The shared **window** is 512 pages (2 MiB, one page-directory entry) and was sized so that an
+800×600×32 frame — **1,920,000 bytes = 469 pages** — fits in it with 43 to spare. The **slotting** is
+what caps a region: `shmMax = 2` regions of `shmSlotPages = 256`, so `shmMaxPages` is 256 and
+`shmcreate(469)` is refused with `shmRetBadLen`.
+
+**What changing it costs: two constants and nothing else.** `shmMax = 1` / `shmSlotPages = 512` fits a
+full-screen frame today and changes no ABI, no syscall, no structure and no wire format — the harness
+multiplies `shmMax * shmSlotPages` against `vmShmPages` and would keep passing.
+
+**Why M21 did not take it.** Two regions is what two processes need, and a one-region kernel could not
+exercise `shmRetTwice` (the same region granted to the same peer twice) or a second concurrent region
+at all. The test coverage was worth more at this rung than the region size, because nothing in this
+tree yet produces a frame.
+
+**The other way out, for later:** a second page-directory entry. `docs/design/memory.md` §1.1 counts
+383 free contiguous entries above the load region, so the window can grow to 768 MiB without touching
+the page-directory budget. That is a `vmShmLeafSlot` change — §1.2(b) names the table-selection bug it
+would introduce — and it is a milestone, not a constant bump.
+
+---
+
+## GAP-0238 — A write through the read-only mapping is never attempted
+
+**Domain:** conformance, shared memory (M21, ADR-0041 §8.1)
+**Status:** **CLOSED at M21**, in the same unit that opened it, after the first version of this entry
+deferred it. `m21-shmem`'s second boot now performs the store and requires the fault.
+
+**What it does.** A second binary is built from the SAME `prog.c` with `-DM21_ROFAULT` (and
+`build-progs.sh` fails if the two link byte-identical, so a `-D` that stopped taking effect cannot
+silently degrade the test into booting the ordinary binary). Its consumer maps the region read-only,
+reads all 16384 bytes, prints its hash, and then stores one byte at the region base. The harness
+requires:
+
+```
+PF CR2 0000000010200000 ERR 00000007 PRESENT WRITE USER DATA
+USER FAULT VEC 0E ERR 0000000000000007 RIP ... CPL 3
+PROC KILL SLOT ...
+```
+
+and requires the ordering — region read correctly, THEN store announced, THEN fault — so a fault
+raised for some other reason cannot satisfy it.
+
+**It is TWO-SIDED, which is what makes it worth having.** If a grantee were ever mapped writable the
+store SUCCEEDS, the program prints `ROSTORE SURVIVED`, and the harness fails on that line's PRESENCE
+with a message naming the invariant that just died. Verified by mutation: turning the store into a
+load made `ROSTORE SURVIVED` appear and the harness caught it. So neither outcome passes by accident.
+
+**The hash is read out of the TRANSCRIPT on that boot, not out of an exit code**, which is the detail
+that made this awkward in the first place: the faulting process is killed and never reaches `exit`.
+`prog.c` prints the hash before storing, so the boot still proves the region was read correctly
+before the fault — otherwise a fault would prove nothing about what was mapped.
+
+*(Historical: the original text follows.)*
+
+**Status:** was OPEN — the read-only-ness was asserted from the page tables, which is a weaker claim
+than a fault.
+
+`m21-shmem` proves the consumer's mapping is read-only by reading the **live page tables** — the
+kernel walks them through `vmEffective` and prints `W 0 X 0` per page, and the harness requires it.
+It does **not** have the consumer store through the mapping and take a `#PF`.
+
+**Why not.** The store would fault, the kernel would kill the process, and the process would never
+reach its `exit` — so the 64-bit hash of the bytes it read, which is the harness's headline assertion,
+would be lost. The two cannot both be the last thing a process does.
+
+**What closing it takes.** A third boot with a variant payload whose *last* act is the store, with the
+hash carried out some other way — printed and matched from the transcript rather than returned as an
+exit code — and the expected `#PF` at a known CR2 asserted from M4's recovery report. That is the
+shape `m8-paging`'s `vmtest ro` already has for the kernel's own mappings; this would be its ring-3
+twin.
+
+**Why it matters more than it looks.** `W 0` in a page table and "a store actually faults" are the
+same claim only if `CR0.WP` and the ring-3 boundary behave as M8 and M9 established. They do, and
+those are separately tested — but this milestone is the one that introduces a page ring 3 can *reach*
+and must not *write*, so the direct demonstration belongs here eventually.
+
+---
+
+## GAP-0239 — M21's no-process guard is live, reachable, and unreachable from this harness
+
+**Domain:** kernel, shared memory, conformance (M21)
+**Status:** **OPEN — GAP-0214's situation exactly, for a second subsystem.**
+
+`shmSysCreate`, `shmSysGrant`, `shmSysMap` and `shmSysDrop` each begin by asking `shmCallerId()`,
+which returns 0 when `procLive() < 1`, and each refuses such a caller with `shmRetNoProc`. A
+capability table IS process-slot storage, so this is not a formality.
+
+**Nothing the shell can start reaches it.** ADR-0034 unified the launch path so `run <lba>` goes
+through `procCreate`; every ring-3 program therefore has a slot. `m21-shmem` was written with a
+`run <lba>` boot as its no-process control, and that boot was **observed taking the producer path
+instead** — `PROC NEW SLOT 00 ID 00000001`, then `CHAN OPEN`, then `SHM CREATE`. The boot was removed
+and replaced with a structural read.
+
+**THIS IS GAP-0214's CATEGORY AND NOT GAP-0206's**, and the distinction is the same one GAP-0214
+draws. `chanRetCorrupt` is unreachable **by construction** — no state this kernel can enter produces
+it. This guard is **reachable**: an M9-style `user` payload runs with no process slot and would hit
+all four of these lines today. What is missing is a payload that issues `shmcreate`. A live defence
+with nothing proving it works is a worse state than dead-and-known.
+
+**What is asserted now, as the weaker claim it is.** All four syscalls call `shmCallerId()`, all four
+refuse with `shmRetNoProc`, all four do so **before** anything reads `procCurrent()`, and
+`shmCallerId` still returns 0 when `procLive()` is 0. That proves the guard has not been deleted. It
+does not prove it works.
+
+**What closing it takes is the same payload GAP-0214 needs**, and that is the point worth keeping:
+one `user` mode that issues a syscall with no process slot closes GAP-0214 and GAP-0239 together.
+GAP-0214 prices it — `shellStrHelp` grows, three harnesses pin it at 2224 bytes, and eight harnesses'
+goldens move by substitution — and that price is now shared between two entries rather than charged
+to one.
+
+---
+
+## GAP-0240 — Which of `m21-shmem`'s checks are load-bearing, measured by mutation
+
+**Domain:** conformance (M21)
+**Status:** OPEN — the entry GAP-0114 established the shape of and GAP-0120 and GAP-0124 refined,
+written for this milestone's own harness. **A test suite's own coverage is a thing to measure, not to
+assume.**
+
+Four deliberately broken kernels were built and run against the harness. All four were caught, and
+**which check caught each one is the useful output**:
+
+| mutation | caught by | kind |
+|---|---|---|
+| `vmShmMap` sets NX only on read-only pages | the structural read of its body | READING |
+| the `freeFrame` shared-frame guard deleted | the structural read of `freeFrame` | READING |
+| the guard still *called*, but `shmFrameMark` never marks anything | `SHM DEAD … FREED 00000001` instead of 5 | RUNNING |
+| the grantee's mapping made writable | `consumer page 0 is W 1, expected W 0` | RUNNING |
+
+### The finding: the peer-death hash is necessary and NOT sufficient
+
+**The third mutation is the one that taught something.** With nothing marked shared, the producer's
+teardown really did release the region's four frames — a live use-after-free — and **the consumer's
+re-read after peer death still produced the correct hash**, because nothing reallocated those frames
+in the interval between the producer's exit and the consumer's second read.
+
+So the milestone's headline assertion — *the bytes are still right after the creator died* — would
+**not** on its own have caught a kernel with a use-after-free in it. What caught it was the **frame
+accounting**: `PROC KILL … FREED` being 11 rather than 15, and `SHM DEAD … FREED` being 5 rather
+than 1.
+
+**Consequence, and it is a general one.** A retention property cannot be tested only by reading the
+retained data, because a freed-but-not-yet-reused frame reads exactly like a retained one. It has to
+be tested by counting. Any later harness that asserts "X survived Y" should carry both.
+
+### What is checked by READING rather than by running, and is therefore weaker
+
+`vmShmMap`'s signature and NX; `freeFrame`'s guard position and return value; the five pointer
+validators' bodies; `procCleanup`'s release order; `procSpaceBuild`'s two clears; `shmSysGrant`'s
+unconditional read-only; the four no-process guards (GAP-0239); `chanPeerId` touching no ring; and the
+storage seam's call-site count. Each is a grep, and a grep can be satisfied by dead code — which is
+why the mutation round above exists and why its results are written down rather than asserted.
+
+### What is checked by NEITHER
+
+* **A store through the read-only mapping** — GAP-0238.
+* **Any preemptive interleaving of the two processes** — GAP-0236. The harness runs `proc coop`.
+* **`shmRetNoSpace`, `shmRetNoMem`, `shmRetNoCap`, `shmRetNoTable` and `shmRetMapFail` have never
+  executed on a boot.** They are reachable in principle — a third region, a drained allocator, a fifth
+  capability, a failed table install — and no boot in this suite arranges one. `shmRetNoCap` is the
+  cheapest to reach (a process creating five regions) and would be the first to add.
+
+---
+
+## GAP-0241 — Two M21 decisions are flagged for a human, and are shipped rather than blocked
+
+**Domain:** memory model, syscall ABI (M21, ADR-0041 §10)
+**Status:** OPEN — an escalation, recorded here so it is discoverable from the work queue rather than
+only from an ADR nobody re-reads.
+
+`CLAUDE.md`'s escalation rule names one of these by hand: *"memory layout that userland will
+eventually depend on."* M21 makes exactly such a choice, plus one about the syscall ABI's shape. Both
+are implemented and verified — the ladder is blocked without them — and both want confirmation
+before a compositor protocol is written on top, at which point they stop being cheap.
+
+1. **Ring 3 now has two windows**, `[0x10000000, 0x10200000)` for the load region and
+   `[0x10200000, 0x10400000)` for shared regions, with `vmUserEnd` as the reachability bound. A
+   region's address is a function of its SLOT, so it is the same number in every address space —
+   which is the property a frame descriptor's offset depends on, and therefore the property userland
+   will encode. `docs/design/memory.md` §1.3 recommends this shape, but that file is explicitly a
+   proposal ("Status: DESIGN … nothing implemented"), so M21 promoted a proposal to a shipped memory
+   layout on its own authority.
+2. **`shmgrant` is the first syscall in this kernel that changes another process's state.** GAP-0201
+   recommended a grant syscall in as many words, so the substance is not unilateral; the SHAPE is —
+   four syscalls rather than two, a grant that is read-only and cannot be anything else, and a peer
+   named through a channel endpoint rather than by process id.
+
+ADR-0041 §10 has the full statement of each and what specifically to confirm.
+
+---
+
+## GAP-0242 — `DCDART_PIN.txt` is checked against a literal in a harness, never against the toolchain that actually built the kernel
+
+**Domain:** build, conformance
+**Status:** OPEN — **found by M21 the boring way: by noticing its own builds did not use the pinned
+commit and that nothing anywhere objected.**
+
+`DCDART_PIN.txt` exists to record "the DCDart commit this was last verified against" (CLAUDE.md's
+documentation rules). One harness asserts it — `m7-frames`, with `[[ "$PIN" == <literal>* ]]` — and
+that assertion compares **the file against a string in a shell script**. Nothing compares either one
+against the DCDart checkout `build-kernel.sh` actually invokes.
+
+**Measured during M21.** `DCDART_PIN.txt` says `38f0b06`. `build-kernel.sh` resolves
+`DCDART_HOME="${DCDART_HOME:-$REPO_DIR/../DCDart}"`, which for a worktree under
+`.claude/worktrees/<agent>` is `.claude/worktrees/DCDart` — a checkout sitting at **`f9676f2`, two
+commits past the pin**. Every kernel M21 built, and every harness M21 ran, used `f9676f2`. The pin
+file said `38f0b06` throughout and no check noticed, because no check looks.
+
+**Why this is worse than it sounds.** The pin's whole purpose is reproducibility: "this kernel is
+known to work against that compiler". A pin that is verified against a hardcoded string is verified
+against nothing — it can only catch somebody editing one of the two files, which is precisely the
+two-place-edit problem GAP-0232 already records from the other side. GAP-0232 is "the literal went
+stale"; this is "even when the literal is fresh, it is not measuring the toolchain".
+
+**PARTLY CLOSED at M21.** `build-kernel.sh` now prints the toolchain's identity on **every build**,
+so it lands in every harness log:
+
+```
+build-kernel: toolchain /path/to/DCDart @ f9676f2 +DIRTY; DCDART_PIN.txt says 38f0b06
+build-kernel: WARNING — the toolchain is NOT the pinned commit. ...
+build-kernel: WARNING — the toolchain working tree is DIRTY, so 'f9676f2' does not identify it. ...
+```
+
+Three facts because all three vary independently: **where** the toolchain is, **what commit** it is
+on, and **whether that commit is what is actually on disk**. `OSCORTEX_REQUIRE_PIN=1` makes either
+mismatch fatal, and that should become the default the moment the pin and the toolchain agree — it is
+a warning today only because a hard failure would take all 24 harnesses red for a reason that is not
+theirs. `m7-frames`' literal can then go away entirely.
+
+### The harder half, and it is NOT what this entry first assumed
+
+The first version of this entry concluded "the pin is stale". **That is not established, and the
+experiment that would have established it fails for a different reason.** Measured at M21:
+
+| toolchain | result building the same kernel |
+|---|---|
+| `.claude/worktrees/DCDart` @ `f9676f2` **+ uncommitted edits** | **builds** |
+| clean `git worktree` @ `38f0b06` (the pin) | `DccLowerError: no @bare top-level function found in kmain.dart` |
+| clean `git worktree` @ `f9676f2` — **the same commit as the working one** | same error |
+| clean worktree @ `f9676f2` **with the working tree's uncommitted diff applied** | same error |
+
+Each fresh worktree was given the documented setup: the 211 MB vendored frontend copied in as **real
+files** (a symlink is not enough — GAP-0110, dcc resolves library identity through real paths), and
+`dart pub get` run in all six packages so every `.dart_tool` and `pubspec.lock` exists. Package
+resolution was confirmed identical in shape to the working checkout's.
+
+**So the pin is not proven bad; what is proven is worse.** A checkout of the *exact commit that
+works* does not build. The working toolchain therefore depends on local state that **neither repo
+tracks and the documented setup does not reproduce** — `core/frontend/` is gitignored by DCDart's own
+ADR-0005/0007, and whatever else is missing was not found. A commit hash does not currently identify
+a buildable DCDart, which is why `DCDART_PIN.txt` cannot mean what it says no matter how it is
+checked.
+
+**What closing THAT takes** is DCDart's to answer, not this repo's (CLAUDE.md rule 3): either a
+`tools/bootstrap.sh` in DCDart that turns a bare checkout into a working toolchain and is itself
+tested, or a recorded statement of exactly which untracked artifacts are load-bearing. Until then,
+"verified against DCDart X" means "verified against the DCDart working tree that happened to be on
+that machine", and this repo can only do what it now does: say so, loudly, in every build log.
+
+**A caveat that is part of the finding.** `38f0b06` IS an ancestor of `f9676f2`, so nothing built
+during M21 used a compiler older than the pin — the drift is forward, and the two intervening commits
+are DCDart's own optimiser work. That is luck, not a property anything enforced.
+
+### And it is worse than drift: the toolchain is a SHARED MUTABLE WORKING TREE
+
+M21's last verification run failed to build at all, with
+
+```
+../../../DCDart/core/backend/lib/llvm_emit.dart:448:11: Error: The type 'DCInstruction' is not
+exhaustively matched by the switch cases since it doesn't match 'ConstFloat()'.
+```
+
+because another agent was **mid-edit** in the DCDart checkout `build-kernel.sh` resolves to —
+`core/dc-ir/lib/instructions.dart`, `core/backend/lib/llvm_emit.dart` and `core/dc-elide/lib/elide.dart`
+all modified and uncommitted, adding a `ConstFloat` instruction. So the compiler this repo builds with
+is not merely un-pinned, it is a **working tree that other work is actively changing**, and a kernel
+build can therefore fail — or, much worse, SUCCEED DIFFERENTLY — for reasons that have nothing to do
+with the change being tested and leave no trace in this repo.
+
+**Why the "succeed differently" case is the dangerous one.** A build that fails is loud. A build that
+picks up half of somebody's optimiser change and produces a subtly different kernel is silent, and
+every byte-exact golden in this suite would then move for a reason no commit here explains. M21 got
+the loud case and only noticed the shared-tree problem because of it.
+
+**This makes the fix in the previous paragraph load-bearing rather than tidy.** Comparing
+`DCDART_PIN.txt` against `git -C "$DCDART_HOME" rev-parse --short HEAD` is not enough on its own:
+`git -C "$DCDART_HOME" status --porcelain` must also be empty, or the build must say out loud that it
+is using a dirty toolchain. A pin names a commit; a dirty tree is not that commit.
+
+**What M21 did about it, and what it could not do.** Every M21 result was produced with one kernel
+image, `md5 75f8a81216c6585e89db80fa44c62247`, and that was checked rather than assumed: the two
+comment-only edits made after the full sweep were each followed by a successful rebuild and a `cmp`
+against the pre-edit binary, both byte-identical. So the sweep's results and the final tree describe
+the same kernel. What M21 could NOT do is re-run anything after the breakage began, because no clean
+DCDart checkout exists on this machine while that edit is in flight.
+
+---
+
+## GAP-0258 — A harness can fail a sweep on a QMP teardown race and pass alone
+
+**Domain:** conformance, infrastructure
+**Status:** OPEN — one observation, recorded because the next person to see it will otherwise spend
+the morning on a kernel that is fine.
+
+`m8-paging` FAILED in M21's full sweep and PASSED on its own re-run, with the same kernel image, no
+edit in between. The failure was not a golden mismatch — the transcript in the failing run is correct,
+`VM TEXT … W 00 X 11` and all — it was:
+
+```
+qmp-drive: wrote .../screen.txt
+Traceback (most recent call last):
+ConnectionResetError: [Errno 54] Connection reset by peer
+M8-paging: FAIL — qmp-drive.py exited 1 for the session boot.
+```
+
+i.e. QEMU closed the QMP socket while the driver was still talking to it, **after** the driver had
+already written the screenshot and the screen text. Everything the harness asserts had been captured;
+the process died during teardown.
+
+**Not GAP-0150.** That entry is the *launch*-side race — the port `pick-port.py` hands out being taken
+between the probe and QEMU's bind — and `drive_session` already retries on `Address already in use`.
+This is the *teardown* side and the retry does not cover it: the error text is different and the run
+is not retried.
+
+**Seen TWICE, on two different harnesses, which is what makes it a class rather than an anecdote.**
+`m16-filewrite` failed the same way on its negative-control boot — `neg.png` and `neg/screen.txt`
+both written, then `ConnectionResetError` — and passed on a straight re-run with no edit in between.
+
+**The condition it was seen under** is worth writing down because it is the likely cause: three
+agents running QEMU-heavy sweeps concurrently, load average **21**, on 8 cores. Both re-runs that
+passed were done after the other agents finished, at load **2.3**. That is correlation from two
+observations, not a proof, and it is recorded as the former.
+
+**The tell that separates it from a real failure**, and the reason it is cheap to triage: the last
+`qmp-drive:` line before the traceback is always a `wrote …` line. Everything the harness asserts has
+already been captured; only the teardown handshake is lost. A real failure fails a `cmp` or a check,
+and says so.
+
+**What closing it takes.** `drive_session` already knows how to retry a boot; it would need to treat a
+`ConnectionResetError` *after* the captures were written as a retryable launch failure rather than a
+harness failure — or, better, `qmp-drive.py` should tolerate the socket going away once it has
+everything it came for, since at that point there is nothing left to ask QEMU. The second is smaller
+and does not re-run a two-minute boot to fix a one-millisecond race.

@@ -188,16 +188,25 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 17504 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 17504 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 21856 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 21856 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
-# The two later blocks, subtracted NEWEST FIRST, so that every assertion below
+# The three later blocks, subtracted NEWEST FIRST, so that every assertion below
 # means what it meant when M19 wrote it.
+SHM_STORE_SIZE=$(bsssize shmStore)
+ck; [[ "$SHM_STORE_SIZE" == "4352" ]] || fail "shmStore is ${SHM_STORE_SIZE:-missing} bytes, expected 4352 — M21's shared-memory block (ADR-0041)"
+SHM_OFF=$(bssoff shmStore)
+ck; [[ -n "$SHM_OFF" ]] || fail "shmStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$SHM_OFF + SHM_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — M21's block is NOT the last one, and every earlier harness's 'bytes from my block to the end' number has silently moved"
+DART_BSS=$(( DART_BSS - SHM_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - SHM_STORE_SIZE ))
+
 IOCTL_STORE_SIZE=$(bsssize ioctlStore)
 ck; [[ "$IOCTL_STORE_SIZE" == "512" ]] || fail "ioctlStore is ${IOCTL_STORE_SIZE:-missing} bytes, expected 512 (ADR-0033)"
 IOCTL_OFF=$(bssoff ioctlStore)
 ck; [[ -n "$IOCTL_OFF" ]] || fail "ioctlStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "ioctlStore ends at $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — S0's block is NOT the last one, and ADR-0031 §4.3 rule 5 requires the ioctl bounce buffer to be last"
+  || fail "ioctlStore ends at $(( 16#$IOCTL_OFF + IOCTL_STORE_SIZE )) and kmain.o's .bss less M21's shmStore is $DART_BSS bytes — S0's block is not immediately before M21's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
 DART_BSS=$(( DART_BSS - IOCTL_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - IOCTL_STORE_SIZE ))
 
@@ -210,7 +219,7 @@ ck; [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
 DART_BSS=$(( DART_BSS - CHAN_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - CHAN_STORE_SIZE ))
 M19_TOTAL=$KDATA_BSS
-ck; [[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore and ioctlStore is $M19_TOTAL, not M19's 14368 — a later milestone moved storage it does not own"
+ck; [[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore, ioctlStore and shmStore is $M19_TOTAL, not M19's 14368 — a later milestone moved storage it does not own"
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
 ck; [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"

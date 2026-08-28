@@ -811,7 +811,7 @@ u64 fileOwnsWrite(u64 ptr, u64 len) {
   if (ptr < u64(vmProgBase)) {
     return u64(0);
   }
-  if (ptr >= u64(vmProgEnd)) {
+  if (ptr >= u64(vmUserEnd)) {
     return u64(0);
   }
   if (len < u64(1)) {
@@ -820,7 +820,7 @@ u64 fileOwnsWrite(u64 ptr, u64 len) {
   if (len > u64(fileReadMax)) {
     return u64(0);
   }
-  if ((ptr + len) > u64(vmProgEnd)) {
+  if ((ptr + len) > u64(vmUserEnd)) {
     return u64(0);
   }
   u64 a = ptr & u64(0xFFFFFFFFFFFFF000);
@@ -1023,7 +1023,7 @@ u64 fileOwnsRead(u64 ptr, u64 len) {
   if (ptr < u64(vmProgBase)) {
     return u64(0);
   }
-  if (ptr >= u64(vmProgEnd)) {
+  if (ptr >= u64(vmUserEnd)) {
     return u64(0);
   }
   if (len < u64(1)) {
@@ -1032,7 +1032,7 @@ u64 fileOwnsRead(u64 ptr, u64 len) {
   if (len > u64(fileWriteMax)) {
     return u64(0);
   }
-  if ((ptr + len) > u64(vmProgEnd)) {
+  if ((ptr + len) > u64(vmUserEnd)) {
     return u64(0);
   }
   u64 a = ptr & u64(0xFFFFFFFFFFFFF000);

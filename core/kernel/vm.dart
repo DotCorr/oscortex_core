@@ -2293,6 +2293,305 @@ u64 vmProgUnmap(u64 va) {
   return u64(vmProgOk);
 }
 
+// ---------------------------------------------------------------------------
+// M21 -- THE SHARED-REGION WINDOW: A SECOND REGION, NOT A BIGGER ONE.
+//
+// `docs/design/memory.md` §1.3 is the argument and this is the implementation
+// of it. [vmProgEnd] was doing two unrelated jobs -- "top of the loadable
+// region" (the bound `elfCheckPhdr` refuses a segment past, the address the
+// stack sits below, the ceiling `heapTop` is measured down from) and "top of
+// what ring 3 can reach" (the bound every user-pointer validator tests). M21
+// needs the second to move and must not move the first.
+//
+// So the load region keeps its geometry EXACTLY -- program at the bottom, heap
+// to page 510, guard page, stack at 511 -- and everything a shared region needs
+// lives in a SECOND window immediately above it, at page-directory entry 129,
+// which nothing M0-M20 built has ever touched.
+//
+//   [vmProgBase, vmProgEnd)  0x10000000..0x10200000  PD[128]  load region
+//   [vmShmBase,  vmShmEnd)   0x10200000..0x10400000  PD[129]  shared regions
+//   [vmProgBase, vmUserEnd)  0x10000000..0x10400000           what ring 3 can reach
+//
+// WHAT THAT BUYS, AND IT IS THE WHOLE REASON FOR THE SHAPE: `prog.ld` in nine
+// harnesses is unchanged, `heapTop`/`heapTopIndex`/`heapGuardPage`/
+// `heapGuardIndex`/`heapMaxInc` are unchanged (so `m12-heap`'s entire
+// structural block, which multiplies all five back out against this window,
+// keeps passing verbatim), `vmProgStackPage`/`vmProgStackTop` are unchanged,
+// and the 47 golden occurrences of `101FE000`/`101FF000`/`10200000` across nine
+// `expected*.txt` files do not move.
+//
+// ONE PAGE-DIRECTORY ENTRY IS 2 MiB IS 512 PAGES, AND THAT IS NOT AN ARBITRARY
+// SIZE: an 800x600x32 frame is 1,920,000 bytes = 469 pages, so a full-screen
+// compositor frame fits inside ONE such window with 43 pages to spare. The
+// window is sized by what the client this exists for actually needs.
+//
+// A SHARED PAGE IS NEVER EXECUTABLE. [vmShmMap] has no `exec` parameter at all
+// -- not a parameter that is checked, ABSENT -- and unconditionally sets the NX
+// bit. `vmProgMap` refuses W+X because an ELF's `p_flags` can ask for it; here
+// there is no way to ask. A shared executable page is a code-injection channel
+// between two processes, which is W^X undone by exactly the milestone that
+// introduced a second writer, and `shm.dart` refuses the REQUEST by name as
+// well so that ring 3 is told rather than quietly given something else.
+// ---------------------------------------------------------------------------
+
+/// Base of the shared-region window: 258MiB, immediately above [vmProgEnd].
+const int vmShmBase = 0x10200000;
+
+/// One past its end: 260MiB. Exactly one page-directory entry, so exactly one
+/// page table, so [vmShmLeafSlot]'s `& 511` is correct for the same reason
+/// [vmProgLeafSlot]'s is. `docs/design/memory.md` §1.2(b) names the aliasing
+/// bug a multi-table window would introduce; this window has one table and
+/// therefore cannot have it.
+const int vmShmEnd = 0x10400000;
+
+/// Its size and page count. Spelled out rather than computed, for GAP-0077's
+/// reason (`dcc` at `DCDART_PIN.txt`'s commit refuses a `u64` literal built
+/// from a constant expression); `m21-shmem/run.sh` multiplies them against each
+/// other and against [vmShmPdIndex].
+const int vmShmBytes = 2097152;
+const int vmShmPages = 512;
+
+/// Index of this window's entry in the page directory for `[0, 1GiB)`:
+/// `vmShmBase / vmBigBytes` = 129. Entry 128 is the load region; 129..511 were
+/// all zero before M21 (`docs/design/memory.md` §1.1 counts them).
+const int vmShmPdIndex = 129;
+
+/// **One past the last address ring 3 can reach, which is no longer
+/// [vmProgEnd].**
+///
+/// This is the bound every user-pointer validator tests -- `elfOwns`,
+/// `fileOwnsRead`, `fileOwnsWrite`, `userOwns`, `chanOwnsRead`, `chanOwnsWrite`
+/// -- and moving it is what lets a program hand a syscall a pointer INTO a
+/// shared region: `chansend` out of one, `fdwrite` a frame to a file, `read`
+/// into one.
+///
+/// **Widening this bound is safe only because every one of those validators
+/// walks EVERY PAGE of the range through [vmEffective] rather than testing
+/// lo/hi.** That is precisely the property M16's mutation round established
+/// (GAP-0124): the two mutations that survived a lo/hi test and died against
+/// the per-page walk were a source page inside the window that is not mapped,
+/// and a range whose first page is mapped and whose second is not. The
+/// unmapped 512-page hole this constant now spans is that same case, and the
+/// same walk refuses it. If any validator is ever rewritten as a range test,
+/// this constant becomes a hole -- which is why `m21-shmem/run.sh` reads all
+/// six bodies and fails if one stops walking.
+const int vmUserEnd = 0x10400000;
+
+// [vmShmMap] / [vmShmTableInstall] status codes. Distinct from `vmProg*` on
+// purpose: the two windows have different rules (this one has no executable
+// case at all) and a shared status set would let a refusal from one be read as
+// the other's.
+const int vmShmOk = 0;
+const int vmShmNotReady = 1;
+const int vmShmOutside = 2;
+const int vmShmNoTable = 3;
+const int vmShmBusy = 4;
+const int vmShmBadAlign = 5;
+
+/// The page table for the shared-region window in the LIVE address space, or 0.
+///
+/// Reached through [vmProgPd], which walks from CR3 -- so this is the CURRENT
+/// process's table, and a syscall does not switch address spaces. Every mapping
+/// operation in this file edits the address space it is running on; there is no
+/// path here that writes another process's tables, which is why there is no
+/// cross-space TLB problem to solve.
+@bare
+u64 vmShmTable() {
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(0);
+  }
+  final u64 e = vmGetEntry(pd, u64(vmShmPdIndex));
+  if ((e & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  return vmEntryAddr(e);
+}
+
+/// Drops TLB and paging-structure-cache entries for the whole shared window.
+/// [vmProgFlush]'s reason, verbatim: `invlpg` invalidates the cached INTERIOR
+/// entries for the page it names, and the page-directory entry installed and
+/// removed here is exactly such an entry.
+@bare
+void vmShmFlush() {
+  u64 a = u64(vmShmBase);
+  while (a < u64(vmShmEnd)) {
+    tlb_invlpg(a);
+    a = a + u64(vmPageBytes);
+  }
+}
+
+/// Installs [ptFrame] as this window's page table in the live address space.
+///
+/// **Allocated LAZILY, on the first shared mapping a process makes, and that is
+/// a deliberate departure from [vmProgTableInstall].** `docs/design/memory.md`
+/// §1.2(c) argues against lazy allocation for the LOAD window because
+/// `vmProgMap` currently cannot fail for want of memory and its callers do not
+/// roll back for that reason. That argument does not transfer: `shmcreate` and
+/// `shmmap` are syscalls that already return refusals, [shmRetNoMem] is one of
+/// them, and a process that never touches shared memory should not be charged a
+/// frame for a table it will never use.
+///
+/// The page-directory entry gets `present | writable | user` and NO NX, for
+/// ADR-0012 §5's reason: an interior entry is the ABSENCE of a veto, and one
+/// that withheld U or W would make every leaf under it unable to have them.
+/// **The leaf is where a shared page's permissions are decided**, and
+/// [vmShmMap] is the only thing that writes one.
+@bare
+u64 vmShmTableInstall(u64 ptFrame) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  if ((ptFrame & u64(vmPageMask)) > u64(0)) {
+    return u64(vmShmBadAlign);
+  }
+  if (vmShmTable() > u64(0)) {
+    return u64(vmShmBusy);
+  }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  vmZeroFrame(ptFrame);
+  vmSetEntry(pd, u64(vmShmPdIndex),
+      ptFrame | u64(vmPresent) | u64(vmWritable) | u64(vmUser));
+  vmShmFlush();
+  return u64(vmShmOk);
+}
+
+/// Takes this window's page table back out of the live page directory. The
+/// caller still owns the frame and must free it -- [vmProgTableRemove]'s
+/// contract, unchanged.
+@bare
+u64 vmShmTableRemove() {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  vmSetEntry(pd, u64(vmShmPdIndex), u64(0));
+  vmShmFlush();
+  return u64(vmShmOk);
+}
+
+/// Address of the page-table ENTRY for [va], or 0 if [va] is outside this
+/// window or no table is installed.
+@bare
+u64 vmShmLeafSlot(u64 va) {
+  if (va < u64(vmShmBase)) {
+    return u64(0);
+  }
+  if (va >= u64(vmShmEnd)) {
+    return u64(0);
+  }
+  final u64 t = vmShmTable();
+  if (t < u64(1)) {
+    return u64(0);
+  }
+  return t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+}
+
+/// The raw leaf entry for [va], flag bits included, or 0.
+@bare
+u64 vmShmLeaf(u64 va) {
+  final u64 slot = vmShmLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(0);
+  }
+  return Pointer<u64>.fromAddress(slot).value;
+}
+
+/// Maps the frame at physical address [pa] into the shared window at [va],
+/// user-accessible and NEVER executable, with [write] deciding W.
+///
+/// **There is no `exec` parameter and that is the W^X argument in one line.**
+/// [vmProgMap] takes one because an ELF's `p_flags` can ask for X and the
+/// kernel has to have an answer; nothing can ask for it here, so `vmNxBit()` is
+/// unconditional and a shared page that is both writable and executable is not
+/// a state this function can produce. `m21-shmem/run.sh` reads this body and
+/// fails if `vmNxBit()` ever becomes conditional, and walks the guest's real
+/// page tables afterwards to check the bit actually landed.
+///
+/// A page that is already mapped is [vmShmBusy] and is NEVER overwritten:
+/// silently re-pointing a live shared mapping at a different frame would change
+/// what a peer is reading underneath it.
+@bare
+u64 vmShmMap(u64 va, u64 pa, u64 write) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  if ((va & u64(vmPageMask)) > u64(0)) {
+    return u64(vmShmBadAlign);
+  }
+  if ((pa & u64(vmPageMask)) > u64(0)) {
+    return u64(vmShmBadAlign);
+  }
+  if (va < u64(vmShmBase)) {
+    return u64(vmShmOutside);
+  }
+  if (va >= u64(vmShmEnd)) {
+    return u64(vmShmOutside);
+  }
+  final u64 t = vmShmTable();
+  if (t < u64(1)) {
+    return u64(vmShmNoTable);
+  }
+  final u64 slot = t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) > u64(0)) {
+    return u64(vmShmBusy);
+  }
+  // NX unconditionally. See this function's doc comment and the block header.
+  u64 bits = u64(vmPresent) | u64(vmUser) | vmNxBit();
+  if (write > u64(0)) {
+    bits = bits | u64(vmWritable);
+  }
+  Pointer<u64>.fromAddress(slot).value = pa | bits;
+  tlb_invlpg(va);
+  return u64(vmShmOk);
+}
+
+/// Clears the leaf for [va] and invalidates it. [vmProgUnmap]'s contract: the
+/// postcondition is "nothing is mapped here", so an already-empty slot is
+/// [vmShmOk] rather than an error.
+///
+/// **This does NOT free the frame**, and for a shared region that is the whole
+/// point: the frame belongs to the region, not to this mapping. `shmUnmapAll`
+/// gives it back through `freeFrame`, which is where M21's reference count is
+/// consulted.
+@bare
+u64 vmShmUnmap(u64 va) {
+  final u64 slot = vmShmLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmShmOutside);
+  }
+  Pointer<u64>.fromAddress(slot).value = u64(0);
+  tlb_invlpg(va);
+  return u64(vmShmOk);
+}
+
+/// Counts pages mapped user-accessible in the shared window of the LIVE address
+/// space. The reporting twin of [vmCountUser], kept separate so that the load
+/// region's `ELF WINDOW PAGES 00000200` line keeps counting exactly what it has
+/// always counted.
+@bare
+u64 vmShmCountUser() {
+  u64 n = u64(0);
+  u64 a = u64(vmShmBase);
+  while (a < u64(vmShmEnd)) {
+    if ((vmEffective(a) & u64(2)) > u64(0)) {
+      n = n + u64(1);
+    }
+    a = a + u64(vmPageBytes);
+  }
+  return n;
+}
+
 /// 1 if the two bytes at [va] are present in the LIVE page tables, else 0.
 ///
 /// **A safety question asked of the tables rather than of a constant.**
