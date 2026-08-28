@@ -172,7 +172,20 @@ elif [[ -e "$DCDART_LINK" ]]; then
 fi
 ln -s "$DCDART_HOME" "$DCDART_LINK" || setup_error "could not create toolchain symlink $DCDART_LINK -> $DCDART_HOME"
 
-DCC_CMD=(dart "$DCDART_LINK/core/dcc/bin/dcc.dart")
+# ADR-0043 made both sides spell the prelude the same way by running dcc THROUGH
+# the symlink, so that `Platform.script.resolve(...)` landed on the same string
+# kmain.dart imports. That worked, but it worked by coincidence of where dcc.dart
+# happened to be reached from -- an invisible coupling that broke the moment
+# anything invoked dcc by its real path (measured: a clean toolchain clone plus a
+# symlinked spelling produced `no @bare top-level function found`, which reads as
+# a broken compiler and is not one).
+#
+# DCDart b94666a added `dcc build --prelude <path>`. The agreement is now STATED
+# rather than arranged: dcc is invoked at its real location and TOLD which file
+# is the prelude, in exactly the spelling kmain.dart imports. dcc makes the value
+# absolute and lexically normalises it, which is the same normalisation the front
+# end applies to the import, so the two cannot drift apart.
+DCC_CMD=(dart "$DCDART_HOME/core/dcc/bin/dcc.dart")
 PRELUDE_PATH="$DCDART_LINK/core/runtime/dc-core-bare/prelude.dart"
 [[ -f "$PRELUDE_PATH" ]] || setup_error "no prelude at $PRELUDE_PATH (DCDART_HOME=$DCDART_HOME does not look like a DCDart checkout)"
 
@@ -199,7 +212,8 @@ echo "build-kernel:          -> $(cd "$DCDART_HOME" && pwd -P)/core/runtime/dc-c
 # ---------------------------------------------------------------------------
 # Step 1 — dcc build --mode bare kmain.dart -o build/kmain.o
 # ---------------------------------------------------------------------------
-( cd "$KERNEL_DIR" && "${DCC_CMD[@]}" build --mode bare kmain.dart -o "$BUILD_DIR/kmain.o" )
+( cd "$KERNEL_DIR" && "${DCC_CMD[@]}" build --mode bare --prelude "$PRELUDE_PATH" \
+    kmain.dart -o "$BUILD_DIR/kmain.o" )
 DCC_STATUS=$?
 if [[ $DCC_STATUS -ne 0 ]]; then
   fail "'dcc build --mode bare kmain.dart -o kmain.o' exited $DCC_STATUS"

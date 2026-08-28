@@ -446,14 +446,15 @@ echo "STRUCTURAL: pass  pmmInit's compiled code carries the 0x8000-frame bound"
 # the pin is load-bearing for are named so a future bump has to answer to both:
 # nested while-loops (e3cfe18, M7) and `@bss` (8713298, M17).
 PIN=$(awk '{print $1; exit}' "$CORE_DIR/../DCDART_PIN.txt")
-# 38f0b06 SINCE 71cf08f, AND THIS LINE WAS NOT MOVED WITH IT. That commit bumped
-# DCDART_PIN.txt and left the literal here at 8713298, so this harness has been
-# RED on the pristine tree ever since — the only one of the twenty-four that
-# was, and the shakedown found it by running the suite rather than by reading
-# the commit. Recorded in docs/known-gaps.md GAP-0247: a pin assertion that is
-# a literal in one file and a value in another is a two-place edit, and the
-# second place was missed the first time it mattered.
-ck; [[ "$PIN" == 38f0b06* ]] || fail "DCDART_PIN.txt says $PIN; the tree is built against 38f0b06 — which is past 8713298 (DCDart's ADR-0051, which M17 needs for @bss, pmm.dart's storage seam) and past e3cfe18 (nested while-loops, which M7 needs — GAP-0068). Both facts the pin is load-bearing for are still named here so a future bump has to answer to both."
+# GAP-0247: a pin assertion that is a literal HERE and a value in
+# DCDART_PIN.txt is a two-place edit, and the second place was missed the first
+# time it mattered (71cf08f bumped the file to 38f0b06 and left this line at
+# 8713298, leaving this harness red on the pristine tree). Moved deliberately
+# with the file this time, and the two-place edit no longer stands alone:
+# build-kernel.sh now compares DCDART_PIN.txt against the commit the toolchain
+# is ACTUALLY on and says so on every build, so a pin that has drifted from the
+# compiler is caught by the build rather than only by this literal.
+ck; [[ "$PIN" == 02631a77* ]] || fail "DCDART_PIN.txt says $PIN; the tree is built against 02631a77 (DCDart neon-round4) — which is past 8713298 (ADR-0051, @bss, pmm.dart's storage seam — M17) and past e3cfe18 (nested while-loops — M7, GAP-0068), and which adds the three facts THIS bump is load-bearing for: ADR-0069's Pointer/Volatile split (ordinary Pointer<T> is optimizable, so every MMIO and every side-effect-only probe in this kernel must be Volatile<T> — ADR-0044, core/scripts/verify-mmio-volatile.sh), 4e1d571 (-mgeneral-regs-only on freestanding targets, which stopped @bare emitting SSE — the 275-%xmm regression m11-proc catches), and 02631a77 itself (read-only globals pinned via llvm.compiler.used, so a one-byte @rodata table is not folded-then-GlobalDCE'd out of kmain.o — argsStrSp/fbStrBy, m5-pci and m19-argv). All five facts the pin is load-bearing for are named here so a future bump has to answer to all of them."
 ck; grep -q 'while (f < lastEx)' "$CORE_DIR/kernel/pmm.dart" || fail "pmm.dart's inner frame loop is gone — if it was decomposed into a helper, the pin bump is no longer justified and GAP-0068 needs updating"
 echo "STRUCTURAL: pass  DCDART_PIN.txt is $PIN and pmm.dart's memory-map walk is still a genuine nested loop"
 
