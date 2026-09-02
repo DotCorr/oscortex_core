@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=64
+ASSERTIONS_REQUIRED=65
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -71,6 +71,7 @@ SKIA_TEXT="$CORE_DIR/tests/conformance/de-skia-text"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
 PACE_DART="$CORE_DIR/kernel/wmpace.dart"
 DESK_C="$CORE_DIR/plat/osgfx/osgfx_desk.c"
+SESSION_C="$CORE_DIR/plat/osgfx/osgfx_session.c"
 GUEST_H="$CORE_DIR/plat/osgfx/osgfx_guest.h"
 WM_DART="$CORE_DIR/kernel/wm.dart"
 
@@ -147,6 +148,27 @@ print('    desk_blit divides nothing; desk_rgb_n takes nx/ny pre-divided')
 PY"
 ck; [[ $LOOP_STATUS -eq 0 ]] || { echo "$LOOP_OUT" >&2; fail "the per-frame path still does the field arithmetic"; }
 echo "$LOOP_OUT"
+capture_sh COLD_OUT COLD_STATUS -- "python3 - '$SESSION_C' <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r'else if \(\(cmd->flags & OSGFX_GUEST_DE\) != 0\) \{(.*?)'
+              r'\n  \} else if \(graphite_ready', src, re.S)
+if not m:
+    raise SystemExit('the DE wallpaper arm is gone')
+body = m.group(1)
+if 'OSGFX_WMPAGE_W_DESK_HAVE' in body:
+    raise SystemExit('the session gates the cached entry point on DESK_HAVE; '
+                     'a cold cache can never stamp its first key')
+if not re.search(r'if \(cmd->wmpage != 0\) \{\s*'
+                 r'osgfx_fill_desk_cached\(', body):
+    raise SystemExit('a published state page does not enter the cache function')
+if re.search(r'seed\s*=\s*[^;]*cmd->gen', src, re.S):
+    raise SystemExit('the default wallpaper seed depends on the per-present generation; '
+                     'the cache key changes on every full paint')
+print('    a cold cache enters osgfx_fill_desk_cached, and its default seed is frame-stable')
+PY"
+ck; [[ $COLD_STATUS -eq 0 ]] || { echo "$COLD_OUT" >&2; fail "the wallpaper cache cannot transition from cold to hot"; }
+echo "$COLD_OUT"
 
 # 1d. THE GFX ARM OF wmComposeCommit NO LONGER THROWS THE DAMAGE AWAY, AND
 # EVERY PIXEL THE SESSION OWNS IS STILL DECLINED. Both halves, because either
@@ -309,10 +331,10 @@ ck; [[ "$DESK_REGEN" -eq 1 ]] \
   || fail "the generative field was regenerated $DESK_REGEN times, expected exactly 1 — the cache key is not stable across frames"
 ck; [[ "$DESK_BLIT" -gt "$DESK_REGEN" ]] \
   || fail "the cache was blitted $DESK_BLIT times and generated $DESK_REGEN — one generate did not serve more than one paint, so nothing was saved"
-# And the DAMAGE path reads it too, which is the half that makes stage 2
-# possible at all: `wmDeskPixel` served this many desktop pixels to a
-# damage-limited repaint. Before the cache, Dart's only desktop colour was
-# one flat blue and this number could only have been zero.
+# And the DAMAGE path reads it too: after capturing the live-client framebuffer,
+# the driver minimises that client. Restoring its old rectangle must resolve
+# through `wmDeskPixel`; pointer motion no longer proves this because the
+# compositor correctly restores its save-under directly.
 ck; [[ "$DESK_READ" -gt 0 ]] \
   || fail "no damage repaint ever read the cached field — Dart is still painting the desktop from a flat constant"
 
@@ -359,12 +381,8 @@ PATCH_RGB=$(jget patch_rgb)
 ck; python3 "$PROBE" "$FB_BIN" "$PITCH" "$PATCH_X" "$PATCH_Y" "$PATCH_RGB" "dpc_patch" \
   || fail "the client's damage patch is not on the screen at ($PATCH_X,$PATCH_Y) in $PATCH_RGB — a damage-limited present that is cheap and paints nothing is not a present"
 # THE RECTANGLE THE POINTER VACATED. `wm on` composes the arrow at the origin;
-# the driver then walks it to the middle of the desktop in twenty steps, and
-# `wmPointerTick` repaints each rectangle it leaves. Those are DESKTOP pixels
-# painted by Dart, out of the cache. If Dart were still answering
-# [wmColorDesktop] for a desktop pixel, this 12x16 corner would be one flat
-# 0x00184060 -- which is exactly the hole the gfx arm was recomposing the
-# world to avoid.
+# the driver then walks it away. The save-under restore must put the varied
+# wallpaper back rather than a flat colour or cursor ink.
 CUR_W=$(jget cursor_w)
 CUR_H=$(jget cursor_h)
 capture_sh HOLE_OUT HOLE_STATUS -- "python3 - '$FB_BIN' $PITCH $CUR_W $CUR_H <<'PY'

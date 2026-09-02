@@ -160,12 +160,9 @@ DESK_RE = re.compile(
 )
 
 # Where the pointer starts (`wm on` composes it at the origin) and how far it
-# is moved. Moving it is the ONE thing in this harness that makes a damage
-# repaint cover DESKTOP pixels: `wmPointerTick` repaints the rectangle the
-# arrow vacated, which resolves through `wmPixelAt` -> `wmDeskPixel` -> the
-# cached generative field. Before the cache, Dart's only answer for a desktop
-# pixel was one flat blue, and that is the whole reason the gfx arm refused to
-# honour damage.
+# is moved. The compositor now restores pointer save-under directly, so pointer
+# motion no longer exercises `wmDeskPixel`; the final control minimises the
+# client to force an explicit Dart damage restore through the cache.
 CURSOR_W, CURSOR_H = 12, 16
 CURSOR_TO = (520, 300)
 
@@ -297,6 +294,28 @@ def main():
     data = open(fb_bin, "rb").read()
     write_png(png, 800, 600, pitch, data)
 
+    # The framebuffer evidence above must retain the live client. Now minimise
+    # that client: wmMinWindow exposes its old rectangle through
+    # wmRepaintRect -> wmDeskPixel. This is the explicit running-OS control for
+    # cache reads after pointer save-under made motion the wrong mechanism.
+    for _ in range(20):
+        q.cmd("input-send-event", events=[
+            {"type": "rel", "data": {"axis": "x", "value": -11}},
+            {"type": "rel", "data": {"axis": "y", "value": -8}},
+        ])
+        time.sleep(0.04)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": True}},
+    ])
+    if not wait_marker(serial, "WM MIN W 0\n", timeout=10):
+        raise SystemExit("the final minimise control did not expose the client rectangle")
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": False}},
+    ])
+    q.line("wm pace off")
+    await_pace(serial, 7)
+
+    text = read_serial(serial)
     desks = DESK_RE.findall(text)
     if not desks:
         raise SystemExit("no `WM DESK ... REGEN ... BLIT ...` report — the "

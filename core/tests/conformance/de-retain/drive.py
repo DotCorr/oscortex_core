@@ -21,10 +21,9 @@ window bodies away.
          `wmPointerTick` bumped the osgfx generation on every packet and
          `isr_common` handed the whole scanout to Skia on the next interrupt.
   MENU   ten open/close cycles of the wallpaper popover, far from both
-         windows. Each transition MOVES `wmGfxChromeSig`, so each is a session
-         present that is legitimately required and that no compose stands
-         behind — the case `wmSessionRestore` exists for, as opposed to the
-         case the `wmPointerTick` gate removes.
+         windows. Each transition MOVES `wmGfxChromeSig`, producing two cached
+         chrome blits whose row copies must cut holes for both client bodies.
+         This directly exercises the current retention mechanism.
   SETTLE thirty seconds with the frame clock armed and no input at all.
   IDLE   ninety more. The door was an empty card inside two minutes.
 
@@ -393,12 +392,12 @@ def main():
     q.cmd("quit")
     print("DE-retain: state page at 0x%X, paced=%d" % (page_addr, out["paced"]))
     for s in stages:
-        print("DE-retain: %-6s +%6.1fs  A %-12s B %-12s  session blits %d  "
+        print("DE-retain: %-6s +%6.1fs  A %-12s B %-12s  chrome blits %d  "
               "restores %d (skip %d)"
               % (s["stage"], s["secs_since_t0"],
                  "intact" if s["a_same"] else "LOST %d px" % s["a_diff_px"],
                  "intact" if s["b_same"] else "LOST %d px" % s["b_diff_px"],
-                 s["desk_blits"], s["restores"], s["restore_skip"]))
+                 s["chrome_blits"], s["restores"], s["restore_skip"]))
     return 0
 
 

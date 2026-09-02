@@ -75,7 +75,7 @@ setup_error() { echo "M21-shmem: FAIL — $1" >&2; exit 2; }
 # Sourced AFTER fail(), which every helper in it reports through.
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=93
+ASSERTIONS_REQUIRED=94
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
             x86_64-elf-readelf; do
@@ -86,7 +86,16 @@ done
 # and Dart resolves library identity through real paths.
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m21.XXXXXX")" || setup_error "mktemp failed"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
-cleanup() { [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"; }
+cleanup() {
+  if [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]]; then
+    mkdir -p "$CORE_DIR/build"
+    [[ -f "$WORKDIR/share/serial.txt" ]] &&
+      cp "$WORKDIR/share/serial.txt" "$CORE_DIR/build/m21-last-serial.txt" || true
+    [[ -f "$WORKDIR/share/qemu.log" ]] &&
+      cp "$WORKDIR/share/qemu.log" "$CORE_DIR/build/m21-last-qemu.log" || true
+    rm -rf "$WORKDIR"
+  fi
+}
 trap cleanup EXIT
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
@@ -189,6 +198,9 @@ S_SLOTPAGES=$(dartconst shmSlotPages shm.dart)
 S_MAXPAGES=$(dartconst shmMaxPages shm.dart)
 S_CAPS=$(dartconst shmCapsPerProc shm.dart)
 
+PROG_MAXPAGES=$(sed -n 's/^#define SHM_MAX_PAGES \([0-9][0-9]*\)UL$/\1/p' "$SCRIPT_DIR/prog.c")
+ck; [[ -n "$PROG_MAXPAGES" && "$PROG_MAXPAGES" -eq "$S_MAXPAGES" ]] \
+  || fail "prog.c's SHM_MAX_PAGES ($PROG_MAXPAGES) disagrees with shm.dart ($S_MAXPAGES) — LENBIG would cease to be an out-of-range control"
 ck; [[ $(( S_METAW * 8 )) -eq "$S_METAB" ]] || fail "shmMetaWords*8 != shmMetaBytes"
 ck; [[ "$S_METAB" -eq "$S_REGOFF" ]] || fail "the counter words do not end where the region records begin"
 ck; [[ $(( S_REGW * 8 )) -eq "$S_REGB" ]] || fail "shmRegWords*8 != shmRegBytes"
