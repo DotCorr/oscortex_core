@@ -41,7 +41,15 @@ static int desk_norm_y(int y, int h) {
 }
 
 static int desk_dither(int x, int y) {
-  return ((x & 7) * 3 + (y & 7) * 5) & 7;
+  static const uint8_t bayer8[64] = {
+      0,  48, 12, 60, 3,  51, 15, 63, 32, 16, 44, 28, 35, 19, 47, 31,
+      8,  56, 4,  52, 11, 59, 7,  55, 40, 24, 36, 20, 43, 27, 39, 23,
+      2,  50, 14, 62, 1,  49, 13, 61, 34, 18, 46, 30, 33, 17, 45, 29,
+      10, 58, 6,  54, 9,  57, 5,  53, 42, 26, 38, 22, 41, 25, 37, 21};
+  /* Scale the 0..63 threshold across one complete 8-bit quantisation step.
+   * Adding 0..7, as the old hash did, affected only one pixel in 32 and left
+   * broad equal-colour bands in a slowly changing field. */
+  return (int)bayer8[((y & 7) << 3) | (x & 7)] * 4 + 2;
 }
 
 static int desk_field_n(int nx, int ny, int tx, int ty, int t) {
@@ -88,16 +96,16 @@ static uint32_t desk_rgb_n(int nx, int ny, int x, int y, int cw, int ch, int tx,
 
   f = desk_field_n(nx, ny, tx, ty, t);
   d = desk_dither(x, y);
-  r = 0x0c + ((f * 0x50) + d) >> 8;
-  g = 0x28 + ((f * 0x90) + d) >> 8;
-  b = 0x48 + ((f * 0x70) + d) >> 8;
+  r = 0x0c + (((f * 0x50) + d) >> 8);
+  g = 0x28 + (((f * 0x90) + d) >> 8);
+  b = 0x48 + (((f * 0x70) + d) >> 8);
   cx = (cw >> 1) - x;
   cy = (ch >> 1) - y;
   d2 = (cx * cx + cy * cy) >> 12;
   if (d2 > 255) {
     d2 = 255;
   }
-  g = g + (((255 - g) * d2) + 128 + d) >> 8;
+  g = g + ((((255 - g) * d2) + 128 + d) >> 8);
   if (r > 255) {
     r = 255;
   }
