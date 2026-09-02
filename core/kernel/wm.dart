@@ -2554,7 +2554,15 @@ u64 wmPixelAt(u64 x, u64 y) {
   final u64 top = wmMeta(u64(wmMetaTop));
   u64 c = u64(wmNoPixel);
   if (top < u64(wmMaxWindows)) {
-    c = wmWindowPixel(top, x, y, u64(1));
+    u64 visible = u64(1);
+    if (wmWinOverlay(top) > u64(0)) {
+      if (wmOverlayParked(top) > u64(0)) {
+        visible = u64(0);
+      }
+    }
+    if (visible > u64(0)) {
+      c = wmWindowPixel(top, x, y, u64(1));
+    }
   }
   if (c != u64(wmNoPixel)) {
     return c;
@@ -2562,9 +2570,17 @@ u64 wmPixelAt(u64 x, u64 y) {
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
     if (i != top) {
-      c = wmWindowPixel(i, x, y, u64(0));
-      if (c != u64(wmNoPixel)) {
-        return c;
+      u64 visible = u64(1);
+      if (wmWinOverlay(i) > u64(0)) {
+        if (wmOverlayParked(i) > u64(0)) {
+          visible = u64(0);
+        }
+      }
+      if (visible > u64(0)) {
+        c = wmWindowPixel(i, x, y, u64(0));
+        if (c != u64(wmNoPixel)) {
+          return c;
+        }
       }
     }
     i = i + u64(1);
@@ -2736,15 +2752,31 @@ u64 wmRepaintWindow(u64 wI) {
 u64 wmHit(u64 x, u64 y) {
   final u64 top = wmMeta(u64(wmMetaTop));
   if (top < u64(wmMaxWindows)) {
-    if (wmWindowPixel(top, x, y, u64(1)) != u64(wmNoPixel)) {
-      return top;
+    u64 visible = u64(1);
+    if (wmWinOverlay(top) > u64(0)) {
+      if (wmOverlayParked(top) > u64(0)) {
+        visible = u64(0);
+      }
+    }
+    if (visible > u64(0)) {
+      if (wmWindowPixel(top, x, y, u64(1)) != u64(wmNoPixel)) {
+        return top;
+      }
     }
   }
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
     if (i != top) {
-      if (wmWindowPixel(i, x, y, u64(0)) != u64(wmNoPixel)) {
-        return i;
+      u64 visible = u64(1);
+      if (wmWinOverlay(i) > u64(0)) {
+        if (wmOverlayParked(i) > u64(0)) {
+          visible = u64(0);
+        }
+      }
+      if (visible > u64(0)) {
+        if (wmWindowPixel(i, x, y, u64(0)) != u64(wmNoPixel)) {
+          return i;
+        }
       }
     }
     i = i + u64(1);
