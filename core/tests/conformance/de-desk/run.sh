@@ -844,17 +844,13 @@ time.sleep(0.08)
 button(16, 20, "left", False)
 time.sleep(0.3)
 
-# CSD min / gap-slot restore / max / SE resize clamp.
-# FILES attaches at (48,40) 400x280. Slot 1 sits in the island gap at x=212.
-# SE-corner drag past the screen edge must clamp, not vanish.
-place(444, 316)
-time.sleep(0.08)
-button(444, 316, "left", True)
-time.sleep(0.08)
-place(790, 580)
-time.sleep(0.15)
-button(790, 580, "left", False)
-time.sleep(0.25)
+# Tab left SET on top. Raise FILES via the uncovered left strip so CSD
+# and the SE handle apply to FILES, not SET's overlapping title/body.
+press(100, 160, "left", "FILES SEL")
+
+# CSD min / gap-slot restore / max on the original FILES card, then SE
+# clamp. FILES attaches at (48,40) 400x280. Slot 1 sits in the island
+# gap at x=212. SE-corner drag past the screen edge must clamp, not vanish.
 press(405, 57, "left", "WM MIN")
 started = False
 for _ in range(8):
@@ -872,13 +868,23 @@ if not started:
 button(220, 572, "left", False)
 time.sleep(0.25)
 press(379, 57, "left", "WM MAX")
+# Toggle back so the SE handle stays at the attach geom.
+press(379, 57, "left", "WM MAX")
+place(444, 316)
+time.sleep(0.08)
+button(444, 316, "left", True)
+time.sleep(0.08)
+place(790, 580)
+time.sleep(0.15)
+button(790, 580, "left", False)
+time.sleep(0.25)
 
 # Sustained combined input: wheel + move + click must not OOM or fault.
 for i in range(8):
     button(300, 180, "wheel-down" if (i & 1) == 0 else "wheel-up", True)
     place(200 + i * 12, 140 + (i * 7) % 40)
     time.sleep(0.04)
-press(300, 160, "left", "FILES SEL")
+press(100, 160, "left", "FILES SEL")
 print("contextual + Start spawn tokens ok")
 PY
 
