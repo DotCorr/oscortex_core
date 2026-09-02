@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=116
+ASSERTIONS_REQUIRED=119
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -158,6 +158,12 @@ ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES does not paint CSD titles"
 ck; grep -q 'files_stride \* files_cap_h' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES does not size native backing from target dimensions"
+ck; grep -q 'SYS_SHMGROW' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not grow backing for native maximize"
+ck; grep -q 'WM_OP_BACKING' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not publish its grown native stride"
+ck; grep -q 'void wmBackingOp' "$CORE_DIR/kernel/wmext.dart" \
+  || fail "WM does not validate native backing updates"
 ck; ! grep -q 'WM_SURFACE_VIEWPORT' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES still requests raster viewport scaling"
 ck; grep -q 'u64 shmVaFind' "$SHM" \

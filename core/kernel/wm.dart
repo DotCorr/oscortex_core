@@ -433,6 +433,8 @@ const int wmDescStride = 6;
 /// ATTACH: byte offset of pixel (0, 0) within the region. **An OFFSET and not
 /// a pointer** -- see this file's header §3.
 const int wmDescOffset = 7;
+const int wmResizableFlag = 0x8000000000000000;
+const int wmOffsetMask = 0x7FFFFFFFFFFFFFFF;
 
 /// COMMIT: the client's own frame counter, echoed into the transcript so that
 /// "the compositor composed the frame the client thought it committed" is a
@@ -1452,7 +1454,9 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 y = wmDesc(ptr, u64(wmDescY));
   final u64 w = wmDesc(ptr, u64(wmDescW));
   final u64 hh = wmDesc(ptr, u64(wmDescH));
-  final u64 off = wmDesc(ptr, u64(wmDescOffset));
+  final u64 rawOff = wmDesc(ptr, u64(wmDescOffset));
+  final u64 resizable = rawOff & u64(wmResizableFlag);
+  final u64 off = rawOff & u64(wmOffsetMask);
   final u64 r = wmResolve(h);
   if (r == u64(shmMax)) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetBadCap));
@@ -1516,7 +1520,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinGen), shmReg(r, u64(shmRegGen)));
   wmSetWin(slot, u64(wmWinGeom), wmPackGeom(x, y, w, hh));
   wmSetWin(slot, u64(wmWinStride), (scale << u64(32)) | stride);
-  wmSetWin(slot, u64(wmWinOffsetW), off);
+  wmSetWin(slot, u64(wmWinOffsetW), off | resizable);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
   if (wmPageAddr() > u64(0)) {

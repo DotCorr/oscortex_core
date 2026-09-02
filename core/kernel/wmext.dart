@@ -40,6 +40,7 @@ const int wmOpScreen = 9;
 
 /// One osgfx.h primitive into caller-owned shm (ADR-0192).
 const int wmOpPaint = 10;
+const int wmOpBacking = 11;
 
 @extern
 external u64 osgfx_client_paint(u64 px, u64 pitch, u64 w, u64 h, u64 scr_x,
@@ -165,7 +166,12 @@ u64 wmWinStrideOf(u64 wI) {
 
 @bare
 u64 wmWinOffsetOf(u64 wI) {
-  return wmWin(wI, u64(wmWinOffsetW));
+  return wmWin(wI, u64(wmWinOffsetW)) & u64(wmOffsetMask);
+}
+
+@bare
+u64 wmWinResizableOf(u64 wI) {
+  return wmWin(wI, u64(wmWinOffsetW)) & u64(wmResizableFlag);
 }
 
 /// Absolute screen X: walk one parent (no deep trees this rung).
@@ -819,6 +825,43 @@ void wmPaintOp(u64 frame, u64 ptr, u64 id) {
   userSetFrame(frame, u64(userFrameRax), ret);
 }
 
+/// Adopt a grown client's native row stride after validating the current
+/// geometry fits entirely inside its region.
+@bare
+void wmBackingOp(u64 frame, u64 ptr, u64 id) {
+  final u64 h = wmDesc(ptr, u64(wmDescHandle));
+  final u64 stride = wmDesc(ptr, u64(wmDescStride));
+  final u64 r = wmResolve(h);
+  if (r >= u64(shmMax)) {
+    wmRefuse(frame, u64(wmOpBacking), h, u64(wmRetBadCap));
+    return;
+  }
+  final u64 slot = wmWindowOfRegion(id, r);
+  if (slot >= u64(wmMaxWindows)) {
+    wmRefuse(frame, u64(wmOpBacking), h, u64(wmRetNoWin));
+    return;
+  }
+  if (wmWinResizableOf(slot) < u64(1)) {
+    wmRefuse(frame, u64(wmOpBacking), h, u64(wmRetBadOp));
+    return;
+  }
+  final u64 g = wmWin(slot, u64(wmWinGeom));
+  if (stride < (wmGeomW(g) << u64(2))) {
+    wmRefuse(frame, u64(wmOpBacking), stride, u64(wmRetSmall));
+    return;
+  }
+  final u64 bytes =
+      shmReg(r, u64(shmRegPages)) << u64(vmPageShift);
+  final u64 need = wmWinOffsetOf(slot) + (stride * wmGeomH(g));
+  if (need > bytes) {
+    wmRefuse(frame, u64(wmOpBacking), need, u64(wmRetSmall));
+    return;
+  }
+  final u64 scale = wmWinScaleOf(slot);
+  wmSetWin(slot, u64(wmWinStride), (scale << u64(32)) | stride);
+  userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
 /// Dispatch extension ops. Returns 1 if handled.
 @bare
 u64 wmExtDispatch(u64 frame, u64 ptr, u64 id, u64 op) {
@@ -852,6 +895,10 @@ u64 wmExtDispatch(u64 frame, u64 ptr, u64 id, u64 op) {
   }
   if (op == u64(wmOpPaint)) {
     wmPaintOp(frame, ptr, id);
+    return u64(1);
+  }
+  if (op == u64(wmOpBacking)) {
+    wmBackingOp(frame, ptr, id);
     return u64(1);
   }
   return u64(0);
