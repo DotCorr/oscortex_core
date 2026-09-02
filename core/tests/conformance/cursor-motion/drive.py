@@ -24,7 +24,9 @@ PTR_W, PTR_H = 16, 20
 class Qmp:
     def __init__(self, port):
         self.s = socket.create_connection(("127.0.0.1", port), timeout=5)
-        self.s.settimeout(10)
+        # pmemsave can be serialized behind a TCG repaint on loaded CI hosts.
+        # A timeout here measures host scheduling, not guest cursor latency.
+        self.s.settimeout(60)
         self.f = self.s.makefile("rw", encoding="utf-8")
         json.loads(self.f.readline())
         self.cmd("qmp_capabilities")
