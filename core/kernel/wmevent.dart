@@ -231,8 +231,17 @@ void wmeventPushCoalesceScroll(u64 w, u64 ev) {
       final u64 b = (ev >> u64(48)) & u64(0xFF);
       final u64 aNeg = a & u64(0x80);
       final u64 bNeg = b & u64(0x80);
-      if ((aNeg > u64(0) && bNeg > u64(0)) ||
-          (aNeg < u64(1) && bNeg < u64(1))) {
+      u64 sameDirection = u64(0);
+      if (aNeg > u64(0)) {
+        if (bNeg > u64(0)) {
+          sameDirection = u64(1);
+        }
+      } else {
+        if (bNeg < u64(1)) {
+          sameDirection = u64(1);
+        }
+      }
+      if (sameDirection > u64(0)) {
         u64 sum = u64(0);
         if (aNeg > u64(0)) {
           u64 mag = (u64(0x100) - a) + (u64(0x100) - b);
