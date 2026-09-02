@@ -139,21 +139,39 @@ void osgfx_fill_rect(OsGfx *g, int x, int y, int w, int h, uint32_t rgb) {
   }
 }
 
-/* This host-only backend deliberately has no outline rasterizer. Returning
- * zero is the osgfx_text ABI's "unavailable" result and lets osxui_label use
- * its bitmap fallback; without the symbol the standalone headless harness no
- * longer linked after chrome text moved to Skia outlines. */
+/* This host-only backend deliberately has no outline rasterizer. Preserve the
+ * deterministic 8x16 reference font used by the headless panel harness; live
+ * compositor/client chrome still resolves this symbol in osgfx_skia.cpp and
+ * uses proportional outlines. */
 int osgfx_text(OsGfx *g, int x, int y, const char *s, int n, int size_px,
                int weight, uint32_t rgb) {
-  (void)g;
-  (void)x;
-  (void)y;
-  (void)s;
-  (void)n;
+  int i;
+  int row;
+  int col;
+  const uint8_t *rows;
+
   (void)size_px;
   (void)weight;
-  (void)rgb;
-  return 0;
+  if (g == 0 || s == 0 || n < 1) {
+    return 0;
+  }
+  i = 0;
+  while (i < n) {
+    rows = osgfx_glyph_rows((int)(unsigned char)s[i]);
+    row = 0;
+    while (row < OSGFX_GLYPH_H) {
+      col = 0;
+      while (col < OSGFX_GLYPH_W) {
+        if ((rows[row] & (uint8_t)(0x80u >> (unsigned)col)) != 0) {
+          put_px(g, x + i * OSGFX_GLYPH_W + col, y + row, rgb);
+        }
+        col = col + 1;
+      }
+      row = row + 1;
+    }
+    i = i + 1;
+  }
+  return n * OSGFX_GLYPH_W;
 }
 
 #if !OSGFX_NO_RRECT
