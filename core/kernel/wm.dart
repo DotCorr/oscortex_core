@@ -792,6 +792,36 @@ u64 wmRegionPixel(u64 vec, u64 off) {
   return Pointer<u32>.fromAddress(phys + (off & u64(vmPageMask))).value.toU64();
 }
 
+/// Premultiplied SRC_OVER for the transparent DESK panel surface.
+///
+/// Ordinary FRAME clients predate alpha and remain direct copies. DESK clears
+/// its full-width carrier to transparent zero and paints premultiplied glass
+/// islands into it, so copying that carrier would turn every gap and rounded
+/// corner black.
+@bare
+u64 wmPanelSrcOver(u64 src, u64 dst) {
+  final u64 a = (src >> u64(24)) & u64(0xFF);
+  if (a < u64(1)) {
+    return dst & u64(0x00FFFFFF);
+  }
+  if (a >= u64(255)) {
+    return src & u64(0x00FFFFFF);
+  }
+  final u64 inv = u64(255) - a;
+  final u64 sr = (src >> u64(16)) & u64(0xFF);
+  final u64 sg = (src >> u64(8)) & u64(0xFF);
+  final u64 sb = src & u64(0xFF);
+  final u64 dr = (dst >> u64(16)) & u64(0xFF);
+  final u64 dg = (dst >> u64(8)) & u64(0xFF);
+  final u64 db = dst & u64(0xFF);
+  final u64 r = sr + ((dr * inv) ~/ u64(255));
+  final u64 g = sg + ((dg * inv) ~/ u64(255));
+  final u64 b = sb + ((db * inv) ~/ u64(255));
+  return ((r & u64(0xFF)) << u64(16)) |
+      ((g & u64(0xFF)) << u64(8)) |
+      (b & u64(0xFF));
+}
+
 /// Blits row [py] of window [wI] from its region onto the framebuffer.
 /// [py] is a surface row; buffer sampling multiplies by the window's
 /// integer scale (ADR-0185).
@@ -806,6 +836,7 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 stride = wmWinStrideOf(wI);
   final u64 rowOff = wmWin(wI, u64(wmWinOffsetW)) +
       ((py * scale) * stride);
+  final u64 panel = wmIsPanel(wI);
   u64 x0 = u64(0);
   u64 x1 = w;
   u64 h = wmGeomH(g);
@@ -837,7 +868,14 @@ void wmBlitRow(u64 wI, u64 py) {
   u64 px = x0;
   while (px < x1) {
     final u64 boff = rowOff + ((px * scale) << u64(2));
-    fbPutPixel(x + px, y + py, wmRegionPixel(vec, boff));
+    final u64 src = wmRegionPixel(vec, boff);
+    if (panel > u64(0)) {
+      final u64 dst =
+          Volatile<u32>.fromAddress(fbPixelAddr(x + px, y + py)).value.toU64();
+      fbPutPixel(x + px, y + py, wmPanelSrcOver(src, dst));
+    } else {
+      fbPutPixel(x + px, y + py, src);
+    }
     px = px + u64(1);
   }
 }

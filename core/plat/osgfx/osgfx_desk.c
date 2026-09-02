@@ -395,35 +395,6 @@ static uint32_t glass_mix(uint32_t wall, uint32_t tint) {
          (uint32_t)(b & 0xff);
 }
 
-static uint32_t glass_blend_cov(uint32_t frost, uint32_t wall, int cover) {
-  int fr;
-  int fg;
-  int fb;
-  int wr;
-  int wg;
-  int wb;
-  int ia;
-
-  if (cover >= 255) {
-    return frost;
-  }
-  if (cover <= 0) {
-    return 0;
-  }
-  ia = 255 - cover;
-  fr = (int)((frost >> 16) & 0xFFu);
-  fg = (int)((frost >> 8) & 0xFFu);
-  fb = (int)(frost & 0xFFu);
-  wr = (int)((wall >> 16) & 0xFFu);
-  wg = (int)((wall >> 8) & 0xFFu);
-  wb = (int)(wall & 0xFFu);
-  fr = (fr * cover + wr * ia) / 255;
-  fg = (fg * cover + wg * ia) / 255;
-  fb = (fb * cover + wb * ia) / 255;
-  return ((uint32_t)(fr & 0xff) << 16) | ((uint32_t)(fg & 0xff) << 8) |
-         (uint32_t)(fb & 0xff);
-}
-
 void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y,
                        int w, int h, int radius, int scr_x0, int scr_y0,
                        uint32_t tint) {
@@ -489,9 +460,13 @@ void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y
                (((acc_g / (uint32_t)n) & 0xFFu) << 8) |
                ((acc_b / (uint32_t)n) & 0xFFu);
         out = glass_mix(wall, tint & 0x00ffffffu);
-        if (cover < 255) {
-          out = glass_blend_cov(out, wall, cover);
-        }
+        /* Client glass is N32 premul. The panel compositor SRC_OVERs this
+         * onto the live desk: clear pixels stay 0, and AA fringe RGB is
+         * scaled by the same coverage carried in A. */
+        out = ((uint32_t)(unsigned)cover << 24) |
+              ((((out >> 16) & 0xffu) * (uint32_t)(unsigned)cover / 255u) << 16) |
+              ((((out >> 8) & 0xffu) * (uint32_t)(unsigned)cover / 255u) << 8) |
+              ((out & 0xffu) * (uint32_t)(unsigned)cover / 255u);
         ((uint32_t *)((uint8_t *)dst + (unsigned)yy * (unsigned)pitch_px))[xx] =
             out;
       }

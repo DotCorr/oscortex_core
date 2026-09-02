@@ -301,30 +301,15 @@ static void paint_icon_glyph(u64 ix, u64 iy, u64 which) {
   osxui_app_rrect(shm_h, ix + 8UL, iy + 19UL, 16UL, 5UL, 2UL, ICO_TOOLS);
 }
 
-/* Seal any still-zero pixels inside an island AABB so skip-0 cannot
- * show raw wallpaper through a frost hole (glyph canvas misses, etc.). */
-static void seal_island(u64 x, u64 y, u64 w, u64 h, u32 rgb) {
-  volatile u32 *p = (volatile u32 *)pix_va;
-  u64 yy = y;
-  while (yy < (y + h)) {
-    u64 xx = x;
-    while (xx < (x + w)) {
-      if ((p[yy * bar_w + xx] & 0x00FFFFFFUL) == 0UL) {
-        p[yy * bar_w + xx] = rgb;
-      }
-      xx = xx + 1;
-    }
-    yy = yy + 1;
-  }
-}
-
 static void frost_copy_out(u64 x, u64 y, u64 w, u64 h, u32 *cache) {
   volatile u32 *p = (volatile u32 *)pix_va;
   u64 yy = 0;
   while (yy < h) {
     u64 xx = 0;
     while (xx < w) {
-      cache[yy * w + xx] = p[(y + yy) * bar_w + (x + xx)] & 0x00FFFFFFUL;
+      /* Preserve premultiplied alpha; dropping A turns transparent corners
+       * into opaque black when this cached island is presented again. */
+      cache[yy * w + xx] = p[(y + yy) * bar_w + (x + xx)];
       xx = xx + 1;
     }
     yy = yy + 1;
@@ -352,8 +337,6 @@ static void paint_frost_islands(u64 wall_key) {
   }
   osxui_app_island(shm_h, LEFT_X, ISLAND_Y, LEFT_W, ISLAND_H);
   osxui_app_island(shm_h, right_x, ISLAND_Y, RIGHT_W, ISLAND_H);
-  seal_island(LEFT_X, ISLAND_Y, LEFT_W, ISLAND_H, OSXUI_GLASS_FILL);
-  seal_island(right_x, ISLAND_Y, RIGHT_W, ISLAND_H, OSXUI_GLASS_FILL);
   frost_copy_out(LEFT_X, ISLAND_Y, FROST_L_W, FROST_ISLE_H, frost_left);
   frost_copy_out(right_x, ISLAND_Y, FROST_R_W, FROST_ISLE_H, frost_right);
   frost_key = wall_key;
