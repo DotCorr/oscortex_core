@@ -200,13 +200,6 @@ final List<u8> wmStrDockMenu = const [
   u8(0x20), u8(0x4D), u8(0x45), u8(0x4E), u8(0x55),
 ];
 
-/// `'WM RAISE W '` -- 11 bytes.
-@rodata
-final List<u8> wmStrRaise = const [
-  u8(0x57), u8(0x4D), u8(0x20), u8(0x52), u8(0x41), u8(0x49), u8(0x53),
-  u8(0x45), u8(0x20), u8(0x57), u8(0x20),
-];
-
 // ---------------------------------------------------------------------------
 // Draw, hit, show, hide. [wmCompose], [wmPixelAt], [wmPointerTick] and
 // [wmGrab] are the callers. GAP-0302: this is the start of a right-click
@@ -474,6 +467,7 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
   }
 }
 
+@bare
 void wmPopShow(u64 x, u64 y) {
   wmPopShowKind(x, y, u64(wmPopWall));
 }
