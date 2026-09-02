@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=119
+ASSERTIONS_REQUIRED=120
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -164,6 +164,8 @@ ck; grep -q 'WM_OP_BACKING' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES does not publish its grown native stride"
 ck; grep -q 'void wmBackingOp' "$CORE_DIR/kernel/wmext.dart" \
   || fail "WM does not validate native backing updates"
+ck; grep -q 'px = shmRegionVa(reg) + off' "$CORE_DIR/kernel/wmext.dart" \
+  || fail "Skia paint assumes discontiguous SHM frames are one physical span"
 ck; ! grep -q 'WM_SURFACE_VIEWPORT' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES still requests raster viewport scaling"
 ck; grep -q 'u64 shmVaFind' "$SHM" \
