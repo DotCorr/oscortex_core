@@ -516,19 +516,13 @@ u64 wmPageEnsure() {
 // The wallpaper cache
 // ---------------------------------------------------------------------------
 
-/// Pixels the generative desk covers: the full width, and the height above
-/// the taskbar. The same rectangle `osgfx_session_paint` gives it, derived
-/// the same way, because a cache sized to a different rectangle is a cache
-/// `osgfx_desk.c` will decline and nobody will notice.
+/// Pixels the generative desk covers: the whole screen.
+///
+/// The legacy session strip is gone. DESK's panel is a transparent carrier,
+/// so its gaps and rounded ends need cached wallpaper beneath them too.
 @bare
 u64 wmDeskPixels() {
-  final u64 w = fbGeomWidth();
-  final u64 h = fbGeomHeight();
-  u64 dh = h - u64(wmChromeH);
-  if (dh < u64(1)) {
-    dh = h;
-  }
-  return w * dh;
+  return fbGeomWidth() * fbGeomHeight();
 }
 
 /// Allocates a CONTIGUOUS run of [n] frames and returns the first, or 0.
@@ -709,7 +703,6 @@ void wmDeskLine() {
 ///
 /// Three refusals, and each is a picture that would otherwise be wrong:
 ///
-///   * the taskbar band — the session owns every pixel of it, antialiased;
 ///   * a solid-image wallpaper — the mailbox `wall` colour is what the session
 ///     filled, so that is what comes back, and the cache is not consulted;
 ///   * a cache whose key or extent does not match the screen — [wmNoPixel],
@@ -717,10 +710,6 @@ void wmDeskLine() {
 ///     what the desktop looks like must not guess.
 @bare
 u64 wmDeskPixel(u64 x, u64 y) {
-  final u64 h = fbGeomHeight();
-  if (y >= (h - u64(wmChromeH))) {
-    return u64(wmNoPixel);
-  }
   if (wmWallMode() > u64(0)) {
     return Pointer<u64>.fromAddress(
                 kernel_data_start() + u64(wmPopMailWall))

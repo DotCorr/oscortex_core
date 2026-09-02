@@ -340,8 +340,9 @@ ck; python3 "$SESS_DERIVE" variety "$FB_BIN" "$PITCH" 800 600 48 \
 ck; python3 "$SESS_DERIVE" title_gradient "$FB_BIN" "$PITCH" 200 120 32 \
   0x00F4F0E8 0x00E8E0D0 \
   || fail "the Skia title band is gone — a damage pass stamped over it"
-ck; python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile" \
-  || fail "the Skia Start pill is gone — a damage pass stamped over the taskbar"
+ck; if python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile"; then
+  fail "the retired Start fallback returned during damage presents"
+fi
 ck; python3 "$SESS_DERIVE" close_aa "$FB_BIN" "$PITCH" 314 127 18 9 0x00D45050 \
   || fail "the close button lost its antialiased fringe — a damage pass stamped a flat disc"
 ck; python3 "$SKIA_TEXT/caption.py" "$FB_BIN" "$PITCH" 114 120 285 152 \

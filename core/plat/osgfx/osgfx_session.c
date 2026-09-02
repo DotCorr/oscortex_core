@@ -292,63 +292,6 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
                   OSGFX_TEXT_TITLE_PX, OSGFX_TEXT_MEDIUM, SESS_TITLE_FG);
 }
 
-static void paint_de_strip(OsGfx *g, uint32_t *fb, int pitch,
-                           const struct OsGfxGuestCmd *cmd, int y, int ww,
-                           int hh) {
-  int i;
-  int sx;
-  int sy;
-  int start_x;
-  int start_y;
-  uint32_t slot;
-  const char *start;
-  const char *slot0;
-  const char *slot1;
-
-  /* Elevated / glass taskbar — vertical gradient, not a flat tan stamp. */
-  osgfx_fill_rrect_vgrad(g, 0, y, ww, OSGFX_CHROME_H, 0, SESS_CHROME_TOP,
-                         SESS_CHROME_BOT);
-  osgfx_fill_rect(g, 0, y, ww, 1, 0x00687888u);
-  osgfx_fill_rect(g, 0, y + 1, ww, 1, 0x00506878u);
-
-  start_x = SESS_START_MX;
-  start_y = y + SESS_START_MY;
-  /* Elevation under the pill, then the pill: two real AA Skia draws. The
-   * old inner "sheen" was a second flat rrect stacked on the first, which
-   * is the stamped look the owner rejected. */
-  osgfx_shadow(g, start_x, start_y + 2, SESS_START_W, SESS_START_H,
-               SESS_START_R, 8, SESS_SHADOW);
-  paint_de_button(g, fb, pitch, ww, hh, start_x, start_y, SESS_START_W,
-                  SESS_START_H, SESS_START_R, SESS_START);
-  start = "Start";
-  paint_text_box(g, fb, pitch, ww, hh, start_x, start_y, SESS_START_W,
-                 SESS_START_H, start, 5, OSGFX_TEXT_LABEL_PX,
-                 OSGFX_TEXT_MEDIUM, SESS_LABEL_FG);
-
-  sy = y + SESS_START_MY;
-  paint_de_button(g, fb, pitch, ww, hh, ww - SESS_NOTE_W - SESS_START_MX, sy,
-                  SESS_NOTE_W, SESS_NOTE_H, SESS_SLOT_R, SESS_NOTE);
-
-  slot0 = "W0";
-  slot1 = "W1";
-  i = 0;
-  while (i < 2) {
-    if ((cmd->flags & (0x10000ULL << (unsigned)i)) != 0) {
-      slot = SESS_SLOT0;
-      if (i == 1) {
-        slot = SESS_SLOT1;
-      }
-      sx = SESS_START_MX + SESS_START_W + 10 + i * (SESS_SLOT_W + 8);
-      paint_de_button(g, fb, pitch, ww, hh, sx, sy, SESS_SLOT_W, SESS_SLOT_H,
-                      SESS_SLOT_R, slot);
-      paint_text_box(g, fb, pitch, ww, hh, sx, sy, SESS_SLOT_W, SESS_SLOT_H,
-                     i == 0 ? slot0 : slot1, 2, OSGFX_TEXT_LABEL_PX,
-                     OSGFX_TEXT_REGULAR, SESS_LABEL_FG);
-    }
-    i = i + 1;
-  }
-}
-
 static void paint_wall_menu(OsGfx *g, uint32_t *fb, int pitch, int ww, int hh,
                             int px, int py) {
   int rx;
@@ -420,10 +363,10 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
     client_noted = 1;
     com1_puts("OSGFX SESSION CHROME CLIENT\n");
   }
-  desk_h = hh - OSGFX_CHROME_H;
-  if (desk_h < 1) {
-    desk_h = hh;
-  }
+  /* There is no pre-DESK fallback strip. Keep real wallpaper behind the
+   * future panel so its transparent carrier and rounded ends reveal the desk
+   * from the first frame instead of stale black pixels. */
+  desk_h = hh;
   user = (uint32_t)cmd->desk;
   seed = 0xD074A17u;
   if (user != 0) {
@@ -467,11 +410,6 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
                         OSGFX_WIN2_FILL);
   }
   if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-    /* ADR-0192: DESK.ELF owns the strip once committed; session fallback only
-     * before a client panel attaches (OSGFX_GUEST_PANEL). */
-    if (panel == 0) {
-      paint_de_strip(g, fb, pitch, cmd, hh - OSGFX_CHROME_H, ww, hh);
-    }
     if (session_csd == 0) {
       if (held0 != 0) {
         paint_de_title_controls(g, fb, pitch, ww, hh, held0, 0);

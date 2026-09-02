@@ -411,8 +411,9 @@ ck; python3 "$DERIVE" variety "$FB_BIN" "$PITCH" 800 600 48 \
 ck; python3 "$DERIVE" title_gradient "$FB_BIN" "$PITCH" 200 120 32 \
   0x00F4F0E8 0x00E8E0D0 \
   || fail "title band is not a Skia vertical gradient through the cache"
-ck; python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile" \
-  || fail "Start pill interior is wrong through the cache"
+ck; if python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile"; then
+  fail "retired Start fallback survived through the chrome cache"
+fi
 ck; python3 "$DERIVE" close_rrect "$FB_BIN" "$PITCH" 314 127 18 9 0x00D45050 \
   || fail "close button is not an rrect through the cache"
 # THE AA FRINGE, THROUGH THE CACHE. A blit is exact, so this is the assertion
@@ -425,15 +426,12 @@ ck; python3 "$CAPTION" "$FB_BIN" "$PITCH" 114 120 285 152 \
 ck; python3 "$PROBE" "$FB_BIN" "$PITCH" 160 160 0x00F0C020 "win_body" \
   || fail "window body is not client shm (ADR-0183)"
 
-# THE CACHED TASKBAR IS THE GRADIENT, not a flat strip. The band cache's own
-# pixels, read off the screen: sample the strip the same way the title band is
-# sampled. Colours from osgfx_session.c's DE strip enum.
-ck; python3 - "$FB_BIN" "$PITCH" <<'PY' || fail "the cached taskbar strip is not a vertical gradient"
+# DE-004 removed the session taskbar. Until DESK attaches, the bottom band in
+# the cached frame is real wallpaper rather than a legacy gradient/Start UI.
+ck; python3 - "$FB_BIN" "$PITCH" <<'PY' || fail "the cached bottom band is not wallpaper"
 import sys
 fb = open(sys.argv[1], "rb").read()
 pitch = int(sys.argv[2])
-# The taskbar occupies the bottom 48 rows. Sample a column clear of the Start
-# pill (x=8..) and of the right-hand hex panel: x=400 is empty strip.
 x = 400
 rows = []
 for y in range(556, 596, 4):
@@ -441,15 +439,11 @@ for y in range(556, 596, 4):
     rows.append(int.from_bytes(fb[off:off + 4], "little") & 0xFFFFFF)
 shades = len(set(rows))
 if shades < 4:
-    raise SystemExit("taskbar column at x=%d has %d distinct shades over 40 rows "
-                     "(%s) — a gradient must ramp" % (x, shades, [hex(v) for v in rows]))
-# And it must ramp MONOTONICALLY in the green channel, so noise cannot pass.
-g = [(v >> 8) & 0xFF for v in rows]
-if not (all(a >= b for a, b in zip(g, g[1:])) or all(a <= b for a, b in zip(g, g[1:]))):
-    raise SystemExit("taskbar green channel is not monotonic: %s" % g)
-print("cached taskbar: %d shades, monotonic green %d..%d" % (shades, g[0], g[-1]))
+    raise SystemExit("bottom wallpaper column at x=%d has only %d shades (%s)"
+                     % (x, shades, [hex(v) for v in rows]))
+print("cached bottom wallpaper: %d shades" % shades)
 PY
-echo "PICTURE: pass  gradient + Start + close AA + outline caption through the cache"
+echo "PICTURE: pass  wallpaper + no Start + close AA + outline caption through the cache"
 
 echo
 echo "    PNG: $PNG"

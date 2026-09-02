@@ -92,18 +92,12 @@ ck; grep -q 'osgfx_face_regular' "$CORE_DIR/plat/osgfx/osgfx_font_data.c" \
   || fail "osgfx_font_data.c has no extracted TrueType face"
 ck; grep -q 'osgfxGuestDe' "$CORE_DIR/kernel/wmgfx.dart" \
   || fail "wmgfx.dart does not pack DE into mailbox flags"
-# ---------------------------------------------------------------------------
-# THE FALLBACK STRIP IS WITHDRAWABLE (ADR-0192, GAP-0329). The session's own
-# taskbar exists so `Start` is on the screen before DESK.ELF attaches; once
-# DESK has committed pixels over the strip rect it must STOP, or the owner has
-# two taskbars. `OSGFX_GUEST_PANEL` is the word that says so, and this phase --
-# which never spawns DESK -- is where the fallback still being in charge is
-# asserted at runtime.
-# ---------------------------------------------------------------------------
+# DE-004: session never paints the retired Start/taskbar fallback. The panel
+# flag remains because it also withdraws server-side CSD and menus.
 ck; grep -q 'OSGFX_GUEST_PANEL' "$SESSION_C" \
-  || fail "osgfx_session.c paints its strip unconditionally — two taskbars"
-ck; grep -q 'if (panel == 0)' "$SESSION_C" \
-  || fail "osgfx_session.c does not gate paint_de_strip on the panel flag"
+  || fail "osgfx_session.c lost the client panel ownership flag"
+ck; ! grep -q 'paint_de_strip' "$SESSION_C" \
+  || fail "osgfx_session.c still contains the retired Start fallback"
 ck; grep -q 'OSGFX SESSION CHROME CLIENT' "$SESSION_C" \
   || fail "osgfx_session.c has no CSD-withdraw token"
 ck; grep -q 'if (session_csd == 0)' "$SESSION_C" \
@@ -340,11 +334,8 @@ ck; grep -q 'OSGFX SKIA OPS OK 16' "$SER" \
        fail "Skia op probe did not complete all 16 ops on qemu64"; }
 ck; grep -q 'OSGFX TEXT OUTLINE PROPORTIONAL' "$SER" \
   || fail "osgfx_text advance is a fixed cell, not a proportional outline"
-# THE FALLBACK STRIP IS WHAT PAINTS THE TASKBAR IN THIS PHASE, because the two
-# clients spawned here are d3-session's own progA/progB and no DESK.ELF is up.
-# Had the session withdrawn its strip with no client panel committed, the Start
-# probe below would be sampling wallpaper. The other half -- the withdrawal
-# itself -- is de-desk's, which does spawn DESK.ELF (ADR-0192, GAP-0329).
+# No DESK.ELF runs in this phase. The bottom band must therefore remain
+# wallpaper, proving there is no one-frame legacy Start flash before DESK.
 ck; ! grep -q 'OSGFX SESSION STRIP CLIENT' "$SER" \
   || fail "session withdrew its strip with no client panel up"
 ck; ! grep -q 'OSGFX SESSION CHROME CLIENT' "$SER" \
@@ -375,10 +366,10 @@ if len(shades) < 6:
     raise SystemExit("corner 10x10 has %d shades — not AA" % len(shades))
 print("session corner AA: pearl %06X shades %d" % (ink, len(shades)))
 PY
-# Start pill: inset at (8, chrome_top+6); sample fill left of `Start` glyph
-# (glyph at x=28) and below the sheen band, past r=18 soft fringe.
-ck; python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile" \
-  || fail "Start pill interior is not wmStartColor"
+# The retired Start pill colour must not appear at its old centre.
+ck; if python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile"; then
+  fail "legacy Start fallback is still visible before DESK"
+fi
 # Window A at (100,120) w=240: close at (314,127) size 18 — mid + AABB corner
 ck; python3 "$DERIVE" close_rrect "$FB_BIN" "$PITCH" 314 127 18 9 0x00D45050 \
   || fail "close button is a flat pixel blob, not an osgfx rrect"
@@ -401,7 +392,7 @@ ck; python3 "$SKIA_TEXT/caption.py" "$FB_BIN" "$PITCH" 114 120 285 152 \
 # ADR-0183: body is FRAME shm, not solid OSGFX_WIN_FILL wipe.
 ck; python3 "$PROBE" "$FB_BIN" "$PITCH" 160 160 0x00F0C020 "win_body" \
   || fail "window body is not client shm (ADR-0183)"
-echo "HOMEBREW: pass  DESK GEN + variety + title + Start + close AA rrect + body"
+echo "HOMEBREW: pass  DESK GEN + variety + no fallback Start + close AA rrect + body"
 
 echo
 echo "=== GL QEMU (venus=on) ==="
