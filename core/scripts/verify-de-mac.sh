@@ -86,8 +86,9 @@ if [[ "$CHECK_ONLY" == 1 ]]; then
       printf '  harness %-18s absent (runtime skip)\n' "$name"
     fi
   done
-  python3 -m py_compile "$QMP_HELPER" \
-    || { echo "verify-de-mac: FAIL — QMP helper does not compile" >&2; exit 1; }
+  python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' \
+    "$QMP_HELPER" \
+    || { echo "verify-de-mac: FAIL — QMP helper does not parse" >&2; exit 1; }
   echo "verify-de-mac: CHECK PASS"
   exit 0
 fi
