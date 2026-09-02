@@ -50,7 +50,12 @@ GAP-0324 / ADR-0175.
 2. **`virtio-tablet-pci` is the live device.** `virtab.dart` finds
    `1AF4:1052`, negotiates VERSION_1, posts one eventq, scales
    ABS_X/ABS_Y onto `fbGeomWidth` × `fbGeomHeight`, and commits on
-   `SYN_REPORT`. Silent arm from `mouseEnable`; `vtab` prints
+   `SYN_REPORT`. The queue holds 64 events (rather than five complete
+   reports in 16 events); one PIT poll coalesces bare motion to its final
+   absolute position but commits every button edge with the axes from that
+   same report. Once this device is armed, decoded PS/2 packets are drained
+   for framing but cannot overwrite its axes or buttons. Silent arm from
+   `mouseEnable`; `vtab` prints
    `VTAB OK`. `vtab feed` is the COM1 SET seam. Keyboard stays 8042.
 3. **The owner door is `sit-in-view.sh --abs`.** QEMU cocoa window
    titled `oscortex-abs-pointer`, one cursor, click inside the

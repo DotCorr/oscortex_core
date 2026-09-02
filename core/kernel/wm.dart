@@ -1096,8 +1096,22 @@ void wmComposeRect(u64 x, u64 y, u64 w, u64 h) {
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
+  /*
+   * A damage pass may cross the visible sprite. Restore BEFORE resolving the
+   * changed pixels: restoring afterwards writes the old save-under over the
+   * new client frame, and capturing before restore saves cursor ink as the
+   * next underlay. Both failures leave a trail on the following move.
+   */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerRestore();
+  }
   final u64 px = wmRepaintRect(x, y, w, h);
-  wmMaybeDrawPointer(x, y, w, h);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerPlace(
+        mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  } else {
+    wmMaybeDrawPointer(x, y, w, h);
+  }
   wmPublishFrame(px);
 }
 
@@ -1142,6 +1156,12 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
   wmDePrefApply();
+  /*
+   * Client damage is allowed underneath the pointer. The old implementation
+   * repainted first and restored afterwards, which put stale pre-commit
+   * pixels back on the screen and could copy pointer AA into save-under.
+   */
+  wmPointerRestore();
   u64 px = u64(0);
   u64 rx = u64(0);
   u64 ry = u64(0);
@@ -1185,6 +1205,8 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
   if (wmPaced() > u64(0)) {
     wmDamageRect(rx, ry, rw, rh);
+    wmPointerPlace(
+        mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
     final u64 dropped = wmMeta(u64(wmMetaDropped));
     final u64 pending = dropped & u64(wmPointerPending);
     wmSetMeta(u64(wmMetaDropped), dropped & u64(wmPointerDropMask));
@@ -1194,7 +1216,6 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     }
     return;
   }
-  wmPointerRestore();
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPublishFrame(px);
 }

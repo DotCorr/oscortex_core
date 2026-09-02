@@ -43,7 +43,10 @@ menus still lived in `wm` / session fallback as a parallel DE.
    the compositor is off.
 2. **Save-under is 16×20, matching the sprite.** Restore puts those
    pixels back. When there is no capture, erase is `wmPixelAt` then
-   the chrome cache — never a wallpaper stamp into a window.
+   the chrome cache — never a wallpaper stamp into a window. Every client
+   damage path restores the sprite before resolving changed pixels and
+   captures again only after the repaint; reversing that order writes stale
+   pre-commit pixels over the client and can capture pointer AA as underlay.
 3. **`wmContextShow` classifies the hit.** Empty desk → wallpaper
    (Regen / Image). Title → Close / Raise. Bar pill → Raise / Close.
    Window body → `WM CTX FILE` and a client click; no wallpaper menu.

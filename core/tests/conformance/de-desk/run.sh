@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=116
+ASSERTIONS_REQUIRED=120
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -179,6 +179,59 @@ ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
   || fail "dock presses still raise or drag the DESK panel"
 ck; grep -q 'def button(x, y, btn, down):' "$0" \
   || fail "QMP button transitions do not carry absolute tablet coordinates"
+ck; python3 - "$WM" <<'PY' \
+  || fail "damage can repaint before restoring pointer save-under"
+import sys
+s = open(sys.argv[1]).read()
+for sig in ("void wmComposeRect(", "void wmComposeCommitGfx("):
+    body = s[s.index(sig):]
+    body = body[:body.index("\n}\n")]
+    restore = body.index("wmPointerRestore();")
+    repaint = min(i for i in (
+        body.find("wmRepaintRect("), body.find("wmRepaintWindow("))
+        if i >= 0)
+    place = body.index("wmPointerPlace(")
+    if not restore < repaint < place:
+        raise SystemExit("%s ordering is restore=%d repaint=%d place=%d"
+                         % (sig, restore, repaint, place))
+PY
+ck; python3 - "$CORE_DIR/kernel/mouse.dart" <<'PY' \
+  || fail "PS/2 still mutates axes after the tablet is armed"
+import sys
+s = open(sys.argv[1]).read()
+body = s[s.index("void mouseComplete()"):]
+body = body[:body.index("\n}\n")]
+guard = body.index("mouseFlagTablet")
+apply = body.index("mouseApplyX(")
+if guard >= apply or "return;" not in body[guard:apply]:
+    raise SystemExit("tablet arbitration is not before relative-axis apply")
+PY
+ck; python3 - "$CORE_DIR/kernel/virtab.dart" <<'PY' \
+  || fail "tablet queue/coalescing cannot preserve fast final positions"
+import re, sys
+s = open(sys.argv[1]).read()
+q = int(re.search(r"const int virtabQSize = (\d+);", s).group(1))
+cap = int(re.search(r"const int virtabPollCap = (\d+);", s).group(1))
+if q < 64 or cap < q:
+    raise SystemExit("tablet queue=%d poll-cap=%d, need at least 64" % (q, cap))
+apply = s[s.index("void virtabApply("):s.index("void virtabPoll(")]
+if "buttons != prev" not in apply or "virtabCommit(hdr);" not in apply:
+    raise SystemExit("button edges are coalesced instead of committed atomically")
+poll = s[s.index("void virtabPoll("):s.index("void shellVtab(")]
+if poll.rfind("virtabCommit(hdr);") < poll.index("while (last != used)"):
+    raise SystemExit("motion is not committed after the ring is drained")
+PY
+ck; python3 - "$CORE_DIR/scripts/sit-in-view.sh" <<'PY' \
+  || fail "live Start proof still splits absolute position from button edge"
+import sys
+s = open(sys.argv[1]).read()
+loop = s[s.index("for attempt in range(12):"):]
+loop = loop[:loop.index("deadline = time.time() + 1.8")]
+call = loop[loop.index("send_once(["):]
+call = call[:call.index("])") + 2]
+if call.count('"type": "abs"') != 2 or '"type": "btn"' not in call:
+    raise SystemExit("press report is not abs-X + abs-Y + button")
+PY
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/set.c" \
   || fail "SET does not paint CSD titles"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/tap.c" \
