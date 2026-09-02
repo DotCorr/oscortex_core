@@ -110,7 +110,14 @@ PY
 fi
 [[ -f "$LIB" ]] || { echo "build-skia-guest: no $LIB" >&2; exit 1; }
 
-SAMPLE=$(x86_64-elf-ar t "$LIB" | grep '\.o$' | head -1)
+# Consume the archive listing completely. With pipefail, `grep | head -1`
+# intermittently makes `ar` die on SIGPIPE and turns an intact cached archive
+# into a failed kernel build.
+SAMPLE=$(x86_64-elf-ar t "$LIB" | awk '
+  /\.o$/ && first == "" { first = $0 }
+  END { print first }
+')
+[[ -n "$SAMPLE" ]] || { echo "build-skia-guest: archive has no object" >&2; exit 1; }
 x86_64-elf-ar p "$LIB" "$SAMPLE" >"$CORE/build/skia-guest-sample.o"
 if file "$CORE/build/skia-guest-sample.o" | grep -qi 'arm64'; then
   echo "build-skia-guest: archive is arm64 — refused" >&2
