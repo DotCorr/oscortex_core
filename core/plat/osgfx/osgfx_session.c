@@ -129,10 +129,10 @@ static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
   osgfx_fill_rrect(g, x - b, y + h - 1, w + b + b, b + 1, 0, border);
   osgfx_fill_rect(g, x - b, y, b, h, border);
   osgfx_fill_rect(g, x + w, y, b, h, border);
-  osgfx_fill_rrect(g, x, y, w, th, r, OSGFX_TITLE);
-  if (th > 3) {
-    osgfx_fill_rect(g, x + 2, y + 1, w - 4, 2, SESS_TITLE_TOP);
-  }
+  /* Pearl title chrome is a real vertical ramp, not a flat beige card with
+   * a two-pixel highlight stamped over it. The rrect gradient shares the
+   * window radius, so fill and AA border cannot disagree at the corners. */
+  osgfx_fill_rrect_vgrad(g, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
 }
 
 /* Live OsGfx path — osxui_button → osgfx_fill_rrect (Graphite when armed). */
