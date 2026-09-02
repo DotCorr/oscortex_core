@@ -555,13 +555,11 @@ u64 wmSlotX(u64 wI) {
 }
 
 /// The held window whose taskbar slot contains ([x], [y]), or
-/// [wmMaxWindows]. Off while a panel owns the strip (ADR-0197).
+/// [wmMaxWindows]. With DESK up these slots occupy the clear gap between its
+/// left and right islands, providing a restore target without a second bar.
 @bare
 u64 wmSlotHit(u64 x, u64 y) {
   if (wmDeOn() < u64(1)) {
-    return u64(wmMaxWindows);
-  }
-  if (wmPanelStrip() > u64(0)) {
     return u64(wmMaxWindows);
   }
   if (y < wmStartY()) {
