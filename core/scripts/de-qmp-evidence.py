@@ -245,7 +245,7 @@ def main() -> int:
     run(
         "window-minimise",
         "07-after-window-minimise.png",
-        lambda: driver.click(505, 103),
+        lambda: driver.click(465, 111),
         "WM MIN W ",
     )
     rows.append(

@@ -251,8 +251,14 @@ else
   elif pgrep -f '[o]scortex-abs-pointer' >/dev/null 2>&1; then
     echo "verify-de-mac: FAIL — an oscortex-abs-pointer QEMU already exists; refusing to replace it" >&2
     record runtime sit-in FAIL 2 "pre-existing abs-pointer QEMU"
+  elif [[ "$MODE" == venus ]] && pgrep -f '[o]scortex-sit-in-view' >/dev/null 2>&1; then
+    echo "verify-de-mac: FAIL — an existing local sit-in QEMU exists; refusing to replace it" >&2
+    record runtime sit-in FAIL 2 "pre-existing local sit-in QEMU"
+  elif [[ "$MODE" == venus ]] && pgrep -x vncviewer >/dev/null 2>&1; then
+    echo "verify-de-mac: FAIL — an existing VNC viewer exists; refusing to replace it" >&2
+    record runtime sit-in FAIL 2 "pre-existing VNC viewer"
   elif [[ "$MODE" == venus ]] && docker ps -a --format '{{.Names}}' 2>/dev/null \
-      | grep -qE '^oscortex-(interactive-door|venus-view|tiger-view)$'; then
+      | grep -qE '^oscortex-(interactive-door($|-boot-)|venus-view$|tiger-view$|venus-graphite$)'; then
     echo "verify-de-mac: FAIL — an existing Venus sit-in container exists; refusing to replace it" >&2
     record runtime sit-in FAIL 2 "pre-existing Venus container"
   else
