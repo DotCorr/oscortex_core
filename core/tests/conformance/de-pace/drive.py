@@ -161,8 +161,8 @@ DESK_RE = re.compile(
 
 # Where the pointer starts (`wm on` composes it at the origin) and how far it
 # is moved. The compositor now restores pointer save-under directly, so pointer
-# motion no longer exercises `wmDeskPixel`; phase 1b opens and dismisses a
-# desktop popover to force an explicit Dart damage restore through the cache.
+# motion no longer exercises `wmDeskPixel`; the final control minimises the
+# client to force an explicit Dart damage restore through the cache.
 CURSOR_W, CURSOR_H = 12, 16
 CURSOR_TO = (520, 300)
 
@@ -227,32 +227,6 @@ def main():
             {"type": "rel", "data": {"axis": "y", "value": step_y}},
         ])
         time.sleep(0.06)
-    time.sleep(0.5)
-
-    # Open the wallpaper menu on empty desktop, move outside it, and dismiss
-    # it. Hiding the card repaints its old rectangle through
-    # wmPopDamageRestore -> wmRepaintRect -> wmDeskPixel, providing runtime
-    # evidence that Dart damage repair reads the generated cache.
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "right", "down": True}},
-    ])
-    if not wait_marker(serial, "WM WALL MENU\n", timeout=10):
-        raise SystemExit("desktop right-click did not open the wallpaper menu")
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "right", "down": False}},
-    ])
-    for _ in range(8):
-        q.cmd("input-send-event", events=[
-            {"type": "rel", "data": {"axis": "x", "value": 10}},
-            {"type": "rel", "data": {"axis": "y", "value": 10}},
-        ])
-        time.sleep(0.04)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}},
-    ])
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}},
-    ])
     time.sleep(0.5)
 
     # ---- phase 2: the client floods, UNPACED ------------------------------
@@ -320,6 +294,28 @@ def main():
     data = open(fb_bin, "rb").read()
     write_png(png, 800, 600, pitch, data)
 
+    # The framebuffer evidence above must retain the live client. Now minimise
+    # that client: wmMinWindow exposes its old rectangle through
+    # wmRepaintRect -> wmDeskPixel. This is the explicit running-OS control for
+    # cache reads after pointer save-under made motion the wrong mechanism.
+    for _ in range(20):
+        q.cmd("input-send-event", events=[
+            {"type": "rel", "data": {"axis": "x", "value": -15}},
+            {"type": "rel", "data": {"axis": "y", "value": -12}},
+        ])
+        time.sleep(0.04)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": True}},
+    ])
+    if not wait_marker(serial, "WM MIN W 0\n", timeout=10):
+        raise SystemExit("the final minimise control did not expose the client rectangle")
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": False}},
+    ])
+    q.line("wm pace off")
+    await_pace(serial, 7)
+
+    text = read_serial(serial)
     desks = DESK_RE.findall(text)
     if not desks:
         raise SystemExit("no `WM DESK ... REGEN ... BLIT ...` report — the "

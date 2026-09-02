@@ -331,10 +331,10 @@ ck; [[ "$DESK_REGEN" -eq 1 ]] \
   || fail "the generative field was regenerated $DESK_REGEN times, expected exactly 1 — the cache key is not stable across frames"
 ck; [[ "$DESK_BLIT" -gt "$DESK_REGEN" ]] \
   || fail "the cache was blitted $DESK_BLIT times and generated $DESK_REGEN — one generate did not serve more than one paint, so nothing was saved"
-# And the DAMAGE path reads it too: the driver opens a wallpaper menu on empty
-# desktop, moves outside it, and dismisses it. Restoring the card's old
-# rectangle must resolve through `wmDeskPixel`; pointer motion no longer proves
-# this because the compositor correctly restores its save-under directly.
+# And the DAMAGE path reads it too: after capturing the live-client framebuffer,
+# the driver minimises that client. Restoring its old rectangle must resolve
+# through `wmDeskPixel`; pointer motion no longer proves this because the
+# compositor correctly restores its save-under directly.
 ck; [[ "$DESK_READ" -gt 0 ]] \
   || fail "no damage repaint ever read the cached field — Dart is still painting the desktop from a flat constant"
 
