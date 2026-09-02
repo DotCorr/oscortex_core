@@ -102,23 +102,26 @@ struct OsGfx {
 
 static OsGfx g_one;
 static OsGfx client_g;
+static int resource_cache_disabled;
 
 static void drop_skia_before_rewind(void) {
+  if (!resource_cache_disabled) {
+    /*
+     * The freestanding CRT's free() is a no-op and frame reclamation rewinds
+     * its bump arena. A Skia cache entry surviving that rewind points into
+     * storage the next frame may overwrite, so a later cache purge can call
+     * through a corrupted resource vtable. A zero-byte cache budget makes
+     * every unreferenced entry leave while its allocation is still valid.
+     */
+    SkGraphics::SetResourceCacheTotalByteLimit(0);
+    resource_cache_disabled = 1;
+  }
   g_one.owned.reset();
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
-  /*
-   * The freestanding CRT's free() is a no-op. PurgeAllCaches walks Skia
-   * resource records allocated by that CRT, while heap_frame_begin rewinds
-   * the same bump arena. A cache record retained across one frame therefore
-   * points into memory the next frame can overwrite; the next purge calls
-   * through its corrupted vtable and #GPs in SkResourceCache::remove.
-   *
-   * Keep the arena monotonic until the CRT has a lifetime-aware allocator.
-   * Resetting the canvases releases their live references without traversing
-   * or recycling storage that global Skia caches may still own.
-   */
+  SkGraphics::PurgeAllCaches();
+  osgfx_heap_frame_begin();
 }
 
 static uint64_t last_gen;
