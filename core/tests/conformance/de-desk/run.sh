@@ -193,6 +193,20 @@ ck; grep -q 'u64 wmPanelWindow' "$CORE_DIR/kernel/wmgfx.dart" \
   || fail "dock dispatch confuses panel ownership with a window slot"
 ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
   || fail "dock presses still raise or drag the DESK panel"
+ck; python3 - "$WM" "$CORE_DIR/plat/osgfx/osgfx_chrome.c" <<'PY' \
+  || fail "panel/title ownership can clip the dock or stale window titles"
+import sys
+wm, chrome = map(lambda p: open(p).read(), sys.argv[1:])
+pixel = wm[wm.index("u64 wmWindowPixel("):wm.index("u64 wmBorderColor(")]
+guard = pixel.index("if (wmIsPanel(wI) < u64(1))")
+title = pixel.index("if (wmTitleHit(wI, x, y) > u64(0))", guard)
+if title < guard:
+    raise SystemExit("title hole is not guarded away from panels")
+call = chrome[chrome.index("chrome_blit((uint32_t"):chrome.index(
+    "pg[OSGFX_WMPAGE_W_CHROME_BLITS]")]
+if "m->win0, m->win1, 0);" not in call:
+    raise SystemExit("panel-presence is still passed as global CSD policy")
+PY
 ck; grep -q 'def button(x, y, btn, down):' "$0" \
   || fail "QMP button transitions do not carry absolute tablet coordinates"
 ck; python3 - "$WM" <<'PY' \

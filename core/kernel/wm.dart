@@ -2491,8 +2491,13 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
   }
   /* Button holes under gfx are wmNoPixel — do not fall through to shm. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (wmTitleHit(wI, x, y) > u64(0)) {
-      return u64(wmNoPixel);
+    /* A DESK panel is a borderless client surface, not a 48px-tall titled
+     * window. Treating its first wmTitleH rows as session chrome clipped the
+     * upper two-thirds of both dock islands after any damage repaint. */
+    if (wmIsPanel(wI) < u64(1)) {
+      if (wmTitleHit(wI, x, y) > u64(0)) {
+        return u64(wmNoPixel);
+      }
     }
   }
   final u64 scale = wmWinScaleOf(wI);

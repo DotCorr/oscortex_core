@@ -326,9 +326,14 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m) {
   if (m->pitch < m->w * 4) {
     return 0;
   }
+  /*
+   * Session titles are always compositor-owned (`session_csd == 0` in
+   * osgfx_session.c). OSGFX_GUEST_PANEL says only that one short DESK surface
+   * owns the bottom strip; using it as the CSD bit punched title-band holes in
+   * every ordinary window as soon as the dock attached.
+   */
   chrome_blit((uint32_t *)(uintptr_t)m->fb, (int)m->pitch, buf, (int)m->w,
-              (int)m->h, m->win0, m->win1,
-              (m->flags & OSGFX_GUEST_PANEL) != 0);
+              (int)m->h, m->win0, m->win1, 0);
   pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
   return (int)(m->w * m->h);
 }
