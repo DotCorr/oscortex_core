@@ -2751,7 +2751,7 @@ void wmGrab(u64 x, u64 y) {
     if (wmDeOn() < u64(1)) {
       return;
     }
-    final u64 panel = wmPanelStrip();
+    final u64 panel = wmPanelWindow();
     if (panel >= u64(wmMaxWindows)) {
       return;
     }

@@ -85,6 +85,19 @@ u64 wmPanelStrip() {
   return u64(0);
 }
 
+/// The live panel window slot, or [wmMaxWindows].
+@bare
+u64 wmPanelWindow() {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmIsPanel(i) > u64(0)) {
+      return i;
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
 /// `'wm gfx'` -- 6 bytes.
 @rodata
 final List<u8> wmStrCmdGfx = const [

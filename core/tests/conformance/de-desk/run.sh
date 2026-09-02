@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=114
+ASSERTIONS_REQUIRED=115
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -171,6 +171,8 @@ ck; grep -q 'wmPointerPending' "$WM" \
   || fail "pointer packets arriving during composition are still discarded"
 ck; grep -q 'wmeventEnqueue(panel, x, y)' "$WM" \
   || fail "fallback chrome does not dispatch unmatched client dock clicks"
+ck; grep -q 'u64 wmPanelWindow' "$CORE_DIR/kernel/wmgfx.dart" \
+  || fail "dock dispatch confuses panel ownership with a window slot"
 ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
   || fail "dock presses still raise or drag the DESK panel"
 ck; grep -q 'def button(x, y, btn, down):' "$0" \
