@@ -1,0 +1,40 @@
+{
+  "blocked": true,
+  "reason": "linux_only_no_COMP_document_fix_plan",
+  "defects": ["DE-005", "DE-006"],
+  "this_run": {
+    "bcId": "bc-d79874b7-4ebb-512d-a3f2-1760419cb648",
+    "name": "DE-005/006 window drag minmax",
+    "uname": "Linux",
+    "hostname": "cursor",
+    "privateWorkerId": null,
+    "usePrivateWorker": false,
+    "workspace": "/workspace",
+    "branch": "cursor/de-005-006-winops-b648"
+  },
+  "deliverables_on_linux": {
+    "fix_plan": ".cursor/patches/DE-005-006-winops.md",
+    "before_artifacts": [
+      "/opt/cursor/artifacts/DE-005-before-mac-de-desk.png",
+      "/opt/cursor/artifacts/DE-005-before-drag-desk-tear-source.png",
+      "/opt/cursor/artifacts/DE-005-linux-host-fb-console-only.png",
+      "/opt/cursor/artifacts/DE-006-before-mac-de-chrome.png",
+      "/opt/cursor/artifacts/DE-006-linux-host-fb-console-only.png"
+    ],
+    "did_not": [
+      "fake Skia DE on milestones-m1-m6",
+      "push stub compositor from /tmp/comp-extract",
+      "claim after-fix without Darwin sit-in"
+    ]
+  },
+  "mac_worker": {
+    "workerId": "54470311-d074-5e4c-a8c1-e3cc777eac29",
+    "displayName": "~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro",
+    "connected": true,
+    "eligibleForSubagent": true,
+    "sharedAssignmentAllowed": true,
+    "preferred_COMP": "/private/tmp/claude-501/-Users-ghostportal-Desktop-dc-sys/0a8dccfa-95e0-46b8-8be8-f0687b1d2277/scratchpad/COMP"
+  },
+  "origin_compositor": "MISSING",
+  "unblock": "Parent must Task-bind workerId 54470311-d074-5e4c-a8c1-e3cc777eac29. On Darwin COMP with OSGFX_SKIA=1: apply .cursor/patches/DE-005-006-winops.md (vacated-rect order, desk_blit restore, chrome-cache invalidate on min/max/restore), sit-in-view --abs daily-drive drag+minmax, write DE-005-after-*.png / DE-006-after-*.png, git push origin HEAD:compositor."
+}

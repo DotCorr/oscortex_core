@@ -89,6 +89,17 @@ Hunt and fix on Mac COMP:
 - Cursor move: restore previous underlay **before** drawing new pointer.
 - Harness: `de-pace` (pointer walk across desk), sit-in-view `--abs` visual check.
 
+## 2b) DE-005 / DE-006 — drag tear+lag and min/max/restore chrome damage
+
+Owned patch (exact Mac edit plan, harness gates, push steps):
+
+`.cursor/patches/DE-005-006-winops.md`
+
+- **DE-005:** geom install before vacated `wmRepaintRect`; `desk_blit` restore; scratch/present damage union; chrome key must miss on drag geom.
+- **DE-006:** union(old,new) damage on min/max/restore; force chrome-cache REGEN; anim frames invalidate each step; no SRC blit of black-cleared chrome scratch.
+- Before evidence: `/opt/cursor/artifacts/DE-005-before-*.png`, `DE-006-before-*.png`.
+- Do not invent this stack on cloud milestones.
+
 ## 3) Sync
 
 ```bash

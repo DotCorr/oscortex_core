@@ -12,8 +12,8 @@ Source: user reports + `QEMU oscortex-abs-pointer` screenshot
 | DE-002 | P0 | Corner radius looks crayon / blocky, not soft AA | `osgfx_fill_rrect` / `rrect_cover` / Sk drawRRect | radius-aa |
 | DE-003 | P0 | Mouse move leaves **teal trails** / row warp | `wmOverlayRestore`, pointer save-under, `desk_blit` | pointer-trails |
 | DE-004 | P0 | Boot **flashes old Start / fallback strip** before DESK | `paint_de_strip` in `osgfx_session.c` | kill-fallback |
-| DE-005 | P0 | Window **drag** tears / smears / lags whole desk | scratch compose, vacated-rect order, present pace | win-drag |
-| DE-006 | P0 | **Minimize / maximize / restore** corrupts chrome or desk | damage union, chrome cache, anim frames | win-minmax |
+| DE-005 | P0 | Window **drag** tears / smears / lags whole desk | scratch compose, vacated-rect order, present pace | win-drag — Linux plan in `.cursor/patches/DE-005-006-winops.md` (Mac COMP apply) |
+| DE-006 | P0 | **Minimize / maximize / restore** corrupts chrome or desk | damage union, chrome cache, anim frames | win-minmax — same patch file; Mac worker `54470311-…` |
 | DE-007 | P1 | Dock ends: black bars, orphan semicircle artifacts | dock frost blit inset / width | dock-chrome |
 | DE-008 | P1 | Top-left island: beige header + black body, black corner blocks | session card / island paint | island-card |
 | DE-009 | P1 | Taskbar/clock island misaligned borders, stray black pixels | panel layout / AA edges | panel-metrics |
