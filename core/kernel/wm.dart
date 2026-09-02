@@ -1122,11 +1122,18 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   u64 rh = u64(0);
   if (full > u64(0)) {
     px = wmRepaintWindow(slot);
-    rx = wmAbsX(slot) - u64(wmBorder);
-    ry = wmAbsY(slot) - u64(wmBorder);
     final u64 g = wmWin(slot, u64(wmWinGeom));
-    rw = wmGeomW(g) + u64(wmBorder) + u64(wmBorder);
-    rh = wmGeomH(g) + u64(wmBorder) + u64(wmBorder);
+    if (wmIsPanel(slot) > u64(0)) {
+      rx = wmAbsX(slot);
+      ry = wmAbsY(slot);
+      rw = wmGeomW(g);
+      rh = wmGeomH(g);
+    } else {
+      rx = wmAbsX(slot) - u64(wmBorder);
+      ry = wmAbsY(slot) - u64(wmBorder);
+      rw = wmGeomW(g) + u64(wmBorder) + u64(wmBorder);
+      rh = wmGeomH(g) + u64(wmBorder) + u64(wmBorder);
+    }
     if (wmMeta(u64(wmMetaTop)) == slot) {
       u64 i = u64(0);
       while (i < u64(wmMaxWindows)) {
@@ -1192,8 +1199,13 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     if (wmWindowUsable(slot) > u64(0)) {
       final u64 g = wmWin(slot, u64(wmWinGeom));
       final u64 b = u64(wmBorder);
-      wmMaybeDrawPointer(wmAbsX(slot) - b, wmAbsY(slot) - b,
-          wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+      if (wmIsPanel(slot) > u64(0)) {
+        wmMaybeDrawPointer(
+            wmAbsX(slot), wmAbsY(slot), wmGeomW(g), wmGeomH(g));
+      } else {
+        wmMaybeDrawPointer(wmAbsX(slot) - b, wmAbsY(slot) - b,
+            wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+      }
     }
     if (wmMeta(u64(wmMetaTop)) == slot) {
       u64 i = u64(0);
@@ -1203,8 +1215,13 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
             px = px + wmRepaintWindow(i);
             final u64 g = wmWin(i, u64(wmWinGeom));
             final u64 b = u64(wmBorder);
-            wmMaybeDrawPointer(wmAbsX(i) - b, wmAbsY(i) - b,
-                wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+            if (wmIsPanel(i) > u64(0)) {
+              wmMaybeDrawPointer(
+                  wmAbsX(i), wmAbsY(i), wmGeomW(g), wmGeomH(g));
+            } else {
+              wmMaybeDrawPointer(wmAbsX(i) - b, wmAbsY(i) - b,
+                  wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+            }
           }
         }
         i = i + u64(1);
