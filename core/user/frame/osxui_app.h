@@ -349,8 +349,8 @@ static inline void osxui_app_move(unsigned long h, unsigned long x,
 #define OSXUI_CSD_FG OSXUI_GLASS_FG
 /* Mockup: thin dark line icons — not traffic-light discs. */
 #define OSXUI_CSD_ICON 0x00202830UL
-#define OSXUI_CSD_BTN 16UL
-#define OSXUI_CSD_GAP 10UL
+#define OSXUI_CSD_BTN 18UL
+#define OSXUI_CSD_GAP 8UL
 #define OSXUI_CSD_PAD 8UL
 
 static inline void osxui_app_glass(unsigned long h, unsigned long x,
