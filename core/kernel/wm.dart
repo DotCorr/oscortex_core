@@ -1232,6 +1232,12 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return;
   }
+  /* Viewport geometry changes both sampling scale and server-owned chrome;
+   * retained rectangle damage cannot reuse either safely. */
+  if (wmWinViewportOf(slot) > u64(0)) {
+    wmCompose();
+    return;
+  }
   /* Under `wm gfx`, honour damage when chrome is fresh; else full compose. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     if (wmGfxChromeFresh() > u64(0)) {
