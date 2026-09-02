@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=115
+ASSERTIONS_REQUIRED=116
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -134,6 +134,8 @@ ck; grep -q 'wmPointerBlit' "$CORE_DIR/kernel/wm.dart" \
   || fail "wm does not blit a Skia sprite"
 ck; grep -q 'wmContextShow' "$CORE_DIR/kernel/wmpop.dart" \
   || fail "no contextual right-click"
+ck; grep -q 'final u64 geomHit = wmDeGeomHit' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "CSD title context clicks still fall through as wallpaper"
 ck; grep -q 'WM_SCREEN_NAME' "$CORE_DIR/user/frame/osframe.h" \
   || fail "no screen name op for desk pills"
 ck; [[ -f "$CORE_DIR/docs/decisions/0194-skia-pointer-and-contextual-menus.md" ]] \
