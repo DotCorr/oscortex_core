@@ -39,6 +39,7 @@ enum {
   SESS_BTN_PAD_Y = 7,
   SESS_CLOSE = 0x00D45050,
   SESS_MIN = 0x00D4A840,
+  SESS_MAX = 0x0068B078,
   SESS_CLOSE_HI = 0x00F0A0A0,
   SESS_MIN_HI = 0x00F0D080,
   SESS_POP_ROW0 = 0x00304878,
@@ -64,7 +65,8 @@ enum {
   /* Traffic-light rim: one shade down from the fill, so the disc reads as
    * a control instead of a flat dot. Skia AA does the edge. */
   SESS_CLOSE_RIM = 0x00A03A3A,
-  SESS_MIN_RIM = 0x00A87C28
+  SESS_MIN_RIM = 0x00A87C28,
+  SESS_MAX_RIM = 0x00487850
 };
 
 const char osgfx_session_door[] = "osgfx-session-tick";
@@ -175,6 +177,10 @@ static int win_min_x(int wx, int ww) {
   return win_close_x(wx, ww) - SESS_BTN_GAP - SESS_BTN_S;
 }
 
+static int win_max_x(int wx, int ww) {
+  return win_min_x(wx, ww) - SESS_BTN_GAP - SESS_BTN_S;
+}
+
 static int win_btn_y(int wy) {
   return wy + SESS_BTN_PAD_Y;
 }
@@ -273,8 +279,10 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
   if (w < 8 || h < 8) {
     return;
   }
-  bx = win_min_x(x, w);
   by = win_btn_y(y);
+  bx = win_max_x(x, w);
+  paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MAX, SESS_MAX_RIM);
+  bx = win_min_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MIN, SESS_MIN_RIM);
   bx = win_close_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_CLOSE, SESS_CLOSE_RIM);
@@ -282,13 +290,9 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
     title_noted = 1;
     com1_puts("OSGFX TITLE CLOSE\n");
   }
-  if (slot == 0) {
-    cap = "FILES";
-    cap_n = 5;
-  } else {
-    cap = "SET";
-    cap_n = 3;
-  }
+  (void)slot;
+  cap = "FILES";
+  cap_n = 5;
   i = SESS_TITLE_BAND;
   if (i > h) {
     i = h;
@@ -363,7 +367,9 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
     com1_puts("OSGFX SESSION CHROME\n");
   }
   panel = (cmd->flags & OSGFX_GUEST_PANEL) != 0;
-  session_csd = panel;
+  /* Client panels own the bottom strip, not ordinary-window title chrome.
+   * Keep title controls in the session so they follow live geometry. */
+  session_csd = 0;
   if (panel != 0 && client_noted == 0) {
     client_noted = 1;
     com1_puts("OSGFX SESSION CHROME CLIENT\n");
@@ -407,7 +413,7 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   top = (int)((cmd->flags >> 8) & 3u);
   held0 = cmd->win0;
   held1 = cmd->win1;
-  if (held0 != 0) {
+  if (held0 != 0 && panel == 0) {
     paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
                         OSGFX_WIN_FILL);
   }
@@ -417,16 +423,17 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   }
   if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
     if (session_csd == 0) {
-      if (held0 != 0) {
+      if (held0 != 0 && panel == 0) {
         paint_de_title_controls(g, fb, pitch, ww, hh, held0, 0);
       } else {
-        if (held0_noted == 0) {
+        if (held0_noted == 0 && panel == 0) {
           held0_noted = 1;
           com1_puts("OSGFX TITLE HELD0 0\n");
         }
       }
       if (held1 != 0) {
-        paint_de_title_controls(g, fb, pitch, ww, hh, held1, 1);
+        paint_de_title_controls(g, fb, pitch, ww, hh, held1,
+                                panel != 0 ? 0 : 1);
       }
     }
   } else {

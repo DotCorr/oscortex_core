@@ -112,6 +112,9 @@
 #define WM_OP_MOVE 7UL
 #define WM_OP_SCREEN 9UL
 #define WM_OP_PAINT 10UL
+/* ATTACH offset flag: scale this bounded backing as a viewport when the
+ * compositor grants geometry larger than its pixel store. */
+#define WM_SURFACE_VIEWPORT (1UL << 63)
 
 /* SCREEN word 2. RECT is the scanout; TASKS is the live window table, one
  * byte per slot: bit 7 live, bit 6 the surface is the panel, bit 5 seat-0
@@ -193,6 +196,7 @@
 #define WMEVENT_OP_DROPPED 1UL
 #define WMEVENT_OP_COUNT 2UL
 #define WMEVENT_TYPE_PRESS 1UL
+#define WMEVENT_TYPE_CONFIGURE 2UL
 #define WMEVENT_TYPE_CONTEXT 5UL
 #define WMEVENT_TYPE_SCROLL 6UL
 #define WMEVENT_EMPTY 0UL

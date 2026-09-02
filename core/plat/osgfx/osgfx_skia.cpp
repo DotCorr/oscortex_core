@@ -209,9 +209,11 @@ void osgfx_blend_px(OsGfx *g, int x, int y, uint32_t rgb, uint8_t cov) {
   unsigned sr;
   unsigned sg;
   unsigned sb;
+  unsigned da;
   unsigned dr;
   unsigned dg;
   unsigned db;
+  unsigned oa;
 
   if (g == 0 || g->px == 0 || cov == 0) {
     return;
@@ -221,7 +223,7 @@ void osgfx_blend_px(OsGfx *g, int x, int y, uint32_t rgb, uint8_t cov) {
   }
   row = (uint8_t *)g->px + (unsigned)y * (unsigned)g->pitch;
   if (cov >= 250) {
-    ((uint32_t *)row)[x] = rgb & 0x00FFFFFFu;
+    ((uint32_t *)row)[x] = 0xFF000000u | (rgb & 0x00FFFFFFu);
     return;
   }
   dst = ((uint32_t *)row)[x];
@@ -230,13 +232,17 @@ void osgfx_blend_px(OsGfx *g, int x, int y, uint32_t rgb, uint8_t cov) {
   sr = (rgb >> 16) & 0xffu;
   sg = (rgb >> 8) & 0xffu;
   sb = rgb & 0xffu;
+  da = (dst >> 24) & 0xffu;
   dr = (dst >> 16) & 0xffu;
   dg = (dst >> 8) & 0xffu;
   db = dst & 0xffu;
-  dr = (sr * a + dr * ia) / 255u;
-  dg = (sg * a + dg * ia) / 255u;
-  db = (sb * a + db * ia) / 255u;
-  ((uint32_t *)row)[x] = ((dr & 0xffu) << 16) | ((dg & 0xffu) << 8) | (db & 0xffu);
+  oa = a + (da * ia) / 255u;
+  dr = (sr * a) / 255u + (dr * ia) / 255u;
+  dg = (sg * a) / 255u + (dg * ia) / 255u;
+  db = (sb * a) / 255u + (db * ia) / 255u;
+  ((uint32_t *)row)[x] = ((oa & 0xffu) << 24) |
+                         ((dr & 0xffu) << 16) |
+                         ((dg & 0xffu) << 8) | (db & 0xffu);
 }
 
 void osgfx_clear(OsGfx *g, uint32_t rgb) {
@@ -326,7 +332,7 @@ static uint32_t read_px(OsGfx *g, int x, int y) {
     return 0;
   }
   row = (uint8_t *)g->px + (unsigned)y * (unsigned)g->pitch;
-  return ((uint32_t *)row)[x] & 0x00FFFFFFu;
+  return ((uint32_t *)row)[x];
 }
 
 static void blend_px(OsGfx *g, int x, int y, uint32_t rgb, int alpha) {
@@ -334,27 +340,32 @@ static void blend_px(OsGfx *g, int x, int y, uint32_t rgb, int alpha) {
   int ar;
   int ag;
   int ab;
+  int da;
   int dr;
   int dg;
   int db;
+  int oa;
   if (alpha <= 0) {
     return;
   }
   if (alpha >= 255) {
-    put_px(g, x, y, rgb);
+    put_px(g, x, y, 0xFF000000u | (rgb & 0x00FFFFFFu));
     return;
   }
   dst = read_px(g, x, y);
   ar = (int)((rgb >> 16) & 0xffu);
   ag = (int)((rgb >> 8) & 0xffu);
   ab = (int)(rgb & 0xffu);
+  da = (int)((dst >> 24) & 0xffu);
   dr = (int)((dst >> 16) & 0xffu);
   dg = (int)((dst >> 8) & 0xffu);
   db = (int)(dst & 0xffu);
-  dr = dr + ((ar - dr) * alpha) / 255;
-  dg = dg + ((ag - dg) * alpha) / 255;
-  db = db + ((ab - db) * alpha) / 255;
-  put_px(g, x, y, ((uint32_t)dr << 16) | ((uint32_t)dg << 8) | (uint32_t)db);
+  oa = alpha + (da * (255 - alpha)) / 255;
+  dr = (ar * alpha) / 255 + (dr * (255 - alpha)) / 255;
+  dg = (ag * alpha) / 255 + (dg * (255 - alpha)) / 255;
+  db = (ab * alpha) / 255 + (db * (255 - alpha)) / 255;
+  put_px(g, x, y, ((uint32_t)oa << 24) | ((uint32_t)dr << 16) |
+                       ((uint32_t)dg << 8) | (uint32_t)db);
 }
 
 /* Soft coverage for corner pixels — reads as AA without SkScan FillPath. */
@@ -685,6 +696,8 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
   int ow;
   int oh;
   int orad;
+  int layer;
+  int spread;
   uint32_t col;
 
   if (g == 0 || w <= 0 || h <= 0) {
@@ -694,7 +707,6 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
   if (col == 0) {
     col = 0x00081018u;
   }
-  (void)blur;
   /*
    * SkMaskFilter::MakeBlur installs mask resources in Skia's process-global
    * cache. That cache cannot share the freestanding frame bump arena: records
@@ -702,28 +714,39 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
    * bounded premultiplied-alpha fallback for shadows; shapes and text continue
    * through Skia's AA paths without creating cached blur masks.
    */
-  ox = x + 6;
-  oy = y + 10;
-  ow = w + 4;
-  oh = h + 4;
-  orad = radius + 1;
-  alpha = 56;
-  yy = oy;
-  while (yy < oy + oh) {
-    xx = ox;
-    while (xx < ox + ow) {
-      if (xx >= ox + orad && xx < ox + ow - orad && yy >= oy + orad &&
-          yy < oy + oh - orad) {
-        xx = ox + ow - orad;
-        continue;
+  spread = blur / 6;
+  if (spread < 1) {
+    spread = 1;
+  }
+  if (spread > 3) {
+    spread = 3;
+  }
+  layer = spread;
+  while (layer >= 0) {
+    ox = x - layer;
+    oy = y - layer;
+    ow = w + layer + layer;
+    oh = h + layer + layer;
+    orad = radius + layer;
+    alpha = 10 + (spread - layer) * 8;
+    yy = oy;
+    while (yy < oy + oh) {
+      xx = ox;
+      while (xx < ox + ow) {
+        if (xx >= ox + orad && xx < ox + ow - orad && yy >= oy + orad &&
+            yy < oy + oh - orad) {
+          xx = ox + ow - orad;
+          continue;
+        }
+        cover = rrect_cover(xx, yy, ox, oy, ow, oh, orad);
+        if (cover > 0) {
+          blend_px(g, xx, yy, col, (alpha * cover) / 255);
+        }
+        xx = xx + 1;
       }
-      cover = rrect_cover(xx, yy, ox, oy, ow, oh, orad);
-      if (cover > 0) {
-        blend_px(g, xx, yy, col, (alpha * cover) / 255);
-      }
-      xx = xx + 1;
+      yy = yy + 1;
     }
-    yy = yy + 1;
+    layer = layer - 1;
   }
 }
 
@@ -1234,6 +1257,7 @@ static const uint64_t WM_RET_FLOOR = 0xFFFFFFFFFFFFFF00ULL;
 static const uint64_t WM_RET_BADPTR = 0xFFFFFFFFFFFFFFFCULL;
 static const uint64_t WM_RET_NOWIN = 0xFFFFFFFFFFFFFFF6ULL;
 static const uint64_t WM_RET_SMALL = 0xFFFFFFFFFFFFFFF5ULL;
+static int client_rrect_noted;
 
 extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
                                        uint64_t h, uint64_t scr_x,
@@ -1292,6 +1316,10 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
   g = &client_g;
   if (kind == 1) {
     osgfx_fill_rrect(g, x, y, rw, rh, rad, (uint32_t)c0);
+    if (g->canvas != 0 && client_rrect_noted == 0) {
+      client_rrect_noted = 1;
+      com1_puts("OSGFX CLIENT SHAPE SKIA RRECT\n");
+    }
     (void)osgfx_flush(g);
     return 0;
   }
