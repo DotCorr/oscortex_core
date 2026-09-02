@@ -4,7 +4,14 @@ set -euo pipefail
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 INC="$CORE/plat/osgfx/guest_inc"
 CFG="$INC/c++cfg"
-LIBCXX="$(xcrun --show-sdk-path)/usr/include/c++/v1"
+if command -v xcrun >/dev/null 2>&1; then
+  LIBCXX="$(xcrun --show-sdk-path)/usr/include/c++/v1"
+elif [[ -d /usr/include/c++/v1 ]]; then
+  LIBCXX=/usr/include/c++/v1
+else
+  echo "skia-guest-cxx: libc++ headers not found" >&2
+  exit 1
+fi
 CLANGINC="$(clang -print-resource-dir)/include"
 args=()
 skip_next=0
