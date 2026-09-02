@@ -1,7 +1,9 @@
 # The oscortex network stack — a design, not yet a decision
 
-**Status: DESIGN. Not an ADR, not numbered, nothing implemented.** This document exists so that the
-agent who builds the first piece does not have to re-decide anything. When a piece is built it gets
+**Status: DESIGN.** N0, N1, N2 and N3 are implemented (ADR-0058, ADR-0063,
+ADR-0066, ADR-0076). The rest of
+the ladder is not. This document exists so that the
+agent who builds the next piece does not have to re-decide anything. When a piece is built it gets
 its own numbered ADR; this file is the thing those ADRs will point back at. It is the sibling of
 `display-protocol.md` and it borrows that document's shape deliberately, because the two designs turn
 out to need **the same three missing things** and it should be obvious when they are the same thing
@@ -28,10 +30,21 @@ between "this needs a PCI config-space write path that does not exist" and "this
 | **Time** | **One `netTick()` call inside the existing `procTick`. That is the entire timer machinery.** A fixed 1-second RTO with exponential backoff — which is RFC 6298's own floor — deletes the RTT estimator, and 100 Hz is exactly enough to measure it. | §4.3, §4.5 |
 | **Buffers** | **`allocFrame()`, not `@bss`.** Frames are 4 KiB, identity-mapped, and their physical address *is* their virtual address — which is precisely a DMA buffer. Nineteen frames, and **zero new bytes of donated `.bss`** beyond one 512-byte state block. | §5.1 |
 
-**What to build first: N0 — the kernel prints the NIC's MAC address (§9).** It moves no packet, it
-touches two files, and its exit criterion compares the kernel's answer against the `mac=` string the
-harness itself typed on the QEMU command line. That is a whole milestone whose expectation comes from
-outside the kernel, which is this repo's rule, and it can be built today with nothing else changing.
+**What to build first: N0 — the kernel prints the NIC's MAC address (§9).** **DONE
+(ADR-0058).** It moves no packet, it touches `pci.dart` and `nic.dart`, and its
+exit criterion compares the kernel's answer against the `mac=` string the
+harness itself typed on the QEMU command line. That is a whole milestone whose
+expectation comes from outside the kernel, which is this repo's rule.
+**N1 — one frame leaves (§9).** **DONE (ADR-0063).** `nic send` programs a TX
+ring from `allocFrame()`, rings `TDT`, and the pcap contains exactly the
+60-byte broadcast frame the harness built from `mac=`.
+**N2 — ARP (§9).** **DONE (ADR-0066).** `nic arp` posts an RX ring, sends a
+request for 10.0.2.2, and prints the reply's SHA. The harness requires
+that MAC to equal the pcap reply source *and* `52:55` ‖ `net|2`.
+**N3 — Ping (§9).** **DONE (ADR-0076).** `nic ping` ARPs, then sends an
+ICMP echo request to 10.0.2.2. The harness recomputes the IP and ICMP
+checksums on the pcap and requires the printed source IP to equal
+`net|2`.
 
 ### And the four findings that surprised me most
 
@@ -995,11 +1008,16 @@ And the pcap parser is ~40 lines of `struct.unpack`: magic `0xa1b2c3d4`, 24-byte
 
 ### N0 — The kernel finds the NIC and reads its MAC address
 
-**Blocked on: work only.** Touches `pci.dart` (§6.4's two functions) and a new `net.dart`. Moves no
-packet. Independent of everything else in this document and of everything in the display one.
+**DONE (ADR-0058, `tests/conformance/n0-mac/run.sh`).** Touches `pci.dart`
+(`pciFindByClass`, `pciReadBar`) and a new `nic.dart`. Moves no packet.
+Zero new `.bss`. The print is the `nic` command, not a boot line: QEMU's
+default machine already has an e1000, and a boot-time MAC line would move
+every session golden after `M1 END`. Configuration space is still
+read-only (GAP-0067 item 2). The device is not reset; `RAL0`/`RAH0` are
+already populated from `mac=` on this machine.
 
 Find class `02/00`, read BAR0, check `cfg[0x04]` bits 1 and 2 and refuse if either is clear (§6.4),
-reset the device, read `RAL0`/`RAH0`, print the MAC.
+read `RAL0`/`RAH0`, print the MAC.
 
 *Binary:* the harness passes `mac=52:54:00:AB:CD:EF` — **a value it chose, that appears nowhere in the
 kernel** — and requires the kernel's printed MAC to equal it, byte for byte. It additionally requires
@@ -1015,15 +1033,21 @@ harness mean anything. *Anti-vacuity:* the harness must fail if the expected MAC
 
 ### N1 — One frame leaves the machine
 
-**Blocked on: N0.**
+**DONE (ADR-0063, `tests/conformance/n1-frame/run.sh`).** Touches `nic.dart`
+(`nicSend`) and uses `pciWrite32` (already present for G1) to set BME.
+Two frames from `allocFrame()` — TX ring and TX buffer — and **zero new
+`.bss`**. The command is `nic send`; `nic` still prints the MAC only.
+Broadcast dest, ethertype `0x88B5`, 60-byte frame, FCS appended by the
+NIC. No IP, no ARP, no RX ring, no IRQ 11.
 
 The TX ring, one frame from `allocFrame()`, one descriptor, one `TDT` write, one `DD` poll. Send a
 broadcast frame with a reserved ethertype and a body the harness generated.
 
 *Binary:* the pcap contains **exactly one** packet; its bytes equal the bytes the harness itself
 generated, byte for byte; its source MAC equals the `mac=` from the command line. *Negative control,
-and it is the one that proves the doorbell is load-bearing:* a build with the `TDT` write removed must
-produce a pcap with **zero** packets. *Anti-vacuity:* a zero-packet pcap fails the positive
+and it is the one that proves the doorbell is load-bearing:* a boot that never types `nic send`
+produces a pcap with **zero** packets (and a build with the `TDT` write removed must do the same).
+*Anti-vacuity:* a zero-packet pcap fails the positive
 assertion — which is exactly what the `romfile=` rule above buys, because without it this control
 passes.
 
@@ -1031,9 +1055,14 @@ passes.
 
 ### N2 — ARP: a frame arrives, and the kernel understood it
 
-**Blocked on: N1.**
+**DONE (ADR-0066, `tests/conformance/n2-arp/run.sh`).** Touches `nic.dart`
+(`nicArp`) only. Four frames from `allocFrame()` — shared TX+RX ring,
+TX buffer, two RX buffer frames — and **zero new `.bss`**. The command
+is `nic arp`. `nic` still prints the MAC only; `nic send` still sends
+0x88B5. Opcode 2 is the only accepted reply. No IP, no ICMP, no
+`netTick`, no IRQ 11. Poll is inside the command.
 
-The RX ring, `netTick`'s poll, and the ARP request/reply pair. Resolve the gateway.
+The RX ring, a poll of RX `DD`, and the ARP request/reply pair. Resolve the gateway.
 
 **This is the milestone that proves reception, and it needs no way to inject a frame** — SLIRP answers
 ARP for 10.0.2.2 itself, which is why this comes before anything that needs a host-side helper.
@@ -1049,10 +1078,17 @@ opcode check is inverted must resolve nothing and print the miss counter non-zer
 
 ### N3 — Ping, and the checksum is proved to matter
 
-**Blocked on: N2.** This is the first milestone where the machine is *on a network* rather than *on a
+**DONE (ADR-0076, `tests/conformance/n3-ping/run.sh`).** Touches
+`nic.dart` (`nicPing`) only. Same four frames as N2, **zero new
+`.bss`**. The command is `nic ping` (one echo; N = 1). `nic` still
+prints the MAC only; `nic send` still sends 0x88B5; `nic arp` still
+stops after the SHA. Type 0 is the only accepted ICMP reply. No TCP,
+no `netTick`, no IRQ 11. Poll is inside the command.
+
+This is the first milestone where the machine is *on a network* rather than *on a
 wire*.
 
-IPv4 out and in, the header checksum, ICMP echo request and reply. A `ping <n>` shell command.
+IPv4 out and in, the header checksum, ICMP echo request and reply. A `nic ping` shell command.
 
 *Binary:* the pcap contains **N** echo requests and **N** replies; the harness verifies **on the host**
 that every outbound IPv4 header checksum and every ICMP checksum is correct — arithmetic the kernel
@@ -1073,7 +1109,7 @@ harness must fail if it is 0.
 
 ### N4 — A descriptor is a network endpoint, and a program uses it
 
-**Blocked on: N3, and on the reserved-name branch of §2.4** — which is shared with the display
+**Unblocked: N3 is done (ADR-0076).** Still blocked on the reserved-name branch of §2.4 — which is shared with the display
 protocol and should be its own small milestone.
 
 `open("/net")`, the record format of §2.3, the channel table, UDP, and the client library in

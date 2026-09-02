@@ -188,16 +188,43 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 22016 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 22016 — 14368 through M19, plus M20's chanStore 2624 (ADR-0027), plus S0's ioctlStore 512 (ADR-0033), plus D1's mouseStore 160 (ADR-0042), plus M21's shmStore 4352 (ADR-0041). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 31584 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 31584 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
-# The four later blocks, subtracted NEWEST FIRST, so that every assertion below
+# The later blocks, subtracted NEWEST FIRST, so that every assertion below
 # means what it meant when M19 wrote it.
+# D7 (ADR-0055) added a block AFTER D2's and is the last one in .bss now, so it
+# is subtracted FIRST -- exactly the accounting D2 itself gave D4.
+WMEVENT_STORE_SIZE=$(bsssize wmeventStore)
+ck; [[ "$WMEVENT_STORE_SIZE" == "384" ]] || fail "wmeventStore is ${WMEVENT_STORE_SIZE:-missing} bytes, expected 384 (ADR-0055)"
+WMEVENT_OFF=$(bssoff wmeventStore)
+ck; [[ -n "$WMEVENT_OFF" ]] || fail "wmeventStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$WMEVENT_OFF + WMEVENT_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "wmeventStore ends at $(( 16#$WMEVENT_OFF + WMEVENT_STORE_SIZE )) and kmain.o's .bss is $DART_BSS -- D7's block is NOT the last one"
+DART_BSS=$(( DART_BSS - WMEVENT_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - WMEVENT_STORE_SIZE ))
+KBDQ_STORE_SIZE=$(bsssize kbdqStore)
+ck; [[ "$KBDQ_STORE_SIZE" == "288" ]] || fail "kbdqStore is ${KBDQ_STORE_SIZE:-missing} bytes, expected 288 (ADR-0054)"
+KBDQ_OFF=$(bssoff kbdqStore)
+ck; [[ -n "$KBDQ_OFF" ]] || fail "kbdqStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$KBDQ_OFF + KBDQ_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "kbdqStore ends at $(( 16#$KBDQ_OFF + KBDQ_STORE_SIZE )) and kmain.o's .bss less D7's wmeventStore is $DART_BSS -- D2's block is not immediately before D7's"
+DART_BSS=$(( DART_BSS - KBDQ_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - KBDQ_STORE_SIZE ))
+WM_STORE_SIZE=$(bsssize wmStore)
+ck; [[ "$WM_STORE_SIZE" == "448" ]] || fail "wmStore is ${WM_STORE_SIZE:-missing} bytes, expected 448 (ADR-0109)"
+WM_OFF=$(bssoff wmStore)
+ck; [[ -n "$WM_OFF" ]] || fail "wmStore has no .bss offset in kmain.o"
+ck; [[ $(( 16#$WM_OFF + WM_STORE_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "wmStore ends at $(( 16#$WM_OFF + WM_STORE_SIZE )) and kmain.o's .bss less D2's kbdqStore is $DART_BSS -- D4's block is not immediately before D2's"
+DART_BSS=$(( DART_BSS - WM_STORE_SIZE ))
+KDATA_BSS=$(( KDATA_BSS - WM_STORE_SIZE ))
+
 SHM_STORE_SIZE=$(bsssize shmStore)
-ck; [[ "$SHM_STORE_SIZE" == "4352" ]] || fail "shmStore is ${SHM_STORE_SIZE:-missing} bytes, expected 4352 — M21's shared-memory block (ADR-0041)"
+ck; [[ "$SHM_STORE_SIZE" == "8576" ]] || fail "shmStore is ${SHM_STORE_SIZE:-missing} bytes, expected 8576 — M21's shared-memory block (ADR-0041 + ADR-0109), whose bit-plane doubled to 8192 when ADR-0155 doubled pmmMaxFrames to 65536"
 SHM_OFF=$(bssoff shmStore)
 ck; [[ -n "$SHM_OFF" ]] || fail "shmStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$SHM_OFF + SHM_STORE_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_STORE_SIZE )) and kmain.o's .bss is $DART_BSS bytes — M21's block is NOT the last one, and every earlier harness's 'bytes from my block to the end' number has silently moved"
+  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_STORE_SIZE )) and kmain.o's .bss less D4's wmStore is $DART_BSS bytes — M21's block is not immediately before D4's, and every earlier harness's 'bytes from my block to the end' number has silently moved"
 DART_BSS=$(( DART_BSS - SHM_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - SHM_STORE_SIZE ))
 
@@ -232,7 +259,7 @@ ck; [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
 DART_BSS=$(( DART_BSS - CHAN_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - CHAN_STORE_SIZE ))
 M19_TOTAL=$KDATA_BSS
-ck; [[ "$M19_TOTAL" -eq 14368 ]] || fail "the .bss outside chanStore, ioctlStore and shmStore is $M19_TOTAL, not M19's 14368 — a later milestone moved storage it does not own"
+ck; [[ "$M19_TOTAL" -eq 18592 ]] || fail "the .bss outside chanStore, ioctlStore and shmStore is $M19_TOTAL, not M19's 14368 plus 4224 — a later milestone moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
 ck; [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"
@@ -240,8 +267,8 @@ ARGS_OFF=$(bssoff argsStore)
 ck; [[ -n "$ARGS_OFF" ]] || fail "argsStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq $(( 16#$CHAN_OFF )) ]] \
   || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and chanStore begins at $(( 16#$CHAN_OFF )) — something was inserted BETWEEN M19's block and M20's, so M19's 'bytes from my block to the next' number has silently moved"
-ck; [[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 14112 ]] \
-  || fail "the .bss outside args_store, chanStore and ioctlStore is $(( KDATA_BSS - ARGS_STORE_SIZE )), not M18's 14112 — M19 moved storage it does not own"
+ck; [[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 18336 ]] \
+  || fail "the .bss outside args_store, chanStore and ioctlStore is $(( KDATA_BSS - ARGS_STORE_SIZE )), not M18's 14112 plus 4224 — M19 moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
 
 # The three regions inside the block, multiplied out against the block's own
 # size. A region that ran past the end would corrupt whatever follows it in
@@ -467,6 +494,44 @@ ck; grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT" \
 ck; grep -c "FREESTANDING: pass" <<<"$VERIFY_OUT" | grep -qx 3 \
   || fail "expected exactly 3 FREESTANDING: pass lines (kmain.o, kdata.o, kernel.elf)"
 EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern(s).*/\1/p' <<<"$VERIFY_OUT" | head -1)
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares ${EXTERN_COUNT:-no} externs, expected 44 — UNCHANGED from M18. M19 builds the initial process stack in Dart and enters ring 3 through the enter_user stub that already existed; a new assembly primitive would be a different design."
 echo "FREESTANDING: pass  $EXTERN_COUNT declared externs, unchanged from M18 — M19 added no assembly"
 

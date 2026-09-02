@@ -1,0 +1,19 @@
+#ifndef OSGFX_STUB_THREAD
+#define OSGFX_STUB_THREAD
+#include <utility>
+namespace std {
+class thread {
+ public:
+  thread() = default;
+  template <class F, class... A>
+  explicit thread(F &&, A &&...) {}
+  thread(thread &&) noexcept = default;
+  thread &operator=(thread &&) noexcept = default;
+  thread(const thread &) = delete;
+  void join() {}
+  void detach() {}
+  bool joinable() const { return false; }
+  static unsigned hardware_concurrency() { return 1; }
+};
+}
+#endif

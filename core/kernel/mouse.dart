@@ -502,6 +502,44 @@ const int mouseFlagReporting = 0x0080; // 0xF4 ACKed
 const int mouseFlagUnmasked = 0x0100; // IRQ2 and IRQ12 unmasked
 const int mouseFlagPostReset = 0x0200; // the post-reset identity byte was read
 const int mouseFlagDefaults = 0x0400; // 0xF6 (set defaults) ACKed
+const int mouseFlagTablet = 0x0800; // virtio-tablet armed (ADR-0193)
+
+/// `'MOUSE ABS '` -- 10 bytes.
+@rodata
+final List<u8> mouseStrAbs = const [
+  u8(0x4D), u8(0x4F), u8(0x55), u8(0x53), u8(0x45), u8(0x20),
+  u8(0x41), u8(0x42), u8(0x53), u8(0x20),
+];
+
+/// `' X '` -- 3 bytes.
+@rodata
+final List<u8> mouseStrAbsX = const [
+  u8(0x20), u8(0x58), u8(0x20),
+];
+
+/// `' Y '` -- 3 bytes.
+@rodata
+final List<u8> mouseStrAbsY = const [
+  u8(0x20), u8(0x59), u8(0x20),
+];
+
+/// SET absolute pointer position from a tablet (ADR-0193). Not accumulated.
+@bare
+void mouseAbsPlace(u64 x, u64 y, u64 buttons, u64 announce) {
+  mouseSetState(u64(mouseWordX), x);
+  mouseSetState(u64(mouseWordY), y);
+  mouseSetState(u64(mouseWordButtons), buttons & u64(0xFF));
+  mouseBump(u64(mouseWordPackets));
+  if (announce > u64(0)) {
+    uartWrite(Rodata.addressOf(mouseStrAbs), u64(10));
+    uartWrite(Rodata.addressOf(mouseStrAbsX), u64(3));
+    uartPutHex(x, u64(4));
+    uartWrite(Rodata.addressOf(mouseStrAbsY), u64(3));
+    uartPutHex(y, u64(4));
+    uartNewline();
+  }
+  wmPointerTick();
+}
 
 /// Reads word [i].
 @bare
@@ -797,8 +835,8 @@ void mouseApplyX(u64 b0, u64 b1) {
     return;
   }
   x = x + b1;
-  if (x > u64(fbWidth - 1)) {
-    x = u64(fbWidth - 1);
+  if (x > (fbGeomWidth() - u64(1))) {
+    x = fbGeomWidth() - u64(1);
   }
   mouseSetState(u64(mouseWordX), x);
 }
@@ -817,8 +855,8 @@ void mouseApplyY(u64 b0, u64 b2) {
   if ((b0 & u64(mousePktSignY)) > u64(0)) {
     // Negative delta: the mouse moved TOWARD the user, so DOWN the screen.
     y = y + (u64(mouseDeltaSpan) - b2);
-    if (y > u64(fbHeight - 1)) {
-      y = u64(fbHeight - 1);
+    if (y > (fbGeomHeight() - u64(1))) {
+      y = fbGeomHeight() - u64(1);
     }
     mouseSetState(u64(mouseWordY), y);
     return;
@@ -887,6 +925,21 @@ void mouseComplete() {
   }
   mouseBump(u64(mouseWordPackets));
   mouseReportPacket();
+  // D5b (ADR-0050): the compositor's pointer tick. **The only place on this
+  // machine where a drag can be noticed** -- the shell is not running while a
+  // client is (`shellProcRun` does not return until every process it launched
+  // has exited), so between "two surfaces are on the screen" and "the clients
+  // are gone" there is no command loop to poll a pointer from.
+  //
+  // It costs one load of `wmMetaActive` and a return on every boot that never
+  // types `wm on`, which is every boot before this one: `d1-mouse` drives
+  // twelve packets through here and its byte-exact transcript does not move.
+  //
+  // AFTER `mouseReportPacket`, deliberately. The packet line is D1's account of
+  // what the device said and the compositor's lines are an account of what was
+  // done about it; a reader following a drag wants them in that order, and a
+  // repaint that faulted would otherwise take the packet report down with it.
+  wmPointerTick();
 }
 
 /// One byte of the mouse's byte stream, wherever it came from.
@@ -1202,13 +1255,13 @@ u64 mouseCursorRow(u64 table, u64 row) {
 /// Blits one row of one bitmap in one colour, clipped to the visible area.
 @bare
 void mouseBlitRow(u64 table, u64 row, u64 x, u64 y, u64 color) {
-  if (y + row > u64(fbHeight - 1)) {
+  if (y + row > (fbGeomHeight() - u64(1))) {
     return;
   }
   final u64 bits = mouseCursorRow(table, row);
   u64 col = u64(0);
   while (col < u64(mouseCursorCols)) {
-    if (x + col < u64(fbWidth)) {
+    if (x + col < fbGeomWidth()) {
       if ((bits & (u64(1) << (u64(15) - col))) > u64(0)) {
         fbPutPixel(x + col, y + row, color);
       }

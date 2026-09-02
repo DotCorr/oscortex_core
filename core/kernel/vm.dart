@@ -68,31 +68,32 @@
 //                                4KiB pages   R,  X     `.multiboot` + `.text`
 //   [__rodata_start, __data_start)
 //                                4KiB pages   R,  NX    `.rodata`
-//   [__data_start, 4MiB)         4KiB pages   RW, NX    `.data`, `.bss`, and
+//   [__data_start, 16MiB)        4KiB pages   RW, NX    `.data`, `.bss`, and
 //                                                       the RAM above the
-//                                                       image up to 4MiB
-//   [4MiB, 128MiB)               2MiB pages   RW, NX    the rest of what the
+//                                                       image up to 16MiB
+//   [16MiB, 128MiB)              2MiB pages   RW, NX    the rest of what the
 //                                                       frame allocator manages
 //   [3GiB, 4GiB)                 2MiB pages   RW, NX    the PC's PCI hole,
 //                                                       where BARs live
 //
-// WHY 4MiB IS THE 4KiB WINDOW. Permissions can only change at a page boundary,
+// WHY 16MiB IS THE 4KiB WINDOW. Permissions can only change at a page boundary,
 // so every section boundary has to fall inside 4KiB-page territory. The kernel
-// image starts at 1MiB and is ~115KiB; a 2MiB window would already be enough,
-// but the window size has to be a CONSTANT for the number of page-table frames
-// to be a constant (see the next paragraph), and a constant that is only just
-// big enough is a constant that breaks on the next milestone. 4MiB is two page
-// tables, costs two frames, and leaves the image room to triple.
+// image starts at 1MiB; Skia + CRT heap + FFmpeg push `__kernel_end` past
+// 12MiB (CEF stays out of kernel.elf). The window size has to be a CONSTANT
+// for the number of page-table frames to be a constant. 16MiB is eight page
+// tables. [vmStore] must hold every frame pointer: `vmMetaFrame0` +
+// [vmFrameCount] words, or `vmInit` writes past the block and never comes
+// READY -- `proc spawn` then prints `PROC REFUSED 01`.
 //
 // [vmInit] REFUSES rather than mis-maps if the image ever outgrows it: the
-// check is `kernel_image_end() <= 4MiB`, the status word says `TOOBIG`, and
+// check is `kernel_image_end() <= 16MiB`, the status word says `TOOBIG`, and
 // CR3 is not touched. A kernel that would not fit keeps running on boot.S's
 // bootstrap tables instead of running on a table that stops short of it.
 //
-// SIX FRAMES, AND WHY THE NUMBER IS FIXED. PML4, PDPT, the page directory for
-// [0, 1GiB), two page tables for [0, 4MiB), and the page directory for
-// [3GiB, 4GiB). That is 6 * 4KiB = 24KiB, taken from `allocFrame()` and never
-// given back. It is fixed because the 4MiB window and the 128MiB bound are
+// TWELVE FRAMES, AND WHY THE NUMBER IS FIXED. PML4, PDPT, the page directory
+// for [0, 1GiB), eight page tables for [0, 16MiB), and the page directory for
+// [3GiB, 4GiB). That is 12 * 4KiB = 48KiB, taken from `allocFrame()` and never
+// given back. It is fixed because the 16MiB window and the 128MiB bound are
 // both fixed, which is what lets `m7-frames/derive.py` and `m8-paging/run.sh`
 // DERIVE the allocator's post-boot free count instead of being told it.
 //
@@ -101,7 +102,7 @@
 // ---------------------------------------------------------------------------
 // Before M8 everything the kernel could not afford to lose was inside
 // `[__kernel_start, __kernel_end)`, which is exactly what `pmmAllocatable`
-// reserves. These six frames are not: they come out of the allocator. So
+// reserves. These twelve frames are not: they come out of the allocator. So
 // `pmmAllocatable` gained one clause -- [vmHoldsFrame] -- and with it three
 // consequences that are all tested:
 //
@@ -111,7 +112,7 @@
 //     them, so the drain/refill cycle cannot destroy the mapping;
 //   * `frames`' BASELINE is re-taken after the tables are built, so
 //     "FREE == BASELINE" still means "nothing is leaked" rather than
-//     "six frames are missing and nobody counted them".
+//     "twelve frames are missing and nobody counted them".
 //
 // ---------------------------------------------------------------------------
 // WHAT IS DELIBERATELY NOT HERE -- docs/known-gaps.md GAP-0081
@@ -572,24 +573,25 @@ const int vmBigShift = 21;
 /// `0xB8000` is in it and the console writes there on every character.
 const int vmLowBytes = 1048576;
 
-/// How much of the bottom of memory is mapped with 4KiB pages. Two page tables.
-/// The kernel image must fit inside this or [vmInit] refuses -- see the header.
-const int vmFineBytes = 4194304;
+/// How much of the bottom of memory is mapped with 4KiB pages. Eight page
+/// tables. The kernel image must fit inside this or [vmInit] refuses -- see
+/// the header.
+const int vmFineBytes = 33554432;
 
-/// Pages in that window: 4MiB / 4KiB.
-const int vmFinePages = 1024;
+/// Pages in that window: 16MiB / 4KiB.
+const int vmFinePages = 8192;
 
 /// The top of what is mapped at all in low memory. **Must equal
 /// `pmmMaxFrames * pmmFrameBytes`** -- a frame the allocator hands out that
 /// this does not map is a page fault inside whatever first uses it. m7-frames
 /// already asserts boot.S's bootstrap map against the same number; m8-paging
 /// asserts this one.
-const int vmMapBytes = 134217728;
+const int vmMapBytes = 268435456;
 
 /// Page-directory entry index of the first and one-past-the-last 2MiB page in
 /// low memory: `vmFineBytes / vmBigBytes` and `vmMapBytes / vmBigBytes`.
-const int vmBigFirst = 2;
-const int vmBigLastEx = 64;
+const int vmBigFirst = 16;
+const int vmBigLastEx = 128;
 
 /// The PC's PCI hole: [3GiB, 4GiB), where firmware puts BARs -- including the
 /// framebuffer M5 draws into. 512 2MiB pages.
@@ -602,7 +604,7 @@ const int vmEntries = 512;
 /// Page-table frames taken from the allocator, and never returned. See the
 /// header for the enumeration. **The harness derives the allocator's free count
 /// from this number**, so changing it changes m7-frames' expectations too.
-const int vmFrameCount = 6;
+const int vmFrameCount = 20;
 
 /// Indices into the frame list, for readability at the build site.
 const int vmIxPml4 = 0;
@@ -610,7 +612,7 @@ const int vmIxPdpt = 1;
 const int vmIxPdLow = 2;
 const int vmIxPt0 = 3;
 const int vmIxPt1 = 4;
-const int vmIxPdPci = 5;
+const int vmIxPdPci = 19;
 
 /// Page-table entry flag bits.
 const int vmPresent = 1;
@@ -634,9 +636,12 @@ const int vmHuge = 128;
 /// of every leaf rather than of one interior entry someone might later change.
 const int vmUser = 4;
 
-/// Donated storage: sixteen `u64` words. See `core/boot/kdata.S`.
-const int vmStoreBytes = 128;
-const int vmStoreWords = 16;
+/// Donated storage: twenty-two `u64` words. Words 10..21 hold the twelve
+/// page-table frame addresses ([vmMetaFrame0] + [vmFrameCount]). Twenty
+/// words covered the ten-frame 12MiB map; a thirteenth write would land
+/// past the block and `vmInit` would never set READY.
+const int vmStoreBytes = 240;
+const int vmStoreWords = 30;
 
 // Metadata word indices.
 const int vmMetaReady = 0;
@@ -685,7 +690,7 @@ const int vectorPageFault = 14;
 // `tests/conformance/m8-paging/run.sh` counts it.
 // ---------------------------------------------------------------------------
 
-/// The 128 bytes this subsystem owns, as a DCDart mutable static.
+/// The 176 bytes this subsystem owns, as a DCDart mutable static.
 ///
 /// Until M17 (ADR-0021) this was `vm_store` in core/boot/kdata.S, reached through
 /// `@extern u64 vm_store_addr()`. DCDart grew `@bss` (its ADR-0051), so the storage is
@@ -696,7 +701,7 @@ const int vectorPageFault = 14;
 @bss
 final Bss vmStore = const Bss(bytes: vmStoreBytes);
 
-/// Base of the sixteen-word metadata block.
+/// Base of the twenty-two-word metadata block.
 @bare
 u64 vmMetaBase() {
   return Bss.addressOf(vmStore);
@@ -1124,11 +1129,11 @@ u64 vmSelfCheck(u64 pml4) {
 ///   * `PDPT[3]` -> the page directory for `[3GiB, 4GiB)`, **with NX**, because
 ///     nothing in the PCI hole is ever executed and a whole-gigabyte veto is
 ///     free at this level.
-///   * `PD_low[0]`, `PD_low[1]` -> the two page tables covering `[0, 4MiB)`.
-///   * `PD_low[2..63]` -> 2MiB pages, `[4MiB, 128MiB)`, writable and NX.
-///     Entries 64..511 are left zero, so `[128MiB, 1GiB)` is NOT MAPPED -- the
-///     bootstrap tables mapped it and this deliberately does not. The allocator
-///     manages 128MiB and a frame it cannot address is not a frame it can hand
+///   * `PD_low[0..5]` -> the six page tables covering `[0, 12MiB)`.
+///   * `PD_low[6..127]` -> 2MiB pages, `[12MiB, 256MiB)`, writable and NX.
+///     Entries 128..511 are left zero, so `[256MiB, 1GiB)` is NOT MAPPED -- the
+///     bootstrap tables mapped only what the allocator manages. The allocator
+///     manages 256MiB and a frame it cannot address is not a frame it can hand
 ///     out (ADR-0011 §2); an address above the bound is now a page fault that
 ///     says so instead of a silent write into RAM nothing tracks.
 ///   * `PD_pci[0..511]` -> 2MiB pages, `[3GiB, 4GiB)`, writable and NX.
@@ -1137,8 +1142,6 @@ void vmBuild() {
   final u64 pml4 = vmFrame(u64(vmIxPml4));
   final u64 pdpt = vmFrame(u64(vmIxPdpt));
   final u64 pdLow = vmFrame(u64(vmIxPdLow));
-  final u64 pt0 = vmFrame(u64(vmIxPt0));
-  final u64 pt1 = vmFrame(u64(vmIxPt1));
   final u64 pdPci = vmFrame(u64(vmIxPdPci));
 
   u64 i = u64(0);
@@ -1167,24 +1170,24 @@ void vmBuild() {
   vmSetEntry(pml4, u64(0), pdpt | pwu);
   vmSetEntry(pdpt, u64(0), pdLow | pwu);
   vmSetEntry(pdpt, u64(3), pdPci | pw | nx);
-  vmSetEntry(pdLow, u64(0), pt0 | pwu);
-  vmSetEntry(pdLow, u64(1), pt1 | pwu);
+  i = u64(0);
+  while (i < u64(vmBigFirst)) {
+    vmSetEntry(pdLow, i, vmFrame(u64(vmIxPt0) + i) | pwu);
+    i = i + u64(1);
+  }
 
-  // The 4KiB window: [0, 4MiB), one entry per page, permissions per section.
+  // The 4KiB window: [0, vmFineBytes), one entry per page, permissions per section.
   u64 pages4k = u64(0);
   i = u64(0);
   while (i < u64(vmFinePages)) {
     final u64 a = i << u64(vmPageShift);
-    u64 t = pt0;
-    if (i >= u64(vmEntries)) {
-      t = pt1;
-    }
+    final u64 t = vmFrame(u64(vmIxPt0) + (i >> u64(9)));
     vmSetEntry(t, i & u64(511), a | vmPageFlags(a));
     pages4k = pages4k + u64(1);
     i = i + u64(1);
   }
 
-  // 2MiB pages: [4MiB, 128MiB).
+  // 2MiB pages: [16MiB, 256MiB).
   u64 pages2m = u64(0);
   i = u64(vmBigFirst);
   while (i < u64(vmBigLastEx)) {
@@ -1748,10 +1751,7 @@ u64 vmFineLeafSlot(u64 va) {
   if (va >= u64(vmFineBytes)) {
     return u64(0);
   }
-  u64 t = vmFrame(u64(vmIxPt0));
-  if (va >= u64(vmBigBytes)) {
-    t = vmFrame(u64(vmIxPt1));
-  }
+  final u64 t = vmFrame(u64(vmIxPt0) + (va >> u64(vmBigShift)));
   return t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
 }
 
@@ -2371,11 +2371,60 @@ const int vmShmPdIndex = 129;
 /// (GAP-0124): the two mutations that survived a lo/hi test and died against
 /// the per-page walk were a source page inside the window that is not mapped,
 /// and a range whose first page is mapped and whose second is not. The
-/// unmapped 512-page hole this constant now spans is that same case, and the
-/// same walk refuses it. If any validator is ever rewritten as a range test,
-/// this constant becomes a hole -- which is why `m21-shmem/run.sh` reads all
-/// six bodies and fails if one stops walking.
-const int vmUserEnd = 0x10400000;
+/// unmapped hole this constant now spans (SHM pages that are not attached,
+/// and the platform window when the slot is not a named platform process)
+/// is that same case, and the same walk refuses it. If any validator is
+/// ever rewritten as a range test, this constant becomes a hole -- which
+/// is why `m21-shmem/run.sh` reads all six bodies and fails if one stops
+/// walking.
+///
+/// ADR-0124: the bound is one past the platform window, not one past SHM.
+/// App TAP/FILES ELFs still load in [vmProgBase, vmProgEnd) and still
+/// heap-grow to [heapTop]. Only a named platform process maps pages in
+/// [vmPlatBase, vmPlatEnd). Unmapped plat pages are refused by the walk.
+const int vmUserEnd = 0x1E0FC000;
+
+// ---------------------------------------------------------------------------
+// ADR-0124 / ADR-0154 / ADR-0155 / ADR-0168 -- THE PLATFORM PROCESS WINDOW.
+//
+// Official libcef LOADs need RO+RX VA span 0xDCFC000 (ADR-0168). The app
+// sandbox stays 64 KiB / 2 MiB. PMM/identity stay 256 MiB (ADR-0155); the
+// host plant for full LOADs is alias-mapped, not double-buffered.
+//
+//   [vmProgBase, vmProgEnd)  0x10000000..0x10200000  PD[128]       app load
+//   [vmShmBase,  vmShmEnd)   0x10200000..0x10400000  PD[129]       shared
+//   [vmPlatBase, vmPlatEnd)  0x10400000..0x1E0FC000  PD[130..240]  platform
+//   [vmProgBase, vmUserEnd)  0x10000000..0x1E0FC000               ring-3 reach
+//
+// THE LOAD REGION DID NOT MOVE. heapTop, the guard page, the stack, and
+// m12-heap's goldens stay. vmFineBytes is not this file's to shrink.
+// ---------------------------------------------------------------------------
+
+/// Base of the platform window: 272MiB, immediately above [vmShmEnd].
+const int vmPlatBase = 0x10400000;
+
+/// One past its end. RO+RX official LOAD span (ADR-0168).
+const int vmPlatEnd = 0x1E0FC000;
+
+/// Its size and page count. Spelled out rather than computed (GAP-0077).
+/// Page-aligned official RO+RX VA span: 0xDCFC000 = 231718912.
+const int vmPlatBytes = 231718912;
+const int vmPlatPages = 56572;
+
+/// First page-directory index: `vmPlatBase / vmBigBytes` = 130.
+const int vmPlatPdIndex = 130;
+
+/// How many page-directory entries the window occupies: ceil(span/2MiB) = 111.
+const int vmPlatPdCount = 111;
+
+const int vmPlatOk = 0;
+const int vmPlatNotReady = 1;
+const int vmPlatOutside = 2;
+const int vmPlatNoTable = 3;
+const int vmPlatBusy = 4;
+const int vmPlatBadAlign = 5;
+const int vmPlatWx = 6;
+const int vmPlatNoMem = 7;
 
 // [vmShmMap] / [vmShmTableInstall] status codes. Distinct from `vmProg*` on
 // purpose: the two windows have different rules (this one has no executable
@@ -2575,6 +2624,40 @@ u64 vmShmUnmap(u64 va) {
   return u64(vmShmOk);
 }
 
+/// Changes W on an already-present shared leaf. Keeps the frame and NX.
+/// Empty or missing leaf is [vmShmOutside]. ADR-0163 / GAP-0235 mprotect.
+@bare
+u64 vmShmProtect(u64 va, u64 write) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  if ((va & u64(vmPageMask)) > u64(0)) {
+    return u64(vmShmBadAlign);
+  }
+  if (va < u64(vmShmBase)) {
+    return u64(vmShmOutside);
+  }
+  if (va >= u64(vmShmEnd)) {
+    return u64(vmShmOutside);
+  }
+  final u64 slot = vmShmLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmShmOutside);
+  }
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) < u64(1)) {
+    return u64(vmShmOutside);
+  }
+  final u64 pa = vmEntryAddr(old);
+  u64 bits = u64(vmPresent) | u64(vmUser) | vmNxBit();
+  if (write > u64(0)) {
+    bits = bits | u64(vmWritable);
+  }
+  Pointer<u64>.fromAddress(slot).value = pa | bits;
+  tlb_invlpg(va);
+  return u64(vmShmOk);
+}
+
 /// Counts pages mapped user-accessible in the shared window of the LIVE address
 /// space. The reporting twin of [vmCountUser], kept separate so that the load
 /// region's `ELF WINDOW PAGES 00000200` line keeps counting exactly what it has
@@ -2590,6 +2673,149 @@ u64 vmShmCountUser() {
     a = a + u64(vmPageBytes);
   }
   return n;
+}
+
+/// Address of the page-table ENTRY for a platform-window [va], or 0.
+@bare
+u64 vmPlatLeafSlot(u64 va) {
+  if (va < u64(vmPlatBase)) {
+    return u64(0);
+  }
+  if (va >= u64(vmPlatEnd)) {
+    return u64(0);
+  }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(0);
+  }
+  final u64 off = va - u64(vmPlatBase);
+  final u64 pdi = u64(vmPlatPdIndex) + (off >> u64(vmBigShift));
+  final u64 e = vmGetEntry(pd, pdi);
+  if ((e & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  final u64 t = vmEntryAddr(e);
+  return t + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+}
+
+@bare
+u64 vmPlatLeaf(u64 va) {
+  final u64 slot = vmPlatLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(0);
+  }
+  return Pointer<u64>.fromAddress(slot).value;
+}
+
+/// Installs [vmPlatPdCount] zeroed page tables at PD[130..] of the LIVE
+/// directory.
+///
+/// Called only for a named platform process. A slot that is not platform
+/// never has these entries present, so a TAP/FILES ELF cannot reach the
+/// platform window. Partial failure rolls back every table this call took.
+@bare
+u64 vmPlatTablesInstall() {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmPlatNotReady);
+  }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(vmPlatNotReady);
+  }
+  u64 i = u64(0);
+  while (i < u64(vmPlatPdCount)) {
+    final u64 e = vmGetEntry(pd, u64(vmPlatPdIndex) + i);
+    if ((e & u64(vmPresent)) > u64(0)) {
+      return u64(vmPlatBusy);
+    }
+    i = i + u64(1);
+  }
+  final u64 pwu = u64(vmPresent) | u64(vmWritable) | u64(vmUser);
+  i = u64(0);
+  while (i < u64(vmPlatPdCount)) {
+    final u64 f = allocFrame();
+    if (f < u64(1)) {
+      u64 j = u64(0);
+      while (j < i) {
+        final u64 old = vmGetEntry(pd, u64(vmPlatPdIndex) + j);
+        vmSetEntry(pd, u64(vmPlatPdIndex) + j, u64(0));
+        if ((old & u64(vmPresent)) > u64(0)) {
+          if (freeFrame(vmEntryAddr(old)) > u64(pmmFreeOk)) {
+            // return consumed: rollback is already the failure path
+          }
+        }
+        j = j + u64(1);
+      }
+      return u64(vmPlatNoMem);
+    }
+    vmZeroFrame(f);
+    vmSetEntry(pd, u64(vmPlatPdIndex) + i, f | pwu);
+    i = i + u64(1);
+  }
+  return u64(vmPlatOk);
+}
+
+/// Maps [pa] at platform-window [va], user + NX, [write] deciding W.
+///
+/// W+X is refused. An address outside [vmPlatBase, vmPlatEnd) is
+/// [vmPlatOutside], not relocated. A slot that never called
+/// [vmPlatTablesInstall] has no tables and is [vmPlatNoTable] -- that
+/// is the anti-vacuity for a TAP/FILES ELF that somehow names a plat
+/// address.
+@bare
+u64 vmPlatMap(u64 va, u64 pa, u64 write, u64 exec) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmPlatNotReady);
+  }
+  if ((va & u64(vmPageMask)) > u64(0)) {
+    return u64(vmPlatBadAlign);
+  }
+  if ((pa & u64(vmPageMask)) > u64(0)) {
+    return u64(vmPlatBadAlign);
+  }
+  if (va < u64(vmPlatBase)) {
+    return u64(vmPlatOutside);
+  }
+  if (va >= u64(vmPlatEnd)) {
+    return u64(vmPlatOutside);
+  }
+  if (write > u64(0)) {
+    if (exec > u64(0)) {
+      return u64(vmPlatWx);
+    }
+  }
+  final u64 slot = vmPlatLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmPlatNoTable);
+  }
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) > u64(0)) {
+    return u64(vmPlatBusy);
+  }
+  u64 bits = u64(vmPresent) | u64(vmUser);
+  if (write > u64(0)) {
+    bits = bits | u64(vmWritable);
+  }
+  if (exec < u64(1)) {
+    bits = bits | vmNxBit();
+  }
+  Pointer<u64>.fromAddress(slot).value = pa | bits;
+  tlb_invlpg(va);
+  return u64(vmPlatOk);
+}
+
+@bare
+u64 vmPlatUnmap(u64 va) {
+  final u64 slot = vmPlatLeafSlot(va);
+  if (slot < u64(1)) {
+    return u64(vmPlatOutside);
+  }
+  Pointer<u64>.fromAddress(slot).value = u64(0);
+  tlb_invlpg(va);
+  return u64(vmPlatOk);
 }
 
 /// 1 if the two bytes at [va] are present in the LIVE page tables, else 0.

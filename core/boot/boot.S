@@ -16,7 +16,8 @@
 .set MB_MAGIC,    0x1BADB002
 .set MB_ALIGN,    1 << 0          /* request page-aligned modules (unused at M0, harmless to request) */
 .set MB_MEMINFO,  1 << 1          /* request a memory map (unused at M0, harmless to request) */
-.set MB_FLAGS,    MB_ALIGN | MB_MEMINFO
+.set MB_VIDEO,    1 << 2          /* request a linear framebuffer (PORT1/PORT2, ADR-0060) */
+.set MB_FLAGS,    MB_ALIGN | MB_MEMINFO | MB_VIDEO
 .set MB_CHECKSUM, -(MB_MAGIC + MB_FLAGS)
 
 .extern kmain
@@ -54,19 +55,42 @@
     .long MB_MAGIC
     .long MB_FLAGS
     .long MB_CHECKSUM
+    /* Address fields (offsets 12-28) are only valid if flags bit 16 is set.
+     * It is not. They sit here as zeroes so the video fields occupy the
+     * spec's offsets 32-44, which are valid because flags bit 2 IS set.
+     *
+     * WHY BIT 2 EXISTS AT ALL. Limine on UEFI refuses Multiboot1 text mode
+     * ("Cannot use text mode with UEFI") -- there is no VGA text on that
+     * firmware. The VIDEO request is what lets the same Multiboot1 header
+     * boot under OVMF. QEMU's built-in `-kernel` loader does not implement
+     * the video request and ignores these fields; that was measured
+     * (ADR-0060), not assumed. Do not "simplify" them away: without them
+     * the UEFI path is a Limine panic and the `-kernel` path is unchanged
+     * only by coincidence of a loader that never looked.
+     *
+     * mode_type 0 = linear graphics. width/height 0 = no preference --
+     * Limine's `resolution:` key (or the firmware GOP mode) fills them in.
+     * depth 32 is what fb.dart already stores as 0x00RRGGBB. */
+    .long 0                       /* header_addr (unused) */
+    .long 0                       /* load_addr */
+    .long 0                       /* load_end_addr */
+    .long 0                       /* bss_end_addr */
+    .long 0                       /* entry_addr */
+    .long 0                       /* mode_type: 0 = graphics */
+    .long 0                       /* width: 0 = no preference */
+    .long 0                       /* height: 0 = no preference */
+    .long 32                      /* depth */
 
 /* ------------------------------------------------------------------
- * Page tables (PAE, 2MiB pages) -- identity-mapped, first 128MiB.
+ * Page tables (PAE, 2MiB pages) -- identity-mapped, first 256MiB.
  *
- * M7 (ADR-0011) RAISED THIS FROM 16MiB, AND THE NUMBER IS NOT ARBITRARY.
- * It is the same number as the page allocator's frame bound
- * (`pmmMaxFrames` = 32768 frames of 4KiB = 128MiB, core/kernel/pmm.dart),
+ * M7 (ADR-0011) raised this from 16MiB to 128MiB. ADR-0155 raises it
+ * again to 256MiB with `pmmMaxFrames`, so a named platform process can
+ * plant the full 189 MiB CEF `.text` window. The number is not arbitrary:
+ * it is the same as the page allocator's frame bound
+ * (`pmmMaxFrames` = 65536 frames of 4KiB = 256MiB, core/kernel/pmm.dart),
  * and they have to be the same number for the allocator to mean anything:
- * a frame this kernel cannot ADDRESS is not a frame it can hand out. With
- * eight entries the allocator would have managed 128MiB of RAM and been
- * able to write to 16MiB of it, and the difference would have surfaced as
- * a page fault inside whatever first used a high frame -- not as a
- * diagnosable allocator bug.
+ * a frame this kernel cannot ADDRESS is not a frame it can hand out.
  *
  * So the invariant, stated once and asserted by
  * `tests/conformance/m7-frames/run.sh`: MAP_2MIB_PAGES * 2MiB ==
@@ -88,13 +112,13 @@
  * stop being inside `[__kernel_start, __kernel_end)`, which is the range the
  * page allocator reserves -- i.e. it would be a change to M7, for 16KiB.
  *
- * Still not a real memory map here (OSCORTEX_SPEC.md §4): 64 entries of one
+ * Still not a real memory map here (OSCORTEX_SPEC.md §4): 128 entries of one
  * page directory, identity, present+writable, no NX, no permissions of any
  * kind. That is the correct shape for a bootstrap table and the wrong shape
  * for an address space, which is the whole subject of ADR-0012.
  * ------------------------------------------------------------------ */
-/* Number of 2MiB identity pages mapped at 0. 64 * 2MiB = 128MiB. */
-.set MAP_2MIB_PAGES, 64
+/* Number of 2MiB identity pages mapped at 0. 128 * 2MiB = 256MiB. */
+.set MAP_2MIB_PAGES, 128
 .section .bss
 .align 4096
 p4_table:
@@ -203,7 +227,12 @@ sse_flag:
  * property is stated, not inherited. */
 .align 16
 stack_bottom:
-    .skip 16384                   /* 16KiB boot stack */
+    /* 2MiB: AnalyticRRect SkSL→SPIR-V in Recorder::snap still #GP'd
+     * on 512KiB (FAULT 0D OP 4C8B after CURVE C). Page tables sit
+     * immediately below stack_bottom — overflow corrupts them into
+     * non-canonical walks. CoverBounds (rect) fit in 16KiB; curves
+     * need this headroom. kstack0 stays 16KiB. */
+    .skip 2097152                 /* 2MiB boot stack */
 stack_top:
 
 /* ------------------------------------------------------------------
@@ -357,8 +386,8 @@ map_p2_table:
     movl $0x200000, %eax           /* 2MiB */
     mull %ecx                      /* eax = 2MiB * ecx. edx is unused and
                                     * that is checked, not assumed: the
-                                    * largest product is 63 * 2MiB =
-                                    * 0x7E00000, which fits in 32 bits. A
+                                    * largest product is 127 * 2MiB =
+                                    * 0xFE00000, which fits in 32 bits. A
                                     * MAP_2MIB_PAGES above 2048 would
                                     * overflow into edx and silently map
                                     * the wrong pages. */

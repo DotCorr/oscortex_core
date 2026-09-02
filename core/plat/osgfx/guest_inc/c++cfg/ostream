@@ -1,0 +1,16 @@
+#ifndef OSGFX_STUB_OSTREAM
+#define OSGFX_STUB_OSTREAM
+namespace std {
+struct ios_base {
+  typedef int fmtflags;
+};
+class ios : public ios_base {};
+class ostream : public ios {
+ public:
+  template <class T>
+  ostream &operator<<(const T &) { return *this; }
+  ostream &operator<<(ostream &(*fn)(ostream &)) { return fn(*this); }
+};
+class istream : public ios {};
+}
+#endif

@@ -20,8 +20,9 @@
 // M3 splits that in two:
 //
 //   * `kbdHandle` (still in interrupt context, IF clear because the gate is an
-//     interrupt gate) does line EDITING only -- append, backspace, and on Enter
-//     set a one-word flag. It never runs a command.
+//     interrupt gate) ENQUEUES a raw scancode+edge (D2 / ADR-0054). It never
+//     edits the line and never runs a command. [kbdqDrainToShell] is the
+//     consumer, in task context, reached through `kbd_drain_gate`.
 //
 //   * `shellMain` (task context, IF set) is the steady state. It waits with
 //     `sti; hlt`, and when the flag says a line is ready it executes the
@@ -40,15 +41,14 @@
 // THE THREE-STATE FLAG, AND THE RACE IT CLOSES
 // ---------------------------------------------------------------------------
 // `shell_ready` is 0 = accepting input, 1 = a line was submitted and is waiting
-// to run, 2 = a command is running. `kbdHandle` drops every keystroke unless
-// the state is 0.
+// to run, 2 = a command is running. The drain consumes the queue only in
+// state 0; IRQ1 always enqueues.
 //
 // Without state 2 the race is real, not theoretical: a key pressed while
 // `shellExecute` is walking the line buffer would append at `shell_len` and
-// bump it, so the command would observe the length changing underneath it. The
-// cost of closing it this way is that type-ahead during a command is LOST --
-// there is no input queue (docs/known-gaps.md GAP-0055 item 4 is still open,
-// and a queue is another donated buffer, GAP-0053).
+// bump it, so the command would observe the length changing underneath it.
+// Type-ahead during a command now WAITS in the ring (ADR-0054) and is
+// drained at the next prompt -- GAP-0055 item 4 is the thing this closes.
 //
 // The idle path is `cli` / test / `sti; hlt` rather than test / `sti; hlt`,
 // which is the classic sleeping-race fix: if the flag were tested with
@@ -806,6 +806,17 @@ external void fault_resume();
 @extern
 external void idle_once();
 
+/// D3: see `proc_idle_gate` in `core/boot/isr.S`. An `@extern` so the
+/// resident-slot walk cannot be inlined into [shellMain].
+@extern
+external void proc_idle_gate();
+
+/// D2: see `kbd_drain_gate` in `core/boot/isr.S`. Same reason as
+/// [proc_idle_gate] -- an inlined queue walk next to the prompt printer
+/// `#UD`s.
+@extern
+external void kbd_drain_gate();
+
 /// Reads the line length.
 @bare
 u64 shellLen() {
@@ -873,6 +884,8 @@ void shellInit(u64 mbInfo) {
   shellSetLen(u64(0));
   shellSetState(u64(0));
   kbdSetPrefix(u64(0));
+  kbdqReset();
+  wmeventReset();
   Pointer<u64>.fromAddress(shell_mbinfo_addr()).value = mbInfo;
   // M4. Both of these must be zero before ANYTHING in this kernel is able to
   // fault, which is why they are set here, in the first call kmain() makes,
@@ -1155,7 +1168,13 @@ void shellTicks() {
   while (now < target) {
     now = tick_count();
   }
-  picUnmaskKeyboardOnly();
+  // D3: a resident session needs IRQ0 left on. Remasking here would park a
+  // spawned process on the CPU forever — it can only leave through a tick.
+  // `m3-shell` types `ticks` with no resident process, so it still remasks
+  // and its golden does not move (GAP-0058).
+  if (procHead(u64(procHeadResident)) < u64(1)) {
+    picUnmaskKeyboardOnly();
+  }
   uartWrite(Rodata.addressOf(shellStrTicksLbl), u64(6));
   uartPutHex(start, u64(16));
   uartWrite(Rodata.addressOf(shellStrPlus), u64(2));
@@ -1412,6 +1431,51 @@ u64 shellNoArgRefused() {
   if (shellNoArgTry(Rodata.addressOf(fbStrCmd), u64(2)) > u64(0)) {
     return u64(1);
   }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdNoBm), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdNoAtt), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdCon), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdNoFlush), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdScroll), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdScrollNo), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdFlip), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdNoFlip), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdCap), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmdNoCap), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpu3dStrCmd), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpu3dStrCmdNo), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpu3dStrCmdVenus), u64(8)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(virtgpuStrCmd), u64(7)) > u64(0)) {
+    return u64(1);
+  }
+  if (shellNoArgTry(Rodata.addressOf(ahciStrCmd), u64(4)) > u64(0)) {
+    return u64(1);
+  }
   if (shellNoArgTry(Rodata.addressOf(pmmCmdAlloc), u64(5)) > u64(0)) {
     return u64(1);
   }
@@ -1468,10 +1532,204 @@ void shellExecute() {
     shellPci();
     return;
   }
+  // ADR-0140. `ota feed ` is nine bytes. RX plant of a signed update.
+  // Not in `help`. Matched before shorter names.
+  if (shellStartsWith(Rodata.addressOf(otaStrCmdFeed), u64(9)) > u64(0)) {
+    otaFeed();
+    return;
+  }
+  // ADR-0177. `ota tls13 ` is ten bytes. TLS 1.3 fetch. Before `ota tls`.
+  if (shellStartsWith(Rodata.addressOf(otaStrCmdTls13), u64(10)) > u64(0)) {
+    otaTls13();
+    return;
+  }
+  // ADR-0154. `ota tls ` is eight bytes. TLS 1.2 fetch. Before `ota get`.
+  if (shellStartsWith(Rodata.addressOf(otaStrCmdTls), u64(8)) > u64(0)) {
+    otaTls();
+    return;
+  }
+  // ADR-0151. `ota get ` is eight bytes. TCP fetch from 10.0.2.2.
+  // Not in `help`. Not plat-tls.
+  if (shellStartsWith(Rodata.addressOf(otaStrCmdGet), u64(8)) > u64(0)) {
+    otaGet();
+    return;
+  }
+  // ADR-0145 before N3: `nic virtio` is ten bytes. Longest-first so
+  // bare `nic` cannot steal the line. Not in `help`.
+  if (shellIsCmd(Rodata.addressOf(virtnetStrCmd), u64(10)) > u64(0)) {
+    virtnetReport();
+    return;
+  }
+  // N3 (ADR-0076) before N0: `nic ping` is eight bytes. Longest-first
+  // so the three-byte name cannot steal the line. Not in `help`.
+  if (shellIsCmd(Rodata.addressOf(nicStrCmdPing), u64(8)) > u64(0)) {
+    nicPing();
+    return;
+  }
+  // N1 (ADR-0063) before N0: `nic send` is a prefix of nothing `nic`
+  // would swallow, but the longer exact match must run first so the
+  // three-byte name cannot steal the line. Not in `help`.
+  if (shellIsCmd(Rodata.addressOf(nicStrCmdSend), u64(8)) > u64(0)) {
+    nicSend();
+    return;
+  }
+  // N2 (ADR-0066) before N0: `nic arp` is seven bytes; `nic` is three.
+  // Same longest-first rule. Not in `help`.
+  if (shellIsCmd(Rodata.addressOf(nicStrCmdArp), u64(7)) > u64(0)) {
+    nicArp();
+    return;
+  }
+  // N0 (ADR-0058). The e1000 MAC. Not in `help` — same reason `mouse`
+  // and `wm` are not: `shellStrHelp` is in five byte-exact goldens.
+  if (shellIsCmd(Rodata.addressOf(nicStrCmd), u64(3)) > u64(0)) {
+    nicReport();
+    return;
+  }
+  // USB0/USB1/USB2/USB3 (usb-hid.md, ADR-0068, ADR-0073, ADR-0085).
+  // xHCI PCI probe, BAR0 cap/op MMIO, the HID→set-1 feed seam, and
+  // the transfer ring. `usb mfeed ` / `usb feed ` / `usb hid` are
+  // matched FIRST so the bare `usb` exact match cannot swallow them;
+  // then `usb` alone; then the bare `usb` prefix LAST so an unknown
+  // argument lands on the usage line. Not in `help`: shellStrHelp is
+  // in five byte-exact goldens.
+  if (shellStartsWith(Rodata.addressOf(usbStrCmdMfeed), u64(10)) > u64(0)) {
+    usbMfeed();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(usbStrCmdFeed), u64(9)) > u64(0)) {
+    usbFeed();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(usb3StrCmdHid), u64(7)) > u64(0)) {
+    usb3Hid();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(usbStrCmd), u64(3)) > u64(0)) {
+    usbReport();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(usbStrCmd), u64(3)) > u64(0)) {
+    usbUsage();
+    return;
+  }
+  // NVM4 (ADR-0089), NVM3 (ADR-0088) and NVM2 (ADR-0087) before
+  // NVM0: `nvme wr`, `nvme rd` and `nvme id` are seven bytes;
+  // `nvme` is four. Longest-first, same as `ahci read`. Not in
+  // `help`.
+  if (shellIsCmd(Rodata.addressOf(nvmeStrCmdWr), u64(7)) > u64(0)) {
+    nvmeWrite();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(nvmeStrCmdRd), u64(7)) > u64(0)) {
+    nvmeRead();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(nvmeStrCmdId), u64(7)) > u64(0)) {
+    nvmeIdentify();
+    return;
+  }
+  // NVM0/NVM1 (ADR-0071, ADR-0074). NVMe PCI probe and CAP/VS. Not
+  // in `help`: shellStrHelp is in five byte-exact goldens.
+  if (shellIsCmd(Rodata.addressOf(nvmeStrCmd), u64(4)) > u64(0)) {
+    nvmeReport();
+    return;
+  }
+  // A1 (ADR-0077) before A0: `ahci read` is nine bytes; `ahci` is four.
+  // Same longest-first rule as `nic send`. Not in `help`.
+  if (shellIsCmd(Rodata.addressOf(ahciStrCmdRead), u64(9)) > u64(0)) {
+    ahciRead();
+    return;
+  }
+  // A0 (ADR-0069). AHCI HBA probe. Not in `help`: shellStrHelp is in
+  // five byte-exact goldens and this command is a diagnostic.
+  if (shellIsCmd(Rodata.addressOf(ahciStrCmd), u64(4)) > u64(0)) {
+    ahciReport();
+    return;
+  }
   // M5 part 2. The framebuffer console: find the display controller by class,
   // read BAR0, set a graphics mode, and draw into it -- core/kernel/fb.dart.
   if (shellIsCmd(Rodata.addressOf(fbStrCmd), u64(2)) > u64(0)) {
     shellFb();
+    return;
+  }
+  // G0–G9 (ADR-0059, ADR-0065, ADR-0067, ADR-0074, ADR-0079,
+  // ADR-0084, ADR-0086, ADR-0091, ADR-0093, ADR-0097). VirtIO-GPU
+  // probe, bus-master, DRIVER_OK, one control queue, a colour
+  // pixel, console, damage/scroll, SET_SCANOUT flip, then
+  // GET_CAPSET_INFO. Longer names first. Not in `help`:
+  // shellStrHelp is in five byte-exact goldens.
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdNoBm), u64(8)) > u64(0)) {
+    shellVirtgpuNoBm();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdNoAtt), u64(8)) > u64(0)) {
+    shellVirtgpuNoAtt();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdCon), u64(8)) > u64(0)) {
+    shellVirtgpuCon();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdNoFlush), u64(8)) > u64(0)) {
+    shellVirtgpuNoFlush();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdScroll), u64(8)) > u64(0)) {
+    shellVirtgpuScroll();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdScrollNo), u64(8)) > u64(0)) {
+    shellVirtgpuScrollNo();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdFlip), u64(8)) > u64(0)) {
+    shellVirtgpuFlip();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdNoFlip), u64(8)) > u64(0)) {
+    shellVirtgpuNoFlip();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdCap), u64(8)) > u64(0)) {
+    shellVirtgpuCap();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmdNoCap), u64(8)) > u64(0)) {
+    shellVirtgpuNoCap();
+    return;
+  }
+  // G10 / VIRGL0 (ADR-0098). After G9 names so those contracts stay.
+  if (shellIsCmd(Rodata.addressOf(virtgpu3dStrCmd), u64(8)) > u64(0)) {
+    shellVirtgpu3d();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpu3dStrCmdNo), u64(8)) > u64(0)) {
+    shellVirtgpu3dNo();
+    return;
+  }
+  // G11 / ADR-0107. After G10 names so virtgpug / virtgpuz stay.
+  if (shellIsCmd(Rodata.addressOf(virtgpu3dStrCmdOsgfx), u64(8)) > u64(0)) {
+    shellVirtgpu3dOsgfx();
+    return;
+  }
+  // ADR-0134. Venus capset door. After G11 so virtgpuk stays.
+  // Not in help. No syscall. 11 stays fdwait.
+  if (shellIsCmd(Rodata.addressOf(virtgpu3dStrCmdVenus), u64(8)) > u64(0)) {
+    shellVirtgpu3dVenus();
+    return;
+  }
+  // G12 / ADR-0114. Explicit app GPU. After G11 so virtgpuk stays.
+  // Not in help. No syscall. UI / osgfx do not call this.
+  if (shellIsCmd(Rodata.addressOf(osgpuStrCmd), u64(6)) > u64(0)) {
+    shellOsgpu();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(virtgpuStrCmdArg), u64(8)) > u64(0)) {
+    shellVirtgpuPix();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtgpuStrCmd), u64(7)) > u64(0)) {
+    shellVirtgpu();
     return;
   }
   // D1 (ADR-0042). The pointer. `mouse feed ` is a PREFIX including its trailing
@@ -1488,6 +1746,14 @@ void shellExecute() {
   // goldens by substitution. M18 added three commands with no help line and M20
   // added none at all, for this reason; D1 does the same and GAP-0254 records
   // the cost, which is that the command is undiscoverable from the shell itself.
+  if (shellStartsWith(Rodata.addressOf(virtabStrCmdFeed), u64(10)) > u64(0)) {
+    shellVtabFeed();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(virtabStrCmd), u64(4)) > u64(0)) {
+    shellVtab();
+    return;
+  }
   if (shellStartsWith(Rodata.addressOf(mouseStrCmdFeed), u64(11)) > u64(0)) {
     shellMouseFeed();
     return;
@@ -1498,6 +1764,68 @@ void shellExecute() {
   }
   if (shellStartsWith(Rodata.addressOf(mouseStrCmd), u64(5)) > u64(0)) {
     shellMouseUsage();
+    return;
+  }
+  // D4/D5 (ADR-0050). The compositor. Whole-line matches first, longest first,
+  // then the bare `wm` exact match, then the bare `wm` PREFIX last so that an
+  // unknown argument lands on the usage line rather than on the
+  // unknown-command path -- `wm` IS a command, it just needs to be told what to
+  // do. Same shape as `frames`, `vmtest`, `user`, `disk` and `mouse`, and for
+  // the same reason: there is still no tokenizer (GAP-0057 item 3).
+  //
+  // **`wm chrome` is matched BEFORE `wm draw`** because it is longer (9 vs 7)
+  // and the ordering rule here is "longest whole line first". There is no
+  // `help` line for chrome either (GAP-0304).
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdChrome), u64(9)) > u64(0)) {
+    wmChromeCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmPaceStrCmdOff), u64(11)) > u64(0)) {
+    wmPaceOffCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmPaceStrCmdLog), u64(11)) > u64(0)) {
+    wmPaceLogCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmPaceStrCmd4), u64(9)) > u64(0)) {
+    wmPaceCmd4();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmPaceStrCmd), u64(7)) > u64(0)) {
+    wmPaceCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdDe), u64(5)) > u64(0)) {
+    wmDeCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmFpsStrCmd), u64(6)) > u64(0)) {
+    wmFpsCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdGfx), u64(6)) > u64(0)) {
+    wmGfxCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdDraw), u64(7)) > u64(0)) {
+    wmDrawCmd();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdOff), u64(6)) > u64(0)) {
+    wmOff();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmdOn), u64(5)) > u64(0)) {
+    wmOn();
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(wmStrCmd), u64(2)) > u64(0)) {
+    wmReport();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(wmStrCmd), u64(2)) > u64(0)) {
+    wmUsage();
     return;
   }
   // M6. `disk id` and `disk read <lba>` -- the first command in this shell
@@ -1689,6 +2017,15 @@ void shellExecute() {
     shellFatCatUsage();
     return;
   }
+  // DE-media (ADR-0116). Hidden `play` / `play NAME`. Not in help.
+  if (shellStartsWith(Rodata.addressOf(mediaCmdPlaySp), u64(5)) > u64(0)) {
+    shellMediaPlay(u64(5));
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(mediaCmdPlay), u64(4)) > u64(0)) {
+    shellMediaPlayDefault();
+    return;
+  }
   // M11. Processes (core/kernel/proc.dart). The two PREFIXES come first, each
   // including its trailing space so two hex LBAs follow, and the bare form last
   // so `proc` alone lands on the report rather than on the unknown-command path.
@@ -1701,6 +2038,24 @@ void shellExecute() {
   // between them.
   if (shellStartsWith(Rodata.addressOf(procCmdCrossSp), u64(11)) > u64(0)) {
     shellProcArgs(u64(11), u64(1), u64(procPolicyPreempt));
+    return;
+  }
+  // Hidden named launch (ADR-0099). Not in help. Longest `go ` first
+  // so a missing name lands on usage rather than unknown.
+  if (shellStartsWith(Rodata.addressOf(procCmdGoSp), u64(3)) > u64(0)) {
+    shellGoArgs(u64(3));
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(procCmdGo), u64(2)) > u64(0)) {
+    shellProcUsage();
+    return;
+  }
+  if (shellStartsWith(Rodata.addressOf(procCmdSpawnSp), u64(11)) > u64(0)) {
+    shellProcSpawnArgs(u64(11));
+    return;
+  }
+  if (shellIsCmd(Rodata.addressOf(procCmdSpawn), u64(10)) > u64(0)) {
+    shellProcUsage();
     return;
   }
   if (shellStartsWith(Rodata.addressOf(procCmdRunSp), u64(9)) > u64(0)) {
@@ -1815,6 +2170,8 @@ void shellRecover() {
   shellSetLen(u64(0));
   shellSetState(u64(0));
   kbdSetPrefix(u64(0));
+  kbdqReset();
+  wmeventReset();
   // The 8259 may still hold an in-service bit if the fault was taken inside an
   // IRQ handler, and the handler's own EOI is one of the things being
   // abandoned. Without this, that line would be dead for the rest of the boot
@@ -1892,10 +2249,11 @@ void shellSerialIrq() {
       }
       final u8 sc = key.toU8();
       if (shellState() > u64(0)) {
-        // A line is submitted or a command is running. `kbdHandle` drops the
-        // key in this case and so does this: there is no input queue in this
-        // kernel (see this file's header), and inventing one for the serial
-        // path only would give the two input sources different semantics.
+        // A line is submitted or a command is running. The PS/2 path now
+        // queues (ADR-0054); serial still drops, because a COM1 byte is
+        // not a scancode and putting it on the same ring would make
+        // syscall 24 lie to a program that asked for keyboard events.
+        // GAP-0309.
         draining = draining;
       } else {
         shellKey(sc);
@@ -1909,9 +2267,13 @@ void shellSerialIrq() {
 void shellMain() {
   while (u64(1) > u64(0)) {
     interrupts_disable();
+    // D2: @extern gate, not kbdqDrainToShell() directly -- same #UD
+    // trap as an inlined procIdle (ADR-0053, ADR-0054).
+    kbd_drain_gate();
     if (shellState() == u64(1)) {
-      // Claim the line: state 2 makes kbdHandle drop keys, so the buffer
-      // cannot change underneath shellExecute.
+      // Claim the line: state 2 stops the drain, so the buffer cannot
+      // change underneath shellExecute. IRQ1 still enqueues; those
+      // events wait for the next prompt.
       shellSetState(u64(2));
       interrupts_enable();
       shellExecute();
@@ -1921,7 +2283,9 @@ void shellMain() {
       shellSetState(u64(0));
       interrupts_enable();
     } else {
-      idle_once(); // sti; hlt -- adjacent, so the wake-up cannot be missed
+      // D3: @extern gate, not procIdle() directly — dcc inlines the latter
+      // back into this loop and the overflow-check ud2 fires.
+      proc_idle_gate();
     }
   }
 }

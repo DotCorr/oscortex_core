@@ -185,6 +185,14 @@ void kbdInit() {
 /// which is why no earlier milestone's behaviour moves.
 @bare
 void picUnmaskKeyboardOnly() {
+  if (wmPaced() > u64(0)) {
+    picUnmaskTimerAndKeyboard();
+    return;
+  }
+  if ((mouseInitFlags() & u64(mouseFlagTablet)) > u64(0)) {
+    picUnmaskTimerAndKeyboard();
+    return;
+  }
   // B1 + D1: IRQ1 AND IRQ4 (COM1), as two read-modify-writes of one bit each
   // rather than the whole-byte 0xED this arrived as. A whole-byte write also
   // re-masks the slave, which is precisely the cross-cutting defect this
@@ -223,78 +231,45 @@ void picUnmaskTimerAndKeyboard() {
   picUnmaskLine(u64(4));
 }
 
-/// Handles one IRQ1: read the scancode, translate it, hand it to the line
-/// editor.
+/// Handles one IRQ1: read the scancode, pack it, enqueue it.
 ///
 /// Reading port 0x60 is not optional even for a scancode that is thrown away
 /// -- the controller will not raise another IRQ1 until its output buffer is
 /// emptied, so an early `return` before the read would make the keyboard stop
 /// after exactly one keypress. Every path below reads it first.
 ///
-/// Four classes are dropped rather than printed, which is the difference
-/// between a console and a garbage generator:
+/// **D2 (ADR-0054): this no longer calls [shellKey].** The IRQ is the
+/// producer of a ring in `@bss`; the shell is a consumer, in task context,
+/// through [kbdqDrainToShell]. Two input paths that disagree are forbidden
+/// (display-protocol.md §4.2 item 5). Translation, the break-code skip,
+/// and the "command is running" guard all moved to the consumer: while a
+/// command runs the events WAIT rather than vanish (GAP-0055 item 4).
 ///
-///   - **The 0xE0 prefix, and the byte after it.** See [kbdSetPrefix] below;
-///     this is the M3 fix for docs/known-gaps.md GAP-0055 item 2.
-///   - **Key releases.** Bit 7 set means a break code. Every key produces one,
-///     so echoing them would double every character.
-///   - **Unmapped codes.** A 0x00 in the table means modifier, function key,
-///     or nothing at all. Printing it would put a NUL glyph on the screen for
-///     every shift press.
-///   - **Anything typed while a command is running** (shell state 2). There is
-///     no input queue to hold it (GAP-0055 item 4), and letting it into the
-///     buffer would change the line out from under `shellExecute`.
+/// The 0xE0 prefix is still consumed as a unit -- that is the M3 fix for
+/// GAP-0055 item 2 -- but the follower is now stored with [kbdqBitExt] set
+/// rather than dropped. The shell consumer still skips it, so arrows still
+/// type nothing; a ring-3 program can see them.
 ///
-/// **M3 CHANGE: this no longer echoes.** It calls [shellKey], which appends to
-/// the line buffer, echoes through [conPutc] itself, and treats Enter and
-/// backspace as editing operations rather than characters. The visible
-/// difference is that backspace now shortens a LINE, and Enter now submits
-/// one, instead of both being bytes that happen to move a cursor.
+/// Still not handled: 0xE1 (Pause). Same as before. GAP-0055 item 2 stays
+/// open for that reason -- narrowed, not closed.
 @bare
 void kbdHandle() {
   final u8 scancode = Port.inb(u16(kbdData));
 
-  // --- The 0xE0 two-byte sequence, consumed as a unit -------------------
-  //
-  // Extended keys (arrows, right-hand modifiers, keypad Enter, the cursor
-  // block) send 0xE0 and then a second byte, in two SEPARATE interrupts.
-  // Before M3 the 0xE0 was ignored and its follower was then translated as
-  // though it were an ordinary make code, so the up arrow (0xE0 0x48) typed
-  // `8` -- 0x48 is keypad-8 in the table above. That was a wrong answer, not a
-  // missing feature, which is why it was the first thing GAP-0055 said to fix.
-  //
-  // The flag is cleared for the follower whether it is a make code or a break
-  // code (0xE0 0x48 / 0xE0 0xC8), because BOTH halves of an extended key press
-  // carry the prefix. Ignoring the release without clearing would leave the
-  // flag set and swallow the next ordinary key.
-  //
-  // Still not handled, and still recorded rather than implied: 0xE1 (the Pause
-  // key's six-byte sequence). It maps to 0x00 in the table and its five
-  // followers are translated as ordinary keys, so Pause still types garbage.
-  // GAP-0055 item 2 stays open for that reason -- narrowed, not closed.
   if (scancode == u8(0xE0)) {
     kbdSetPrefix(u64(1));
     return;
   }
+  u64 ext = u64(0);
   if (kbdPrefix() > u64(0)) {
     kbdSetPrefix(u64(0));
-    return; // the extended key itself: consumed, deliberately does nothing
+    ext = u64(kbdqBitExt);
   }
 
+  u64 ev = (scancode & u8(0x7F)).toU64();
   if ((scancode & u8(0x80)) > u8(0)) {
-    return; // key release
+    ev = ev | u64(kbdqBitBreak);
   }
-  // In range by construction: bit 7 is clear, so scancode < 128 and the table
-  // has 128 entries.
-  final u8 c = Pointer<u8>.fromAddress(
-    Rodata.addressOf(kbdSet1Ascii) + scancode.toU64(),
-  ).value;
-  if (c < u8(1)) {
-    return; // unmapped
-  }
-  if (shellState() > u64(0)) {
-    return; // a line is submitted or a command is running -- no queue exists
-  }
-  shellKey(c);
-  vgaUpdateHwCursor();
+  ev = ev | ext;
+  kbdqPush(ev);
 }

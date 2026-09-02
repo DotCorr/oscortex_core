@@ -772,8 +772,11 @@ the program must read half of one of the five before asking.
 
 ### APP3 — `ls` is a program
 
-**Blocked on: `namespace.md`'s device branch (its N1), which is where the `:` sigil is decided.**
-Harness `m22-readdir`.
+**Blocked on: work only for `LS.ELF`.** ADR-0100 landed `open(":ROOT")` /
+`read` of 32-byte root records in `fileSysOpen` (never `fatLookup`).
+`FILES.ELF` (`files-fm/`) is the FRAME consumer. This rung is still
+`LS.ELF` printing `mdir` order on a volume built for APP3's five-entry
+shape. Harness `m22-readdir`.
 
 Take `namespace.md`'s spelling, not a new syscall: the branch goes in **`fileSysOpen`** and **never** in
 `fatLookup` — that document calls a `fatLookup` branch *"a ring-3-reachable volume corruption"*, and it

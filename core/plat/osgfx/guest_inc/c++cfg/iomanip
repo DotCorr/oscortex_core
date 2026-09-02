@@ -1,0 +1,15 @@
+#ifndef OSGFX_STUB_IOMANIP
+#define OSGFX_STUB_IOMANIP
+#include <ostream>
+namespace std {
+inline ostream &uppercase(ostream &os) { return os; }
+inline ostream &hex(ostream &os) { return os; }
+inline ostream &dec(ostream &os) { return os; }
+struct __setfill { char c; };
+struct __setw { int n; };
+inline __setfill setfill(char c) { return {c}; }
+inline __setw setw(int n) { return {n}; }
+inline ostream &operator<<(ostream &os, __setfill) { return os; }
+inline ostream &operator<<(ostream &os, __setw) { return os; }
+}
+#endif

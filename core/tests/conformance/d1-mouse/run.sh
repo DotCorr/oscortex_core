@@ -187,7 +187,7 @@ ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 TOTAL_BSS=$(( 16#$DART_BSS_HEX + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 22016 ]] || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 22016 — 17504 through S0, plus D1's mouseStore 160 (ADR-0042) and M21's shmStore 4352 (ADR-0041), the two branches this merge brought together. If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
+ck; [[ "$TOTAL_BSS" -eq 31584 ]] || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 31584 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 echo "STRUCTURAL: pass  mouseStore is $MOUSE_SIZE bytes at .bss+0x$MOUSE_OFF, immediately before ioctlStore at 0x$IOCTL_OFF; total .bss $TOTAL_BSS"
 
 # --- 2b. NO GOLDEN MOVES --------------------------------------------------
@@ -453,6 +453,44 @@ ck; [[ $FS_STATUS -eq 0 ]] || fail "verify-freestanding.sh exited $FS_STATUS und
 ck; [[ "$(grep -c '^FREESTANDING: pass' <<<"$FS_OUT")" -eq 4 ]] \
   || fail "verify-freestanding reported $(grep -c '^FREESTANDING: pass' <<<"$FS_OUT") passes, expected 4 — one each for kmain.o, kdata.o, portio.o and kernel.elf"
 EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern.*/\1/p' <<<"$FS_OUT")
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED, because D1 added no assembly at all. A mouse driver that needed a new @extern would be doing something in assembly that ADR-0042 says is DCDart's job."
 echo "FREESTANDING: pass  four objects, $EXTERN_COUNT declared externs, UNCHANGED — and NO dc_alloc anywhere, which is what \"no allocation in an interrupt handler\" is mechanically"
 

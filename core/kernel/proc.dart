@@ -208,9 +208,11 @@ const int procHeadKernTicks = 12;
 /// half of why it exists.
 const int procHeadBudget = 13;
 
-// Header words 14 and 15 are unused and asserted zero by `m18-preempt/run.sh`,
-// so that a future field lands in a place somebody chose. Same discipline as
-// slot words 54..63.
+/// D3: 1 if this table holds processes that outlive the shell command that
+/// created them (`proc spawn`), else 0. A classic `proc run` / `proc spin`
+/// session leaves this word 0, which is what `m18-preempt` still reads out of
+/// guest RAM after those commands. Header word 15 stays unused.
+const int procHeadResident = 14;
 
 // Slot words 0..31 are metadata; 32..53 are the saved interrupt frame; 54..63
 // are unused and asserted zero by the harness, so a future field lands in a
@@ -249,6 +251,11 @@ const int procSlotProbe = 15;
 /// assertion about tick counts and an assertion about wall-clock.
 const int procSlotPreempts = 20;
 
+/// D3: 1 after this slot has been entered once. Word 54 was unused and
+/// `m18-preempt` still requires 54..63 to be zero after a `proc run` session,
+/// which never writes this word.
+const int procSlotEntered = 54;
+
 /// M18: how many times THIS slot has called `yield`. Zero for every program in
 /// `m18-preempt`, and that zero is the point: it is the kernel's own record
 /// that the switches it performed were not asked for.
@@ -267,6 +274,12 @@ const int procSlotYields = 21;
 /// which is the invariant that matters (the tables are what the CPU obeys).
 const int procSlotShmPt = 22;
 
+/// ADR-0124: 1 if this slot is a named platform process (`PLAT.ELF`)
+/// and may use the 189 MiB window at [vmPlatBase]. Word 23 sat between
+/// the SHM page-table word and the capability block; TAP/FILES ELFs
+/// leave it 0 and keep the 2 MiB [heapTop] cap.
+const int procSlotPlat = 23;
+
 /// M21: first of [shmCapsPerProc] SHARED-REGION CAPABILITY words — 24..27.
 ///
 /// **This is where "a capability cannot be forged" is actually true, and the
@@ -282,6 +295,25 @@ const int procSlotShmPt = 22;
 /// capability", which is what `procSlotWipe` leaves behind and what a slot
 /// reused by a later process therefore starts with.
 const int procSlotShmCaps = 24;
+
+/// ADR-0146: virtual address this BLOCKED slot is waiting on, or 0.
+/// Word 28 sits after the four capability words (24..27) and before
+/// the saved frame at 32. A scan of the table is the wait queue
+/// (`blocking-and-threads.md` §1.3(b)): `procMax` is 4.
+const int procSlotWaitAddr = 28;
+
+/// ADR-0148: this slot's `IA32_FS_BASE` (TLS door). Word 29 sits
+/// between the futex wait word and the saved frame. Written by
+/// [procSysSetfs]; installed on every enter/switch via [msr_write].
+/// Zero means "no TLS" — a `%fs:0` access then faults at VA 0.
+const int procSlotFsBase = 29;
+
+/// ADR-0169 / ADR-0170: VA of the official `memset@plt` trampoline
+/// after plant bind (points at OUR libc face in the RX slab).
+/// Word 30 sits between FS.base and the saved frame.
+/// Zero means unbound — a call through the PLT still hits the
+/// unmapped GOT and #PF (anti-vacuity).
+const int procSlotCefMemset = 30;
 
 /// First word of the saved 22-word interrupt frame.
 const int procSlotSaved = 32;
@@ -303,6 +335,9 @@ const int procStateReady = 1;
 const int procStateRunning = 2;
 const int procStateExited = 3;
 const int procStateKilled = 4;
+/// ADR-0146: waiting on a futex address ([procSlotWaitAddr]).
+/// [procPickNext] skips it. Not `fdwait` (11 stays reserved).
+const int procStateBlocked = 5;
 
 // [procCreate] / `proc run` refusal codes. Each one has a sentence.
 const int procErrOk = 0;
@@ -355,6 +390,75 @@ const int procSysYieldNo = 3;
 /// It does not switch, does not sleep and does not block. A process that calls
 /// it in a loop is still a process that never yields.
 const int procSysPreemptsNo = 10;
+
+/// Syscall 26 — `spawn(namePtr, nameLen)`. A live process starts another
+/// process by 8.3 FAT name. Assembled from [fatParseAt] + [fatLookup] +
+/// [procCreate] (named). 11 stays `fdwait`, 21/22 stay taken on other
+/// lines. No `oslibc.h` name — FRAME clients declare `SYS_SPAWN` in
+/// `osframe.h`.
+const int procSysSpawnNo = 26;
+
+/// Spawn refusals sit above this floor so a success slot (0..3) cannot
+/// be confused with a failure. Same idiom as `wmRet*`.
+const int spawnRetFloor = 0xFFFFFFFFFFFFFF00;
+const int spawnRetNoProc = 0xFFFFFFFFFFFFFFFE;
+const int spawnRetBadPtr = 0xFFFFFFFFFFFFFFFC;
+const int spawnRetBadLen = 0xFFFFFFFFFFFFFFFB;
+const int spawnRetBadName = 0xFFFFFFFFFFFFFFFA;
+const int spawnRetNotFound = 0xFFFFFFFFFFFFFFF9;
+const int spawnRetNoSlot = 0xFFFFFFFFFFFFFFF8;
+const int spawnRetLoad = 0xFFFFFFFFFFFFFFF7;
+
+/// Syscall 28 — `clone(fn, stack) -> slot` for a named platform
+/// process (ADR-0130). The child shares the caller's page tables
+/// (CLONE_VM) and starts at [fn] with RSP = [stack]. 11 stays
+/// `fdwait`. 21 and 22 stay reserved on other lines. 26 is `spawn`,
+/// 27 is `mmap`. ASK.ELF of the same bytes is [cloneRetBadArg].
+/// No `oslibc.h` name — a libc `clone()` would be Linux clone.
+const int procSysCloneNo = 28;
+
+/// Clone refusals sit above this floor so a success slot (0..3)
+/// cannot be confused with a failure. [cloneRetBadArg] matches
+/// [heapRetBadArg] so ASK.ELF prints the same `ASKED` bytes mmap
+/// already used.
+const int cloneRetFloor = 0xFFFFFFFFFFFFFF00;
+const int cloneRetBadArg = 0xFFFFFFFFFFFFFFFE;
+const int cloneRetBadPtr = 0xFFFFFFFFFFFFFFFC;
+const int cloneRetNoSlot = 0xFFFFFFFFFFFFFFF8;
+
+/// Syscall 30 — `futex(op, addr, val)` for a named platform
+/// process (ADR-0146). Op 0 waits while `*addr == val`; op 1
+/// wakes up to `val` waiters on `addr`. 11 stays `fdwait`. 21
+/// and 22 stay reserved on other lines. 26 is `spawn`, 27 is
+/// `mmap`, 28 is `clone`, 29 is `dlopen`. ASK.ELF of the same
+/// bytes is [futexRetBadArg]. No `oslibc.h` name — a libc
+/// `futex()` would be Linux's.
+const int procSysFutexNo = 30;
+
+const int futexOpWait = 0;
+const int futexOpWake = 1;
+
+const int futexRetFloor = 0xFFFFFFFFFFFFFF00;
+const int futexRetBadArg = 0xFFFFFFFFFFFFFFFE;
+const int futexRetBadPtr = 0xFFFFFFFFFFFFFFFC;
+const int futexRetBadOp = 0xFFFFFFFFFFFFFFFB;
+const int futexRetAlone = 0xFFFFFFFFFFFFFFF7;
+
+/// Syscall 33 — `setfs(base)` for a named platform process
+/// (ADR-0148). Plants [procSlotFsBase] and writes `IA32_FS_BASE`
+/// so a `%fs:` load/store reaches [base]. 11 stays `fdwait`.
+/// 21 and 22 stay reserved. 30 is `futex`, 31/32 are
+/// `unlink`/`rename`. ASK.ELF of the same bytes is
+/// [setfsRetBadArg]. No `oslibc.h` name — a libc `arch_prctl`
+/// would be Linux's.
+const int procSysSetfsNo = 33;
+
+/// `IA32_FS_BASE` MSR index (Intel SDM).
+const int procFsBaseMsr = 0xC0000100;
+
+const int setfsRetFloor = 0xFFFFFFFFFFFFFF00;
+const int setfsRetBadArg = 0xFFFFFFFFFFFFFFFE;
+const int setfsRetBadPtr = 0xFFFFFFFFFFFFFFFC;
 
 // ---------------------------------------------------------------------------
 // M18: THE QUANTUM, AND THE POLICY.
@@ -963,6 +1067,124 @@ final List<u8> procCmdSched = const [
   u8(0x64),
 ];
 
+/// `proc spawn ` -- 11 bytes. D3; not in `help` (GAP-0304).
+@rodata
+final List<u8> procCmdSpawnSp = const [
+  u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x73), u8(0x70), u8(0x61),
+  u8(0x77), u8(0x6E), u8(0x20),
+];
+
+/// `proc spawn` -- 10 bytes. The bare form, so a missing LBA or name lands on usage.
+@rodata
+final List<u8> procCmdSpawn = const [
+  u8(0x70), u8(0x72), u8(0x6F), u8(0x63), u8(0x20), u8(0x73), u8(0x70), u8(0x61),
+  u8(0x77), u8(0x6E),
+];
+
+/// `go ` -- 3 bytes. Hidden named launch from the idle line (ADR-0099).
+/// Not in `help`. Same residency door as the longer spawn form.
+@rodata
+final List<u8> procCmdGoSp = const [
+  u8(0x67), u8(0x6F), u8(0x20),
+];
+
+/// `go` -- 2 bytes. Bare form, so a missing name lands on usage.
+@rodata
+final List<u8> procCmdGo = const [
+  u8(0x67), u8(0x6F),
+];
+
+/// 8.3 `PLAT    ELF` -- 11 bytes. The only name that raises the
+/// process window. Compared against [fatNameBase] after a named open.
+@rodata
+final List<u8> procStrPlatName = const [
+  u8(0x50), u8(0x4C), u8(0x41), u8(0x54), u8(0x20), u8(0x20), u8(0x20), u8(0x20),
+  u8(0x45), u8(0x4C), u8(0x46),
+];
+
+/// `'PROC PLAT '` -- 10 bytes.
+@rodata
+final List<u8> procStrPlat = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x50), u8(0x4C), u8(0x41),
+  u8(0x54), u8(0x20),
+];
+
+/// `' WIN '` -- 5 bytes.
+@rodata
+final List<u8> procStrWin = const [
+  u8(0x20), u8(0x57), u8(0x49), u8(0x4E), u8(0x20),
+];
+
+/// `GO` + newline -- 3 bytes. Marker that the hidden path ran.
+@rodata
+final List<u8> procStrGo = const [
+  u8(0x47), u8(0x4F), u8(0x0A),
+];
+
+/// `PROC SPAWN ` -- 11 bytes.
+@rodata
+final List<u8> procStrSpawn = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x53), u8(0x50), u8(0x41),
+  u8(0x57), u8(0x4E), u8(0x20),
+];
+
+/// `PROC CLONE ` -- 11 bytes. ADR-0130.
+@rodata
+final List<u8> procStrClone = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x43), u8(0x4C), u8(0x4F),
+  u8(0x4E), u8(0x45), u8(0x20),
+];
+
+/// `PROC FUTEX ` -- 11 bytes. ADR-0146.
+@rodata
+final List<u8> procStrFutex = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x46), u8(0x55), u8(0x54),
+  u8(0x45), u8(0x58), u8(0x20),
+];
+
+/// `PROC SETFS ` -- 11 bytes. ADR-0148.
+@rodata
+final List<u8> procStrSetfs = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x53), u8(0x45), u8(0x54),
+  u8(0x46), u8(0x53), u8(0x20),
+];
+
+/// ` WAIT ` -- 6 bytes.
+@rodata
+final List<u8> procStrWait = const [
+  u8(0x20), u8(0x57), u8(0x41), u8(0x49), u8(0x54), u8(0x20),
+];
+
+/// ` WAKE ` -- 6 bytes.
+@rodata
+final List<u8> procStrWake = const [
+  u8(0x20), u8(0x57), u8(0x41), u8(0x4B), u8(0x45), u8(0x20),
+];
+
+/// ` ADDR ` -- 6 bytes.
+@rodata
+final List<u8> procStrAddr = const [
+  u8(0x20), u8(0x41), u8(0x44), u8(0x44), u8(0x52), u8(0x20),
+];
+
+/// ` VAL ` -- 5 bytes.
+@rodata
+final List<u8> procStrVal = const [
+  u8(0x20), u8(0x56), u8(0x41), u8(0x4C), u8(0x20),
+];
+
+/// ` FN ` -- 4 bytes.
+@rodata
+final List<u8> procStrFn = const [
+  u8(0x20), u8(0x46), u8(0x4E), u8(0x20),
+];
+
+/// ` SP ` -- 4 bytes.
+@rodata
+final List<u8> procStrSp = const [
+  u8(0x20), u8(0x53), u8(0x50), u8(0x20),
+];
+
 /// `       proc sched | proc coop <lbaA> <lbaB> | proc spin <lbaA> <lbaB> <quanta>\n` -- 79 bytes.
 @rodata
 final List<u8> procStrUsage2 = const [
@@ -1069,6 +1291,11 @@ external void fx_save(u64 area);
 @extern
 external void fx_restore(u64 area);
 
+/// `wrmsr` — write MSR [msr] with [value]. ADR-0148 TLS door:
+/// only [procInstallFs] calls this, and only for `IA32_FS_BASE`.
+@extern
+external void msr_write(u64 msr, u64 value);
+
 // ---------------------------------------------------------------------------
 // Primitives. Everything below goes through the seam.
 // ---------------------------------------------------------------------------
@@ -1174,6 +1401,10 @@ void procInit() {
   // kernel STATES rather than a thing that happens to be the non-zero value.
   procSetHead(u64(procHeadPolicy), u64(procPolicyPreempt));
   procSetHead(u64(procHeadReady), u64(1));
+  // osmedia_guest.o calls [wmMediaFill]. dcc drops an unreferenced
+  // @bare symbol, so the final link fails with an undefined C
+  // reference. src==0 returns immediately (kmedia.dart).
+  wmMediaFill(u64(0), u64(0), u64(0));
 }
 
 /// 1 if a process is on the CPU right now, else 0.
@@ -1342,6 +1573,14 @@ u64 procSpaceBuild(u64 s) {
   // warning, and it costs one line to be structurally impossible instead of
   // merely unlikely. `m21-shmem/run.sh` asserts both clears are present.
   vmSetEntry(pd, u64(vmShmPdIndex), u64(0));
+  // ADR-0124: the platform window, same inheritance lock. A new
+  // address space must not inherit PD[130..137] from a previous
+  // platform process or from a kernel directory that never maps them.
+  u64 p = u64(0);
+  while (p < u64(vmPlatPdCount)) {
+    vmSetEntry(pd, u64(vmPlatPdIndex) + p, u64(0));
+    p = p + u64(1);
+  }
   return u64(procErrOk);
 }
 
@@ -1359,8 +1598,44 @@ u64 procSpaceBuild(u64 s) {
 /// the CPU obeys, so they are what a teardown has to be checked against.
 /// Returns the number of frames actually given back, which `proc` prints and the
 /// allocator's free count is asserted against.
+/// 1 if another live slot still walks slot [s]'s PML4.
+///
+/// ADR-0130: `clone` shares the caller's page tables. The first
+/// sharer to exit must not free the frames the survivor is
+/// standing on. The last one frees as today. Compared by PML4
+/// frame, not by a new slot word — m18-preempt owns the indices.
+@bare
+u64 procSpaceShared(u64 s) {
+  final u64 pml4 = procGet(s, u64(procSlotPml4));
+  if (pml4 < u64(1)) {
+    return u64(0);
+  }
+  u64 i = u64(0);
+  while (i < u64(procMax)) {
+    if (i != s) {
+      if (procGet(i, u64(procSlotState)) > u64(procStateFree)) {
+        if (procGet(i, u64(procSlotPml4)) == pml4) {
+          return u64(1);
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(0);
+}
+
 @bare
 u64 procSpaceFree(u64 s) {
+  if (procSpaceShared(s) > u64(0)) {
+    procSet(s, u64(procSlotPml4), u64(0));
+    procSet(s, u64(procSlotPdpt), u64(0));
+    procSet(s, u64(procSlotPd), u64(0));
+    procSet(s, u64(procSlotPt), u64(0));
+    procSet(s, u64(procSlotShmPt), u64(0));
+    procSet(s, u64(procSlotPages), u64(0));
+    heapReset(s);
+    return u64(0);
+  }
   u64 freed = u64(0);
   final u64 pd = procGet(s, u64(procSlotPd));
   if (pd > u64(0)) {
@@ -1423,6 +1698,34 @@ u64 procSpaceFree(u64 s) {
       if (freeFrame(spt) == u64(pmmFreeOk)) {
         freed = freed + u64(1);
       }
+    }
+    // ADR-0124: platform-window tables and the leaves under them.
+    // Every present leaf is a frame this process owns (sbrk), so they
+    // go back through freeFrame the same way the 2 MiB window's do.
+    u64 p = u64(0);
+    while (p < u64(vmPlatPdCount)) {
+      final u64 pe = vmGetEntry(pd, u64(vmPlatPdIndex) + p);
+      if ((pe & u64(vmPresent)) > u64(0)) {
+        final u64 ppt = vmEntryAddr(pe);
+        u64 k = u64(0);
+        while (k < u64(vmEntries)) {
+          final u64 ple = vmGetEntry(ppt, k);
+          if ((ple & u64(vmPresent)) > u64(0)) {
+            // ADR-0168: skip host-plant alias frames.
+            if (elfCefPlantOwns(vmEntryAddr(ple)) < u64(1)) {
+              if (freeFrame(vmEntryAddr(ple)) == u64(pmmFreeOk)) {
+                freed = freed + u64(1);
+              }
+            }
+          }
+          k = k + u64(1);
+        }
+        vmSetEntry(pd, u64(vmPlatPdIndex) + p, u64(0));
+        if (freeFrame(ppt) == u64(pmmFreeOk)) {
+          freed = freed + u64(1);
+        }
+      }
+      p = p + u64(1);
     }
     if (freeFrame(pd) == u64(pmmFreeOk)) {
       freed = freed + u64(1);
@@ -1625,6 +1928,9 @@ void procSwitchTo(u64 next, u64 frame) {
   if (procHead(u64(procHeadSse)) > u64(0)) {
     fx_restore(procFxArea(next));
   }
+  // ADR-0148: FS.base is per-slot. Without this write a clone that
+  // set TLS would hand its sibling the wrong base on resume.
+  procInstallFs(next);
   procLoadFrame(next, frame);
   procBumpHead(u64(procHeadSwitches));
   // M18: the incoming process starts a FRESH slice. Without this line a process
@@ -1681,6 +1987,10 @@ void procTick(u64 frame) {
   if (procLive() < u64(1)) {
     return;
   }
+  if (procGet(procCurrent(), u64(procSlotState)) == u64(procStateKilled)) {
+    procReapKilled(procCurrent());
+    return;
+  }
   if (procHead(u64(procHeadPolicy)) < u64(procPolicyPreempt)) {
     return;
   }
@@ -1716,9 +2026,29 @@ void procTick(u64 frame) {
   final u64 cur = procCurrent();
   final u64 next = procPickNext(cur);
   if (next == u64(procMax)) {
-    // A quantum expired with exactly one runnable process. Nothing to switch
-    // to, so nothing is switched -- but the expiry was counted, which is what
-    // makes a LONE runaway visible and, with a budget, stoppable.
+    // A quantum expired with exactly one runnable process. A classic
+    // `proc run` session stays on the CPU -- the expiry was counted, which is
+    // what makes a LONE runaway visible and, with a budget, stoppable.
+    //
+    // A RESIDENT session gives the CPU back to the shell: that is D3. The
+    // process is saved and marked READY, the per-slot preempt counter
+    // advances (the criterion `display-protocol.md` §6 names), and
+    // `user_return` lands in the idle loop. `m18-preempt` uses `proc run`,
+    // so this arm is not taken there.
+    if (procHead(u64(procHeadResident)) < u64(1)) {
+      return;
+    }
+    procSaveFrame(cur, frame);
+    if (procHead(u64(procHeadSse)) > u64(0)) {
+      fx_save(procFxArea(cur));
+    }
+    procSet(cur, u64(procSlotState), u64(procStateReady));
+    procSet(cur, u64(procSlotPreempts),
+        procGet(cur, u64(procSlotPreempts)) + u64(1));
+    procBumpHead(u64(procHeadPreempts));
+    procToKernel();
+    procSetHead(u64(procHeadCurrent), u64(0));
+    user_return(); // never returns; control reappears in procResume
     return;
   }
 
@@ -1781,7 +2111,11 @@ void procBudgetEnd() {
     }
     s = s + u64(1);
   }
-  user_return(); // never returns; control reappears in shellProcRun
+  if (procHead(u64(procHeadResident)) > u64(0)) {
+    procSetHead(u64(procHeadResident), u64(0));
+    procSessionTimerOff();
+  }
+  user_return(); // never returns; control reappears in shellProcRun or the idle loop
 }
 
 /// `PROC PREEMPT <cur> -> <next> N <n>` — one line per involuntary switch.
@@ -1833,6 +2167,10 @@ void procToKernel() {
 @bare
 void procYield(u64 frame) {
   final u64 cur = procCurrent();
+  if (procGet(cur, u64(procSlotState)) == u64(procStateKilled)) {
+    procReapKilled(cur);
+    return;
+  }
   final u64 next = procPickNext(cur);
   if (next == u64(procMax)) {
     userSetFrame(frame, u64(userFrameRax), u64(0));
@@ -1906,12 +2244,62 @@ void procCleanup(u64 s) {
   // count is asserted across the LAST exit rather than each one
   // (`docs/design/memory.md` §2.3, ADR-0041 §5).
   shmReleaseOwner(s);
+  // D7: this process's click rings. A process may own two windows.
+  // Both are still LIVE until [wmReap]. A reused window that kept
+  // a press would pop it for the next owner.
+  wmeventResetOwned(procGet(s, u64(procSlotId)));
+  procSet(s, u64(procSlotWaitAddr), u64(0));
+  procSet(s, u64(procSlotFsBase), u64(0));
+  procSet(s, u64(procSlotCefMemset), u64(0));
   procSet(s, u64(procSlotState), u64(procStateFree));
   uartWrite(Rodata.addressOf(procStrKill), u64(15));
   uartPutHex(s, u64(2));
   uartWrite(Rodata.addressOf(procStrFreed), u64(7));
   uartPutHex(freed, u64(8));
   uartNewline();
+}
+
+/// Tears down slot [s] from a close that landed while it was current.
+/// CR3 goes back to the kernel first; then [user_return] to the idle
+/// line. Same shape as the last-process arm of [procSysExit].
+@bare
+void procReapKilled(u64 s) {
+  if (procGet(s, u64(procSlotState)) != u64(procStateKilled)) {
+    return;
+  }
+  procToKernel();
+  procSetHead(u64(procHeadCurrent), u64(0));
+  if (procHead(u64(procHeadLive)) > u64(0)) {
+    procSetHead(u64(procHeadLive), procHead(u64(procHeadLive)) - u64(1));
+  }
+  procCleanup(s);
+  user_return();
+}
+
+/// Kills the process that holds [id]. Close is compositor policy: the
+/// surface is already gone. If that process is on the CPU (IRQ12 during
+/// its quantum) it is marked [procStateKilled] and [procReapKilled]
+/// finishes on the next yield or tick — the page tables the CPU is
+/// standing on are not freed from the mouse path.
+@bare
+void procKillId(u64 id) {
+  final u64 s = procSlotOfId(id);
+  if (s >= u64(procMax)) {
+    return;
+  }
+  if (procGet(s, u64(procSlotState)) == u64(procStateFree)) {
+    return;
+  }
+  if (procLive() > u64(0)) {
+    if (procCurrent() == s) {
+      procSet(s, u64(procSlotState), u64(procStateKilled));
+      return;
+    }
+  }
+  if (procHead(u64(procHeadLive)) > u64(0)) {
+    procSetHead(u64(procHeadLive), procHead(u64(procHeadLive)) - u64(1));
+  }
+  procCleanup(s);
 }
 
 /// Loads the ELF whose header sector is at [lba] into a fresh slot.
@@ -1942,12 +2330,35 @@ void procCleanup(u64 s) {
 /// loader reads image-relative sectors through it. **The two forms differ in
 /// nothing else**, which is why one parameter and two `if`s express the whole
 /// difference rather than a second copy of this function.
+/// 1 if the name already in [fatNameBase] is `PLAT.ELF`.
+///
+/// **Name, not a syscall argument.** A TAP/FILES ELF that asks for a
+/// 3 MiB `sbrk` is refused by [heapCap]. Only this 8.3 name installs
+/// the 16 MiB window. LBA spawn never matches: [fatNameBase] is not
+/// consulted when [named] is 0.
+@bare
+u64 procPlatNameMatch() {
+  final u64 have = fatNameBase();
+  final u64 want = Rodata.addressOf(procStrPlatName);
+  u64 i = u64(0);
+  while (i < u64(fatNameBytes)) {
+    if (Pointer<u8>.fromAddress(have + i).value !=
+        Pointer<u8>.fromAddress(want + i).value) {
+      return u64(0);
+    }
+    i = i + u64(1);
+  }
+  return u64(1);
+}
+
 @bare
 u64 procCreate(u64 lba, u64 named) {
   final u64 s = procFreeSlot();
   if (s == u64(procMax)) {
     return u64(procErrNoSlot);
   }
+  procSet(s, u64(procSlotPlat), u64(0));
+  procSet(s, u64(procSlotCefMemset), u64(0));
   final u64 bs = procSpaceBuild(s);
   if (bs > u64(0)) {
     procCleanup(s);
@@ -2018,6 +2429,14 @@ u64 procCreate(u64 lba, u64 named) {
   if (st < u64(1)) {
     elfPageReport();
     elfWindowLine();
+    if (named > u64(0)) {
+      if (procPlatNameMatch() > u64(0)) {
+        procSet(s, u64(procSlotPlat), u64(1));
+        if (vmPlatTablesInstall() > u64(0)) {
+          st = u64(elfErrNoFrames);
+        }
+      }
+    }
   }
 
   procToKernel();
@@ -2078,7 +2497,9 @@ u64 procCreate(u64 lba, u64 named) {
   procSet(s, u64(procSlotHi), elfMeta(u64(elfMetaHi)));
   procSet(s, u64(procSlotLba), lba);
   procSet(s, u64(procSlotExit), u64(0));
-  procSet(s, u64(procSlotProbe), u64(0));
+  // ADR-0126: RDI is the dyn `e_entry` when a platform `PT_INTERP`
+  // load parked it in [elfMetaExit]. Zero on every other spawn.
+  procSet(s, u64(procSlotProbe), elfMeta(u64(elfMetaExit)));
   procBumpHead(u64(procHeadCreated));
   procSet(s, u64(procSlotId), procHead(u64(procHeadCreated)));
   procFxInit(s);
@@ -2109,6 +2530,13 @@ u64 procCreate(u64 lba, u64 named) {
   uartWrite(Rodata.addressOf(procStrFx), u64(4));
   uartPutHex(procFxArea(s), u64(16));
   uartNewline();
+  if (procGet(s, u64(procSlotPlat)) > u64(0)) {
+    uartWrite(Rodata.addressOf(procStrPlat), u64(10));
+    uartPutHex(s, u64(2));
+    uartWrite(Rodata.addressOf(procStrWin), u64(5));
+    uartPutHex(u64(vmPlatBytes), u64(16));
+    uartNewline();
+  }
   return u64(procErrOk);
 }
 
@@ -2155,7 +2583,21 @@ void procSysExit(u64 frame, u64 code) {
     procToKernel();
     procSetHead(u64(procHeadCurrent), u64(0));
     procCleanup(cur);
-    user_return(); // never returns; control reappears in shellProcRun
+    // ADR-0146: a BLOCKED waiter with no READY peer is deadlocked.
+    // Tear those slots down with the session rather than leak tables.
+    u64 s = u64(0);
+    while (s < u64(procMax)) {
+      if (procGet(s, u64(procSlotState)) == u64(procStateBlocked)) {
+        procSetHead(u64(procHeadLive), procHead(u64(procHeadLive)) - u64(1));
+        procCleanup(s);
+      }
+      s = s + u64(1);
+    }
+    if (procHead(u64(procHeadResident)) > u64(0)) {
+      procSetHead(u64(procHeadResident), u64(0));
+      procSessionTimerOff();
+    }
+    user_return(); // never returns; control reappears in shellProcRun or the idle loop
     return;
   }
   procSwitchTo(next, frame);
@@ -2196,6 +2638,7 @@ void procOnFault(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   // that died. It runs here instead, before the diagnostic, so a faulting
   // session leaves the PIC exactly as tidy as one that finished.
   procSessionTimerOff();
+  procSetHead(u64(procHeadResident), u64(0));
   procEndLine();
   // The process is dead and `user_return` will never run for it, so the resume
   // point `enter_user` recorded describes a stack frame `fault_resume` is about
@@ -2235,6 +2678,15 @@ void procEndLine() {
 @bare
 void procSessionTimerOff() {
   picUnmaskKeyboardOnly();
+}
+
+/// Unmasks IRQ0 and IRQ1 for a preemptive session. **The one call site of
+/// `picUnmaskTimerAndKeyboard` in this file**, so `m18-preempt` can still
+/// require exactly one. [shellProcRun] and [shellProcSpawn] both come through
+/// here.
+@bare
+void procSessionTimerOn() {
+  picUnmaskTimerAndKeyboard();
 }
 
 /// `PROC SCHED POLICY <n> QUANTUM <n> QUANTA <n> PREEMPTS <n> KTICKS <n> SLICE <n> BUDGET <n>`
@@ -2516,6 +2968,7 @@ void procSessionReset() {
   procSetHead(u64(procHeadSlice), u64(0));
   procSetHead(u64(procHeadKernTicks), u64(0));
   procSetHead(u64(procHeadBudget), u64(0));
+  procSetHead(u64(procHeadResident), u64(0));
 }
 
 /// Enters the first READY process. **Returns only through `user_return`**, i.e.
@@ -2551,6 +3004,8 @@ void procStart(u64 s) {
   if (procHead(u64(procHeadSse)) > u64(0)) {
     fx_restore(procFxArea(s));
   }
+  // ADR-0148: plant FS.base before the first ring-3 instruction.
+  procInstallFs(s);
   enter_user(procGet(s, u64(procSlotEntry)), procGet(s, u64(procSlotRsp)),
       procGet(s, u64(procSlotProbe)), u64(userCodeSel), u64(userDataSel));
 }
@@ -2633,6 +3088,12 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross, u64 policy, u64 budget) {
     procRefuse(u64(procErrBusy));
     return;
   }
+  // D3: a spawn session owns the table until its last process exits. Starting
+  // a classic two-program session on top of it would wipe those slots.
+  if (procHead(u64(procHeadResident)) > u64(0)) {
+    procRefuse(u64(procErrBusy));
+    return;
+  }
   // AND TWO THE SHELL ANSWERS FIRST, ON PURPOSE. `shellProcArgs` caps both
   // fields at `ataLba28Max` and prints its usage line, which is correct: the
   // shell should refuse a line it knows is malformed rather than build a
@@ -2686,7 +3147,7 @@ void shellProcRun(u64 lbaA, u64 lbaB, u64 cross, u64 policy, u64 budget) {
   // process at its entry point with nothing at all interrupting it.
   // ---------------------------------------------------------------------
   if (policy > u64(procPolicyCoop)) {
-    picUnmaskTimerAndKeyboard();
+    procSessionTimerOn();
   }
 
   uartWrite(Rodata.addressOf(procStrRun), u64(13));
@@ -2806,4 +3267,551 @@ void shellProcSpinArgs(u64 from) {
     return;
   }
   shellProcRun(a, b, u64(0), u64(procPolicyPreempt), q);
+}
+
+/// Lowest READY slot, or [procMax] if there is none.
+@bare
+u64 procPickReady() {
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (procGet(s, u64(procSlotState)) == u64(procStateReady)) {
+      return s;
+    }
+    s = s + u64(1);
+  }
+  return u64(procMax);
+}
+
+/// 1 if the idle loop should hand the CPU to a resident process.
+@bare
+u64 procShouldResume() {
+  if (procHead(u64(procHeadResident)) < u64(1)) {
+    return u64(0);
+  }
+  if (procPickReady() == u64(procMax)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// The idle-loop body for D3. Kept in this file so `shellMain` does not
+/// inline the slot walk: DCDart's overflow flags live in callee-saved
+/// registers, and a walk inlined next to the prompt printer #UD's (0F0B)
+/// the moment those registers are clobbered.
+@bare
+void procIdle() {
+  if (procShouldResume() > u64(0)) {
+    procResume();
+    return;
+  }
+  idle_once();
+}
+
+/// Enters a READY resident process from the shell idle loop. **Returns only
+/// through `user_return`**, after a quantum (lone-process D3 path) or after
+/// the last process exits.
+///
+/// Uses [resume_user] rather than [enter_user]: the slot already has a
+/// synthesised or saved 22-word frame, and `enter_user` would discard it and
+/// restart at the entry point.
+@bare
+void procResume() {
+  final u64 s = procPickReady();
+  if (s == u64(procMax)) {
+    return;
+  }
+  procSet(s, u64(procSlotState), u64(procStateRunning));
+  procSetHead(u64(procHeadCurrent), s + u64(1));
+  procSetHead(u64(procHeadSlice), u64(0));
+  paging_install(procGet(s, u64(procSlotPml4)));
+  if (procHead(u64(procHeadSse)) > u64(0)) {
+    fx_restore(procFxArea(s));
+  }
+  // ADR-0148: FS.base before enter/resume (same as [procSwitchTo]).
+  procInstallFs(s);
+  // First time on a slot: `enter_user` is the proven door. Later times the
+  // saved frame is a real interrupt snapshot and `resume_user` loads it.
+  if (procGet(s, u64(procSlotEntered)) < u64(1)) {
+    procSet(s, u64(procSlotEntered), u64(1));
+    enter_user(procGet(s, u64(procSlotEntry)), procGet(s, u64(procSlotRsp)),
+        procGet(s, u64(procSlotProbe)), u64(userCodeSel), u64(userDataSel));
+    return;
+  }
+  resume_user(procSlotBase(s) + u64(256), u64(userDataSel));
+}
+
+/// Guards shared by the LBA and 8.3 forms of `proc spawn`. 1 if a
+/// refusal was already printed.
+@bare
+u64 shellProcSpawnReady() {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    procRefuse(u64(procErrNotReady));
+    return u64(1);
+  }
+  if (procHead(u64(procHeadReady)) < u64(1)) {
+    procRefuse(u64(procErrNotReady));
+    return u64(1);
+  }
+  if (procHead(u64(procHeadSse)) < u64(1)) {
+    procRefuse(u64(procErrNoSse));
+    return u64(1);
+  }
+  if (procLive() > u64(0)) {
+    procRefuse(u64(procErrBusy));
+    return u64(1);
+  }
+  if (userMeta(u64(userMetaLive)) > u64(0)) {
+    procRefuse(u64(procErrBusy));
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// Session start + [procCreate] + `PROC SPAWN` line. [named] is the
+/// same flag [procCreate] already takes for `run <name>`: the FAT chain
+/// is open and the loader reads through it. One [procSessionTimerOff]
+/// site on the fail path, so m18's count does not move.
+@bare
+void shellProcSpawnCreate(u64 lba, u64 named) {
+  if (procHead(u64(procHeadResident)) < u64(1)) {
+    procSessionReset();
+    argsReset();
+    procSetHead(u64(procHeadPolicy), u64(procPolicyPreempt));
+    procSetHead(u64(procHeadBudget), u64(0));
+    procSetHead(u64(procHeadResident), u64(1));
+    procSessionTimerOn();
+  }
+  final u64 st = procCreate(lba, named);
+  if (st > u64(0)) {
+    procRefuse(st);
+    if (procHead(u64(procHeadLive)) < u64(1)) {
+      procSetHead(u64(procHeadResident), u64(0));
+      procSessionTimerOff();
+    }
+    return;
+  }
+  uartWrite(Rodata.addressOf(procStrSpawn), u64(11));
+  if (named > u64(0)) {
+    uartPutHex(elfMeta(u64(elfMetaImageLba)), u64(8));
+  } else {
+    uartPutHex(lba, u64(8));
+  }
+  uartNewline();
+}
+
+/// `proc spawn <lba>` — create one process and return to the prompt.
+///
+/// The first spawn of a session resets the table, marks it resident, and
+/// unmasks the timer. Later spawns add a slot. The idle loop in [shellMain]
+/// is what actually runs them.
+@bare
+void shellProcSpawn(u64 lba) {
+  if (shellProcSpawnReady() > u64(0)) {
+    return;
+  }
+  if (lba > u64(ataLba28Max)) {
+    procRefuse(u64(procErrBadLba));
+    return;
+  }
+  shellProcSpawnCreate(lba, u64(0));
+}
+
+/// `proc spawn <name>` — the same residency as the LBA form, image from
+/// an 8.3 FAT file. Not in `help` (GAP-0304). `elfLoadFile` prints
+/// `ELF FILE <name>`; this function does not grow a help line.
+@bare
+void shellProcSpawnName(u64 from, u64 end) {
+  if (shellProcSpawnReady() > u64(0)) {
+    return;
+  }
+  final u64 fs = fatOpenAt(from, end);
+  if (fs > u64(fatErrOk)) {
+    fatReportError(fs);
+    return;
+  }
+  fatOpenLine();
+  fatChainReport();
+  shellProcSpawnCreate(u64(0), u64(1));
+}
+
+/// Hidden `go <name>` from the idle line. Prints `GO` then the same
+/// named residency as the longer spawn form. Not in `help`. ADR-0099.
+@bare
+void shellGoArgs(u64 from) {
+  uartWrite(Rodata.addressOf(procStrGo), u64(3));
+  shellProcSpawnArgs(from);
+}
+
+/// `proc spawn ...` from the shell: one hex LBA, or an 8.3 name.
+///
+/// Told apart the way `run` is: [procHexField] returns above
+/// [ataLba28Max] for anything that is not one to seven hex digits, so
+/// `proc spawn 20` is still sector 0x20 and `proc spawn APP1.ELF` is a
+/// name. Empty second word is still usage. Not in `help`.
+@bare
+void shellProcSpawnArgs(u64 from) {
+  final u64 e1 = procFieldEnd(from);
+  if (e1 < (from + u64(1))) {
+    shellProcUsage();
+    return;
+  }
+  final u64 a = procHexField(from, e1);
+  if (a > u64(ataLba28Max)) {
+    shellProcSpawnName(from, e1);
+    return;
+  }
+  shellProcSpawn(a);
+}
+
+/// Syscall 26. `rdi` is a pointer to an 8.3 name, `rsi` is its length.
+/// Returns the new slot (0..3) or a [spawnRet*] refusal.
+///
+/// **The caller stays on the CPU.** [procCreate] installs the child's
+/// CR3 to load, then [procToKernel]. This function puts the CALLER's
+/// PML4 back before the syscall returns, or the `iretq` would land in
+/// an address space that does not map the studio.
+///
+/// No new `.bss`. The name is bounced through [fileBufBase], the same
+/// buffer `open` already uses. GAP-0096 item 7 is the process-from-
+/// process hole this call closes for a name; it is not APP7's full
+/// `spawn(name, argv)` (no argv pointer).
+@bare
+void procSysSpawn(u64 frame) {
+  if (procLive() < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetNoProc));
+    return;
+  }
+  final u64 ptr = userFrame(frame, u64(userFrameRdi));
+  final u64 len = userFrame(frame, u64(userFrameRsi));
+  if (len < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetBadLen));
+    return;
+  }
+  if (len > u64(fileNameMax)) {
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetBadLen));
+    return;
+  }
+  if (elfOwns(ptr, len) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetBadPtr));
+    return;
+  }
+  final u64 buf = fileBufBase();
+  u64 i = u64(0);
+  while (i < len) {
+    Pointer<u8>.fromAddress(buf + i).value =
+        Pointer<u8>.fromAddress(ptr + i).value;
+    i = i + u64(1);
+  }
+  final u64 pn = fatParseAt(buf, len);
+  if (pn > u64(fatErrOk)) {
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetBadName));
+    return;
+  }
+  final u64 fs = fatLookup();
+  if (fs > u64(fatErrOk)) {
+    fatReportError(fs);
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetNotFound));
+    return;
+  }
+  fatOpenLine();
+  fatChainReport();
+  final u64 slot = procFreeSlot();
+  if (slot == u64(procMax)) {
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetNoSlot));
+    return;
+  }
+  final u64 caller = procCurrent();
+  final u64 callerPml4 = procGet(caller, u64(procSlotPml4));
+  if (procHead(u64(procHeadResident)) < u64(1)) {
+    procSetHead(u64(procHeadResident), u64(1));
+    procSessionTimerOn();
+  }
+  final u64 st = procCreate(u64(0), u64(1));
+  paging_install(callerPml4);
+  if (st > u64(0)) {
+    if (st == u64(procErrNoSlot)) {
+      userSetFrame(frame, u64(userFrameRax), u64(spawnRetNoSlot));
+      return;
+    }
+    userSetFrame(frame, u64(userFrameRax), u64(spawnRetLoad));
+    return;
+  }
+  uartWrite(Rodata.addressOf(procStrSpawn), u64(11));
+  uartPutHex(slot, u64(8));
+  uartNewline();
+  userSetFrame(frame, u64(userFrameRax), slot);
+}
+
+/// `PROC CLONE <s> FN <fn> SP <stack> PML4 <pa>`, or
+/// `PROC CLONE <s> ERR <ret>` on a refusal. ADR-0130.
+@bare
+void procCloneLine(u64 s, u64 fn, u64 stack, u64 r) {
+  uartWrite(Rodata.addressOf(procStrClone), u64(11));
+  uartPutHex(s, u64(2));
+  if (r > u64(cloneRetFloor)) {
+    uartWrite(Rodata.addressOf(vmStrErr), u64(5));
+    uartPutHex(r, u64(16));
+    uartNewline();
+    return;
+  }
+  uartWrite(Rodata.addressOf(procStrFn), u64(4));
+  uartPutHex(fn, u64(16));
+  uartWrite(Rodata.addressOf(procStrSp), u64(4));
+  uartPutHex(stack, u64(16));
+  uartWrite(Rodata.addressOf(procStrPml4), u64(6));
+  uartPutHex(procGet(s, u64(procSlotPml4)), u64(16));
+  uartNewline();
+}
+
+/// Syscall 28. `rdi` is the child entry, `rsi` is the child stack
+/// top. Returns the child slot (0..3) or a [cloneRet*] refusal.
+///
+/// **The child walks the caller's page tables.** That is the door:
+/// a later Content thread starts at a function that already lives
+/// in this address space. A new `procCreate` would be `spawn`, and
+/// a fake tid without a READY slot cannot print `CHILD`. ASK.ELF
+/// of the same bytes is [cloneRetBadArg]. Not futex. Not TLS.
+/// Not `dlopen`. 11 stays `fdwait`.
+@bare
+void procSysClone(u64 frame) {
+  if (procLive() < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(cloneRetBadArg));
+    return;
+  }
+  final u64 caller = procCurrent();
+  final u64 fn = userFrame(frame, u64(userFrameRdi));
+  final u64 stack = userFrame(frame, u64(userFrameRsi));
+  if (heapIsPlat(caller) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(cloneRetBadArg));
+    procCloneLine(caller, fn, stack, u64(cloneRetBadArg));
+    return;
+  }
+  if (elfEntryMapped(fn) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(cloneRetBadPtr));
+    procCloneLine(caller, fn, stack, u64(cloneRetBadPtr));
+    return;
+  }
+  if (stack < u64(16)) {
+    userSetFrame(frame, u64(userFrameRax), u64(cloneRetBadPtr));
+    procCloneLine(caller, fn, stack, u64(cloneRetBadPtr));
+    return;
+  }
+  if (elfOwns(stack - u64(16), u64(16)) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(cloneRetBadPtr));
+    procCloneLine(caller, fn, stack, u64(cloneRetBadPtr));
+    return;
+  }
+  final u64 child = procFreeSlot();
+  if (child == u64(procMax)) {
+    userSetFrame(frame, u64(userFrameRax), u64(cloneRetNoSlot));
+    procCloneLine(caller, fn, stack, u64(cloneRetNoSlot));
+    return;
+  }
+  procSet(child, u64(procSlotPml4), procGet(caller, u64(procSlotPml4)));
+  procSet(child, u64(procSlotPdpt), procGet(caller, u64(procSlotPdpt)));
+  procSet(child, u64(procSlotPd), procGet(caller, u64(procSlotPd)));
+  procSet(child, u64(procSlotPt), procGet(caller, u64(procSlotPt)));
+  procSet(child, u64(procSlotPlat), procGet(caller, u64(procSlotPlat)));
+  procSet(child, u64(procSlotEntry), fn);
+  procSet(child, u64(procSlotRsp), stack);
+  procSet(child, u64(procSlotStackFrame),
+      procGet(caller, u64(procSlotStackFrame)));
+  procSet(child, u64(procSlotPages), u64(0));
+  procSet(child, u64(procSlotLo), procGet(caller, u64(procSlotLo)));
+  procSet(child, u64(procSlotHi), procGet(caller, u64(procSlotHi)));
+  procSet(child, u64(procSlotLba), procGet(caller, u64(procSlotLba)));
+  procSet(child, u64(procSlotSegments),
+      procGet(caller, u64(procSlotSegments)));
+  procSet(child, u64(procSlotProbe), u64(0));
+  procSet(child, u64(procSlotExit), u64(0));
+  procSet(child, u64(procSlotPreempts), u64(0));
+  procSet(child, u64(procSlotYields), u64(0));
+  procSet(child, u64(procSlotEntered), u64(0));
+  procSet(child, u64(procSlotShmPt), u64(0));
+  procSet(child, u64(procSlotWaitAddr), u64(0));
+  // ADR-0148: a clone starts with no TLS. The parent keeps its FS.base;
+  // the child must call setfs itself (Linux would pass a new TLS via
+  // clone flags — we do not).
+  procSet(child, u64(procSlotFsBase), u64(0));
+  procSet(child, u64(procSlotCefMemset), u64(0));
+  procBumpHead(u64(procHeadCreated));
+  procSet(child, u64(procSlotId), procHead(u64(procHeadCreated)));
+  procFxInit(child);
+  procInitFrame(child);
+  procSet(child, u64(procSlotState), u64(procStateReady));
+  procBumpHead(u64(procHeadLive));
+  procCloneLine(child, fn, stack, child);
+  userSetFrame(frame, u64(userFrameRax), child);
+}
+
+/// `PROC FUTEX WAIT|WAKE|ERR …`. ADR-0146.
+@bare
+void procFutexLine(u64 s, u64 op, u64 addr, u64 val, u64 r) {
+  uartWrite(Rodata.addressOf(procStrFutex), u64(11));
+  uartPutHex(s, u64(2));
+  if (r > u64(futexRetFloor)) {
+    uartWrite(Rodata.addressOf(vmStrErr), u64(5));
+    uartPutHex(r, u64(16));
+    uartNewline();
+    return;
+  }
+  if (op == u64(futexOpWait)) {
+    uartWrite(Rodata.addressOf(procStrWait), u64(6));
+  } else {
+    uartWrite(Rodata.addressOf(procStrWake), u64(6));
+  }
+  uartWrite(Rodata.addressOf(procStrAddr), u64(6));
+  uartPutHex(addr, u64(16));
+  uartWrite(Rodata.addressOf(procStrVal), u64(5));
+  uartPutHex(val, u64(16));
+  uartNewline();
+}
+
+/// Wake up to [n] BLOCKED slots waiting on virtual address [addr].
+/// Returns how many it made READY. The table is the queue.
+@bare
+u64 procFutexWake(u64 addr, u64 n) {
+  u64 woken = u64(0);
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (woken == n) {
+      return woken;
+    }
+    if (procGet(s, u64(procSlotState)) == u64(procStateBlocked)) {
+      if (procGet(s, u64(procSlotWaitAddr)) == addr) {
+        procSet(s, u64(procSlotWaitAddr), u64(0));
+        procSet(s, u64(procSlotState), u64(procStateReady));
+        woken = woken + u64(1);
+      }
+    }
+    s = s + u64(1);
+  }
+  return woken;
+}
+
+/// Syscall 30. `rdi` is the op, `rsi` is the word address, `rdx`
+/// is the expected value (WAIT) or the wake count (WAKE).
+///
+/// **WAIT blocks only when `*addr == val` and another slot is
+/// READY.** A fake tid that never blocks cannot hand the child
+/// the CPU, so the parent's derived SYNC line stays the zero
+/// mix. ASK.ELF of the same bytes is [futexRetBadArg]. Not
+/// TLS. Not glibc. Not OnPaint. 11 stays `fdwait`.
+@bare
+void procSysFutex(u64 frame) {
+  if (procLive() < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(futexRetBadArg));
+    return;
+  }
+  final u64 caller = procCurrent();
+  final u64 op = userFrame(frame, u64(userFrameRdi));
+  final u64 addr = userFrame(frame, u64(userFrameRsi));
+  final u64 val = userFrame(frame, u64(userFrameRdx));
+  if (heapIsPlat(caller) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(futexRetBadArg));
+    procFutexLine(caller, op, addr, val, u64(futexRetBadArg));
+    return;
+  }
+  if (op > u64(futexOpWake)) {
+    userSetFrame(frame, u64(userFrameRax), u64(futexRetBadOp));
+    procFutexLine(caller, op, addr, val, u64(futexRetBadOp));
+    return;
+  }
+  if ((addr & u64(7)) > u64(0)) {
+    userSetFrame(frame, u64(userFrameRax), u64(futexRetBadPtr));
+    procFutexLine(caller, op, addr, val, u64(futexRetBadPtr));
+    return;
+  }
+  if (elfOwns(addr, u64(8)) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(futexRetBadPtr));
+    procFutexLine(caller, op, addr, val, u64(futexRetBadPtr));
+    return;
+  }
+  if (op == u64(futexOpWake)) {
+    final u64 n = val;
+    final u64 woken = procFutexWake(addr, n);
+    procFutexLine(caller, op, addr, woken, woken);
+    userSetFrame(frame, u64(userFrameRax), woken);
+    return;
+  }
+  // WAIT.
+  final u64 seen = Pointer<u64>.fromAddress(addr).value;
+  if (seen != val) {
+    userSetFrame(frame, u64(userFrameRax), u64(0));
+    return;
+  }
+  final u64 next = procPickNext(caller);
+  if (next == u64(procMax)) {
+    userSetFrame(frame, u64(userFrameRax), u64(futexRetAlone));
+    procFutexLine(caller, op, addr, val, u64(futexRetAlone));
+    return;
+  }
+  procSaveFrame(caller, frame);
+  procSet(caller, u64(procSlotSaved) + u64(procFrameRaxWord), u64(0));
+  if (procHead(u64(procHeadSse)) > u64(0)) {
+    fx_save(procFxArea(caller));
+  }
+  procSet(caller, u64(procSlotWaitAddr), addr);
+  procSet(caller, u64(procSlotState), u64(procStateBlocked));
+  procFutexLine(caller, op, addr, val, u64(0));
+  procSwitchTo(next, frame);
+}
+
+/// Write `IA32_FS_BASE` from [procSlotFsBase]. Called on every
+/// path that returns a slot to ring 3. ADR-0148.
+@bare
+void procInstallFs(u64 s) {
+  msr_write(u64(procFsBaseMsr), procGet(s, u64(procSlotFsBase)));
+}
+
+/// `PROC SETFS …`. ADR-0148.
+@bare
+void procSetfsLine(u64 s, u64 base, u64 r) {
+  uartWrite(Rodata.addressOf(procStrSetfs), u64(11));
+  uartPutHex(s, u64(2));
+  if (r > u64(setfsRetFloor)) {
+    uartWrite(Rodata.addressOf(vmStrErr), u64(5));
+    uartPutHex(r, u64(16));
+    uartNewline();
+    return;
+  }
+  uartWrite(Rodata.addressOf(procStrAddr), u64(6));
+  uartPutHex(base, u64(16));
+  uartNewline();
+}
+
+/// Syscall 33. `rdi` is the TLS block address.
+///
+/// **Plants [procSlotFsBase] and writes the MSR now.** A fake
+/// success that leaves FS.base at 0 makes the next `%fs:0`
+/// store fault at VA 0, so the derived TLS line never prints.
+/// ASK.ELF of the same bytes is [setfsRetBadArg]. Not glibc.
+/// Not OnPaint. 11 stays `fdwait`.
+@bare
+void procSysSetfs(u64 frame) {
+  if (procLive() < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(setfsRetBadArg));
+    return;
+  }
+  final u64 caller = procCurrent();
+  final u64 base = userFrame(frame, u64(userFrameRdi));
+  if (heapIsPlat(caller) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(setfsRetBadArg));
+    procSetfsLine(caller, base, u64(setfsRetBadArg));
+    return;
+  }
+  if ((base & u64(7)) > u64(0)) {
+    userSetFrame(frame, u64(userFrameRax), u64(setfsRetBadPtr));
+    procSetfsLine(caller, base, u64(setfsRetBadPtr));
+    return;
+  }
+  if (elfOwns(base, u64(8)) < u64(1)) {
+    userSetFrame(frame, u64(userFrameRax), u64(setfsRetBadPtr));
+    procSetfsLine(caller, base, u64(setfsRetBadPtr));
+    return;
+  }
+  procSet(caller, u64(procSlotFsBase), base);
+  procInstallFs(caller);
+  procSetfsLine(caller, base, u64(0));
+  userSetFrame(frame, u64(userFrameRax), u64(0));
 }

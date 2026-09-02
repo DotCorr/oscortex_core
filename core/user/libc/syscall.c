@@ -16,14 +16,19 @@
 
 #include "oslibc.h"
 
-unsigned long sys_call3(unsigned long n, unsigned long a, unsigned long b,
-                        unsigned long c) {
+unsigned long sys_call4(unsigned long n, unsigned long a, unsigned long b,
+                        unsigned long c, unsigned long d) {
   unsigned long r;
   __asm__ volatile("int $0x80"
                    : "=a"(r)
-                   : "a"(n), "D"(a), "S"(b), "d"(c)
+                   : "a"(n), "D"(a), "S"(b), "d"(c), "c"(d)
                    : "memory");
   return r;
+}
+
+unsigned long sys_call3(unsigned long n, unsigned long a, unsigned long b,
+                        unsigned long c) {
+  return sys_call4(n, a, b, c, 0);
 }
 
 /* M15 made the three-argument form the real one and this the wrapper, rather
@@ -118,6 +123,15 @@ unsigned long create(const char *name) { return openmode(name, O_WRITE); }
 
 unsigned long fdwrite(unsigned long fd, const void *buf, size_t len) {
   return sys_call3(SYS_FDWRITE, fd, (unsigned long)buf, len);
+}
+
+unsigned long unlink(const char *name) {
+  return sys_call(SYS_UNLINK, (unsigned long)name, strlen(name));
+}
+
+unsigned long rename(const char *old, const char *newname) {
+  return sys_call4(SYS_RENAME, (unsigned long)old, strlen(old),
+                   (unsigned long)newname, strlen(newname));
 }
 
 /* ---------------------------------------------------------------------------

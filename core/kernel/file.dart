@@ -290,6 +290,15 @@ const int fileSysSeekNo = 8;
 /// cost and why it was not this milestone's business.
 const int fileSysWriteNo = 9;
 
+/// APP4 / ADR-0147 — syscall 31, `unlink(namePtr, nameLen)`.
+/// 11 stays `fdwait`. 30 is `futex`.
+const int fileSysUnlinkNo = 31;
+
+/// APP4 / ADR-0147 — syscall 32,
+/// `rename(oldPtr, oldLen, newPtr, newLen)`. Fourth arg in RCX
+/// ([userFrameRcx]). 11 stays `fdwait`.
+const int fileSysRenameNo = 32;
+
 /// Descriptors per program. FOUR, and the number is a bound rather than a
 /// budget: a fifth `open` is [fileRetNoSlot] with nothing allocated and nothing
 /// leaked, and `m15-fileio`'s program opens five files to prove it.
@@ -450,6 +459,19 @@ const int fileFdWrite = 2;
 /// creates one, and `ioctl.dart`'s check that a descriptor it is handed IS
 /// one.
 const int fileFdDevice = 3;
+
+/// ADR-0100 — a descriptor over the root directory as fixed 32-byte records.
+///
+/// **Above [fileFdDevice] for the same reason that one sits above
+/// [fileFdWrite]:** `state >= fileFdOpen` still means "something is here",
+/// so [fileFreeFd], [fileReleaseOwner] and [fileSysClose] handle a root
+/// listing without being told. `read` grows one equality branch; `seek`
+/// and `fdwrite` keep refusing it as [fileRetBadMode]. No new `.bss`.
+/// `wmeventStore` stays last.
+const int fileFdRoot = 4;
+
+/// One `:ROOT` record is one FAT directory entry. Whole records only.
+const int fileRootRec = 32;
 
 /// The two values `open`'s third argument may take. Anything else is
 /// [fileRetBadMode], refused before the name is even parsed.
@@ -1098,8 +1120,130 @@ void fileSplice(u64 at, u64 from, u64 n) {
   }
 }
 
+/// 1 if the bounce-buffer bytes are exactly `:ROOT` (five characters).
+///
+/// Compared byte-by-byte, not parsed as 8.3: a colon is a sigil
+/// (`namespace.md` / ADR-0100), and [fatParseAt] must never see these
+/// bytes. No `@rodata` table — m15 counts every table against a call site.
+@bare
+u64 fileIsRootName(u64 buf, u64 len) {
+  if (len != u64(5)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(buf).value != u8(0x3A)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(buf + u64(1)).value != u8(0x52)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(buf + u64(2)).value != u8(0x4F)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(buf + u64(3)).value != u8(0x4F)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(buf + u64(4)).value != u8(0x54)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// 1 if the directory entry at [e] is deleted, a long name, or the volume
+/// label — the same three skips [shellFatLs] counts. Subdirectories are
+/// listed (APP3); they are marked in the attribute byte of the record.
+@bare
+u64 fileRootSkip(u64 e) {
+  final u64 c0 = fatU8(e);
+  if (c0 == u64(fatDirDeleted)) {
+    return u64(1);
+  }
+  final u64 attr = fatU8(e + u64(fatDirOffAttr));
+  if (attr == u64(fatAttrLongName)) {
+    return u64(1);
+  }
+  if ((attr & u64(fatAttrVolumeId)) > u64(0)) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// How many root entries [fileRootSkip] would keep, or bit 31 set if a
+/// directory sector could not be read. The root is at most 512 entries, so
+/// the error bit cannot collide with a count.
+@bare
+u64 fileRootCount() {
+  final u64 n = fatMeta(u64(fatMetaRootEntries));
+  u64 i = u64(0);
+  u64 listed = u64(0);
+  while (i < n) {
+    final u64 e = fatDirEntry(i);
+    if (e < u64(1)) {
+      return u64(0x80000000);
+    }
+    final u64 c0 = fatU8(e);
+    if (c0 == u64(fatDirFree)) {
+      i = n;
+    } else {
+      if (fileRootSkip(e) < u64(1)) {
+        listed = listed + u64(1);
+      }
+      i = i + u64(1);
+    }
+  }
+  return listed;
+}
+
+/// Copies one 32-byte directory entry into the bounce buffer. A separate
+/// function because GAP-0068: `dcc` cannot nest a `while`.
+@bare
+void fileCopyEnt(u64 dstOff, u64 e) {
+  final u64 dst = fileBufBase() + dstOff;
+  u64 i = u64(0);
+  while (i < u64(fileRootRec)) {
+    Pointer<u8>.fromAddress(dst + i).value =
+        Pointer<u8>.fromAddress(e + i).value;
+    i = i + u64(1);
+  }
+}
+
+/// Fills the bounce buffer with whole `:ROOT` records starting at listed
+/// index [first]. Returns how many records were written, or
+/// [fileRetIo] if a directory sector failed.
+@bare
+u64 fileRootFill(u64 first, u64 need) {
+  final u64 n = fatMeta(u64(fatMetaRootEntries));
+  u64 i = u64(0);
+  u64 listed = u64(0);
+  u64 got = u64(0);
+  while (i < n) {
+    if (got >= need) {
+      i = n;
+    } else {
+      final u64 e = fatDirEntry(i);
+      if (e < u64(1)) {
+        return u64(fileRetIo);
+      }
+      final u64 c0 = fatU8(e);
+      if (c0 == u64(fatDirFree)) {
+        i = n;
+      } else {
+        if (fileRootSkip(e) < u64(1)) {
+          if (listed >= first) {
+            fileCopyEnt(got * u64(fileRootRec), e);
+            got = got + u64(1);
+          }
+          listed = listed + u64(1);
+        }
+        i = i + u64(1);
+      }
+    }
+  }
+  return got;
+}
+
 /// Writes descriptor [fd] of [row]'s size and first cluster into its directory
-/// entry. Returns a `fatErr*` code. Does nothing at all for a read descriptor.
+/// entry. Returns a `fatErr*` code. Does nothing at all for a read, device,
+/// or `:ROOT` descriptor.
 ///
 /// **Rule 3 of the FAT write layer, at the syscall boundary.** Until this runs,
 /// the volume's idea of the file is the empty one `open` left behind: the FAT
@@ -1544,6 +1688,45 @@ void fileSysOpen(u64 frame) {
     userSetFrame(frame, u64(userFrameRax), dfd);
     return;
   }
+  // ---------------------------------------------------------------------
+  // ADR-0100 — `:ROOT`. HERE, AND NOT IN `fatLookup`. Same placement
+  // argument as the device branch: after the bounce-buffer copy, before
+  // `fatParseAt`. A colon-name never becomes a FAT name, and
+  // `fileMakeEmpty` / `shellFatCat` / `shellElfRunName` never see it.
+  // ---------------------------------------------------------------------
+  if (fileIsRootName(buf, len) > u64(0)) {
+    if (mode != u64(fileOpenRead)) {
+      fileRefuse(frame, u64(fileRetBadMode));
+      return;
+    }
+    final u64 mt = fatMount();
+    if (mt > u64(fatErrOk)) {
+      fileFatStatus(mt);
+      fileRefuse(frame, fileFromFat(mt));
+      return;
+    }
+    final u64 listed = fileRootCount();
+    if ((listed & u64(0x80000000)) > u64(0)) {
+      fileFatStatus(u64(fatErrDiskDir));
+      fileRefuse(frame, u64(fileRetIo));
+      return;
+    }
+    final u64 rfd = fileFreeFd(row);
+    if (rfd >= u64(fileMaxFds)) {
+      fileRefuse(frame, u64(fileRetNoSlot));
+      return;
+    }
+    fileClearFd(row, rfd);
+    fileSetFd(row, rfd, u64(fileFdSize), listed * u64(fileRootRec));
+    fileSetFd(row, rfd, u64(fileFdState), u64(fileFdRoot));
+    fileBump(u64(fileMetaOpens));
+    fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) + u64(1));
+    if (fileMeta(u64(fileMetaPeak)) < fileMeta(u64(fileMetaLive))) {
+      fileSetMeta(u64(fileMetaPeak), fileMeta(u64(fileMetaLive)));
+    }
+    userSetFrame(frame, u64(userFrameRax), rfd);
+    return;
+  }
   // Not a device name, so it must be an 8.3 name — and [fileNameMax] is
   // enforced HERE, on the arm that reaches `fatParseAt`, exactly as it was
   // enforced above before S0 widened the outer bound.
@@ -1635,6 +1818,59 @@ void fileSysRead(u64 frame) {
   }
   if (fileFd(row, fd, u64(fileFdState)) < u64(fileFdOpen)) {
     fileRefuse(frame, u64(fileRetBadFd));
+    return;
+  }
+  // ADR-0100: a `:ROOT` descriptor is readable. Whole 32-byte records,
+  // 0 at the end, same as a file. Synthesised from the directory so the
+  // chain cache is not touched.
+  if (fileFd(row, fd, u64(fileFdState)) == u64(fileFdRoot)) {
+    if (len < u64(1)) {
+      fileRefuse(frame, u64(fileRetBadLen));
+      return;
+    }
+    if (len > u64(fileReadMax)) {
+      fileRefuse(frame, u64(fileRetBadLen));
+      return;
+    }
+    if (fileOwnsWrite(dst, len) < u64(1)) {
+      fileRefuse(frame, u64(fileRetBadPtr));
+      return;
+    }
+    final u64 mt = fatMount();
+    if (mt > u64(fatErrOk)) {
+      fileFatStatus(mt);
+      fileRefuse(frame, fileFromFat(mt));
+      return;
+    }
+    final u64 size = fileFd(row, fd, u64(fileFdSize));
+    final u64 pos = fileFd(row, fd, u64(fileFdPos));
+    if (pos >= size) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    u64 want = len;
+    if ((size - pos) < want) {
+      want = size - pos;
+    }
+    want = want & u64(0xFFFFFFFFFFFFFFE0);
+    if (want < u64(fileRootRec)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    final u64 first = pos >> u64(5);
+    final u64 need = want >> u64(5);
+    final u64 recs = fileRootFill(first, need);
+    if (recs == u64(fileRetIo)) {
+      fileFatStatus(u64(fatErrDiskDir));
+      fileRefuse(frame, u64(fileRetIo));
+      return;
+    }
+    final u64 done = recs * u64(fileRootRec);
+    fileCopyOut(dst, u64(0), done);
+    fileSetFd(row, fd, u64(fileFdPos), pos + done);
+    fileBump(u64(fileMetaReads));
+    fileSetMeta(u64(fileMetaBytes), fileMeta(u64(fileMetaBytes)) + done);
+    userSetFrame(frame, u64(userFrameRax), done);
     return;
   }
   // M16: a write descriptor is not a read descriptor. There is no read-write
@@ -1779,6 +2015,178 @@ void fileSysSeek(u64 frame) {
   fileSetFd(row, fd, u64(fileFdPos), to);
   fileBump(u64(fileMetaSeeks));
   userSetFrame(frame, u64(userFrameRax), to);
+}
+
+/// Syscall 31 — `unlink(namePtr, nameLen)`. Marks the root entry
+/// deleted and frees its chain. Returns 0, or a `fileRet*`.
+///
+/// A subdirectory is [fileRetIsDir]. A missing name is
+/// [fileRetNotFound]. Device names and `:ROOT` are not FAT names
+/// and are [fileRetBadName] here — same outer bound as `open`'s
+/// non-device arm.
+@bare
+void fileSysUnlink(u64 frame) {
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    fileRefuse(frame, u64(fileRetNoOwner));
+    return;
+  }
+  final u64 ptr = userFrame(frame, u64(userFrameRdi));
+  final u64 len = userFrame(frame, u64(userFrameRsi));
+  if (len < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (len > u64(fileNameMax)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (elfOwns(ptr, len) < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadPtr));
+    return;
+  }
+  final u64 buf = fileBufBase();
+  u64 i = u64(0);
+  while (i < len) {
+    Pointer<u8>.fromAddress(buf + i).value =
+        Pointer<u8>.fromAddress(ptr + i).value;
+    i = i + u64(1);
+  }
+  if (ioctlIsDevName(buf, len) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  if (fileIsRootName(buf, len) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 pn = fatParseAt(buf, len);
+  if (pn > u64(fatErrOk)) {
+    fileFatStatus(pn);
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 ur = fatUnlink();
+  if (ur > u64(fatErrOk)) {
+    fileFatStatus(ur);
+    fileRefuse(frame, fileFromFat(ur));
+    return;
+  }
+  userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
+/// Syscall 32 — `rename(oldPtr, oldLen, newPtr, newLen)`.
+/// [userFrameRcx] carries `newLen`. Dest over source frees the dest
+/// chain first, then rewrites the source entry's 11 name bytes.
+@bare
+void fileSysRename(u64 frame) {
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    fileRefuse(frame, u64(fileRetNoOwner));
+    return;
+  }
+  final u64 optr = userFrame(frame, u64(userFrameRdi));
+  final u64 olen = userFrame(frame, u64(userFrameRsi));
+  final u64 nptr = userFrame(frame, u64(userFrameRdx));
+  final u64 nlen = userFrame(frame, u64(userFrameRcx));
+  if (olen < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (olen > u64(fileNameMax)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (nlen < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (nlen > u64(fileNameMax)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (elfOwns(optr, olen) < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadPtr));
+    return;
+  }
+  if (elfOwns(nptr, nlen) < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadPtr));
+    return;
+  }
+  final u64 buf = fileBufBase();
+  u64 i = u64(0);
+  while (i < olen) {
+    Pointer<u8>.fromAddress(buf + i).value =
+        Pointer<u8>.fromAddress(optr + i).value;
+    i = i + u64(1);
+  }
+  if (ioctlIsDevName(buf, olen) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  if (fileIsRootName(buf, olen) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 pn = fatParseAt(buf, olen);
+  if (pn > u64(fatErrOk)) {
+    fileFatStatus(pn);
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 src = fatDirFind();
+  if (src > u64(fatErrOk)) {
+    fileFatStatus(src);
+    fileRefuse(frame, fileFromFat(src));
+    return;
+  }
+  final u64 srcEntry = fatMeta(u64(fatMetaFileEntry));
+  i = u64(0);
+  while (i < nlen) {
+    Pointer<u8>.fromAddress(buf + i).value =
+        Pointer<u8>.fromAddress(nptr + i).value;
+    i = i + u64(1);
+  }
+  if (ioctlIsDevName(buf, nlen) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  if (fileIsRootName(buf, nlen) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 qn = fatParseAt(buf, nlen);
+  if (qn > u64(fatErrOk)) {
+    fileFatStatus(qn);
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 dest = fatDirFind();
+  u64 destEntry = fatMeta(u64(fatMetaRootEntries));
+  u64 destFirst = u64(0);
+  if (dest == u64(fatErrOk)) {
+    destEntry = fatMeta(u64(fatMetaFileEntry));
+    destFirst = fatMeta(u64(fatMetaFileFirst));
+  } else {
+    if (dest == u64(fatErrIsDir)) {
+      fileFatStatus(dest);
+      fileRefuse(frame, u64(fileRetIsDir));
+      return;
+    }
+    if (dest != u64(fatErrNotFound)) {
+      fileFatStatus(dest);
+      fileRefuse(frame, fileFromFat(dest));
+      return;
+    }
+  }
+  // Dest name is still in the name buffer from the last fatParseAt.
+  final u64 rr = fatRenameTo(srcEntry, destEntry, destFirst);
+  if (rr > u64(fatErrOk)) {
+    fileFatStatus(rr);
+    fileRefuse(frame, fileFromFat(rr));
+    return;
+  }
+  userSetFrame(frame, u64(userFrameRax), u64(0));
 }
 
 /// `FILE OPENS <n> READS <n> CLOSES <n> SEEKS <n> REFUSED <n> BYTES <n>

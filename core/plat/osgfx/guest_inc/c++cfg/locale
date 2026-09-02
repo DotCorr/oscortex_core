@@ -1,0 +1,15 @@
+#ifndef OSGFX_STUB_LOCALE
+#define OSGFX_STUB_LOCALE
+#include <cctype>
+namespace std {
+class locale {
+ public:
+  static locale classic() { return locale(); }
+};
+template <class C>
+inline bool isalnum(C c, const locale &) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         c == '_';
+}
+}
+#endif

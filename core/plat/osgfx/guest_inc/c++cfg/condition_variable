@@ -1,0 +1,15 @@
+#ifndef OSGFX_STUB_CONDVAR
+#define OSGFX_STUB_CONDVAR
+#include <mutex>
+namespace std {
+class condition_variable {
+ public:
+  void notify_one() {}
+  void notify_all() {}
+  template <class Lock>
+  void wait(Lock &) {}
+  template <class Lock, class Pred>
+  void wait(Lock &l, Pred p) { while (!p()) { wait(l); } }
+};
+}
+#endif

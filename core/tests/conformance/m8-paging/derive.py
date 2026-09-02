@@ -43,12 +43,16 @@ import sys
 # than trusting the copy.
 PAGE_BYTES = 4096
 BIG_BYTES = 2097152
-FINE_BYTES = 4194304
+FINE_BYTES = 33554432
 LOW_BYTES = 1048576
-MAP_BYTES = 134217728
+# ADR-0189 took the identity map from 128MiB to 256MiB so the driver can pick
+# the mode and the CEF text mapping fits. Restated here by hand, on purpose:
+# this file is the double-entry copy of vm.dart's geometry, and run.sh asserts
+# the two agree rather than importing one into the other.
+MAP_BYTES = 268435456
 PCI_BASE = 0xC0000000
 PCI_END = 0x100000000
-FRAME_COUNT = 6
+FRAME_COUNT = 20
 
 PRESENT = 1 << 0
 WRITABLE = 1 << 1

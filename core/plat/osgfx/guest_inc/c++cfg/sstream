@@ -1,0 +1,25 @@
+#ifndef OSGFX_STUB_SSTREAM
+#define OSGFX_STUB_SSTREAM
+#include <ostream>
+#include <string>
+namespace std {
+template <class C, class T = char_traits<C>, class A = allocator<C>>
+class basic_ostringstream : public ostream {
+  basic_string<C, T, A> s_;
+ public:
+  basic_string<C, T, A> str() const { return s_; }
+  void str(const basic_string<C, T, A> &s) { s_ = s; }
+};
+template <class C, class T = char_traits<C>, class A = allocator<C>>
+class basic_stringstream : public ostream {
+  basic_string<C, T, A> s_;
+ public:
+  basic_stringstream() = default;
+  explicit basic_stringstream(const basic_string<C, T, A> &s) : s_(s) {}
+  basic_string<C, T, A> str() const { return s_; }
+  void str(const basic_string<C, T, A> &s) { s_ = s; }
+};
+using ostringstream = basic_ostringstream<char>;
+using stringstream = basic_stringstream<char>;
+}
+#endif

@@ -250,6 +250,12 @@ isr_common:
 
     call isrDispatch
 
+    /* osgfx trampoline. Mailbox is zero unless `wm gfx`. */
+    call osgfx_guest_tick
+    call wmSessionRestore
+    /* decoder mailbox. Zero unless hidden `play`. */
+    call osmedia_guest_tick
+
     popq %r15
     popq %r14
     popq %r13
@@ -326,7 +332,16 @@ tick_counter_addr:
 .global tick_count
 .type tick_count, @function
 tick_count:
+    /* ADR-0154: drive OTA TLS mailbox from shell waits (not IRQ). */
+    call otatls_guest_tick
     movq tick_counter(%rip), %rax
+    ret
+
+/* Weak stub if otatls.o is omitted from the link. */
+.align 16
+.weak otatls_guest_tick
+.type otatls_guest_tick, @function
+otatls_guest_tick:
     ret
 
 /* void idt_load(void) -- lidt.
@@ -1014,6 +1029,82 @@ user_return:
     movq user_resume_rsp(%rip), %rsp
     ret
 
+/* void resume_user(uint64_t frame, uint64_t ss) -- DOES NOT RETURN NORMALLY.
+ *
+ * D3: re-enter ring 3 from a 22-word saved interrupt frame WITHOUT replacing
+ * the resume point `enter_user` records. `enter_user` is the first-entry
+ * door: it scrubs registers and starts at a RIP. A resident process that has
+ * already run has a saved frame, and loading that frame through `enter_user`
+ * would restart it. This function copies the 22 words onto the ring-0 stack
+ * and takes the same pop/`iretq` path `isr_common` does.
+ *
+ * THE RESUME POINT IS RECORDED FIRST, at this function's own RSP, so
+ * `user_return` `ret`s into the caller (the shell idle loop) rather than
+ * into the copied frame. Same order `enter_user` uses, for the same reason.
+ *
+ * `ss` is the user data selector, loaded into DS/ES/FS/GS the way
+ * `enter_user` loads them: whatever is in those registers at the `iretq` is
+ * what ring 3 sees. */
+.align 16
+.global resume_user
+.type resume_user, @function
+resume_user:
+    movq %rsp, user_resume_rsp(%rip)
+    movq $1, user_resume_ok(%rip)
+    cli
+    movq %rsi, %rax               /* user data selector */
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+    cld
+    movq %rdi, %rsi               /* source: 22-word saved frame */
+    subq $176, %rsp
+    movq %rsp, %rdi
+    movq $22, %rcx
+    rep movsq
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    addq $16, %rsp                /* drop vector + error code */
+    iretq
+
+/* void proc_idle_gate(void) -- tail-calls procIdle.
+ *
+ * D3: shellMain must not inline the resident-slot walk. DCDart's overflow
+ * checks live in callee-saved registers; an inlined walk next to the prompt
+ * printer #UD's (vector 6, opcode 0F0B) the moment those registers are
+ * leftover-nonzero. An @extern call cannot be inlined. */
+.extern procIdle
+.align 16
+.global proc_idle_gate
+.type proc_idle_gate, @function
+proc_idle_gate:
+    jmp procIdle
+
+/* void kbd_drain_gate(void) -- tail-calls kbdqDrainToShell.
+ *
+ * D2: shellMain must not inline the queue walk. Same overflow-check #UD
+ * as proc_idle_gate (ADR-0053). An @extern call cannot be inlined. */
+.extern kbdqDrainToShell
+.align 16
+.global kbd_drain_gate
+.type kbd_drain_gate, @function
+kbd_drain_gate:
+    jmp kbdqDrainToShell
+
 /* void tlb_invlpg(uint64_t va) -- invalidate one page's TLB entries.
  *
  * docs/known-gaps.md GAP-0083 said this becomes necessary "the moment anything
@@ -1033,6 +1124,24 @@ user_return:
 .type tlb_invlpg, @function
 tlb_invlpg:
     invlpg (%rdi)
+    ret
+
+/* void msr_write(uint64_t msr, uint64_t value) -- ADR-0148.
+ *
+ * One `wrmsr`: ECX = MSR index, EDX:EAX = value. Scoped for
+ * IA32_FS_BASE (the TLS door). Not general MSR access from ring 3.
+ * `boot.S` already uses rdmsr/wrmsr for EFER; this is the same
+ * privilege, exposed as one C-ABI stub so DCDart can plant FS.base
+ * on switch without opening a second MSR path. */
+.align 16
+.global msr_write
+.type msr_write, @function
+msr_write:
+    movl %edi, %ecx
+    movq %rsi, %rax
+    movq %rsi, %rdx
+    shrq $32, %rdx
+    wrmsr
     ret
 
 /* ==================================================================

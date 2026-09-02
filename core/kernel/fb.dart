@@ -17,13 +17,17 @@
 // glyph font in .rodata". This is that renderer, and it closes the part of
 // GAP-0054 that is about DRAWING.
 //
-// It does NOT close the part that is about BOOTING. A UEFI machine hands the
-// loader a framebuffer through the boot protocol; this kernel is a Multiboot1
-// image and gets nothing of the kind, so it finds the framebuffer the only
-// other way there is -- by enumerating PCI and reading BAR0 of the display
-// controller (core/kernel/pci.dart, ADR-0008), then programming a mode through
-// a device-specific register interface. That works on the QEMU/Bochs std VGA
-// device and on nothing else. See GAP-0070.
+// It does NOT close the part that is about BOOTING ON METAL. A UEFI machine
+// hands the loader a framebuffer through the boot protocol. Since ADR-0060
+// the Multiboot1 header requests that tag (flags bit 2) and `gop.dart`
+// reads it when the loader filled it. ADR-0064 is the probe order on `fb`:
+// GOP tag + successful map, else Bochs/VBE BAR, else `FB NONE` (VGA text
+// and COM1 remain). QEMU's `-kernel` loader does not fill the tag, so the
+// PCI+Bochs path remains the sit-in / m5-pci path. A tag that cannot be
+// mapped must not page-fault -- `gopTry` returns 0 and this file falls
+// through. See GAP-0070 and GAP-0001: OVMF+Limine paints (ADR-0061);
+// session chrome composes onto that aperture (ADR-0141). A vendor
+// iGPU driver is not this file.
 //
 // **The VGA text console is untouched.** `conPutc` still writes COM1 first and
 // `0xB8000` second; this is a THIRD output path, enabled only by the `fb`
@@ -263,14 +267,18 @@ void fbSetState(u64 i, u64 v) {
   Pointer<u64>.fromAddress(Bss.addressOf(fbStateBlock) + (i * u64(8))).value = v;
 }
 
-/// Bytes in the state block: four `u64` words.
-const int fbStateBytes = 32;
+/// Bytes in the state block: six `u64` words. Geom W/H let VirtIO
+/// SCAN (and other non-GOP live apertures) outrank Bochs 800×600 so
+/// session compose does not paint an 800×600 island inside 1280×720.
+const int fbStateBytes = 48;
 
 /// Word indices inside the state block.
 const int fbStateBase = 0;
 const int fbStatePitch = 1;
 const int fbStateCol = 2;
 const int fbStateRow = 3;
+const int fbStateGeomW = 4;
+const int fbStateGeomH = 5;
 
 /// Zeroes the block. Called from `kmain()` alongside `vgaInit()` and
 /// `shellInit()`, and for the identical reason: `.bss` is not zeroed by
@@ -283,6 +291,8 @@ void fbInit() {
   fbSetState(u64(fbStatePitch), u64(0));
   fbSetState(u64(fbStateCol), u64(0));
   fbSetState(u64(fbStateRow), u64(0));
+  fbSetState(u64(fbStateGeomW), u64(0));
+  fbSetState(u64(fbStateGeomH), u64(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +431,67 @@ void fbPutPixel(u64 x, u64 y, u64 color) {
   Volatile<u32>.fromAddress(fbPixelAddr(x, y)).value = color.toU32();
 }
 
+/// Sit-in origin of a decoded 64×64 tile (ADR-0131). Same numbers as
+/// `OSMEDIA_BLIT_X` / `OSMEDIA_BLIT_Y` in `osmedia.h`.
+const int fbMediaBlitX = 16;
+const int fbMediaBlitY = 400;
+
+/// `"OSMEDIA BLIT "` -- 13 bytes.
+@rodata
+final List<u8> fbStrMediaBlit = const [
+  u8(0x4F), u8(0x53), u8(0x4D), u8(0x45), u8(0x44), u8(0x49), u8(0x41),
+  u8(0x20), u8(0x42), u8(0x4C), u8(0x49), u8(0x54), u8(0x20),
+];
+
+/// One scanline of a decoded ARGB buffer onto the live scanout.
+/// Separate from [fbBlitArgb] because `dcc` rejects nested `while`.
+@bare
+void fbBlitArgbRow(u64 src, u64 w, u64 dx, u64 dy, u64 py) {
+  u64 i = u64(0);
+  while (i < w) {
+    final u64 pix =
+        Pointer<u32>.fromAddress(src + ((py * w + i) * u64(4))).value.toU64();
+    fbPutPixel(dx + i, dy + py, pix);
+    i = i + u64(1);
+  }
+}
+
+/// Copies a decoder-filled 0x00RRGGBB buffer onto the sit-in
+/// framebuffer at [fbMediaBlitX], [fbMediaBlitY]. Called from C after
+/// `osmedia_decode_frame` (IRQ0). No dest and the stores are skipped —
+/// that is the skip-blit miss (play before `fb`).
+@bare
+void fbBlitArgb(u64 src, u64 w, u64 h, u64 dx, u64 dy) {
+  if (fbState(u64(fbStateBase)) < u64(1)) {
+    return;
+  }
+  if (src < u64(1)) {
+    return;
+  }
+  if (w < u64(1)) {
+    return;
+  }
+  if (h < u64(1)) {
+    return;
+  }
+  if ((dx + w) > fbGeomWidth()) {
+    return;
+  }
+  if ((dy + h) > fbGeomHeight()) {
+    return;
+  }
+  u64 py = u64(0);
+  while (py < h) {
+    fbBlitArgbRow(src, w, dx, dy, py);
+    py = py + u64(1);
+  }
+  uartWrite(Rodata.addressOf(fbStrMediaBlit), u64(13));
+  uartPutHex(dx, u64(4));
+  uartWrite(Rodata.addressOf(fbStrBy), u64(1));
+  uartPutHex(dy, u64(4));
+  uartWrite(Rodata.addressOf(fbStrOk), u64(4));
+}
+
 /// Fills one scanline segment of [w] pixels starting at ([x], [y]).
 ///
 /// A separate function rather than an inner loop because `dcc` rejects nested
@@ -437,12 +508,53 @@ void fbFillRow(u64 x, u64 y, u64 w, u64 color) {
   }
 }
 
+/// Visible width of the live scanout: explicit [fbStateGeomW] when a
+/// VirtIO (or other) path armed it, else GOP tag width only when
+/// [gopIsLive], otherwise the compiled-in Bochs [fbWidth]. A leftover
+/// tag after a failed map must not steal geometry from a Bochs win
+/// (ADR-0064). Session chrome uses this so a GOP / VirtIO compose
+/// reaches the panel, not an 800x600 rectangle inside it (ADR-0141).
+@bare
+u64 fbGeomWidth() {
+  final u64 armed = fbState(u64(fbStateGeomW));
+  if (armed > u64(0)) {
+    return armed;
+  }
+  if (gopIsLive() < u64(1)) {
+    return u64(fbWidth);
+  }
+  final u64 w = mbU32(gopInfo() + u64(mbFbWidthOff));
+  if (w < u64(1)) {
+    return u64(fbWidth);
+  }
+  return w;
+}
+
+/// Visible height of the live scanout. Pair of [fbGeomWidth].
+@bare
+u64 fbGeomHeight() {
+  final u64 armed = fbState(u64(fbStateGeomH));
+  if (armed > u64(0)) {
+    return armed;
+  }
+  if (gopIsLive() < u64(1)) {
+    return u64(fbHeight);
+  }
+  final u64 h = mbU32(gopInfo() + u64(mbFbHeightOff));
+  if (h < u64(1)) {
+    return u64(fbHeight);
+  }
+  return h;
+}
+
 /// Fills the whole visible area with [color].
 @bare
 void fbFill(u64 color) {
   u64 y = u64(0);
-  while (y < u64(fbHeight)) {
-    fbFillRow(u64(0), y, u64(fbWidth), color);
+  final u64 h = fbGeomHeight();
+  final u64 w = fbGeomWidth();
+  while (y < h) {
+    fbFillRow(u64(0), y, w, color);
     y = y + u64(1);
   }
 }
@@ -511,6 +623,65 @@ void fbDrawGlyph(u64 col, u64 row, u8 c) {
 const int fbCols = 100; // fbWidth / glyphWidth
 const int fbRows = 37; // fbHeight ~/ glyphHeight, rounded down
 
+/// Copies [w] pixels from scanline [ysrc] to [ydst]. Separate from
+/// [fbScroll] because `dcc` rejects nested `while` (GAP-0068).
+@bare
+void fbCopyRow(u64 ydst, u64 ysrc, u64 w) {
+  u64 i = u64(0);
+  while (i < w) {
+    final u64 pix =
+        Volatile<u32>.fromAddress(fbPixelAddr(i, ysrc)).value.toU64();
+    fbPutPixel(i, ydst, pix);
+    i = i + u64(1);
+  }
+}
+
+/// Scroll the live console up one glyph row.
+///
+/// On the VirtIO backing (ordinary RAM, G5/G6) this copies
+/// `width × (height - glyphHeight)` pixels up, fills the last glyph
+/// row with the background, and issues TRANSFER_TO_HOST_2D +
+/// RESOURCE_FLUSH of the moved rectangle. That is the G6 flush: the
+/// host sees the move, not a silent guest memcpy.
+///
+/// On a BAR / GOP aperture this is a no-op and returns 0. The Bochs
+/// path still stops at the last row (GAP-0070 item 1) so sit-in /
+/// d2 goldens do not grow a 467,000-store scroll.
+///
+/// Returns 1 if the backing moved, 0 if it did not.
+@bare
+u64 fbScroll() {
+  final u64 base = fbState(u64(fbStateBase));
+  if (base < u64(1)) {
+    return u64(0);
+  }
+  if (base >= u64(virtgpuRamCeil)) {
+    return u64(0);
+  }
+  final u64 w = fbGeomWidth();
+  final u64 h = fbGeomHeight();
+  if (h < u64(glyphHeight) + u64(1)) {
+    return u64(0);
+  }
+  if (w < u64(1)) {
+    return u64(0);
+  }
+  u64 y = u64(0);
+  while (y + u64(glyphHeight) < h) {
+    fbCopyRow(y, y + u64(glyphHeight), w);
+    y = y + u64(1);
+  }
+  y = h - u64(glyphHeight);
+  while (y < h) {
+    fbFillRow(u64(0), y, w, u64(fbColorBg));
+    y = y + u64(1);
+  }
+  virtgpuRect(u64(0), u64(0), w, h - u64(glyphHeight));
+  fbSetState(u64(fbStateCol), u64(0));
+  fbSetState(u64(fbStateRow), (h ~/ u64(glyphHeight)) - u64(1));
+  return u64(1);
+}
+
 /// Writes one character to the framebuffer console, honouring newline and
 /// backspace, and wrapping at the right edge.
 ///
@@ -521,27 +692,49 @@ const int fbRows = 37; // fbHeight ~/ glyphHeight, rounded down
 /// harness before M5 exercises exactly that path and is byte-identical because
 /// of it.
 ///
-/// **Scrolling is not implemented, and running off the bottom STOPS the
-/// console rather than corrupting it.** Once the cursor passes the last row
-/// every subsequent character is dropped: the framebuffer keeps the first 37
-/// lines and stops. That is a real limitation and it is deliberate rather than
-/// unnoticed -- a pixel-row scroll is a 1.9MiB move, DCDart has no `memcpy`
-/// (GAP-0054 item 3 predicted this exact wall), and doing it a pixel at a time
-/// through `Pointer<u32>` is 467,000 volatile load/store pairs per line. The
-/// alternative shapes -- overwriting the last row forever, or wrapping to the
-/// top -- both produce a screen that looks like a corrupted one. Stopping looks
-/// like what it is. docs/known-gaps.md GAP-0070.
+/// **On VirtIO backing, a newline past the last row scrolls.** [fbScroll]
+/// copies the moved rectangle and flushes it (ADR-0086 / G6). On a BAR
+/// or GOP aperture the console still STOPS rather than corrupting the
+/// scanout: once the cursor passes the last row every subsequent
+/// character is dropped. That Bochs limit is still GAP-0070 item 1 --
+/// a pixel-row scroll of the dispi aperture is 467,000 volatile
+/// load/store pairs, and sit-in / d2 goldens must not grow it.
 @bare
 void fbPutc(u8 c) {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return; // no framebuffer: this is the state on every boot until `fb` runs
   }
+  // D4 (ADR-0050). **THE COMPOSITOR OWNS THE FRAMEBUFFER WHILE IT IS ON, AND
+  // THIS IS THE ONE PLACE THAT IS ENFORCED.**
+  //
+  // A compositor and a text console cannot both draw into one framebuffer: the
+  // console blits glyphs at a cursor it advances itself, over whatever is
+  // underneath, and every line the shell prints while windows are composed
+  // would land on top of them. ADR-0050 weighed three answers -- the compositor
+  // takes it exclusively, the console gets a region of its own, or the two
+  // alternate by mode -- and took the third. This is the mode.
+  //
+  // **Nothing about the serial contract changes and that is the point.**
+  // `conPutc` has already written the byte to COM1 before it reaches here
+  // (vga.dart), so every byte-exact golden from M1 onwards is produced by the
+  // same code in the same order it always was. What stops is GLYPHS, not
+  // OUTPUT. On a boot where `wm on` is never typed, `wmActive` is 0 from
+  // `wmInit` and this costs one load and one compare per character.
+  if (wmActive() > u64(0)) {
+    return;
+  }
   final u64 row = fbState(u64(fbStateRow));
   if (row > u64(fbRows) - u64(1)) {
-    return; // the console is full; see the note above
+    return; // Bochs path is full; VirtIO scroll keeps the cursor on the last row
   }
   if (c == u8(0x0A)) {
     fbSetState(u64(fbStateCol), u64(0));
+    if (row >= u64(fbRows) - u64(1)) {
+      if (fbScroll() < u64(1)) {
+        fbSetState(u64(fbStateRow), row + u64(1));
+      }
+      return;
+    }
     fbSetState(u64(fbStateRow), row + u64(1));
     return;
   }
@@ -550,16 +743,24 @@ void fbPutc(u8 c) {
     if (col > u64(0)) {
       fbSetState(u64(fbStateCol), col - u64(1));
       fbDrawGlyph(col - u64(1), row, u8(0x20));
+      virtgpuCell(col - u64(1), row);
     }
     return;
   }
   fbDrawGlyph(col, row, c);
+  virtgpuCell(col, row);
   if (col + u64(1) < u64(fbCols)) {
     fbSetState(u64(fbStateCol), col + u64(1));
     return;
   }
   // Ran off the right edge: wrap, which is a newline by another name.
   fbSetState(u64(fbStateCol), u64(0));
+  if (row >= u64(fbRows) - u64(1)) {
+    if (fbScroll() < u64(1)) {
+      fbSetState(u64(fbStateRow), row + u64(1));
+    }
+    return;
+  }
   fbSetState(u64(fbStateRow), row + u64(1));
 }
 
@@ -817,12 +1018,21 @@ void fbPaintBanner() {
   fbWrite(Rodata.addressOf(fbStrBanner), u64(52));
 }
 
-/// `fb` -- find the display controller, set a graphics mode, and draw.
+/// `fb` -- probe scanout in one order, never hang, print which path won.
+///
+/// 1. GOP tag + successful map -- `gopTry` prints `FB GOP …` and returns.
+/// 2. Else Bochs/VBE BAR -- this function prints `FB BAR … MODE … OK`.
+/// 3. Else `FB NONE` (or `FB NOVBE` if a VGA BAR answered but dispi did
+///    not). VGA text 80×25 and COM1 stay up either way.
+///
+/// A GOP tag that cannot be mapped returns 0 from [gopTry] and falls
+/// through here -- it must not page-fault (ADR-0064).
 ///
 /// Prints to serial and the text console (through `uartWrite`, i.e. `conPutc`)
-/// what it found, and paints into the framebuffer itself. Both, on purpose: the
-/// serial line is what a byte-exact golden can assert, and the framebuffer is
-/// what a pixel read-back can assert, and they are different claims.
+/// what it found, and paints into the framebuffer itself when a linear
+/// aperture exists. Both, on purpose: the serial line is what a byte-exact
+/// golden can assert, and the framebuffer is what a pixel read-back can
+/// assert, and they are different claims.
 ///
 /// **The VGA text console keeps working across this.** Setting a Bochs VBE
 /// graphics mode does not unmap `0xB8000` -- the text buffer is still there and
@@ -832,6 +1042,9 @@ void fbPaintBanner() {
 /// looking at the screen.
 @bare
 void shellFb() {
+  if (gopTry() > u64(0)) {
+    return;
+  }
   final u64 bar = fbFindVgaBar();
   if (bar < u64(1)) {
     uartWrite(Rodata.addressOf(fbStrNoDev), u64(59));
@@ -845,6 +1058,8 @@ void shellFb() {
   fbSetState(u64(fbStatePitch), u64(fbWidth) * u64(fbBytesPerPixel));
   fbSetState(u64(fbStateCol), u64(0));
   fbSetState(u64(fbStateRow), u64(0));
+  fbSetState(u64(fbStateGeomW), u64(0));
+  fbSetState(u64(fbStateGeomH), u64(0));
   fbFill(u64(fbColorBg));
   fbPaintBanner();
 

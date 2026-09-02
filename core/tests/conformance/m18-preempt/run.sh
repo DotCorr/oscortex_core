@@ -165,28 +165,78 @@ echo "STRUCTURAL: pass  the quantum is a named constant, procQuantumTicks = $QUA
 ck; python3 - "$CORE_DIR/kernel" <<'PY' || fail "two subsystems are using the same process-table slot word"
 import os, re, sys
 root = sys.argv[1]
-seen = {}
-fails = []
+
+# WHICH constants are process-table slot words is decided BY USE, not by name.
+#
+# The name test this replaces matched every `\w*Slot\w+` in core/kernel/ and
+# only passed while nothing else in the kernel had "Slot" in a constant name.
+# `ahciSlotOk`, `wmSlotPadX` and `wmeventSlots` index a command list, a taskbar
+# button and a per-window ring; they have nothing to do with the process table,
+# and colliding with `procSlotState` costs nothing. The rule below is narrower
+# in what it looks at and STRICTER about it: a constant is a process-table slot
+# word if and only if it is passed as the WORD argument to proc.dart's own
+# accessors, `procGet(slot, u64(W))` / `procSet(slot, u64(W), ...)`. That is
+# exactly the set M18's first build got wrong -- `procSlotPreempts` was written
+# as 16, which is heap.dart's `heapSlotBase`, and the two names cross files, so
+# any per-file or per-prefix grouping would miss it -- and it now also catches a
+# RAW NUMBER passed where a named word belongs, which the name test could not
+# see at all.
+ACCESS = re.compile(r"proc(?:Get|Set)\(\s*\w+\s*,\s*u64\(([^)]*)\)")
+CONST = re.compile(r"^const int (\w+) = (\d+);", re.M)
+
+value = {}
+srcs = {}
 for fn in sorted(os.listdir(root)):
-    if not fn.endswith(".dart"):
-        continue
-    src = open(os.path.join(root, fn)).read()
-    for m in re.finditer(r"^const int (\w*Slot\w+) = (\d+);", src, re.M):
-        name, val = m.group(1), int(m.group(2))
-        # Only the ones that INDEX a slot word. `procSlotBytes`, `procSlotWords`
-        # and `procSlotShift` are sizes, not indices, and are excluded by name.
-        if name in ("procSlotBytes", "procSlotWords", "procSlotShift"):
+    if fn.endswith(".dart"):
+        srcs[fn] = open(os.path.join(root, fn)).read()
+        for m in CONST.finditer(srcs[fn]):
+            value[m.group(1)] = (int(m.group(2)), fn)
+
+fails = []
+words = {}
+for fn in sorted(srcs):
+    src = srcs[fn]
+    for m in ACCESS.finditer(src):
+        arg = m.group(1).strip()
+        line = src[:m.start()].count("\n") + 1
+        if arg.isdigit():
+            fails.append("%s:%d passes the raw word %s to procGet/procSet() -- "
+                         "a slot word must be a named constant, or nothing can "
+                         "check that two subsystems are not sharing it"
+                         % (fn, line, arg))
             continue
-        if val in seen and seen[val][0] != name:
-            fails.append("slot word %d is both %s (%s) and %s (%s)"
-                         % (val, seen[val][0], seen[val][1], name, fn))
-        seen.setdefault(val, (name, fn))
+        if arg not in value:
+            fails.append("%s:%d passes `%s` as a process-table word and it is "
+                         "not a `const int` this harness can read"
+                         % (fn, line, arg))
+            continue
+        val, where = value[arg]
+        if val in words and words[val][0] != arg:
+            fails.append("process-table slot word %d is both %s (%s) and %s "
+                         "(%s) -- two subsystems are writing the same word"
+                         % (val, words[val][0], words[val][1], arg, where))
+        words.setdefault(val, (arg, where))
+
+# And the words must fit the slot. A word past procSlotWords writes into the
+# NEXT process's metadata, which no boot would report as anything but the next
+# process behaving strangely.
+mp = re.search(r"^const int procSlotWords = (\d+);", srcs["proc.dart"], re.M)
+if not mp:
+    fails.append("proc.dart has no procSlotWords")
+else:
+    for val in sorted(words):
+        name, where = words[val]
+        if val >= int(mp.group(1)):
+            fails.append("%s (%s) is word %d, past procSlotWords = %s -- it "
+                         "lands in the next slot" % (name, where, val, mp.group(1)))
+
 if fails:
     for f in fails:
         print("    - " + f, file=sys.stderr)
     sys.exit(1)
-print("    (%d distinct slot-word indices across the kernel: %s)"
-      % (len(seen), ", ".join("%d=%s" % (v, seen[v][0]) for v in sorted(seen))))
+print("    (%d distinct process-table slot words, every one reached through "
+      "procGet/procSet: %s)"
+      % (len(words), ", ".join("%d=%s" % (v, words[v][0]) for v in sorted(words))))
 PY
 echo "STRUCTURAL: pass  no two subsystems index the same process-table slot word"
 
@@ -312,8 +362,8 @@ echo "STRUCTURAL: pass  shellStrHelp is 2511 bytes AND lists all three of M18's 
 # in the boot -- silently, because nothing prints.
 UNMASK_SITES=$(grep -c 'picUnmaskTimerAndKeyboard();' "$CORE_DIR/kernel/proc.dart")
 MASK_SITES=$(grep -c 'procSessionTimerOff();' "$CORE_DIR/kernel/proc.dart")
-ck; [[ "$UNMASK_SITES" -eq 1 ]] || fail "proc.dart unmasks the timer at $UNMASK_SITES sites, expected exactly 1 (shellProcRun, guarded by the policy)"
-ck; [[ "$MASK_SITES" -eq 5 ]] || fail "proc.dart calls procSessionTimerOff() at $MASK_SITES sites, expected exactly 5: shellProcRun's normal end, its two procCreate refusals, its cross-address refusal, and procOnFault's abandoned stack. EXACTLY, not at least: a mutation that deleted one and left four would otherwise pass, and the path it deleted would leave a 100 Hz interrupt running under every later command in the boot -- silently, because nothing prints."
+ck; [[ "$UNMASK_SITES" -eq 1 ]] || fail "proc.dart unmasks the timer at $UNMASK_SITES sites, expected exactly 1 (procSessionTimerOn, used by both proc run and proc spawn)"
+ck; [[ "$MASK_SITES" -eq 8 ]] || fail "proc.dart calls procSessionTimerOff() at $MASK_SITES sites, expected exactly 8: shellProcRun's normal end, its two procCreate refusals, its cross-address refusal, procOnFault, procBudgetEnd and procSysExit when the last resident process dies, and a failed first spawn. EXACTLY, not at least: a mutation that deleted one would leave IRQ0 running under later commands."
 echo "STRUCTURAL: pass  the timer is unmasked at exactly 1 site and re-masked at $MASK_SITES, one per exit from a session"
 
 # 3h. verify-freestanding, and the extern count.
@@ -321,6 +371,44 @@ capture_sh VERIFY_OUT VERIFY_STATUS -- 'cd "$CORE_DIR" && bash scripts/verify-fr
 echo "$VERIFY_OUT"
 ck; [[ $VERIFY_STATUS -eq 0 ]] || fail "verify-freestanding.sh failed (output above)"
 EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern(s).*/\1/p' <<<"$VERIFY_OUT" | head -1)
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED from M17. M18 is a scheduler, and a scheduler that needed a new assembly primitive would be a different design: the interrupt frame `isr_common` already builds is the whole context block."
 echo "FREESTANDING: pass  $EXTERN_COUNT declared externs, unchanged from M17 — M18 added no assembly"
 
@@ -649,10 +737,12 @@ if not fails:
     if table.head_word(D.HEAD_BUDGET) != budget:
         fails.append("the process table's budget word is %d, not %d"
                      % (table.head_word(D.HEAD_BUDGET), budget))
+    # Word 14 is D3's procHeadResident. A `proc spin` session is not resident,
+    # so it must still read 0. Word 15 is unused.
     for i in (14, 15):
         if table.head_word(i) != 0:
-            fails.append("header word %d is 0x%X; words 14 and 15 are unused and must "
-                         "stay zero so a future field lands somewhere somebody chose"
+            fails.append("header word %d is 0x%X; a proc-run session leaves "
+                         "procHeadResident (14) and unused word 15 at zero"
                          % (i, table.head_word(i)))
 
     # A million iterations is a floor, not an estimate: progC's loop is two

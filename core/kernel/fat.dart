@@ -273,6 +273,18 @@ const int fatMetaAllocs = 27;
 const int fatMetaFrees = 28;
 const int fatMetaNextFree = 29;
 
+/// NVM5 (ADR-0090): which block device this mount is using, and the
+/// NVMe session frame if that device is NVMe. These two words were
+/// unused. `fat_store` stays 1824 bytes; `wmeventStore` stays last.
+/// 0 = not chosen, 1 = ATA PIO, 2 = NVMe I/O queue, 3 = AHCI.
+/// Word 31 is the session frame for whichever DMA pick won.
+const int fatMetaDev = 30;
+const int fatMetaNvme = 31;
+const int fatDevNone = 0;
+const int fatDevAta = 1;
+const int fatDevNvme = 2;
+const int fatDevAhci = 3;
+
 /// A cached LBA that cannot be a real one. Sector 0 IS real (it is the boot
 /// sector), so 0 would be wrong here.
 const int fatNoSector = 0xFFFFFFFFFFFFFFFF;
@@ -363,6 +375,20 @@ final List<u8> fatCmdCat = const [
 @rodata
 final List<u8> fatCmdCatSp = const [
   u8(0x63), u8(0x61), u8(0x74), u8(0x20),
+];
+
+/// `'FAT NVME\n'` -- 9 bytes.
+@rodata
+final List<u8> fatStrNvme = const [
+  u8(0x46), u8(0x41), u8(0x54), u8(0x20), u8(0x4E), u8(0x56), u8(0x4D), u8(0x45),
+  u8(0x0A),
+];
+
+/// `'FAT AHCI\n'` -- 9 bytes.
+@rodata
+final List<u8> fatStrAhci = const [
+  u8(0x46), u8(0x41), u8(0x54), u8(0x20), u8(0x41), u8(0x48), u8(0x43), u8(0x49),
+  u8(0x0A),
 ];
 
 /// `'FS MOUNT BPS '` -- 13 bytes.
@@ -1016,11 +1042,66 @@ u64 fatU32(u64 a) {
 // and both count what they did.
 // ---------------------------------------------------------------------------
 
+/// Chooses a class storage root on the first sector I/O of the boot.
+///
+/// **NVMe if [nvmeFind] sees class 01/08/02, else AHCI if [ahciFind]
+/// sees class 01/06/01, else ATA PIO.** Both DMA backends are the
+/// same door ([fatDiskRead]). A machine with neither (every FAT
+/// harness before NVM5) keeps the PIO path, so `m6-disk` / `m14-fat`
+/// / `m15-fileio` / `m16-filewrite` do not move. A present controller
+/// that fails to set up is a disk error, not a silent fallback.
+///
+/// Prints `FAT NVME` or `FAT AHCI` once when that path is taken, and
+/// nothing when ATA is taken (m14's golden is byte-for-byte).
+@bare
+u64 fatDiskPick() {
+  if (fatMeta(u64(fatMetaDev)) > u64(fatDevNone)) {
+    return u64(0);
+  }
+  if (nvmeFind() != u64(pciBdfNone)) {
+    final u64 st = nvmeIoSetup();
+    if (st < u64(1)) {
+      return u64(1);
+    }
+    fatSetMeta(u64(fatMetaDev), u64(fatDevNvme));
+    fatSetMeta(u64(fatMetaNvme), st);
+    uartWrite(Rodata.addressOf(fatStrNvme), u64(9));
+    return u64(0);
+  }
+  if (ahciFind() != u64(pciBdfNone)) {
+    final u64 st = ahciIoSetup();
+    if (st < u64(1)) {
+      return u64(1);
+    }
+    fatSetMeta(u64(fatMetaDev), u64(fatDevAhci));
+    fatSetMeta(u64(fatMetaNvme), st);
+    uartWrite(Rodata.addressOf(fatStrAhci), u64(9));
+    return u64(0);
+  }
+  fatSetMeta(u64(fatMetaDev), u64(fatDevAta));
+  return u64(0);
+}
+
+/// One sector into [dst] from whichever device [fatDiskPick] chose.
+@bare
+u64 fatDiskRead(u64 lba, u64 dst) {
+  if (fatDiskPick() > u64(0)) {
+    return u64(1);
+  }
+  if (fatMeta(u64(fatMetaDev)) == u64(fatDevNvme)) {
+    return nvmeIoRead(fatMeta(u64(fatMetaNvme)), lba, dst);
+  }
+  if (fatMeta(u64(fatMetaDev)) == u64(fatDevAhci)) {
+    return ahciIoRead(fatMeta(u64(fatMetaNvme)), lba, dst);
+  }
+  return ataReadInto(lba, dst);
+}
+
 /// Reads sector [lba] into the shared sector buffer, unless it is already
 /// there. Returns 0 on success, 1 on a drive failure.
 ///
 /// **The cache is invalidated BEFORE the read, not after.** A failed
-/// `ataReadInto` leaves whatever it managed to transfer in the buffer, and a
+/// `fatDiskRead` leaves whatever it managed to transfer in the buffer, and a
 /// cache that still claimed to hold [lba] would serve those bytes to the next
 /// caller as if they were a sector. So the window in which the buffer is
 /// undefined is a window in which the cache says it holds nothing.
@@ -1038,7 +1119,7 @@ u64 fatReadCached(u64 lba) {
     return u64(0);
   }
   fatSetMeta(u64(fatMetaCached), u64(fatNoSector));
-  if (ataReadInto(lba, fatSectorBase()) > u64(0)) {
+  if (fatDiskRead(lba, fatSectorBase()) > u64(0)) {
     return u64(1);
   }
   fatSetMeta(u64(fatMetaCached), lba);
@@ -1054,7 +1135,7 @@ u64 fatReadCached(u64 lba) {
 /// contents under that name.
 @bare
 u64 fatReadSector(u64 lba, u64 dst) {
-  if (ataReadInto(lba, dst) > u64(0)) {
+  if (fatDiskRead(lba, dst) > u64(0)) {
     return u64(1);
   }
   fatSetMeta(u64(fatMetaReads), fatMeta(u64(fatMetaReads)) + u64(1));
@@ -1588,6 +1669,138 @@ u64 fatLookup() {
   return u64(fatErrNotFound);
 }
 
+/// Finds the name already in the name buffer in the root directory and
+/// leaves its entry index, attribute, first cluster and size in the
+/// file meta words. Does **not** walk the chain and does **not** refuse
+/// an empty file — [fatLookup] does both of those. Returns
+/// [fatErrIsDir] for a subdirectory, [fatErrNotFound] on a miss.
+///
+/// APP4 / ADR-0147: `unlink` and `rename` need the entry even when it
+/// has no clusters. Reusing [fatLookup] would refuse those as empty.
+@bare
+u64 fatDirFind() {
+  fatSetMeta(u64(fatMetaOpen), u64(0));
+  final u64 m = fatMount();
+  if (m > u64(fatErrOk)) {
+    return m;
+  }
+  final u64 n = fatMeta(u64(fatMetaRootEntries));
+  u64 i = u64(0);
+  while (i < n) {
+    final u64 e = fatDirEntry(i);
+    if (e < u64(1)) {
+      return u64(fatErrDiskDir);
+    }
+    final u64 c0 = fatU8(e);
+    if (c0 == u64(fatDirFree)) {
+      i = n;
+    } else {
+      u64 hit = u64(0);
+      if (c0 != u64(fatDirDeleted)) {
+        final u64 attr = fatU8(e + u64(fatDirOffAttr));
+        if (attr != u64(fatAttrLongName)) {
+          if ((attr & u64(fatAttrVolumeId)) < u64(1)) {
+            if (fatNameEq(e) > u64(0)) {
+              hit = u64(1);
+              fatSetMeta(u64(fatMetaFileAttr), attr);
+              fatSetMeta(u64(fatMetaFileEntry), i);
+              fatSetMeta(u64(fatMetaFileFirst),
+                  fatU16(e + u64(fatDirOffCluster)));
+              fatSetMeta(u64(fatMetaFileBytes), fatU32(e + u64(fatDirOffSize)));
+            }
+          }
+        }
+      }
+      if (hit > u64(0)) {
+        if ((fatMeta(u64(fatMetaFileAttr)) & u64(fatAttrDirectory)) > u64(0)) {
+          return u64(fatErrIsDir);
+        }
+        return u64(fatErrOk);
+      }
+      i = i + u64(1);
+    }
+  }
+  return u64(fatErrNotFound);
+}
+
+/// Marks the name-buffer entry deleted (0xE5) and frees its cluster
+/// chain. Directory first, then the FAT — a crash between them leaves
+/// a lost chain, which `fsck_msdos` can reclaim; freeing first would
+/// leave a live entry pointing at free clusters.
+///
+/// Subdirectories are [fatErrIsDir]. A missing name is [fatErrNotFound].
+@bare
+u64 fatUnlink() {
+  final u64 fs = fatDirFind();
+  if (fs > u64(fatErrOk)) {
+    return fs;
+  }
+  final u64 entry = fatMeta(u64(fatMetaFileEntry));
+  final u64 first = fatMeta(u64(fatMetaFileFirst));
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (entry >> u64(4));
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(fatErrDiskDir);
+  }
+  final u64 e = fatSectorBase() + ((entry & u64(15)) << u64(5));
+  Pointer<u8>.fromAddress(e).value = u8(fatDirDeleted);
+  final u64 w = fatWriteSector(lba, fatSectorBase());
+  if (w > u64(fatErrOk)) {
+    return w;
+  }
+  return fatTruncate(first);
+}
+
+/// Renames the entry found under the current name buffer to the 8.3
+/// already parsed into that buffer after the source was located.
+/// Callers: parse source, [fatDirFind], save the entry index, parse
+/// dest into the name buffer, then call this with the saved index.
+///
+/// If [destEntry] is not [fatMeta] rootEntries, that entry is unlinked
+/// first (mark 0xE5, free its chain) so rename-over frees the old
+/// name's clusters. Same-entry is a no-op.
+@bare
+u64 fatRenameTo(u64 srcEntry, u64 destEntry, u64 destFirst) {
+  if (srcEntry >= fatMeta(u64(fatMetaRootEntries))) {
+    return u64(fatErrDiskDir);
+  }
+  if (destEntry < fatMeta(u64(fatMetaRootEntries))) {
+    if (destEntry != srcEntry) {
+      final u64 dlba = fatMeta(u64(fatMetaRootStart)) + (destEntry >> u64(4));
+      if (fatReadCached(dlba) > u64(0)) {
+        return u64(fatErrDiskDir);
+      }
+      final u64 de = fatSectorBase() + ((destEntry & u64(15)) << u64(5));
+      Pointer<u8>.fromAddress(de).value = u8(fatDirDeleted);
+      final u64 dw = fatWriteSector(dlba, fatSectorBase());
+      if (dw > u64(fatErrOk)) {
+        return dw;
+      }
+      final u64 tr = fatTruncate(destFirst);
+      if (tr > u64(fatErrOk)) {
+        return tr;
+      }
+    } else {
+      return u64(fatErrOk);
+    }
+  }
+  if (fatNameLegal() < u64(1)) {
+    return u64(fatErrBadName);
+  }
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (srcEntry >> u64(4));
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(fatErrDiskDir);
+  }
+  final u64 e = fatSectorBase() + ((srcEntry & u64(15)) << u64(5));
+  if (fatU8(e) == u64(fatDirDeleted)) {
+    return u64(fatErrNotFound);
+  }
+  if (fatU8(e) == u64(fatDirFree)) {
+    return u64(fatErrNotFound);
+  }
+  fatDirName(e);
+  return fatWriteSector(lba, fatSectorBase());
+}
+
 /// [fatErrReadOnly] if the entry the last [fatLookup] found is marked
 /// read-only, [fatErrOk] otherwise.
 ///
@@ -1776,10 +1989,32 @@ void fatPut32(u64 a, u64 v) {
 ///
 /// **Every write in this kernel goes through this function.** `ataWriteFrom` is
 /// called from exactly one place, which is what makes [fatMetaWrites] a
-/// complete count rather than a sample.
+/// complete count rather than a sample. NVM5 keeps that call in this
+/// body so m16's structural grep still sees it; the NVMe arm is taken
+/// only after [fatDiskPick] has chosen the I/O queue.
 @bare
 u64 fatWriteSector(u64 lba, u64 src) {
-  if (ataWriteFrom(lba, src) > u64(ataWriteOk)) {
+  u64 bad = u64(0);
+  if (fatDiskPick() > u64(0)) {
+    bad = u64(1);
+  } else {
+    if (fatMeta(u64(fatMetaDev)) == u64(fatDevNvme)) {
+      if (nvmeIoWrite(fatMeta(u64(fatMetaNvme)), lba, src) > u64(0)) {
+        bad = u64(1);
+      }
+    } else {
+      if (fatMeta(u64(fatMetaDev)) == u64(fatDevAhci)) {
+        if (ahciIoWrite(fatMeta(u64(fatMetaNvme)), lba, src) > u64(0)) {
+          bad = u64(1);
+        }
+      } else {
+        if (ataWriteFrom(lba, src) > u64(ataWriteOk)) {
+          bad = u64(1);
+        }
+      }
+    }
+  }
+  if (bad > u64(0)) {
     fatSetMeta(u64(fatMetaCached), u64(fatNoSector));
     return u64(fatErrDiskWrite);
   }

@@ -154,8 +154,12 @@ ck; [[ $(( VM_SHM_BASE / VM_BIG_BYTES )) -eq "$VM_SHM_PD" ]] \
   || fail "vmShmPdIndex is $VM_SHM_PD but vmShmBase/vmBigBytes is $(( VM_SHM_BASE / VM_BIG_BYTES ))"
 ck; [[ "$VM_SHM_PD" -eq $(( $(dartconst vmProgPdIndex vm.dart) + 1 )) ]] \
   || fail "the shared window's page-directory entry is not the one immediately after the load region's"
-ck; [[ "$VM_USER_END" -eq "$VM_SHM_END" ]] \
-  || fail "vmUserEnd ($VM_USER_END) is not vmShmEnd ($VM_SHM_END) — the bound the pointer validators test must be one past the last address ring 3 can reach"
+VM_PLAT_BASE=$(dartconst vmPlatBase vm.dart)
+VM_PLAT_END=$(dartconst vmPlatEnd vm.dart)
+ck; [[ "$VM_PLAT_BASE" -eq "$VM_SHM_END" ]] \
+  || fail "vmPlatBase ($VM_PLAT_BASE) is not vmShmEnd ($VM_SHM_END) — the platform window must begin exactly where SHM ends"
+ck; [[ "$VM_USER_END" -eq "$VM_PLAT_END" ]] \
+  || fail "vmUserEnd ($VM_USER_END) is not vmPlatEnd ($VM_PLAT_END) — the bound the pointer validators test must be one past the last address ring 3 can reach (ADR-0124)"
 ck; [[ "$VM_SHM_BASE" -eq $(jget shm_base) ]] || fail "derive.py's SHM_BASE disagrees with vm.dart"
 ck; [[ "$VM_SHM_PD" -eq $(jget shm_pd_index) ]] || fail "derive.py's SHM_PD_INDEX disagrees with vm.dart"
 
@@ -217,20 +221,62 @@ ck; [[ "$SHM_SIZE" -eq "$S_STORE" ]] \
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 SHM_OFF=$(bssoff shmStore)
-ck; [[ $(( 16#$SHM_OFF + SHM_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_SIZE )) and kmain.o's .bss is $DART_BSS — M21's block is not last, so every earlier harness's 'bytes from my block to the end' arithmetic has silently moved"
+# D4 (ADR-0050) added `wmStore` AFTER this block, so M21's is no longer the last
+# one -- this is ADR-0033 §6.4's correction to ADR-0031 §4.3 rule 5 applied for
+# the fourth time, and the check moves from "shmStore is last" to "shmStore is
+# immediately before the block that now is", which is the same property stated
+# against a moving end. d1-mouse's mouseStore/ioctlStore pair is checked exactly
+# this way and for exactly this reason.
+WM_OFF=$(bssoff wmStore)
+ck; [[ -n "$WM_OFF" ]] || fail "wmStore has no .bss offset in kmain.o — D4's compositor block (ADR-0050) is missing, and this harness can no longer say where .bss ends"
+ck; [[ $(( 16#$SHM_OFF + SHM_SIZE )) -eq $(( 16#$WM_OFF )) ]] \
+  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_SIZE )) and wmStore begins at $(( 16#$WM_OFF )) — M21's block is not immediately before D4's, so every earlier harness's 'bytes from my block to the end' arithmetic has silently moved"
+WM_SIZE=$(bsssize wmStore)
+KBDQ_OFF=$(bssoff kbdqStore)
+KBDQ_SIZE=$(bsssize kbdqStore)
+EV_OFF=$(bssoff wmeventStore)
+EV_SIZE=$(bsssize wmeventStore)
+ck; [[ -n "$KBDQ_OFF" ]] || fail "kbdqStore has no .bss offset in kmain.o — D2's input-queue block (ADR-0054) is missing"
+ck; [[ -n "$EV_OFF" ]] || fail "wmeventStore has no .bss offset in kmain.o — D7's click-event block (ADR-0055) is missing"
+ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq $(( 16#$KBDQ_OFF )) ]] \
+  || fail "wmStore ends at $(( 16#$WM_OFF + WM_SIZE )) and kbdqStore begins at $(( 16#$KBDQ_OFF )) — D4's block is not immediately before D2's"
+ck; [[ $(( 16#$KBDQ_OFF + KBDQ_SIZE )) -eq $(( 16#$EV_OFF )) ]] \
+  || fail "kbdqStore ends at $(( 16#$KBDQ_OFF + KBDQ_SIZE )) and wmeventStore begins at $(( 16#$EV_OFF )) — D2's block is not immediately before D7's"
+ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "wmeventStore ends at $(( 16#$EV_OFF + EV_SIZE )) and kmain.o's .bss is $DART_BSS — D7's block is not last"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 22016 ]] \
-  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 22016 — 17504 through S0, plus D1's mouseStore 160 (ADR-0042) and M21's shmStore 4352 (ADR-0041), the two branches this merge brought together. If that changed deliberately, move GAP-0053's running total and every harness that subtracts a later block with it."
+ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 31584 ]] \
+  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 31584 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 
 # 2e. THE STORAGE SEAM. ADR-0011 §0: the symbol is named in its accessors and
 # nowhere else in the kernel.
 SEAM=$(grep -cE "^  return Bss[.]addressOf[(]shmStore[)]" "$CORE_DIR/kernel/shm.dart")
 ck; [[ "$SEAM" -eq 4 ]] \
   || fail "Bss.addressOf(shmStore) is returned from $SEAM functions in shm.dart, expected exactly 4 (the meta, region, plane and whole-block accessors)"
-OUTSIDE=$(grep -l "shmStore" "$CORE_DIR"/kernel/*.dart | grep -v "shm.dart" | wc -l | tr -d ' ')
-ck; [[ "$OUTSIDE" -eq 0 ]] \
-  || fail "shmStore is named in $OUTSIDE kernel file(s) other than shm.dart — the storage seam is broken"
+# COMMENTS STRIPPED. The seam is about CODE reaching the symbol, and a check
+# that could not tell prose from code makes it illegal to WRITE ABOUT the
+# block -- which is what `wm.dart` does when it explains (ADR-0050 §3) that
+# `shmStore` was the last `.bss` block until D4's went behind it. That
+# explanation is the kind of thing this repo's documentation rules ask for, and
+# the first version of this check failed on it.
+capture_sh SEAM_OUT SEAM_STATUS -- "python3 - '$CORE_DIR/kernel' <<'PY'
+import os, re, sys
+d = sys.argv[1]
+bad = []
+for f in sorted(os.listdir(d)):
+    if not f.endswith('.dart') or f == 'shm.dart':
+        continue
+    src = open(os.path.join(d, f)).read()
+    src = re.sub(r'///[^\n]*', ' ', src)
+    src = re.sub(r'//[^\n]*', ' ', src)
+    if 'shmStore' in src:
+        bad.append(f)
+if bad:
+    raise SystemExit('shmStore is referenced in CODE outside shm.dart: %s' % bad)
+print('    shmStore is reached only through shm.dart accessors')
+PY"
+ck; [[ $SEAM_STATUS -eq 0 ]] || { echo "$SEAM_OUT" >&2; fail "the shmStore storage seam is broken"; }
+echo "$SEAM_OUT"
 
 # 2f. W^X, STRUCTURALLY -- the state must not be EXPRESSIBLE, not merely
 # refused. `vmShmMap` must take no `exec` parameter and must set NX
@@ -399,16 +445,17 @@ if len(set(codes.values())) != len(codes):
 for k, v in codes.items():
     if v <= floor:
         raise SystemExit('%s (0x%X) is not above shmRetFloor (0x%X)' % (k, v, floor))
-pairs = {
-    'SHM_FLOOR': 'shmRetFloor', 'SHM_NOPROC': 'shmRetNoProc',
-    'SHM_BADLEN': 'shmRetBadLen', 'SHM_NOSPACE': 'shmRetNoSpace',
-    'SHM_NOMEM': 'shmRetNoMem', 'SHM_NOCAP': 'shmRetNoCap',
-    'SHM_BADCAP': 'shmRetBadCap', 'SHM_STALE': 'shmRetStale',
-    'SHM_BADEP': 'shmRetBadEp', 'SHM_NOPEER2': 'shmRetNoPeer',
-    'SHM_TWICE': 'shmRetTwice', 'SHM_MAPPED': 'shmRetMapped',
-    'SHM_EXEC': 'shmRetExec', 'SHM_BADPERM': 'shmRetBadPerm',
-    'SHM_NOTABLE': 'shmRetNoTable', 'SHM_MAPFAIL': 'shmRetMapFail',
-}
+# DERIVED, not listed. This used to be a hand-kept table, and a hand-kept
+# table is a second place to forget: ADR-0163 added shmRetBadFixed to shm.dart
+# and the table did not know the name, so the census went red with 'a refusal
+# was added without a test' -- correctly, but only because someone had to come
+# and edit two files. The mapping is mechanical (shmRetBadLen -> SHM_BADLEN),
+# so derive it, and keep ONE explicit irregular spelling with its reason.
+IRREGULAR = {'shmRetNoPeer': 'SHM_NOPEER2'}   # SHM_NOPEER is already taken in prog.c
+pairs = {}
+for kk in kv:
+    pk = IRREGULAR.get(kk) or ('SHM_' + kk[len('shmRet'):].upper())
+    pairs[pk] = kk
 for pk, kk in pairs.items():
     if pk not in pv:
         raise SystemExit('prog.c does not define %s' % pk)
@@ -972,4 +1019,4 @@ echo "$ROK_OUT"
 # ---------------------------------------------------------------------------
 echo
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "M21-shmem: PASS — dcc build -> link -> clang builds ONE freestanding ELF64 -> make-image.py writes it to two byte-identical disk slots -> structural checks (the shared window multiplies out against the load region it must not move; shmStore tiles exactly and is last in .bss at 4352 with the total at 21856; the storage seam is 4 call sites in one file; vmShmMap CANNOT EXPRESS a writable+executable page; all five user-pointer validators still walk every page, which is what makes the widened vmUserEnd safe; freeFrame's shared-frame guard is one branch in the one place five teardown paths funnel through; procCleanup releases capabilities on the fault path as well as the exit path; procSpaceBuild clears BOTH windows; a grant is unconditionally read-only; 16 refusal codes distinct, above one floor, and agreeing with prog.c's private copy; the syscall registry accepts 16..19) -> verify-freestanding pass on kmain.o, kdata.o, portio.o and kernel.elf -> TWO REAL QEMU BOOTS. Two processes in two different address spaces (two different PML4s) share ${WANT_PAGES} frames: the SAME physical frames appear in BOTH page tables, walked out of the live tables through vmEffective, WRITABLE to the creator, READ-ONLY to the grantee, and NOT EXECUTABLE in either. The consumer exits with $WANT_CONS_HASH, an FNV-1a of all 16384 bytes it read through the shared mapping, computed on the host before the machine booted and different from the producer's $WANT_PROD_HASH. The producer then EXITS while the consumer still holds a capability, its address space is reclaimed, and the consumer re-reads all 16384 bytes and gets the same hash — with neither teardown releasing or counting one frame of the region. The region dies with its last capability, returns exactly $WANT_FRAMES frames, and the allocator's free count is identical before and after. Twenty negative controls observed from ring 3 as return values, including an executable mapping refused, a read-only capability refused permission to widen, four forged handles refused and three out-of-range lengths refused. A SECOND BOOT stores through the grantee's read-only mapping and requires the #PF: ERR 0x7 (present, write, user, data) at the region base, from CPL 3, with the process killed -- and requires the ABSENCE of the line the program prints if that store succeeds, so the control is two-sided. The no-process guard is asserted STRUCTURALLY and not behaviourally, because ADR-0034 left nothing the shell can start without a process slot — GAP-0239, in GAP-0214's category."
+echo "M21-shmem: PASS — dcc build -> link -> clang builds ONE freestanding ELF64 -> make-image.py writes it to two byte-identical disk slots -> structural checks (the shared window multiplies out against the load region it must not move; shmStore tiles exactly at 8576 and is immediately before D4's wmStore, which is now last, with the total at 22336; the storage seam is 4 call sites in one file; vmShmMap CANNOT EXPRESS a writable+executable page; all five user-pointer validators still walk every page, which is what makes the widened vmUserEnd safe; freeFrame's shared-frame guard is one branch in the one place five teardown paths funnel through; procCleanup releases capabilities on the fault path as well as the exit path; procSpaceBuild clears BOTH windows; a grant is unconditionally read-only; 16 refusal codes distinct, above one floor, and agreeing with prog.c's private copy; the syscall registry accepts 16..19) -> verify-freestanding pass on kmain.o, kdata.o, portio.o and kernel.elf -> TWO REAL QEMU BOOTS. Two processes in two different address spaces (two different PML4s) share ${WANT_PAGES} frames: the SAME physical frames appear in BOTH page tables, walked out of the live tables through vmEffective, WRITABLE to the creator, READ-ONLY to the grantee, and NOT EXECUTABLE in either. The consumer exits with $WANT_CONS_HASH, an FNV-1a of all 16384 bytes it read through the shared mapping, computed on the host before the machine booted and different from the producer's $WANT_PROD_HASH. The producer then EXITS while the consumer still holds a capability, its address space is reclaimed, and the consumer re-reads all 16384 bytes and gets the same hash — with neither teardown releasing or counting one frame of the region. The region dies with its last capability, returns exactly $WANT_FRAMES frames, and the allocator's free count is identical before and after. Twenty negative controls observed from ring 3 as return values, including an executable mapping refused, a read-only capability refused permission to widen, four forged handles refused and three out-of-range lengths refused. A SECOND BOOT stores through the grantee's read-only mapping and requires the #PF: ERR 0x7 (present, write, user, data) at the region base, from CPL 3, with the process killed -- and requires the ABSENCE of the line the program prints if that store succeeds, so the control is two-sided. The no-process guard is asserted STRUCTURALLY and not behaviourally, because ADR-0034 left nothing the shell can start without a process slot — GAP-0239, in GAP-0214's category."

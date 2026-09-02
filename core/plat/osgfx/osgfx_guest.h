@@ -1,0 +1,112 @@
+/* Guest osgfx mailbox. Lives at kernel_data_start() as section .osgfx_cmd.
+ * Dart writes it. Skia CPU raster reads it. No new @extern.
+ *
+ * Word indices match core/kernel/wmpace.dart (ADR-0188 / ADR-0191). */
+#ifndef OSGFX_GUEST_H
+#define OSGFX_GUEST_H
+
+#include <stdint.h>
+
+#define OSGFX_GUEST_MAGIC 0x4F534746585F7631ULL /* OSGFX_v1 */
+#define OSGFX_GUEST_ON 1ULL
+#define OSGFX_GUEST_DE 2ULL
+#define OSGFX_GUEST_WALL_IMG 4ULL
+#define OSGFX_GUEST_POP_SHIFT 4
+#define OSGFX_GUEST_TOP_SHIFT 8
+#define OSGFX_GUEST_HELD0 0x10000ULL
+#define OSGFX_GUEST_HELD1 0x20000ULL
+#define OSGFX_GUEST_PANEL 8ULL
+
+#define OSGFX_WMPAGE_MAGIC 0x00574D5041474531ULL /* WMPAGE1 */
+
+#define OSGFX_WMPAGE_W_MAGIC 0
+#define OSGFX_WMPAGE_W_FLAGS 1
+#define OSGFX_WMPAGE_W_PERIOD 2
+#define OSGFX_WMPAGE_W_LAST 3
+#define OSGFX_WMPAGE_W_DMG_X0 4
+#define OSGFX_WMPAGE_W_DMG_Y0 5
+#define OSGFX_WMPAGE_W_DMG_X1 6
+#define OSGFX_WMPAGE_W_DMG_Y1 7
+#define OSGFX_WMPAGE_W_PRESENTED 8
+#define OSGFX_WMPAGE_W_COALESCED 9
+#define OSGFX_WMPAGE_W_LATE 10
+#define OSGFX_WMPAGE_W_DESK_BUF 11
+#define OSGFX_WMPAGE_W_DESK_PX 12
+#define OSGFX_WMPAGE_W_DESK_FRAMES 13
+#define OSGFX_WMPAGE_W_DESK_HAVE 14
+#define OSGFX_WMPAGE_W_DESK_W 15
+#define OSGFX_WMPAGE_W_DESK_H 16
+#define OSGFX_WMPAGE_W_DESK_REGEN 17
+#define OSGFX_WMPAGE_W_DESK_BLITS 18
+#define OSGFX_WMPAGE_W_CHROME_SIG 19
+#define OSGFX_WMPAGE_W_DESK_READS 20
+#define OSGFX_WMPAGE_W_CHROME_BUF 21
+#define OSGFX_WMPAGE_W_CHROME_PX 22
+#define OSGFX_WMPAGE_W_CHROME_FRAMES 23
+#define OSGFX_WMPAGE_W_CHROME_HAVE 24
+#define OSGFX_WMPAGE_W_CHROME_W 25
+#define OSGFX_WMPAGE_W_CHROME_H 26
+#define OSGFX_WMPAGE_W_CHROME_REGEN 27
+#define OSGFX_WMPAGE_W_CHROME_BLITS 28
+#define OSGFX_WMPAGE_W_CHROME_LOG 29
+#define OSGFX_WMPAGE_W_GLYPH_FILL 30
+#define OSGFX_WMPAGE_W_GLYPH_HIT 31
+#define OSGFX_WMPAGE_W_BAND_BUF 32
+#define OSGFX_WMPAGE_W_BAND_PX 33
+#define OSGFX_WMPAGE_W_BAND_HAVE 34
+#define OSGFX_WMPAGE_W_BAND_W 35
+#define OSGFX_WMPAGE_W_BAND_H 36
+#define OSGFX_WMPAGE_W_BAND_FILL 37
+#define OSGFX_WMPAGE_W_BAND_HIT 38
+#define OSGFX_WMPAGE_W_SESSION_OWED 39
+#define OSGFX_WMPAGE_W_RESTORES 40
+#define OSGFX_WMPAGE_W_RESTORE_PX 41
+#define OSGFX_WMPAGE_W_RESTORE_SKIP 42
+#define OSGFX_WMPAGE_W_PTR_HAVE 43
+#define OSGFX_WMPAGE_W_PTR_X 44
+#define OSGFX_WMPAGE_W_PTR_Y 45
+#define OSGFX_WMPAGE_W_PTR_PIX 46
+#define OSGFX_WMPAGE_W_PTR_SPR 206
+#define OSGFX_WMPAGE_W_PTR_SPR_ON 366
+#define OSGFX_WMPAGE_W_CTX_KIND 367
+#define OSGFX_WMPAGE_W_CTX_SLOT 368
+#define OSGFX_WMPAGE_W_PANEL_NOTED 369
+#define OSGFX_WMPAGE_W_LAUNCH0 370
+#define OSGFX_WMPAGE_W_PAINT_NOTED 374
+#define OSGFX_WMPAGE_W_SCRATCH_BUF 375
+#define OSGFX_WMPAGE_W_SCRATCH_PX 376
+#define OSGFX_WMPAGE_W_SCRATCH_FRAMES 377
+
+struct OsGfxGuestCmd {
+  uint64_t magic;
+  uint64_t flags;
+  uint64_t fb;
+  uint64_t pitch;
+  uint64_t w;
+  uint64_t h;
+  uint64_t win0;
+  uint64_t win1;
+  uint64_t pop;
+  uint64_t gen;
+  /* 1 when Venus capset 4 was offered. Homebrew stays 0. */
+  uint64_t vk;
+  /* Low 32 = generative seed; bits 32..39 = mode (1 = solid image). */
+  uint64_t desk;
+  /* Solid 0x00RRGGBB when WALL_IMG is set. */
+  uint64_t wall;
+  /* Client bottom-corner tones (ADR-0191 chrome key). */
+  uint64_t tone0;
+  uint64_t tone1;
+  /* ADR-0188: compositor state page (wmpace.dart). */
+  uint64_t wmpage;
+};
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void osgfx_guest_tick(void);
+#ifdef __cplusplus
+}
+#endif
+
+#endif

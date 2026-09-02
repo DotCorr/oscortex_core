@@ -1,0 +1,1404 @@
+{
+  "faces": [
+    {
+      "name": "select",
+      "va": 231699680,
+      "off": 231695584,
+      "sym": "Select",
+      "stub": "int select(void) { return -1; }"
+    },
+    {
+      "name": "ioctl",
+      "va": 231697616,
+      "off": 231693520,
+      "sym": "Ioctl",
+      "stub": "int ioctl(void) { return -1; }"
+    },
+    {
+      "name": "strdup",
+      "va": 231695504,
+      "off": 231691408,
+      "sym": "Strdup",
+      "stub": "void *strdup(void) { return (void *)0; }"
+    },
+    {
+      "name": "strtod",
+      "va": 231697408,
+      "off": 231693312,
+      "sym": "Strtod",
+      "stub": "double strtod(const char *s, void *e) { (void)s; (void)e; return 0.0; }"
+    },
+    {
+      "name": "strftime",
+      "va": 231695408,
+      "off": 231691312,
+      "sym": "Strftime",
+      "stub": "unsigned long strftime(void *s, unsigned long nmax, const void *fmt, const void *tm) { (void)s; (void)nmax; (void)fmt; (void)tm; return 0; }"
+    },
+    {
+      "name": "fcntl",
+      "va": 231695568,
+      "off": 231691472,
+      "sym": "Fcntl",
+      "stub": "int fcntl(void) { return -1; }"
+    },
+    {
+      "name": "prctl",
+      "va": 231695360,
+      "off": 231691264,
+      "sym": "Prctl",
+      "stub": "int prctl(void) { return -1; }"
+    },
+    {
+      "name": "sigemptyset",
+      "va": 231694592,
+      "off": 231690496,
+      "sym": "Sigemptyset",
+      "stub": "int sigemptyset(void) { return -1; }"
+    },
+    {
+      "name": "sigfillset",
+      "va": 231694848,
+      "off": 231690752,
+      "sym": "Sigfillset",
+      "stub": "int sigfillset(void) { return -1; }"
+    },
+    {
+      "name": "sigaddset",
+      "va": 231698208,
+      "off": 231694112,
+      "sym": "Sigaddset",
+      "stub": "int sigaddset(void) { return -1; }"
+    },
+    {
+      "name": "sigdelset",
+      "va": 231700336,
+      "off": 231696240,
+      "sym": "Sigdelset",
+      "stub": "int sigdelset(void) { return -1; }"
+    },
+    {
+      "name": "sigprocmask",
+      "va": 231698224,
+      "off": 231694128,
+      "sym": "Sigprocmask",
+      "stub": "int sigprocmask(void) { return -1; }"
+    },
+    {
+      "name": "sigaltstack",
+      "va": 231695600,
+      "off": 231691504,
+      "sym": "Sigaltstack",
+      "stub": "int sigaltstack(void) { return -1; }"
+    },
+    {
+      "name": "sem_init",
+      "va": 231695184,
+      "off": 231691088,
+      "sym": "SemInit",
+      "stub": "int sem_init(void) { return -1; }"
+    },
+    {
+      "name": "sem_wait",
+      "va": 231695216,
+      "off": 231691120,
+      "sym": "SemWait",
+      "stub": "int sem_wait(void) { return -1; }"
+    },
+    {
+      "name": "sem_post",
+      "va": 231695232,
+      "off": 231691136,
+      "sym": "SemPost",
+      "stub": "int sem_post(void) { return -1; }"
+    },
+    {
+      "name": "sem_destroy",
+      "va": 231697504,
+      "off": 231693408,
+      "sym": "SemDestroy",
+      "stub": "int sem_destroy(void) { return -1; }"
+    },
+    {
+      "name": "sem_timedwait",
+      "va": 231695200,
+      "off": 231691104,
+      "sym": "SemTimedwait",
+      "stub": "int sem_timedwait(void) { return -1; }"
+    },
+    {
+      "name": "mmap64",
+      "va": 231695344,
+      "off": 231691248,
+      "sym": "Mmap64",
+      "stub": "int mmap64(void) { return -1; }"
+    },
+    {
+      "name": "open64",
+      "va": 231694768,
+      "off": 231690672,
+      "sym": "Open64",
+      "stub": "int open64(void) { return -1; }"
+    },
+    {
+      "name": "openat64",
+      "va": 231700272,
+      "off": 231696176,
+      "sym": "Openat64",
+      "stub": "int openat64(void) { return -1; }"
+    },
+    {
+      "name": "fopen64",
+      "va": 231694432,
+      "off": 231690336,
+      "sym": "Fopen64",
+      "stub": "void *fopen64(void) { return (void *)0; }"
+    },
+    {
+      "name": "fdopen",
+      "va": 231694672,
+      "off": 231690576,
+      "sym": "Fdopen",
+      "stub": "void *fdopen(void) { return (void *)0; }"
+    },
+    {
+      "name": "lseek64",
+      "va": 231695856,
+      "off": 231691760,
+      "sym": "Lseek64",
+      "stub": "int lseek64(void) { return -1; }"
+    },
+    {
+      "name": "pread64",
+      "va": 231695552,
+      "off": 231691456,
+      "sym": "Pread64",
+      "stub": "int pread64(void) { return -1; }"
+    },
+    {
+      "name": "pwrite64",
+      "va": 231701216,
+      "off": 231697120,
+      "sym": "Pwrite64",
+      "stub": "int pwrite64(void) { return -1; }"
+    },
+    {
+      "name": "ftruncate64",
+      "va": 231696720,
+      "off": 231692624,
+      "sym": "Ftruncate64",
+      "stub": "int ftruncate64(void) { return -1; }"
+    },
+    {
+      "name": "fseeko64",
+      "va": 231699792,
+      "off": 231695696,
+      "sym": "Fseeko64",
+      "stub": "int fseeko64(void) { return -1; }"
+    },
+    {
+      "name": "ftello64",
+      "va": 231699808,
+      "off": 231695712,
+      "sym": "Ftello64",
+      "stub": "int ftello64(void) { return -1; }"
+    },
+    {
+      "name": "mkstemp64",
+      "va": 231694656,
+      "off": 231690560,
+      "sym": "Mkstemp64",
+      "stub": "int mkstemp64(void) { return -1; }"
+    },
+    {
+      "name": "mkostemp64",
+      "va": 231698256,
+      "off": 231694160,
+      "sym": "Mkostemp64",
+      "stub": "int mkostemp64(void) { return -1; }"
+    },
+    {
+      "name": "mkdtemp",
+      "va": 231696304,
+      "off": 231692208,
+      "sym": "Mkdtemp",
+      "stub": "int mkdtemp(void) { return -1; }"
+    },
+    {
+      "name": "readdir64",
+      "va": 231695936,
+      "off": 231691840,
+      "sym": "Readdir64",
+      "stub": "void *readdir64(void) { return (void *)0; }"
+    },
+    {
+      "name": "getgrnam",
+      "va": 231695952,
+      "off": 231691856,
+      "sym": "Getgrnam",
+      "stub": "void *getgrnam(void) { return (void *)0; }"
+    },
+    {
+      "name": "getpwuid",
+      "va": 231700080,
+      "off": 231695984,
+      "sym": "Getpwuid",
+      "stub": "void *getpwuid(void) { return (void *)0; }"
+    },
+    {
+      "name": "eventfd",
+      "va": 231695808,
+      "off": 231691712,
+      "sym": "Eventfd",
+      "stub": "int eventfd(void) { return -1; }"
+    },
+    {
+      "name": "timerfd_create",
+      "va": 231696128,
+      "off": 231692032,
+      "sym": "TimerfdCreate",
+      "stub": "int timerfd_create(void) { return -1; }"
+    },
+    {
+      "name": "timerfd_settime",
+      "va": 231696144,
+      "off": 231692048,
+      "sym": "TimerfdSettime",
+      "stub": "int timerfd_settime(void) { return -1; }"
+    },
+    {
+      "name": "sched_setscheduler",
+      "va": 231696176,
+      "off": 231692080,
+      "sym": "SchedSetscheduler",
+      "stub": "int sched_setscheduler(void) { return -1; }"
+    },
+    {
+      "name": "sched_getscheduler",
+      "va": 231696208,
+      "off": 231692112,
+      "sym": "SchedGetscheduler",
+      "stub": "int sched_getscheduler(void) { return -1; }"
+    },
+    {
+      "name": "sched_getparam",
+      "va": 231696224,
+      "off": 231692128,
+      "sym": "SchedGetparam",
+      "stub": "int sched_getparam(void) { return -1; }"
+    },
+    {
+      "name": "sched_getaffinity",
+      "va": 231701456,
+      "off": 231697360,
+      "sym": "SchedGetaffinity",
+      "stub": "int sched_getaffinity(void) { return -1; }"
+    },
+    {
+      "name": "newlocale",
+      "va": 231696256,
+      "off": 231692160,
+      "sym": "Newlocale",
+      "stub": "void *newlocale(void) { return (void *)0; }"
+    },
+    {
+      "name": "strtod_l",
+      "va": 231696272,
+      "off": 231692176,
+      "sym": "StrtodL",
+      "stub": "double strtod_l(const char *s, void *e) { (void)s; (void)e; return 0.0; }"
+    },
+    {
+      "name": "setlocale",
+      "va": 231700320,
+      "off": 231696224,
+      "sym": "Setlocale",
+      "stub": "void *setlocale(void) { return (void *)0; }"
+    },
+    {
+      "name": "setenv",
+      "va": 231696368,
+      "off": 231692272,
+      "sym": "Setenv",
+      "stub": "int setenv(void) { return -1; }"
+    },
+    {
+      "name": "unsetenv",
+      "va": 231696384,
+      "off": 231692288,
+      "sym": "Unsetenv",
+      "stub": "int unsetenv(void) { return -1; }"
+    },
+    {
+      "name": "setsid",
+      "va": 231696416,
+      "off": 231692320,
+      "sym": "Setsid",
+      "stub": "int setsid(void) { return -1; }"
+    },
+    {
+      "name": "readlink",
+      "va": 231696464,
+      "off": 231692368,
+      "sym": "Readlink",
+      "stub": "int readlink(void) { return -1; }"
+    },
+    {
+      "name": "setpgid",
+      "va": 231696544,
+      "off": 231692448,
+      "sym": "Setpgid",
+      "stub": "int setpgid(void) { return -1; }"
+    },
+    {
+      "name": "execvp",
+      "va": 231696576,
+      "off": 231692480,
+      "sym": "Execvp",
+      "stub": "int execvp(void) { return -1; }"
+    },
+    {
+      "name": "execlp",
+      "va": 231694576,
+      "off": 231690480,
+      "sym": "Execlp",
+      "stub": "int execlp(void) { return -1; }"
+    },
+    {
+      "name": "execv",
+      "va": 231700688,
+      "off": 231696592,
+      "sym": "Execv",
+      "stub": "int execv(void) { return -1; }"
+    },
+    {
+      "name": "system",
+      "va": 231694720,
+      "off": 231690624,
+      "sym": "System",
+      "stub": "int system(void) { return -1; }"
+    },
+    {
+      "name": "clone",
+      "va": 231700672,
+      "off": 231696576,
+      "sym": "Clone",
+      "stub": "int clone(void) { return -1; }"
+    },
+    {
+      "name": "vfprintf",
+      "va": 231696624,
+      "off": 231692528,
+      "sym": "Vfprintf",
+      "stub": "int vfprintf(void) { return -1; }"
+    },
+    {
+      "name": "fchmod",
+      "va": 231696688,
+      "off": 231692592,
+      "sym": "Fchmod",
+      "stub": "int fchmod(void) { return -1; }"
+    },
+    {
+      "name": "freeaddrinfo",
+      "va": 231696752,
+      "off": 231692656,
+      "sym": "Freeaddrinfo",
+      "stub": "void freeaddrinfo(void) {}"
+    },
+    {
+      "name": "socketpair",
+      "va": 231696768,
+      "off": 231692672,
+      "sym": "Socketpair",
+      "stub": "int socketpair(void) { return -1; }"
+    },
+    {
+      "name": "getsockname",
+      "va": 231696848,
+      "off": 231692752,
+      "sym": "Getsockname",
+      "stub": "int getsockname(void) { return -1; }"
+    },
+    {
+      "name": "inet_ntop",
+      "va": 231696864,
+      "off": 231692768,
+      "sym": "InetNtop",
+      "stub": "void *inet_ntop(void) { return (void *)0; }"
+    },
+    {
+      "name": "sendmsg",
+      "va": 231696928,
+      "off": 231692832,
+      "sym": "Sendmsg",
+      "stub": "int sendmsg(void) { return -1; }"
+    },
+    {
+      "name": "recvmsg",
+      "va": 231696944,
+      "off": 231692848,
+      "sym": "Recvmsg",
+      "stub": "int recvmsg(void) { return -1; }"
+    },
+    {
+      "name": "gai_strerror",
+      "va": 231697072,
+      "off": 231692976,
+      "sym": "GaiStrerror",
+      "stub": "void *gai_strerror(void) { return (void *)0; }"
+    },
+    {
+      "name": "getifaddrs",
+      "va": 231697088,
+      "off": 231692992,
+      "sym": "Getifaddrs",
+      "stub": "void *getifaddrs(void) { return (void *)0; }"
+    },
+    {
+      "name": "freeifaddrs",
+      "va": 231697104,
+      "off": 231693008,
+      "sym": "Freeifaddrs",
+      "stub": "void freeifaddrs(void) {}"
+    },
+    {
+      "name": "mremap",
+      "va": 231697312,
+      "off": 231693216,
+      "sym": "Mremap",
+      "stub": "int mremap(void) { return -1; }"
+    },
+    {
+      "name": "ppoll",
+      "va": 231697984,
+      "off": 231693888,
+      "sym": "Ppoll",
+      "stub": "int ppoll(void) { return -1; }"
+    },
+    {
+      "name": "open_memstream",
+      "va": 231698000,
+      "off": 231693904,
+      "sym": "OpenMemstream",
+      "stub": "void *open_memstream(void) { return (void *)0; }"
+    },
+    {
+      "name": "epoll_create1",
+      "va": 231698016,
+      "off": 231693920,
+      "sym": "EpollCreate1",
+      "stub": "int epoll_create1(void) { return -1; }"
+    },
+    {
+      "name": "epoll_create",
+      "va": 231698032,
+      "off": 231693936,
+      "sym": "EpollCreate",
+      "stub": "int epoll_create(void) { return -1; }"
+    },
+    {
+      "name": "epoll_ctl",
+      "va": 231701744,
+      "off": 231697648,
+      "sym": "EpollCtl",
+      "stub": "int epoll_ctl(void) { return -1; }"
+    },
+    {
+      "name": "epoll_wait",
+      "va": 231701760,
+      "off": 231697664,
+      "sym": "EpollWait",
+      "stub": "int epoll_wait(void) { return -1; }"
+    },
+    {
+      "name": "msync",
+      "va": 231698048,
+      "off": 231693952,
+      "sym": "Msync",
+      "stub": "int msync(void) { return -1; }"
+    },
+    {
+      "name": "posix_fallocate64",
+      "va": 231698240,
+      "off": 231694144,
+      "sym": "PosixFallocate64",
+      "stub": "int posix_fallocate64(void) { return -1; }"
+    },
+    {
+      "name": "posix_fadvise64",
+      "va": 231701632,
+      "off": 231697536,
+      "sym": "PosixFadvise64",
+      "stub": "int posix_fadvise64(void) { return -1; }"
+    },
+    {
+      "name": "fallocate64",
+      "va": 231701600,
+      "off": 231697504,
+      "sym": "Fallocate64",
+      "stub": "int fallocate64(void) { return -1; }"
+    },
+    {
+      "name": "sendfile64",
+      "va": 231701648,
+      "off": 231697552,
+      "sym": "Sendfile64",
+      "stub": "int sendfile64(void) { return -1; }"
+    },
+    {
+      "name": "fdatasync",
+      "va": 231695984,
+      "off": 231691888,
+      "sym": "Fdatasync",
+      "stub": "int fdatasync(void) { return -1; }"
+    },
+    {
+      "name": "utimensat",
+      "va": 231699824,
+      "off": 231695728,
+      "sym": "Utimensat",
+      "stub": "int utimensat(void) { return -1; }"
+    },
+    {
+      "name": "futimens",
+      "va": 231701232,
+      "off": 231697136,
+      "sym": "Futimens",
+      "stub": "int futimens(void) { return -1; }"
+    },
+    {
+      "name": "getrlimit64",
+      "va": 231695584,
+      "off": 231691488,
+      "sym": "Getrlimit64",
+      "stub": "int getrlimit64(void) { return -1; }"
+    },
+    {
+      "name": "setrlimit64",
+      "va": 231701712,
+      "off": 231697616,
+      "sym": "Setrlimit64",
+      "stub": "int setrlimit64(void) { return -1; }"
+    },
+    {
+      "name": "inotify_init",
+      "va": 231700160,
+      "off": 231696064,
+      "sym": "InotifyInit",
+      "stub": "int inotify_init(void) { return -1; }"
+    },
+    {
+      "name": "inotify_add_watch",
+      "va": 231700176,
+      "off": 231696080,
+      "sym": "InotifyAddWatch",
+      "stub": "int inotify_add_watch(void) { return -1; }"
+    },
+    {
+      "name": "inotify_rm_watch",
+      "va": 231700192,
+      "off": 231696096,
+      "sym": "InotifyRmWatch",
+      "stub": "int inotify_rm_watch(void) { return -1; }"
+    },
+    {
+      "name": "tcflush",
+      "va": 231700208,
+      "off": 231696112,
+      "sym": "Tcflush",
+      "stub": "int tcflush(void) { return -1; }"
+    },
+    {
+      "name": "tcdrain",
+      "va": 231700224,
+      "off": 231696128,
+      "sym": "Tcdrain",
+      "stub": "int tcdrain(void) { return -1; }"
+    },
+    {
+      "name": "syscall",
+      "va": 231694752,
+      "off": 231690656,
+      "sym": "Syscall",
+      "stub": "int syscall(void) { return -1; }"
+    },
+    {
+      "name": "remove",
+      "va": 231700576,
+      "off": 231696480,
+      "sym": "Remove",
+      "stub": "int remove(void) { return -1; }"
+    },
+    {
+      "name": "pathconf",
+      "va": 231701616,
+      "off": 231697520,
+      "sym": "Pathconf",
+      "stub": "int pathconf(void) { return -1; }"
+    },
+    {
+      "name": "fsync",
+      "va": 231700544,
+      "off": 231696448,
+      "sym": "Fsync",
+      "stub": "int fsync(void) { return -1; }"
+    },
+    {
+      "name": "symlink",
+      "va": 231701568,
+      "off": 231697472,
+      "sym": "Symlink",
+      "stub": "int symlink(void) { return -1; }"
+    },
+    {
+      "name": "unlinkat",
+      "va": 231700288,
+      "off": 231696192,
+      "sym": "Unlinkat",
+      "stub": "int unlinkat(void) { return -1; }"
+    },
+    {
+      "name": "getcwd",
+      "va": 231700704,
+      "off": 231696608,
+      "sym": "Getcwd",
+      "stub": "void *getcwd(void) { return (void *)0; }"
+    },
+    {
+      "name": "realpath",
+      "va": 231701552,
+      "off": 231697456,
+      "sym": "Realpath",
+      "stub": "void *realpath(void) { return (void *)0; }"
+    },
+    {
+      "name": "gettimeofday",
+      "va": 231700448,
+      "off": 231696352,
+      "sym": "Gettimeofday",
+      "stub": "int gettimeofday(void) { return -1; }"
+    },
+    {
+      "name": "difftime",
+      "va": 231712096,
+      "off": 231708000,
+      "sym": "Difftime",
+      "stub": "double difftime(double a, double b) { (void)a; (void)b; return 0.0; }"
+    },
+    {
+      "name": "timegm",
+      "va": 231701808,
+      "off": 231697712,
+      "sym": "Timegm",
+      "stub": "int timegm(void) { return -1; }"
+    },
+    {
+      "name": "wcstol",
+      "va": 231713264,
+      "off": 231709168,
+      "sym": "Wcstol",
+      "stub": "long wcstol(const void *s, void *e, int b) { (void)s; (void)e; (void)b; return 0; }"
+    },
+    {
+      "name": "swprintf",
+      "va": 231700480,
+      "off": 231696384,
+      "sym": "Swprintf",
+      "stub": "int swprintf(void) { return -1; }"
+    },
+    {
+      "name": "vswprintf",
+      "va": 231700528,
+      "off": 231696432,
+      "sym": "Vswprintf",
+      "stub": "int vswprintf(void) { return -1; }"
+    },
+    {
+      "name": "fmod",
+      "va": 231715232,
+      "off": 231711136,
+      "sym": "Fmod",
+      "stub": "double fmod(double a, double b) { (void)a; (void)b; return 0.0; }"
+    },
+    {
+      "name": "log1pf",
+      "va": 231714416,
+      "off": 231710320,
+      "sym": "Log1pf",
+      "stub": "float log1pf(float x) { (void)x; return 0.0f; }"
+    },
+    {
+      "name": "lround",
+      "va": 231714896,
+      "off": 231710800,
+      "sym": "Lround",
+      "stub": "long lround(double x) { (void)x; return 0; }"
+    },
+    {
+      "name": "lroundf",
+      "va": 231715056,
+      "off": 231710960,
+      "sym": "Lroundf",
+      "stub": "long lroundf(float x) { (void)x; return 0; }"
+    },
+    {
+      "name": "llround",
+      "va": 231714944,
+      "off": 231710848,
+      "sym": "Llround",
+      "stub": "long long llround(double x) { (void)x; return 0; }"
+    },
+    {
+      "name": "llroundf",
+      "va": 231715168,
+      "off": 231711072,
+      "sym": "Llroundf",
+      "stub": "long long llroundf(float x) { (void)x; return 0; }"
+    },
+    {
+      "name": "getopt_long",
+      "va": 231714432,
+      "off": 231710336,
+      "sym": "GetoptLong",
+      "stub": "int getopt_long(void) { return -1; }"
+    },
+    {
+      "name": "waitpid",
+      "va": 231700352,
+      "off": 231696256,
+      "sym": "Waitpid",
+      "stub": "int waitpid(void) { return -1; }"
+    },
+    {
+      "name": "pipe2",
+      "va": 231700400,
+      "off": 231696304,
+      "sym": "Pipe2",
+      "stub": "int pipe2(void) { return -1; }"
+    },
+    {
+      "name": "flock",
+      "va": 231700384,
+      "off": 231696288,
+      "sym": "Flock",
+      "stub": "int flock(void) { return -1; }"
+    },
+    {
+      "name": "lchown",
+      "va": 231713296,
+      "off": 231709200,
+      "sym": "Lchown",
+      "stub": "int lchown(void) { return -1; }"
+    },
+    {
+      "name": "umask",
+      "va": 231713248,
+      "off": 231709152,
+      "sym": "Umask",
+      "stub": "int umask(void) { return -1; }"
+    },
+    {
+      "name": "mincore",
+      "va": 231700736,
+      "off": 231696640,
+      "sym": "Mincore",
+      "stub": "int mincore(void) { return -1; }"
+    },
+    {
+      "name": "dirfd",
+      "va": 231700784,
+      "off": 231696688,
+      "sym": "Dirfd",
+      "stub": "int dirfd(void) { return -1; }"
+    },
+    {
+      "name": "openlog",
+      "va": 231701168,
+      "off": 231697072,
+      "sym": "Openlog",
+      "stub": "void openlog(void) {}"
+    },
+    {
+      "name": "syslog",
+      "va": 231701184,
+      "off": 231697088,
+      "sym": "Syslog",
+      "stub": "void syslog(int p, const char *fmt) { (void)p; (void)fmt; }"
+    },
+    {
+      "name": "closelog",
+      "va": 231701200,
+      "off": 231697104,
+      "sym": "Closelog",
+      "stub": "void closelog(void) {}"
+    },
+    {
+      "name": "statvfs64",
+      "va": 231701504,
+      "off": 231697408,
+      "sym": "Statvfs64",
+      "stub": "int statvfs64(void) { return -1; }"
+    },
+    {
+      "name": "statfs64",
+      "va": 231701520,
+      "off": 231697424,
+      "sym": "Statfs64",
+      "stub": "int statfs64(void) { return -1; }"
+    },
+    {
+      "name": "fstatfs64",
+      "va": 231701696,
+      "off": 231697600,
+      "sym": "Fstatfs64",
+      "stub": "int fstatfs64(void) { return -1; }"
+    },
+    {
+      "name": "fnmatch",
+      "va": 231701536,
+      "off": 231697440,
+      "sym": "Fnmatch",
+      "stub": "int fnmatch(void) { return -1; }"
+    },
+    {
+      "name": "creat64",
+      "va": 231701584,
+      "off": 231697488,
+      "sym": "Creat64",
+      "stub": "int creat64(void) { return -1; }"
+    },
+    {
+      "name": "fdopendir",
+      "va": 231701664,
+      "off": 231697568,
+      "sym": "Fdopendir",
+      "stub": "void *fdopendir(void) { return (void *)0; }"
+    },
+    {
+      "name": "wcrtomb",
+      "va": 231701776,
+      "off": 231697680,
+      "sym": "Wcrtomb",
+      "stub": "unsigned long wcrtomb(void) { return 0; }"
+    },
+    {
+      "name": "mbrtowc",
+      "va": 231701792,
+      "off": 231697696,
+      "sym": "Mbrtowc",
+      "stub": "unsigned long mbrtowc(void) { return 0; }"
+    },
+    {
+      "name": "wcsftime",
+      "va": 231700624,
+      "off": 231696528,
+      "sym": "Wcsftime",
+      "stub": "unsigned long wcsftime(void *s, unsigned long nmax, const void *fmt, const void *tm) { (void)s; (void)nmax; (void)fmt; (void)tm; return 0; }"
+    },
+    {
+      "name": "longjmp",
+      "va": 231700416,
+      "off": 231696320,
+      "sym": "Longjmp",
+      "stub": "int longjmp(void) { return -1; }"
+    },
+    {
+      "name": "_setjmp",
+      "va": 231700432,
+      "off": 231696336,
+      "sym": "USetjmp",
+      "stub": "int _setjmp(void) { return -1; }"
+    },
+    {
+      "name": "pthread_self",
+      "va": 231695296,
+      "off": 231691200,
+      "sym": "PthreadSelf",
+      "stub": "unsigned long pthread_self(void) { return 0; }"
+    },
+    {
+      "name": "pthread_once",
+      "va": 231697280,
+      "off": 231693184,
+      "sym": "PthreadOnce",
+      "stub": "int pthread_once(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutex_init",
+      "va": 231695088,
+      "off": 231690992,
+      "sym": "PthreadMutexInit",
+      "stub": "int pthread_mutex_init(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutex_lock",
+      "va": 231695168,
+      "off": 231691072,
+      "sym": "PthreadMutexLock",
+      "stub": "int pthread_mutex_lock(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutex_unlock",
+      "va": 231694272,
+      "off": 231690176,
+      "sym": "PthreadMutexUnlock",
+      "stub": "int pthread_mutex_unlock(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutex_destroy",
+      "va": 231697328,
+      "off": 231693232,
+      "sym": "PthreadMutexDestroy",
+      "stub": "int pthread_mutex_destroy(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutex_trylock",
+      "va": 231694256,
+      "off": 231690160,
+      "sym": "PthreadMutexTrylock",
+      "stub": "int pthread_mutex_trylock(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutexattr_init",
+      "va": 231701312,
+      "off": 231697216,
+      "sym": "PthreadMutexattrInit",
+      "stub": "int pthread_mutexattr_init(void) { return -1; }"
+    },
+    {
+      "name": "pthread_mutexattr_destroy",
+      "va": 231701328,
+      "off": 231697232,
+      "sym": "PthreadMutexattrDestroy",
+      "stub": "int pthread_mutexattr_destroy(void) { return -1; }"
+    },
+    {
+      "name": "pthread_cond_init",
+      "va": 231695104,
+      "off": 231691008,
+      "sym": "PthreadCondInit",
+      "stub": "int pthread_cond_init(void) { return -1; }"
+    },
+    {
+      "name": "pthread_cond_wait",
+      "va": 231695136,
+      "off": 231691040,
+      "sym": "PthreadCondWait",
+      "stub": "int pthread_cond_wait(void) { return -1; }"
+    },
+    {
+      "name": "pthread_cond_timedwait",
+      "va": 231695120,
+      "off": 231691024,
+      "sym": "PthreadCondTimedwait",
+      "stub": "int pthread_cond_timedwait(void) { return -1; }"
+    },
+    {
+      "name": "pthread_cond_signal",
+      "va": 231695152,
+      "off": 231691056,
+      "sym": "PthreadCondSignal",
+      "stub": "int pthread_cond_signal(void) { return -1; }"
+    },
+    {
+      "name": "pthread_cond_broadcast",
+      "va": 231697968,
+      "off": 231693872,
+      "sym": "PthreadCondBroadcast",
+      "stub": "int pthread_cond_broadcast(void) { return -1; }"
+    },
+    {
+      "name": "pthread_cond_destroy",
+      "va": 231697952,
+      "off": 231693856,
+      "sym": "PthreadCondDestroy",
+      "stub": "int pthread_cond_destroy(void) { return -1; }"
+    },
+    {
+      "name": "pthread_condattr_init",
+      "va": 231701264,
+      "off": 231697168,
+      "sym": "PthreadCondattrInit",
+      "stub": "int pthread_condattr_init(void) { return -1; }"
+    },
+    {
+      "name": "pthread_condattr_setclock",
+      "va": 231701280,
+      "off": 231697184,
+      "sym": "PthreadCondattrSetclock",
+      "stub": "int pthread_condattr_setclock(void) { return -1; }"
+    },
+    {
+      "name": "pthread_condattr_destroy",
+      "va": 231701296,
+      "off": 231697200,
+      "sym": "PthreadCondattrDestroy",
+      "stub": "int pthread_condattr_destroy(void) { return -1; }"
+    },
+    {
+      "name": "pthread_key_create",
+      "va": 231694912,
+      "off": 231690816,
+      "sym": "PthreadKeyCreate",
+      "stub": "int pthread_key_create(void) { return -1; }"
+    },
+    {
+      "name": "pthread_key_delete",
+      "va": 231696640,
+      "off": 231692544,
+      "sym": "PthreadKeyDelete",
+      "stub": "int pthread_key_delete(void) { return -1; }"
+    },
+    {
+      "name": "pthread_getspecific",
+      "va": 231694896,
+      "off": 231690800,
+      "sym": "PthreadGetspecific",
+      "stub": "void *pthread_getspecific(void) { return (void *)0; }"
+    },
+    {
+      "name": "pthread_setspecific",
+      "va": 231694880,
+      "off": 231690784,
+      "sym": "PthreadSetspecific",
+      "stub": "int pthread_setspecific(void) { return -1; }"
+    },
+    {
+      "name": "pthread_attr_init",
+      "va": 231701376,
+      "off": 231697280,
+      "sym": "PthreadAttrInit",
+      "stub": "int pthread_attr_init(void) { return -1; }"
+    },
+    {
+      "name": "pthread_attr_destroy",
+      "va": 231701424,
+      "off": 231697328,
+      "sym": "PthreadAttrDestroy",
+      "stub": "int pthread_attr_destroy(void) { return -1; }"
+    },
+    {
+      "name": "pthread_attr_setstacksize",
+      "va": 231701408,
+      "off": 231697312,
+      "sym": "PthreadAttrSetstacksize",
+      "stub": "int pthread_attr_setstacksize(void) { return -1; }"
+    },
+    {
+      "name": "pthread_attr_setdetachstate",
+      "va": 231701392,
+      "off": 231697296,
+      "sym": "PthreadAttrSetdetachstate",
+      "stub": "int pthread_attr_setdetachstate(void) { return -1; }"
+    },
+    {
+      "name": "pthread_attr_getstack",
+      "va": 231699952,
+      "off": 231695856,
+      "sym": "PthreadAttrGetstack",
+      "stub": "int pthread_attr_getstack(void) { return -1; }"
+    },
+    {
+      "name": "pthread_attr_getstacksize",
+      "va": 231701824,
+      "off": 231697728,
+      "sym": "PthreadAttrGetstacksize",
+      "stub": "int pthread_attr_getstacksize(void) { return -1; }"
+    },
+    {
+      "name": "pthread_create",
+      "va": 231696512,
+      "off": 231692416,
+      "sym": "PthreadCreate",
+      "stub": "int pthread_create(void) { return -1; }"
+    },
+    {
+      "name": "pthread_join",
+      "va": 231701344,
+      "off": 231697248,
+      "sym": "PthreadJoin",
+      "stub": "int pthread_join(void) { return -1; }"
+    },
+    {
+      "name": "pthread_detach",
+      "va": 231701360,
+      "off": 231697264,
+      "sym": "PthreadDetach",
+      "stub": "int pthread_detach(void) { return -1; }"
+    },
+    {
+      "name": "pthread_sigmask",
+      "va": 231694864,
+      "off": 231690768,
+      "sym": "PthreadSigmask",
+      "stub": "int pthread_sigmask(void) { return -1; }"
+    },
+    {
+      "name": "pthread_getschedparam",
+      "va": 231695280,
+      "off": 231691184,
+      "sym": "PthreadGetschedparam",
+      "stub": "int pthread_getschedparam(void) { return -1; }"
+    },
+    {
+      "name": "pthread_setname_np",
+      "va": 231696496,
+      "off": 231692400,
+      "sym": "PthreadSetnameNp",
+      "stub": "int pthread_setname_np(void) { return -1; }"
+    },
+    {
+      "name": "pthread_getname_np",
+      "va": 231696656,
+      "off": 231692560,
+      "sym": "PthreadGetnameNp",
+      "stub": "int pthread_getname_np(void) { return -1; }"
+    },
+    {
+      "name": "pthread_kill",
+      "va": 231699904,
+      "off": 231695808,
+      "sym": "PthreadKill",
+      "stub": "int pthread_kill(void) { return -1; }"
+    },
+    {
+      "name": "pthread_getattr_np",
+      "va": 231699936,
+      "off": 231695840,
+      "sym": "PthreadGetattrNp",
+      "stub": "int pthread_getattr_np(void) { return -1; }"
+    },
+    {
+      "name": "__cxa_finalize",
+      "va": 231693808,
+      "off": 231689712,
+      "sym": "XCxaFinalize",
+      "stub": "int __cxa_finalize(void) { return -1; }"
+    },
+    {
+      "name": "__cxa_atexit",
+      "va": 231694416,
+      "off": 231690320,
+      "sym": "XCxaAtexit",
+      "stub": "int __cxa_atexit(void) { return -1; }"
+    },
+    {
+      "name": "__errno_location",
+      "va": 231694288,
+      "off": 231690192,
+      "sym": "XErrnoLocation",
+      "stub": "void *__errno_location(void) { return (void *)0; }"
+    },
+    {
+      "name": "__ctype_b_loc",
+      "va": 231695392,
+      "off": 231691296,
+      "sym": "XCtypeBLoc",
+      "stub": "void *__ctype_b_loc(void) { return (void *)0; }"
+    },
+    {
+      "name": "__ctype_tolower_loc",
+      "va": 231694496,
+      "off": 231690400,
+      "sym": "XCtypeTolowerLoc",
+      "stub": "void *__ctype_tolower_loc(void) { return (void *)0; }"
+    },
+    {
+      "name": "__ctype_toupper_loc",
+      "va": 231699920,
+      "off": 231695824,
+      "sym": "XCtypeToupperLoc",
+      "stub": "void *__ctype_toupper_loc(void) { return (void *)0; }"
+    },
+    {
+      "name": "__ctype_get_mb_cur_max",
+      "va": 231713408,
+      "off": 231709312,
+      "sym": "XCtypeGetMbCurMax",
+      "stub": "int __ctype_get_mb_cur_max(void) { return -1; }"
+    },
+    {
+      "name": "__cxa_thread_atexit_impl",
+      "va": 231714800,
+      "off": 231710704,
+      "sym": "XCxaThreadAtexitImpl",
+      "stub": "int __cxa_thread_atexit_impl(void) { return -1; }"
+    },
+    {
+      "name": "__getdelim",
+      "va": 231698272,
+      "off": 231694176,
+      "sym": "XGetdelim",
+      "stub": "int __getdelim(void) { return -1; }"
+    },
+    {
+      "name": "__longjmp_chk",
+      "va": 231700560,
+      "off": 231696464,
+      "sym": "XLongjmpChk",
+      "stub": "int __longjmp_chk(void) { return -1; }"
+    },
+    {
+      "name": "__mbrlen",
+      "va": 231714624,
+      "off": 231710528,
+      "sym": "XMbrlen",
+      "stub": "int __mbrlen(void) { return -1; }"
+    },
+    {
+      "name": "__register_atfork",
+      "va": 231715280,
+      "off": 231711184,
+      "sym": "XRegisterAtfork",
+      "stub": "int __register_atfork(void) { return -1; }"
+    },
+    {
+      "name": "__sched_cpualloc",
+      "va": 231701440,
+      "off": 231697344,
+      "sym": "XSchedCpualloc",
+      "stub": "int __sched_cpualloc(void) { return -1; }"
+    },
+    {
+      "name": "__sched_cpucount",
+      "va": 231701472,
+      "off": 231697376,
+      "sym": "XSchedCpucount",
+      "stub": "int __sched_cpucount(void) { return -1; }"
+    },
+    {
+      "name": "__sched_cpufree",
+      "va": 231701488,
+      "off": 231697392,
+      "sym": "XSchedCpufree",
+      "stub": "int __sched_cpufree(void) { return -1; }"
+    },
+    {
+      "name": "__stack_chk_fail",
+      "va": 231714848,
+      "off": 231710752,
+      "sym": "XStackChkFail",
+      "stub": "int __stack_chk_fail(void) { return -1; }"
+    },
+    {
+      "name": "__tls_get_addr",
+      "va": 231715328,
+      "off": 231711232,
+      "sym": "XTlsGetAddr",
+      "stub": "int __tls_get_addr(void) { return -1; }"
+    },
+    {
+      "name": "__udivti3",
+      "va": 231714816,
+      "off": 231710720,
+      "sym": "XUdivti3",
+      "stub": "int __udivti3(void) { return -1; }"
+    },
+    {
+      "name": "__umodti3",
+      "va": 231714832,
+      "off": 231710736,
+      "sym": "XUmodti3",
+      "stub": "int __umodti3(void) { return -1; }"
+    },
+    {
+      "name": "catclose",
+      "va": 231714560,
+      "off": 231710464,
+      "sym": "Catclose",
+      "stub": "int catclose(void) { return -1; }"
+    },
+    {
+      "name": "catgets",
+      "va": 231714544,
+      "off": 231710448,
+      "sym": "Catgets",
+      "stub": "int catgets(void) { return -1; }"
+    },
+    {
+      "name": "catopen",
+      "va": 231714528,
+      "off": 231710432,
+      "sym": "Catopen",
+      "stub": "int catopen(void) { return -1; }"
+    },
+    {
+      "name": "dladdr",
+      "va": 231694512,
+      "off": 231690416,
+      "sym": "Dladdr",
+      "stub": "int dladdr(void) { return -1; }"
+    },
+    {
+      "name": "dlclose",
+      "va": 231697472,
+      "off": 231693376,
+      "sym": "Dlclose",
+      "stub": "int dlclose(void) { return -1; }"
+    },
+    {
+      "name": "dlerror",
+      "va": 231697456,
+      "off": 231693360,
+      "sym": "Dlerror",
+      "stub": "int dlerror(void) { return -1; }"
+    },
+    {
+      "name": "dlopen",
+      "va": 231697440,
+      "off": 231693344,
+      "sym": "Dlopen",
+      "stub": "int dlopen(void) { return -1; }"
+    },
+    {
+      "name": "dlsym",
+      "va": 231697424,
+      "off": 231693328,
+      "sym": "Dlsym",
+      "stub": "int dlsym(void) { return -1; }"
+    },
+    {
+      "name": "endmntent",
+      "va": 231712144,
+      "off": 231708048,
+      "sym": "Endmntent",
+      "stub": "int endmntent(void) { return -1; }"
+    },
+    {
+      "name": "fputwc",
+      "va": 231714512,
+      "off": 231710416,
+      "sym": "Fputwc",
+      "stub": "int fputwc(void) { return -1; }"
+    },
+    {
+      "name": "getmntent_r",
+      "va": 231712128,
+      "off": 231708032,
+      "sym": "GetmntentR",
+      "stub": "int getmntent_r(void) { return -1; }"
+    },
+    {
+      "name": "getpwnam",
+      "va": 231713280,
+      "off": 231709184,
+      "sym": "Getpwnam",
+      "stub": "int getpwnam(void) { return -1; }"
+    },
+    {
+      "name": "getwc",
+      "va": 231714480,
+      "off": 231710384,
+      "sym": "Getwc",
+      "stub": "int getwc(void) { return -1; }"
+    },
+    {
+      "name": "gnu_get_libc_version",
+      "va": 231711776,
+      "off": 231707680,
+      "sym": "GnuGetLibcVersion",
+      "stub": "int gnu_get_libc_version(void) { return -1; }"
+    }
+  ]
+}

@@ -12,7 +12,9 @@ was worked around, and the cost.
 (`docs/decisions/0003-uart-driver-and-multiboot-info.md`, verified by
 `tests/conformance/mb-info/run.sh`), interrupts RESOLVED
 (`docs/decisions/0002-m1-interrupts-architecture.md`, verified by
-`tests/conformance/m1-interrupts/run.sh`). Only the real bootloader remains OPEN.
+`tests/conformance/m1-interrupts/run.sh`). The real bootloader is
+**NARROWED under QEMU+OVMF** (ADR-0060, `tests/conformance/p2-gop/run.sh`)
+and remains OPEN on real hardware.
 
 M0's exit criterion (`docs/decisions/0001-m0-boot-architecture.md`) is deliberately narrow: boot, prove
 alive over serial, nothing else. Status of what was missing:
@@ -62,11 +64,21 @@ alive over serial, nothing else. Status of what was missing:
   now (`docs/decisions/0004-rodata-message-tables.md`). See GAP-0004 item 6 for exactly what that does
   and does not cover.
 
-- **No real bootloader.** Still true. QEMU's built-in Multiboot loader (`-kernel`) is the only tested
-  boot path. BIOS MBR / UEFI boot on real hardware is unbuilt and unverified.
+- **No real bootloader.** **NARROWED, not closed (2026-08-30, ADR-0060,
+  ADR-0072).** QEMU + OVMF + Limine 12 now loads the same Multiboot1
+  `kernel.elf` without `-kernel` (`tests/conformance/p2-gop/run.sh`:
+  serial `OSCORTEX M0 OK`, then `fb` prints a GOP tag). The same hybrid
+  ISO also boots under QEMU SeaBIOS (`tests/conformance/p4-bios/run.sh`,
+  ADR-0072: `-cdrom`, no OVMF, no `-kernel`; first line `OSCORTEX M0 OK`;
+  `fb` is any ADR-0064 winner, GOP not required). The Multiboot `-kernel` path
+  is still required and still passes (`m0-boot`, `m1-interrupts`).
+  **BIOS MBR / UEFI on real hardware is still unbuilt and unverified.**
+  A Ryzen laptop is not this harness. GOP paint under OVMF is done
+  (ADR-0061). Leftover: USB HID / NVMe on metal.
 
-**Cost of the workaround:** none of this was worked around — the two resolved items were real work,
-and the two open ones are real, un-started work correctly scoped out of M0.
+**Cost of the workaround:** none of this was worked around — the resolved items were real work.
+The bootloader is no longer un-started (ADR-0060 proved Limine+OVMF on QEMU;
+ADR-0072 proved the same ISO under SeaBIOS); metal is.
 
 ---
 
@@ -643,6 +655,32 @@ M5, → 424 at M6 (unchanged), → 5096 at M7, → 5224 at M8, → 5368 at M9, �
 port records) = **16992 at M20**, + 512 (`ioctlStore`, ADR-0033 — 32 metadata words and the 256-byte
 `ioctl` bounce buffer) = **17504 at S0**, + 4352 (`shmStore`, ADR-0041 — 16 global counter words,
 two 64-byte shared-region records and a 4096-byte one-bit-per-frame plane) = **21856 at M21**.
+**+ 320 (`wmStore`, ADR-0050 — nineteen compositor state words in a 24-word block and two 64-byte
+window records, one per shared region) = the D1/M21 merge total of 22016 becomes 22336 at D4.**
+**+ 288 (`kbdqStore`, ADR-0054 — four header words and 32 event slots) = 22624 at D2.**
+**+ 192 (`wmeventStore`, ADR-0055 — two per-window rings of four header words and
+8 event slots) = 22816 at D7.** **ADR-0109 grew the three tables in place
+(`shmStore` +128, `wmStore` +128, `wmeventStore` +192) = 23264.**
+**Four authorised growths take it to 31584, which is the number every harness
+pins today.** In ledger order, and each traceable to the ADR that required it:
+**+ 4096 (`pmmStore`, 4672 → 8768: ADR-0155 doubled `pmmMaxFrames` 32768 →
+65536 and `pmmBoundMib` 128 → 256 so a measured `libcef` slice fits, and the
+bitmap is one bit per managed frame)**, **+ 4096 (`shmStore`, 4480 → 8576: the
+shared-region bit-plane must describe exactly `pmmMaxFrames` — `shmPlaneFrames
+== pmmMaxFrames` is asserted in `m21-shmem` — so ADR-0155 moved this block
+too, 4096 → 8192 of plane)**, **+ 112 (`vmStore`, 128 → 240: ADR-0189 took
+`vmFineBytes` 4MiB → 32MiB, `vmMapBytes` 128MiB → 256MiB and `vmFrameCount`
+6 → 20 so a driver-reported mode can be mapped)**, **+ 16 (`fbStateBlock`,
+32 → 48: ADR-0064's scanout fallback chain added the geometry width and height
+words so a VirtIO scanout can outrank Bochs's 800x600 default)**.
+23264 + 4096 + 4096 + 112 + 16 = **31584**, section total including the 8 bytes
+of alignment padding and `kdata.o`'s own blocks. `wmeventStore` is now the LAST block, `kbdqStore`
+the one immediately before it, `wmStore` before that. **Every harness that
+subtracted `kbdqStore` first now subtracts `wmeventStore` first**, then
+`kbdqStore` — the sixth application of ADR-0033 §6.4's correction, and it
+moved `kbdqStore`'s own to-the-end number in exactly the way that correction
+predicts, which is why every harness now measures `kbdqStore` to
+`wmeventStore`'s START and still reads 288.
 **`shmStore` is the LAST block** in `kmain.o`'s `.bss`, `ioctlStore` is the one immediately before it,
 and `chanStore` before that. `m19-argv` asserts that `shmStore` ends exactly at the end of the
 section, that `ioctlStore` ends where `shmStore` begins, that `chanStore` ends where `ioctlStore`
@@ -953,7 +991,9 @@ header is untouched, and no escalation was needed.
 kernel can program a mode on. It does **not** work on a machine that boots UEFI and hands the loader
 an already-configured framebuffer — there the right answer is still to take the one you are given,
 and asking a GOP-configured adapter for a Bochs VBE mode gets nothing (GAP-0070 item 2). So
-Multiboot2 or a UEFI stub is **still** the portable answer and is **still** unbuilt. This entry is
+Multiboot2 or a UEFI stub was the portable answer. **ADR-0060 took the Multiboot1 VIDEO
+flag + Limine/OVMF instead of Multiboot2:** under QEMU the kernel now reads the GOP tag
+(`FB GOP …`) without a `multiboot.dart` rewrite. Metal is still unbuilt. This entry is
 narrowed, not closed.
 
 **Original entry follows, kept because items 1 and 3 are still live.**
@@ -991,7 +1031,7 @@ is Bochs-specific.
 
 **Domain:** kernel (M2, M3)
 **Status:** OPEN — **item 2 is largely FIXED at M3** (arrow keys); items 1, 3 and 5 unchanged; item 4
-partly answered by the shell's line buffer and partly still open.
+**CLOSED at D2** (ADR-0054: a 32-event ring, counted overflow, the shell is a consumer).
 
 `core/kernel/keyboard.dart` reads one byte per IRQ1, rejects anything with bit 7 set, translates
 through a 128-entry `@rodata` table, and (as of M3) hands the character to the shell's line editor.
@@ -1029,15 +1069,15 @@ they are not equally harmless:
    leaves it, and does not verify it. Verifying it needs a command/response handshake with timeouts,
    and this kernel has no answer to "the keyboard did not respond" beyond hanging.
 
-4. **No input buffer — HALF ANSWERED at M3.** A keystroke used to be echoed and discarded; there is a
-   256-byte line buffer now, and something that consumes lines (the shell). What is still missing is a
-   **queue**: while a command is running, `shell_state` is 2 and `kbdHandle` drops every keystroke, so
-   type-ahead during `mem` or `ticks` is lost silently. A real queue is another donated buffer plus
-   head/tail indices (GAP-0053), and it is what a `getchar()` for programs would eventually be built
-   on. See GAP-0057.
+4. **No input buffer — CLOSED at D2 (ADR-0054).** A keystroke used to be echoed and discarded; M3
+   added a 256-byte line buffer; D2 added the queue that item asked for. IRQ1 enqueues a raw
+   scancode+edge; `kbdqDrainToShell` consumes it at the prompt; while a command runs the events wait
+   rather than vanish; ring 3 reads them through syscall 24. Serial type-ahead is still dropped
+   (GAP-0309) — a COM1 byte is not a scancode.
 
 5. **8042 assumed to exist.** On hardware that came up through UEFI with no legacy emulation there may
-   be no PS/2 controller at all; the real input path there is USB HID, which needs a USB stack.
+   be no PS/2 controller at all; the real input path there is USB HID. USB3 (ADR-0085) is one
+   command-driven xHCI transfer, not a resident keyboard at the idle prompt.
 
 **Cost of the workaround:** the shell types lowercase ASCII correctly and no longer does anything
 visibly wrong for arrow keys — they are consumed and ignored. The remaining *wrong* answer is Pause
@@ -1591,8 +1631,9 @@ other port access in this kernel is 8-bit.
 ## GAP-0067 — What PCI enumeration does NOT do, listed rather than discovered later
 
 **Domain:** kernel (M5)
-**Status:** OPEN — deliberately scoped out. Every item is absence, not wrongness: nothing below is
-mis-reported, it is simply not attempted.
+**Status:** OPEN — item 2 closed at G1 (ADR-0065). The rest is deliberately scoped out. Every
+remaining item is absence, not wrongness: nothing below is mis-reported, it is simply not
+attempted.
 
 `core/kernel/pci.dart` finds devices and prints them. That is the whole of it.
 
@@ -1604,17 +1645,30 @@ mis-reported, it is simply not attempted.
    A device table is the same donated-storage decision the physical memory manager is blocked on, and
    building it here would have prejudged that decision (ADR-0008 §6).
 
-2. **Configuration space is read-only.** No `port_outl` to `0xCFC` anywhere. That rules out, today:
-   enabling memory or I/O decoding in the command register, setting the bus-master bit (needed by
-   every DMA-capable device), BAR *sizing* (write all-ones, read back the mask, restore), and
-   assigning a BAR at all. On QEMU the firmware has already done all of this, which is precisely why
-   it is easy to not notice that the kernel cannot.
+2. **Configuration space is writable (G1, ADR-0065).** `pciWrite32` is the twin of `pciRead32`:
+   the same 0xCF8 selector, then `outl` to 0xCFC. G1 sets bus-master (command bit 2) on the
+   VirtIO GPU from the `virtgpu` command, reads it back, and refuses if it did not stick.
+   **What this item still does not do:** BAR *sizing* (write all-ones, read back the mask,
+   restore) and assigning a BAR at all. SeaBIOS still leaves bus-master **clear** on both
+   `virtio-vga` and `virtio-gpu-pci` (measured `cmd=0x0103`, `gpu.md` §3.2) — the kernel
+   must set it; firmware will not. **The e1000 with `romfile=` is the same case:**
+   SeaBIOS leaves bit 2 clear. N0 (ADR-0058) *reads* memory-decode and still
+   does not write `0xCFC`. N1 (ADR-0063) writes MEM|BME through `pciWrite32`
+   before the first DMA. The `pci` command still only reads.
 
-3. **BARs are not read or printed.** Deliberate at M5: without item 2 there is no way to verify a BAR
-   is decoded, and printing an address the kernel cannot use would suggest more than is true.
+3. **BARs are not read or printed by `pci.dart`.** Deliberate at M5: without item 2 there is no way
+   to verify a BAR is decoded, and printing an address the kernel cannot use would suggest more than
+   is true. **G0 narrowed this for one device:** `virtgpu.dart` reads the BAR a VirtIO capability
+   names, including the 64-bit form, and refuses a non-zero upper dword.
+   `fbFindVgaBar` still reads one 32-bit register and masks. **N0 added `pciReadBar` in
+   `pci.dart` — a second walk, same I/O-bit refusal.** The `pci` command still does not
+   print BAR values, so m5-pci goldens do not move.
 
-4. **No capability list.** Offset `0x34` is not followed, so MSI/MSI-X, PCIe capabilities and power
-   management are all invisible. Every modern interrupt path for a PCI device starts there.
+4. **No capability list in `pci.dart`.** Offset `0x34` is not followed there, so MSI/MSI-X, PCIe
+   capabilities and power management stay invisible to `pci`. **G0 (ADR-0059) walks the list for
+   vendor `0x1AF4` device `0x1050` only**, in `virtgpu.dart`, and prints the five VirtIO vendor
+   capabilities. That is not a general helper. Every modern interrupt path for a PCI device still
+   starts at `0x34` and still has no shared walker.
 
 5. **No ECAM/MMCONFIG.** Mechanism #1 reaches only the first 256 bytes of configuration space; PCIe's
    extended 4KiB space needs the memory-mapped window whose base comes from the ACPI `MCFG` table,
@@ -1633,8 +1687,14 @@ mis-reported, it is simply not attempted.
    and the cap means a legitimately deeper hierarchy would be silently truncated. Nothing would say
    so. A worklist instead of recursion needs storage — see item 1.
 
-8. **No device is *driven*.** The e1000 and the IDE controller are found and named and then left
-   alone. That is the next milestone's problem, not a defect in this one.
+8. **The e1000 now transmits, resolves ARP, and pings.** N0 (ADR-0058)
+   reads its MAC from `RAL0`/`RAH0`. N1 (ADR-0063) programs a TX ring
+   from `allocFrame()`, rings `TDT`, and puts one 60-byte broadcast
+   frame on the wire. N2 (ADR-0066) posts an RX ring, sends an ARP
+   request for 10.0.2.2, and prints the reply's SHA. N3 (ADR-0076)
+   sends an ICMP echo to 10.0.2.2 and prints the reply's source IP.
+   It still does not speak TCP, and does not unmask IRQ 11. The IDE
+   controller is still found and named and then left alone.
 
 ---
 
@@ -1761,27 +1821,33 @@ record of what WAS built.
 `core/kernel/fb.dart` finds a display controller by PCI class, reads BAR0, sets 800x600x32 through
 the Bochs VBE interface, and blits 8x16 glyphs. Everything below is absent rather than wrong.
 
-1. **No scrolling. The console fills up and stops.** Once the cursor passes row 37 every further
-   character is dropped: the framebuffer keeps its first 37 lines and freezes. GAP-0054 item 3
-   predicted exactly this wall and it arrived exactly as predicted — a pixel-row scroll of a
-   800x600x32 screen is a **1.9MiB** move, DCDart has no `memcpy`, no array type and no intrinsic,
-   and doing it through `Pointer<u32>` a pixel at a time is roughly **467,000 volatile load/store
-   pairs per line scrolled**. The two cheaper-looking shapes were rejected as worse: overwriting the
-   last row forever, and wrapping to the top, both produce a screen that looks like a corrupted one
-   rather than a full one. Stopping looks like what it is.
+1. **Bochs / GOP still do not scroll. The VirtIO console does (G6 / ADR-0086).**
+   On a BAR or GOP aperture the cursor still stops at row 37 and further
+   characters are dropped: sit-in / d2 goldens must not grow a 467,000-store
+   scroll of the dispi aperture. On VirtIO backing (`virtgpuc` / `virtgpus`)
+   a newline past the last row, or an explicit `fbScroll`, copies
+   `fbWidth × (fbHeight - glyphHeight)` pixels up and issues
+   `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH` of that rectangle. The guest-side
+   move is still a byte-at-a-time copy (DCDart has no `memcpy`); what G6
+   bought is a host-visible transfer of the moved region, not a free scroll.
 
-   *What would fix it properly:* a `memcpy`/`memmove` primitive in DCDart (a DCDart-repo decision,
-   CLAUDE.md rule 3), or a hardware scroll via the dispi Y-offset register — which is genuinely the
-   right answer for this device and needs a ring-buffer discipline over the framebuffer that this
+   *What would fix the Bochs path:* a `memcpy`/`memmove` primitive in DCDart
+   (a DCDart-repo decision, CLAUDE.md rule 3), or a hardware scroll via the
+   dispi Y-offset register — which is genuinely the right answer for that
+   device and needs a ring-buffer discipline over the framebuffer that this
    console does not have.
 
 2. **The Bochs VBE interface is not portable, and it is the only mode-set path here.** `0x1CE`/
-   `0x1CF` is implemented by QEMU's std VGA, by Bochs, and by very little else. On real hardware the
+   `0x1CF` is implemented by QEMU's std VGA, by Bochs, **and by `virtio-vga`** (`gpu.md` §0.1 —
+   that is why the existing `fb` command scanouts on `-vga virtio` with zero kernel change, and why
+   G0 can be a probe rather than a mode-set). On real hardware the
    equivalents are VBE 2.0/3.0 real-mode BIOS calls (unreachable from long mode without a v8086
    monitor or an emulator), a UEFI GOP handle (which needs a UEFI boot), or a device-specific
    modesetting driver (which is what a real graphics driver *is*). This kernel checks the dispi ID
    register and prints `FB NOVBE` rather than pretending — but "prints an honest error on every real
-   machine" is still the situation.
+   machine" is still the situation. G7 (ADR-0091) scanouts on `virtio-gpu-pci` without dispi;
+   `fb` on that machine prints `FB NONE` (no VGA-class BAR), which is the ADR-0064 line,
+   not a third spelling.
 
 3. **The mode is fixed and unnegotiated.** 800x600x32, always. The dispi VRAM-size register (index
    0x0A) is not read, so the mode is chosen to be small enough (1.9MiB) that any configuration this
@@ -1798,8 +1864,16 @@ the Bochs VBE interface, and blits 8x16 glyphs. Everything below is absent rathe
    CRTC hardware cursor has no equivalent here, so there is nothing on screen showing where the next
    character will go.
 
-6. **No double buffering and no tearing control.** Glyphs are blitted straight into the scanned-out
-   framebuffer. Invisible at this rate; it stops being invisible the moment anything animates.
+6. **Bochs still has no double buffering. VirtIO does (G8 / ADR-0093).**
+   On a BAR or GOP aperture glyphs are still blitted straight into the
+   scanned-out framebuffer — invisible at this rate; it stops being
+   invisible the moment anything animates. On VirtIO (`virtgpuf`) two
+   resources exist, the console paints the back resource, and
+   `SET_SCANOUT` flips to it. `virtgpuy` paints both and never flips.
+
+   *What would fix the Bochs path:* a dispi Y-offset page-flip
+   (`display-protocol.md` §3.2), which needs a ring-buffer discipline
+   over the BAR that this console does not have.
 
 7. **Every pixel is an individual volatile 32-bit store.** One glyph is 128 of them, so a full line
    of text is ~12,800. That is the same "DCDart has no memcpy" problem as item 1 wearing everyday
@@ -3058,8 +3132,18 @@ vagueness starts.
    value rather than faulting, and every page goes back at teardown. **What replaces this item is
    GAP-0107**: what exists is a monotonic page-granular break with no `free`, no reuse and no quota —
    the interface a `malloc` needs, and not an allocator.
-7. **A process cannot create a process.** No `fork`, no `exec`, no `spawn`. Both processes are created
-   by the shell before either runs.
+7. ~~**A process cannot create a process.** No `fork`, no `exec`, no `spawn`. Both processes are created
+   by the shell before either runs.~~
+   **NARROWED at STUDIO2 (ADR-0078), ADR-0099, and STUDIO2b (ADR-0119).**
+   Syscall 26 `spawn(namePtr, nameLen)` starts a named ELF into a free
+   slot from a live process. Hidden `go <name>` is the idle-line
+   spelling of the same named residency (not in `help`). `SEL.DAT` is
+   four bytes of a selected row (destroy-on-save). No `fork`, no
+   `exec`, no argv pointer (APP7 remainder). The leftover that is
+   still true: a process cannot **reflect or emit** another program
+   (GAP-0166 / GAP-0321 — `@extern` is a name, not a descriptor;
+   there is no compiler on the box). `de-studio/` / `studio2b/` are
+   launcher/exhibit/persist, not a builder.
 8. **Nothing is shared between address spaces except the kernel.** Which is the point, and is also
    the reason there is no way to build anything that needs sharing.
 
@@ -4209,8 +4293,13 @@ eleven distinct refusals above one floor; and a buffered read-only layer (`RFILE
    what ran rather than about what is spellable.
 2. **NO PATHS AND NO DIRECTORIES.** `open("SUB")` is `fileRetIsDir` and `open("SUB/X.TXT")` is
    `fileRetBadName`, because `/` is not a character an 8.3 name may contain here. There is no `chdir`,
-   no working directory, no `opendir`/`readdir`, and no way for a program to enumerate the volume at
-   all — the shell's `ls` is ring-0 code and is not reachable from ring 3.
+   no working directory, and no `opendir`/`readdir` syscall. **NARROWED AT ADR-0100:**
+   `open(":ROOT")` in `fileSysOpen` (never `fatLookup`) yields a `fileFdRoot` descriptor;
+   `read` returns whole 32-byte directory records. `FILES.ELF` (`files-fm/`) lists planted
+   names and cats a planted file. **ADR-0118** copied and moved planted
+   `.DAT`s with `open` / `fdwrite` (`files-fm/`). The shell's `ls` is still ring 0. `LS.ELF` (APP3) is still
+   unbuilt. Subdirectories remain open. Icons closed (ADR-0154).
+   Move consumes rename (ADR-0149).
 3. **NO `stat`, NO `fstat`, AND THEREFORE NO WAY TO ASK HOW BIG A FILE IS.** The kernel knows: the
    size is in the descriptor. A program finds it by reading to the end and counting, which is what
    `m15-fileio`'s program does. This is the single most obviously missing call and it was left out
@@ -4520,12 +4609,11 @@ thirteen distinct refusals above one floor, and a volume the host tools accept.
 2. **NO READ-WRITE MODE.** A descriptor is a read descriptor or a write descriptor and the other
    operation on it is `FILE_EBADMODE`. A program that wants both opens the file twice — and since
    `open(..., O_WRITE)` truncates, it must write first and read after.
-3. **NO `unlink`, NO `rename`, NO `mkdir`, NO `rmdir`.** A file can be created and its contents
-   replaced; it cannot be removed or moved. Marking a directory entry 0xE5 and freeing its chain is
-   twenty lines and was left out because "delete" is the operation whose failure modes are worst and
-   because nothing in this OS yet needs one — `m16-filewrite`'s volume carries a deleted entry that
-   `make-image.py` planted, and the kernel REUSES it, which is the half of the mechanism that is
-   built.
+3. **NO `mkdir`, NO `rmdir`.** `unlink` and `rename` for root
+   files landed in ADR-0147 (`files-unl/`, syscalls 31/32). A
+   subdirectory still cannot be created or removed from ring 3.
+   Marking a directory entry 0xE5 and freeing its chain is what
+   APP4 shipped; mkdir/rmdir remain.
 4. **NO TIMESTAMPS.** `DIR_CrtTime`, `DIR_WrtTime` and `DIR_LstAccDate` are written as zero on a file
    this kernel creates, and are LEFT ALONE on a file it truncates — so a file that has been rewritten
    still carries the date the formatter gave it. This kernel has no wall clock (GAP-0058: the PIT is
@@ -6179,10 +6267,13 @@ device namespace there is nothing to issue it against. `drm-abi.md` S0 and S1 ar
 ## GAP-0159 — There is no `mmap`, and every DRM buffer object is reached through one
 
 **Domain:** kernel, memory, ABI (design unit, ADR-0029)
-**Status:** OPEN — nothing implemented. Hard-gated on a prerequisite this repo has wanted three times.
+**Status:** OPEN — NARROWED (ADR-0128, `plat-map/`): a named
+`PLAT.ELF` may `mmap(len)` anonymous pages (syscall 27). TAP/FILES
+and `ASK.ELF` are still refused. There is still no `munmap`, no
+`mprotect`, no fd/`MAP_SHARED` map, and no DRM GEM offset map.
 
-`sbrk` (ADR-0016) is the only way a ring-3 program on this OS obtains a page. There is no `mmap`, no
-`munmap`, no `mprotect`, and no kernel object that can be mapped into an address space.
+`sbrk` (ADR-0016) is still how every other ring-3 program obtains a
+page. ADR-0128 is the platform door, not this unit.
 
 **The DRM ABI does not have an alternative path.** A GEM buffer object is reached by calling a
 driver-specific ioctl to obtain a **fake offset** — Linux calls the machinery the
@@ -6324,8 +6415,12 @@ tier E needs *plus* a C++ runtime that no tier includes.
 ## GAP-0163 — This machine's QEMU cannot exercise any 3D or compute path, and no software substitute exists
 
 **Domain:** tooling, conformance, environment (design unit, ADR-0029)
-**Status:** OPEN — this is a logistics prerequisite, not a code one, and nothing on the ladder can
-substitute for it.
+**Status:** NARROWED — Homebrew QEMU 11.0.0 on this arm64 Mac still has no
+`virtio-gpu-gl-pci`. G10 (`g10-virgl/`, ADR-0098) boots a Docker image
+`oscortex-qemu-gl:local` (`scripts/build-qemu-gl.sh`: Debian sid
+`qemu-system-x86` 11.1.0 + `qemu-system-modules-opengl` +
+`libvirglrenderer1` + Xvfb + llvmpipe). That is the 3D QEMU. Vendor
+GPUs and Skia-on-this-GPU remain OPEN.
 
 Measured on this Mac, 2026-08-26, QEMU 11.0.0 (Homebrew):
 
@@ -8078,28 +8173,41 @@ cooperate.
 ## GAP-0234 — A capability names a whole region and maps it whole
 
 **Domain:** kernel, shared memory (M21)
-**Status:** OPEN — a scope boundary.
+**Status:** CLOSED — grow-in-place landed (ADR-0150, `shmgrow`
+34), shrink-in-place landed (ADR-0156, `shmshrink` 35),
+multi-mapper grow/shrink landed (ADR-0158, `shm-multi/`), and
+partial / offset map landed (ADR-0160, `shm-part/`: `shmmap` rdx
+range word + capability window). Syscall 11 stays `fdwait`.
 
-There is no partial map, no offset map and no resize. `shmmap` maps every page of the region at the
-region's own address, and `shmdrop` unmaps all of them. A client that wants to share one tile of a
-surface shares a region that is one tile.
+There was no partial map and no offset map. `shmmap` mapped every
+page of the region at the region's own address, and `shmdrop`
+unmapped all of them. A client that wants to share one tile of a
+surface can now map `[offset, offset+count)` of a larger region
+(ADR-0160). Growing past the create size without a new region is
+ADR-0150. Shrinking without a new region is ADR-0156. Updating every
+mapper's page table on grow/shrink is ADR-0158.
 
 **Cost:** a compositor with many small surfaces needs many regions, and `shmMax` is 2 (GAP-0237). The
 frame-vector page already indexes pages individually, so a partial map is a bounded change to
 `shmMapPages`/`shmUnmapPages` and a wider capability word — not a redesign.
 
+**Binary next step:** done — `shm-part/run.sh` PASSes.
+
 ---
 
-## GAP-0235 — No file backing, no `MAP_FIXED`, no `mprotect`, no demand paging
+## GAP-0235 — File backing + demand paging closed (`shmfile` / demand)
 
 **Domain:** kernel, shared memory (M21)
-**Status:** OPEN — recorded so it is not inferred from the word "shared memory".
+**Status:** CLOSED — ADR-0163 (`mprotect` / `MAP_FIXED`, `mmap-prot/`);
+ADR-0164 (`shmfile` + demand fill, `mmap-file/`).
 
-A region is anonymous, eagerly allocated and eagerly mapped. There is no page cache to back a file
-with (`docs/design/memory.md` §2.5 declined `mmap` for this reason and ADR-0016 §1 declined it once
-before for `sbrk`). Addresses are chosen by the kernel and a caller cannot propose one. Permissions
-are fixed at map time: there is no `mprotect`, so a creator cannot downgrade itself to read-only after
-publishing, which is the one of these four a compositor client might actually want.
+A region may be anonymous and eager (ADR-0041) or file-backed and
+demand-filled (ADR-0164). `shmfile(fd)` sizes a RO window to an open
+FAT file with not-present leaves; first `#PF` NOTPRES fills from the
+fd and resumes. Syscall 11 stays `fdwait`.
+
+**Binary next step:** none for this gap. Write-through shared file
+maps and anonymous lazy `shmcreate` are later work if needed.
 
 ---
 
@@ -8140,7 +8248,7 @@ protocol, above this primitive. Closing this gap means writing that protocol dow
 
 ---
 
-## GAP-0237 — A region is capped at 256 pages, and a full-screen frame is 469
+## GAP-0237 — A region is capped at 128 pages, and a full-screen frame is 469
 
 **Domain:** kernel, shared memory (M21, ADR-0041 §7.1)
 **Status:** OPEN — a configuration choice with the numbers attached, and the one number a compositor
@@ -8148,17 +8256,18 @@ will hit first.
 
 The shared **window** is 512 pages (2 MiB, one page-directory entry) and was sized so that an
 800×600×32 frame — **1,920,000 bytes = 469 pages** — fits in it with 43 to spare. The **slotting** is
-what caps a region: `shmMax = 2` regions of `shmSlotPages = 256`, so `shmMaxPages` is 256 and
-`shmcreate(469)` is refused with `shmRetBadLen`.
+what caps a region: **ADR-0109 took `shmMax = 4` regions of `shmSlotPages = 128`**, so `shmMaxPages` is 128 and
+`shmcreate(469)` is still refused with `shmRetBadLen`. The DE can hold four named surfaces; a
+full-screen frame still does not fit.
 
 **What changing it costs: two constants and nothing else.** `shmMax = 1` / `shmSlotPages = 512` fits a
 full-screen frame today and changes no ABI, no syscall, no structure and no wire format — the harness
-multiplies `shmMax * shmSlotPages` against `vmShmPages` and would keep passing.
+multiplies `shmMax * shmSlotPages` against `vmShmPages` and would keep passing. ADR-0109 went the
+other way (more slots, smaller slots) so Start can spawn.
 
-**Why M21 did not take it.** Two regions is what two processes need, and a one-region kernel could not
-exercise `shmRetTwice` (the same region granted to the same peer twice) or a second concurrent region
-at all. The test coverage was worth more at this rung than the region size, because nothing in this
-tree yet produces a frame.
+**Why M21 did not take the one-slot configuration.** Two regions is what two processes needed, and a
+one-region kernel could not exercise `shmRetTwice` or a second concurrent region at all. The test
+coverage was worth more at that rung than the region size.
 
 **The other way out, for later:** a second page-directory entry. `docs/design/memory.md` §1.1 counts
 383 free contiguous entries above the load region, so the window can grow to 768 MiB without touching
@@ -8580,27 +8689,22 @@ it goes with it.
 
 ---
 
-## GAP-0253 — Every ring-3 program can see the pointer; there is no input focus
+## GAP-0253 — Every ring-3 program can see the pointer; keyboard focus is D9
 
-**Domain:** kernel (D1)
-**Status:** **OPEN — and the decision it needs is not this file's to make.**
+**Domain:** kernel (D1 / D9)
+**Status:** **NARROWED — keyboard focus is ADR-0062; the pointer is still a global poll.**
 
 `mouseSysRead` refuses nobody. An M9 payload, an M10 `run` program and a process can all call syscall
-16 and all get the same global device state. There is no notion of which program input belongs to.
+20 and all get the same global device state. There is no notion of which program the *pointer*
+belongs to. Keyboard focus is a compositor slot (`wmMetaFocus`); syscall 24 pops only for the
+owner of that window while the slot is live.
 
-**Why it was not invented here.** `docs/design/display-protocol.md` §4.3 asks the question directly —
-whether the compositor should be the *only* recipient of input, or whether the kernel should keep
-delivering to the shell when no compositor is running — and says plainly that it is worth an owner's
-answer, because the second option means the kernel has a notion of "input goes here now", which is a
-piece of policy in ring 0. Inventing an answer inside a device driver would settle a design question
-in the worst possible place.
+**Keyboard half is answered.** ADR-0062 took §4.3's second option: the shell keeps the
+keys when focus is 0, so a compositor that is off (or a window that has died) does not
+take the keyboard with it. The pointer is still the original gap.
 
-**What this costs today, stated rather than implied.** Nothing yet: one program runs at a time and
-there is no compositor to steal from. It becomes real the moment two ring-3 programs are live and one
-of them is drawing a window — which is D3 in that document, two milestones away.
-
-**What closing it takes.** An owner's answer to §4.3, and then a word saying who input goes to, set
-by whatever creates that relationship. Not a driver change.
+**What closing the pointer half takes.** The same word, or a sibling, saying which
+process may read syscall 20. Not a driver change that invents a second policy.
 
 ---
 
@@ -9081,3 +9185,2377 @@ plays that role for GAP or ADR numbers — they are allocated by reading the tai
 branch. The check that found #2 and #3 was written for this merge and is not committed anywhere: for
 every number, collect its heading across every branch and every worktree and require agreement. That
 is a small script and it belongs beside the syscall one.
+
+---
+
+## GAP-0300 — The compositor is in the kernel, and it is there because moving it is a later ADR
+
+ADR-0050. D3 (ADR-0053) now exists: `proc spawn` leaves a process live at the prompt. The
+compositor is **still** `core/kernel/wm.dart`. Resident processes make the *move* expressible;
+they do not perform it. The protocol (ADR-0051) does not change when it does.
+
+**What that actually costs, itemised, because "it should be a process" is easy to say and the cost is
+not obvious:**
+
+* **Compositor policy is kernel policy.** Stacking order is "the newest surface is on top", it is one
+  line in `wmAttach`, and ring 3 cannot change it. `display-protocol.md` §0.1 is explicit that window
+  management is compositor policy and not protocol — so this is policy in the wrong *place*, not
+  policy in the protocol. See GAP-0302.
+* **A misbehaving compositor is a kernel bug**, not a dead process. There is no restart.
+* **The composition loop runs with the caller's page tables installed.** It does not use them — it
+  reads a region's frames by physical address through `shmRegVec` — but it is on the caller's stack
+  and inside the caller's syscall, so a compositor fault is a ring-3 process's fault.
+
+**What it does NOT cost, and this is the part worth keeping visible:** nothing about the *protocol*.
+The descriptor is a legal `chan` message carrying no address (ADR-0051 §2, §3), so moving the
+compositor to ring 3 under D3 changes who reads the eight words and nothing else. **The final blit
+was always going to be a kernel operation** — ring 3 cannot execute `out`, `m9-ring3` asserts the TSS
+has no I/O bitmap, and `display-protocol.md` §3.1 settled that before any of this existed.
+
+---
+
+## GAP-0301 — Damage is carried, validated and printed, and then a full frame is composed anyway
+
+**Status:** RESOLVED by ADR-0052 (D6). A commit paints the damage rectangle, and
+`d2-compositor` requires the 16×16 present to print `00000100` pixels, not
+`00075300`. Full-surface damage paints the decorated window (border included);
+`wm on` / `wm draw` still compose a full frame, because they have no damage to
+honour.
+
+**What remains, and it is a shape not a skip:** the dirty region is a bounding
+box, not an exact region. `display-protocol.md` §3.5 says an exact region needs a
+data structure `@bare` DCDart cannot express yet. A one-pixel present in the
+corner of a window still paints a box; it does not paint 480,000 stores.
+
+The per-buffer trap in that same section does not apply: this compositor writes
+the visible scanout in place and does not flip (ADR-0052 §3). If a flip lands,
+the union-of-both-buffers rule has to be built and this entry reopens.
+
+---
+
+## GAP-0302 — Window move exists; what does NOT is anything else a window manager does
+
+Superseded in part. A left click raises the window under the pointer and a drag moves it, from the
+IRQ12 path, with a damage-limited repaint (`wmGrab`, `wmDragStep`, `wmPointerTick`; ADR-0050 §D5b).
+`d2-compositor` asserts the raise and the drag as **pixels in a second framebuffer dump taken from the
+same boot**, with the moved origin derived on the host from the grab offset and the clamp.
+
+**What is still missing, and it is most of a window manager:**
+
+* **Chrome has started (ADR-0056): a 24-pixel bottom strip, off by default, compositor-drawn,
+  compositor-consumed clicks.** `wm chrome` turns it on. **Title bars have started
+  (ADR-0075): an 18-pixel compositor-drawn caption on the top of each window's
+  content, colour `0x00D8B060`, on only with `wm chrome`.** A press on the caption
+  still raises and still starts a drag. A **right-click popover has started
+  (ADR-0070 / OSXUI1): 96×64 pixels near the pointer, colour `0x00C04088`, on whenever
+  the compositor is on.** Right-click does not start a drag and does not enqueue a client
+  click. Left-click or a click elsewhere dismisses it. **Close, minimise, start/spotlight,
+  and a reflection panel landed behind `wm de` (ADR-0106 / `de-chrome`).**
+  **Title-drag under `wm de` landed (ADR-0111 / `de-wm/`):** a caption
+  press moves the origin; a body press does not. **SE-corner resize
+  under `wm de` landed (ADR-0121 / `de-resize/`):** geom w/h change,
+  same shm, clip. Configure and enter/leave under `wm de` are
+  ADR-0142 (`de-cfg/`). Growing the shm past the attach region is
+  ADR-0150 (`shm-grow/`, syscall 34). Keyboard focus is D9 (ADR-0062): a click names the window that may pop
+  syscall 24. A client is told about a left press (ADR-0055) and,
+  under `wm de`, about place / move / resize / enter / leave
+  (ADR-0142). A
+  damage pass does not paint the taskbar strip; only a full compose does. The popover
+  and the title strip are in `wmPixelAt`, so a cursor erase does not punch a hole
+  in them.
+* **Middle is still ignored.** Right is the popover (ADR-0070). Bit 0 is still the only
+  button that raises, drags, or enqueues.
+* **A drag is bounded by the client's hold.** D3 lets a client be `proc spawn`ed and stay live at
+  the prompt, but `d2-compositor` still launches through `proc run` and so still has to drag inside
+  that session's busy spin. The drag path itself does not care which command created the process.
+* **The repaint is a rectangle, not a region.** A drag step paints where the window was and where it
+  is, as two full rectangles, so a one-pixel move costs two window-sized repaints (81,672 pixels for
+  a 240×160 window). The harness asserts only that this is *less than a full frame*. A real
+  implementation subtracts the intersection; that is region algebra, and `display-protocol.md` §3.5
+  says an exact region needs a data structure `@bare` DCDart cannot express yet.
+
+## GAP-0303 — A client pays for its own composite, inside its own syscall
+
+`wmOpCommit` composes and then returns, and the return **is** the release (ADR-0051 §1.1). That is
+the only shape available: nothing on this machine can block (GAP-0141), so telling a client later
+needs a queue, a wakeup and a sixth process state, none of which exist.
+
+The cost is that a `wmsurface` commit still runs **on the calling process's time**, on its stack,
+with interrupts on but the scheduler not consulted. D6 (ADR-0052) cut the bill from 561,672 stores
+to the damage rectangle — 256 for the 16×16 present `d2-compositor` asserts — but a client that
+commits a full surface still pays for a decorated window, and a client that commits in a tight
+loop still starves its peer without ever yielding.
+
+The honest remaining fix is a compositor that is not a syscall, which is D3.
+
+---
+
+## GAP-0304 — `wm` is not in `help`, so it is undiscoverable from the shell
+
+The same choice D1 made for `mouse`, for the same reason and with the same cost. `shellStrHelp` is
+2511 bytes and appears verbatim inside five byte-exact serial goldens plus `m3-shell`'s screen
+golden (GAP-0105, GAP-0115), so one line moves six goldens by substitution. M18 added three commands
+with no help line and M20 added none at all.
+
+`wm`, `wm on`, `wm off` and `wm draw` are therefore documented in ADR-0050, in `wm.dart`'s header and
+in this file, and nowhere a person sitting at the machine can find them. `d2-compositor/run.sh`
+asserts the *absence* of a help line, so adding one is a deliberate act that moves six goldens rather
+than an accident that moves them silently.
+
+---
+
+## GAP-0305 — `m21-shmem/build-progs.sh`'s syscall detector reads a stale `%eax`
+
+Not a kernel gap; a harness one, found by copying the check and having it fail.
+
+`m21-shmem/build-progs.sh` decides which syscalls a program issues by tracking the most recent
+`mov $imm,%eax` before each `int $0x80`. **`xor %eax,%eax` is `mov $0,%eax`** and clang emits it for
+`SYS_EXIT`; the regex does not match it, so the detector reads the syscall number off whatever *last*
+wrote `%eax` — which in `d2-compositor/prog.c` is a 32-bit diagnostic code an exit-on-failure path
+builds, and the check reported the program issuing "syscall 3523215363".
+
+`d2-compositor/build-progs.sh` recognises the `xor` form. **`m21-shmem`'s copy has not been changed**,
+because it is green as it stands: M21's program happens to get a literal `mov $0x0,%eax` from clang
+at that site, so its detector is correct by luck rather than by construction. It will report a
+nonsense number the first time that codegen changes, and the failure mode is a build check that
+*rejects* a correct program rather than one that accepts a wrong one — loud, not silent, which is why
+this is recorded rather than fixed across a file another line is editing.
+
+---
+
+## GAP-0306 — A window dies with its client, because the compositor holds no capability
+
+`wmWindowUsable` checks, on every painter, that the region a window was attached to is still live
+**and still the same generation**; `wmReap` closes the window if it is not. Without it the first
+pointer packet after `PROC END` read a freed page as a frame vector and the machine took a
+`FAULT 0D` at the shell prompt. That was found by running a drag past the end of the clients' hold,
+and it is the reason the check is at the top of every painter rather than on a teardown path.
+
+**The gap is not the check, it is what the check reveals: this compositor cannot outlive its
+clients' pixels.** A region dies with its last capability (`shm.dart`), the compositor holds none —
+ADR-0050 §4 records that reading the frame vector rather than mapping the region was a deliberate
+choice — so the instant a client exits, its window's pixels are back in the frame allocator.
+
+**Sit-in / `d3-session` does not close this.** Those clients `proc spawn` and never exit, so the
+region stays live for the same reason the process does (ADR-0053). That is option 3 deferred: the
+window survives because nobody disconnected. `sit-in.sh` used to `proc coop` the d2-compositor
+clients; they exited after the hold and the next painter printed `WM REAP`. The compositor still
+holds no capability. Option 1 is still unbuilt.
+
+Three ways out, none of them free, and the choice belongs with D3 rather than here:
+
+1. **The compositor takes a capability.** It would need a process identity to hold one in
+   (`shmgrant` installs into a process slot), which is D3. Not taken: windows stay only while the
+   resident client lives.
+2. **The compositor keeps a copy.** 153,600 bytes per window against a kernel mutable-static total of
+   22,336 — so it is a frame-allocator allocation with a lifetime nobody has designed.
+3. **The window closes, which is what happens now when a client exits.** Honest, and it is what a compositor does when a
+   client disconnects. What is missing is that nothing *tells* anyone: the screen still shows the
+   composed pixels until the next paint, because the framebuffer is not repainted on reap.
+
+**That last sentence is a real inconsistency and it is deliberate.** `wmReap` closes the window and
+does NOT repaint, so a boot that ends with two windows on screen keeps showing them after both
+clients have exited — which is what `d2-compositor`'s screenshots are taken during, and it is why the
+harness's second dump happens while the clients are still holding. Repainting on reap would be one
+line and would make the screen go blank at the end of every run; leaving the last frame up is what a
+person looking at the QEMU window wants, and it is recorded here rather than defended as a design.
+
+---
+
+## GAP-0307 — The compositor's re-entrancy guard is one word, and on two cores it is a lock
+
+`wmMetaBusy` is set by every painter and checked by `wmPointerTick`, which returns without painting
+if it is set. On this single-core kernel that is a real mutual exclusion: the interrupt gate clears
+IF, so the tick's test-and-return cannot itself be interrupted, and there is no second CPU to observe
+a stale value.
+
+**On two cores it is a data race**, in exactly the shape `chan.dart`'s publication point is
+(GAP-0205): the store that sets the flag and the loads that follow it need release/acquire ordering,
+and the test-and-set needs to be atomic. It becomes a real lock — one `lock cmpxchg` — and the
+interesting part is that the *pointer tick must still not block on it*, because it runs in an
+interrupt handler. A tick that could not take the lock would still have to drop the frame, so the
+behaviour this gap describes is the behaviour a correct SMP version keeps; only the mechanism
+changes.
+
+`wmMetaDropped` counts the ticks that were dropped, and `wm` prints it, so "how often does this
+actually happen" is a number rather than a worry. In `d2-compositor`'s boot it is 0.
+
+---
+
+## GAP-0308 — A client is never told configure or enter/leave
+
+**Status:** CLOSED — ADR-0142 (`tests/conformance/de-cfg/run.sh`).
+Under `wm de`, attach / move / resize enqueue type 2 (configure)
+on the existing press queue; a focus change enqueues enter/leave.
+Syscall 25 is still `wmevent`. 11 stays `fdwait`. Without `wm de`
+the ring is still press-only (`d7-click`).
+
+**Narrowed at D7 (ADR-0055).** A left press on a window is enqueued for that window's
+owner and popped through syscall 25 `wmevent`, with surface-relative coordinates.
+`d7-click` asserts the top client in an overlap reports the derived point and the
+bottom client reports nothing; a desktop click is reported by neither.
+
+**Keyboard-focus closed at D9 (ADR-0062).** `wmMetaFocus` is a spare compositor
+word (index 20, plus-one). A click on a window focuses it; a desktop click or a
+reap returns keys to the shell. `kbdqDrainToShell` skips while focus is live;
+syscall 24 `kbdevent` pops only for the focused window's owner. `d9-focus`
+asserts the focused client reads the derived make+break sequence and the
+unfocused client prints NONE. Escape is not special.
+
+**Configure and enter/leave closed at ADR-0142.** Types 2/3/4 on the
+same ring. `de-cfg/` asserts the client pops the host-derived attach
+geom, the host-derived resize geom, ENTER on focus, and LEAVE on a
+desktop click. A second boot without `wm de` still attaches and the
+client pops NONE.
+
+**Leftover:** growing the shm past the attach region (a new region,
+not a new syscall). `unlink` / `rename` (APP4 / `m23-unlink`) is
+the next named leftover after this gap. Not Flutter. Not `fdwait`.
+
+---
+
+## GAP-0309 — Serial type-ahead is still dropped, and that is a second input path
+
+**Domain:** kernel (D2)
+**Status:** **OPEN — accepted for this milestone, not forgotten.**
+
+ADR-0054 put PS/2 keystrokes on a ring. COM1 still calls `shellKey` from `shellSerialIrq` when
+`shellState == 0` and drops the byte when a command is running. Putting a UART byte on the same
+ring would make syscall 24 return something that is not a scancode, and inventing a second ring
+for serial is a different milestone.
+
+**What it costs.** Type-ahead from a serial console during `ticks` or `proc run` is still lost.
+A program that reads `kbdevent` never sees a character that arrived on COM1. The two paths agree
+on the line editor's alphabet (CR→LF, DEL→BS) and disagree on whether a key waits.
+
+**What closing it takes.** Either a serial-to-scancode translator nobody has asked for, or a
+second ring with its own syscall, or `fdwait` plus a `/dev/cons` that is not this file's to design.
+
+---
+
+## GAP-0310 — A1 boots aarch64 virt; that is not an ARM64 port
+
+**Domain:** boot, kernel (ARM64 A1)
+**Status:** OPEN — A1 is green (`docs/decisions/0057-a1-aarch64-virt-proof-of-life.md`,
+`tests/conformance/a1-boot/run.sh` PASS). Everything above A1 is unstarted.
+
+A `@bare` `kmain_virt.dart` linked with `boot-arm/boot.S` boots under
+`qemu-system-aarch64 -M virt-11.0`, prints `OSCORTEX A64 OK\n` on the PL011, and shuts the
+guest down with PSCI `SYSTEM_OFF` (QEMU exit 0). `dcc --target bare-aarch64` was verified to
+emit an aarch64 ELF, not assumed from the design doc. The x86 kernel and its harnesses were
+not edited.
+
+**What A1 worked around, and the cost:**
+
+1. **The PL011 address is a literal `0x09000000`.** A2 is the device-tree walk. A QEMU that
+   moves `pl011@9000000` fails this golden rather than being discovered. The machine is pinned
+   to `virt-11.0,gic-version=2` for that reason.
+2. **`hvc` / `mrs` / `msr` still cannot come from DCDart.** PSCI lives in `boot.S` behind
+   `@extern psci_system_off`. That is fine for halt. It is not fine for `CNTPCT_EL0`,
+   `VBAR_EL1`, `TTBR0_EL1`, or anything A4/A5 need to read at runtime. This is the design
+   doc's second-largest open question and it is still DCDart's.
+3. **A0 is still DCDart's file.** There is no `core/tests/conformance/bare-aarch64/` in the
+   DCDart repo. Dart 3.12.2 unblocked `dcc`; the registry comment's "adding a target means
+   adding a conformance target" rule is still unpaid.
+4. **Two library roots were not tested.** `kmain_virt.dart` does not `part` any x86 file.
+   Whether DCDart accepts one file as `part of` two library roots in two `dcc` invocations
+   is still the first thing a later rung that wants to share `fat.dart` must check.
+5. **PL011 `UARTFR.TXFF` is the opposite polarity of the 16550 `LSR.THRE`.** Copying the x86
+   wait hung the guest (exit 124, empty serial). Recorded so A3 does not rediscover it when
+   `uart.dart`'s interface is put in front of this driver.
+
+**What a real port still does not have** (A2–A9, named so this entry cannot be read as
+"ARM64 is started, therefore those are close"):
+
+| missing | why it is not A1 |
+|---|---|
+| Flattened device tree in `x0` | RAM base, UART, GIC, ECAM all come from it; A1 hardcodes the UART |
+| GIC + vector table (`VBAR_EL1`) | no IRQs, no faults reported |
+| ARM generic timer (`CNTPCT_EL0`) | blocked on `mrs` from DCDart, or an asm call per read |
+| TTBR0/TTBR1, 4 KiB granule, `SCTLR_EL1` | MMU is off; identity is luck, not policy |
+| PMM from `/memory` | RAM starts at `0x40000000`, not 0; the x86 bitmap is the wrong shape |
+| EL0 + `SVC` | no user mode |
+| virtio-mmio block / virtio-net | no disk, no NIC |
+| ECAM `pciRead32` | PCI exists at `0x4010000000`; nothing walks it |
+| framebuffer / VirtIO-GPU | no display |
+| Keyboard | virt has no i8042; serial input is the honest first input |
+| Sharing `uart.dart` / `kmain.dart` / `fat.dart` | A3 and A8 |
+
+The x86 suite is the production kernel. This gap exists so A1 cannot be mistaken for a
+second architecture.
+
+---
+
+## GAP-0311 — N0 depends on firmware for bus-master, and on `romfile=` for an honest pcap
+
+**Domain:** kernel (N0/N1/N2/N3), harness
+**Status:** NARROWED — N1 (ADR-0063) writes BME through `pciWrite32`. N2
+(ADR-0066) receives. N3 (ADR-0076) pings. `romfile=` is
+still mandatory for every N-series pcap.
+
+Two dependencies N0 created; N1 closed the first:
+
+1. ~~**Bus-master is a firmware fact, not a kernel write.**~~ **NARROWED.** N1 writes
+   MEM|BME before the first DMA. N0 still only *reads* memory-decode and prints
+   `NIC NOCMD` if it is clear. With `romfile=` SeaBIOS leaves bit 2 clear; the
+   write is load-bearing, not decorative.
+2. **The e1000 option ROM transmits before the kernel runs.** A default `-device e1000`
+   puts seven frames in a pcap (DHCP plus a gratuitous ARP) with no guest OS at all.
+   `romfile=` (empty) removes BAR6 and the traffic. Every later N-series pcap assertion
+   must pass that flag, or "the guest transmitted" is satisfied by firmware.
+
+The PCI hole is still mapped write-back with no `PCD` (net-e1000.md §1.2). Invisible
+under QEMU; wrong on hardware. It already affects `fb.dart`. Not new in N0, but N0 is
+the second MMIO consumer in that window.
+
+---
+
+## GAP-0312 — AHCI is found; a sector is not
+
+**Domain:** kernel (storage A0/A1)
+**Status:** NARROWED — A1 is green (`docs/decisions/0077-one-ahci-sector-read.md`,
+`tests/conformance/a1-ahci-read/run.sh`). One `READ DMA EXT` of LBA 7
+prints host-planted bytes. A write, NCQ, and uncached MMIO are unstarted.
+
+The kernel walks bus 0 for class `01/06/01` (or QEMU `8086:2922` / `1B36:0001`),
+reads BAR5, loads CAP, starts one port, and DMA-reads one sector. ATA PIO
+is still the path FAT and the loader use (`ata.dart`, `m6-disk`).
+
+**What A1 worked around, and the leftover:**
+
+1. ~~**No command list, no Received FIS, no Command Table.**~~ **NARROWED.**
+   One `allocFrame` holds all three plus the sector (`storage.md` §2.3).
+2. ~~**No port start.**~~ **NARROWED.** `PxCMD.ST` / `PxCMD.FRE` are written.
+   `ahciWaitSlot` watches `PxIS.TFES` on every `PxCI` load.
+3. **MMIO is still cacheable** (GAP-0071). The completion poll is
+   `Volatile<u32>`, so it cannot hoist under QEMU. The mapping is still
+   wrong for hardware.
+4. ~~**LBA48 FIS is unbuilt.**~~ **NARROWED** for this command. The 128 GiB
+   `ataLba28Max` ceiling still binds the PIO path.
+
+---
+
+## GAP-0313 — Skia Graphite, Vulkan, and Chromium WebView are not in the OS image; DCDart cannot call C++ yet
+
+**Domain:** platform C/C++, UI language, DCDart FFI
+**Status:** NARROWED — GFX0 / CMOD1 landed (ADR-0080, `tests/conformance/gfx0-host/run.sh`);
+CMOD-FFI1 landed (ADR-0081, `cmod-ffi1/`); **GFX1 landed** (ADR-0082,
+`tests/conformance/gfx1-graphite/run.sh`); **COMPOSE0 landed** (ADR-0094,
+`tests/conformance/gfx2-compose/run.sh`): session chrome through
+`osgfx_scene_compose` / Graphite, policy pixels match `wm*`;
+**BROWSER0 landed** (ADR-0083, `tests/conformance/browser0/run.sh`);
+**CMOD-CHROME1 landed** (ADR-0095, `tests/conformance/cmod-chrome1/run.sh`):
+platform clang++ links official Spotify CEF macosarm64 (Chromium 144
+Content) behind `oschrome.h`, and DCDart `@extern`s that ABI
+(`oschrome.dart`, u64 handles). A `data:` HTML names PAGE; PPM/readback
+matches; `--no-init` is the negative. **MEDIA0 landed** (ADR-0103,
+`tests/conformance/media0/run.sh`): platform clang links brew FFmpeg
+8.1.2 (`libavcodec` / `libavformat` / `libavutil`) behind `osmedia.h`.
+A planted H.264 solid names FRAME; PPM/readback matches; `--no-init`
+and `--missing` are the negatives. Not in `kernel.elf`. Vulkan is still unbuilt. **G9 landed** (ADR-0097,
+`g9-virtgpu/`): the OS submits `GET_CAPSET_INFO` on the
+VirtIO-GPU control queue. **G10 landed** (ADR-0098,
+`g10-virgl/`): `virtio-gpu-gl-pci` in Docker QEMU executes a
+virgl CLEAR with alpha; `VIRTIO 3D PIX` is device-written
+`A=0x80` (or src-over). That is not Skia-on-GPU. Graphite /
+Vulkan / Venus / CEF are still not in the **running GPU
+path**. Preview.app is gone. CPU Skia in the kernel image
+(ADR-0096) is withdrawn. **DE-osgfx landed** (ADR-0104 then
+ADR-0110, `de-osgfx/`): `osgfx_skia.cpp` + ELF `libskia.a`
+are linked into `kernel.elf` on the kernel triple; sit-in /
+`wm gfx` calls `osgfx_fill_rrect` → live `SkCanvas::drawRRect`
+(ADR-0125; qemu64 stays SSE2 / no `xgetbv`).
+`osgfx_sw.c` stays in-tree and is not the linked backend.
+**DE-browse landed** (ADR-0115 then ADR-0122, `de-browse/`):
+`oschrome_guest.c` implements `oschrome.h` on the kernel triple;
+`BROWSE.ELF` loads a `data:` page and the derived pixel is PAGE;
+`--no-init` / `NINIT.ELF` is not PAGE. Official linux64
+`cef_initialize` (Spotify CEF, same stamp as macosarm64) is
+linked into that ELF. Mac CEF is not copied into `kernel.elf`.
+Leftover: execute Content `OnPaint` — **hard process-ABI
+blocker** (ADR-0123, GAP-0322). Official `libcef.so` is 1.5 GiB
+`ET_DYN` with 32 `DT_NEEDED` (`libc.so.6`,
+`ld-linux-x86-64.so.2`, pthread, X11, glib, NSS, …). `.text` is
+231 MiB. ADR-0124 (`plat-proc/`) opened a 16 MiB **platform**
+`sbrk` window for `PLAT.ELF`; TAP/FILES stay 64K/2MiB.
+ADR-0126 (`plat-dyn/`) opened `PT_INTERP` for that name
+(`LD.SO` on the FAT, our loader, not glibc). ADR-0127
+(`plat-rel/`) opened `PT_DYNAMIC` on that name; `LD.SO`
+applies `R_X86_64_64`. ADR-0128 (`plat-map/`) opened anonymous
+`mmap` (syscall 27) on that name; pages are real and teardown
+frees them. ADR-0130 (`plat-clone/`) opened `clone`
+(syscall 28) on that name; the child shares the page tables
+and writes a derived line; first FREED is 0. ADR-0144
+(`plat-dl/`) opened `dlopen` (syscall 29) for our own tiny
+FAT `ET_DYN`. ADR-0146 (`plat-futex/`) opened `futex`
+(syscall 30) wait/wake so two clones sync a derived line.
+ADR-0148 (`plat-tls/`) opened `setfs` (syscall 33) so a
+`%fs:` store/load reaches a derived TLS block.
+ADR-0152 (`plat-libc/`) opened OUR tiny FAT `LIBC.SO`:
+`dlopen` resolves `write`, remaps X LOADs R+X, and the call
+prints a derived LINE. Not glibc.
+The 558-byte extract's first real call is `memset@plt`.
+Floor stays 87. ADR-0154 (`plat-huge/`) planted **112 MiB**
+of that window under the 128 MiB PMM floor. **ADR-0155** raised
+`MAP_2MIB_PAGES` / `pmmMaxFrames` together to **256 MiB** and the
+platform window to the full **189 MiB** CEF `.text` plant
+(`189 << 20`; measured `.text` 189095087). **ADR-0157**
+(`plat-need/`) walks two FAT `DT_NEEDED` (`LIBC.SO` + `LIBM.SO`)
+via `dlopen` with derived `LINE1`/`LINE2`; missing `LIBM.SO`
+refuses the second line. Satisfies **2 of 32** CEF `DT_NEEDED`
+stand-ins. **ADR-0160** (`plat-need2/`) grows that walk to
+four (`LIBC.SO` + `LIBM.SO` + `LIBDL.SO` + `LIBPT.SO`) with
+derived `LINE1`..`LINE4`; missing `LIBPT.SO` refuses the
+fourth line. Satisfies **4 of 32** (**28 remain**).
+**ADR-0162** (`plat-need3/`) grows that walk to eight
+(`LIBC.SO` + `LIBM.SO` + `LIBDL.SO` + `LIBPT.SO` + `LIBGB.SO`
++ `LIBGO.SO` + `LIBNP.SO` + `LIBNS.SO`) with derived
+`LINE1`..`LINE8`; missing `LIBNS.SO` refuses the eighth
+line. Satisfies **8 of 32** (**24 remain**).
+**ADR-0163** (`plat-need4/`) grows that walk to sixteen
+(ADR-0162's eight plus `LIBNU.SO` + `LIBSM.SO` + `LIBDB.SO`
++ `LIBGI.SO` + `LIBAT.SO` + `LIBAB.SO` + `LIBCU.SO` +
+`LIBX1.SO`) with derived `LINE1`..`LINE16`; missing
+`LIBX1.SO` refuses the sixteenth line. Satisfies **16 of
+32** (**16 remain**). **ADR-0165** (`plat-need5/`) finishes
+that walk to thirty-two (ADR-0163's sixteen plus `LIBXC.SO`
+… `LIBLD.SO` covering `libXcomposite.so.1` …
+`ld-linux-x86-64.so.2`) with derived `LINE1`..`LINE32`;
+missing `LIBLD.SO` refuses the thirty-second line. Satisfies
+**32 of 32**. Leftover: `OnPaint`. Not another extract.
+**G11 landed** (ADR-0107, `g11-osgfx-gl/`): that compose
+buffer is `TRANSFER_TO_HOST_3D` + `SET_SCANOUT` on
+`virtio-gpu-gl-pci`. Rounded AABB / title come back through
+`TRANSFER_FROM_HOST_3D`. Not Graphite.
+**ADR-0129 landed** (`de-graphite/`): `kernel.elf` links
+guest-elf Graphite and calls `ContextFactory::MakeVulkan`.
+**ADR-0134 landed** (`de-graphite2/`): Venus capset 4 arms
+mailbox `vk`; a kernel Vulkan 1.1 ICD supplies handles;
+MakeVulkan returns a live context (`OSGFX GRAPHITE OK`) and
+one Graphite GPU clear (`PIX 00E24A18`) is stamped at (8,8).
+Homebrew stays `NONE`. **ADR-0153 landed** (`de-graphite3/`):
+a chrome title-bar-class rrect is Graphite `drawRRect` + ICD
+DRAW (`OSGFX GRAPHITE RRECT 00C45A20`), not CPU `drawRect`.
+**ADR-0159 landed** (`de-graphite4/`): desktop / taskbar fill is
+Graphite `drawRect` + ICD DRAW (`OSGFX GRAPHITE DESK 001C6A38`),
+not CPU `put_px`. **ADR-0161 landed** (`de-graphite5/`): curved
+`MakeRectXY` paints via host-precompiled SPIR-V (`osgfx-host-spirv`)
++ ICD radius (`CURVE 00A87C14`) — freestanding AnalyticRRect SkSL
+still #GPs if invoked; curve path does not run it. **ADR-0172 landed**
+(`de-graphite6/`): retained SPIR-V is encoded through Venus
+CONTEXT_INIT + SUBMIT (`OSGFX VENUS SPIRV`); HOST3D blob is
+best-effort. Full lavapipe CreateShaderModule / Graphite FS
+coverage is leftover.
+
+**What GFX0 worked around:** this arm64 Mac has Metal. brew `graphite2`
+is a font shaper. Flutter is on PATH and must not be embedded
+(`dcdart.md`). The 64 KiB / 2 MiB numbers are the **app** sandbox.
+They do not apply to WebView (`c-modules.md` §0 — Android shape).
+Chromium is not a FRAME ELF.
+
+**Binary next steps (do not mark DESIGN done without the named harness):**
+
+1. ~~**GFX1 — vendor Skia Graphite** behind `osgfx.h` as platform C++.~~
+   **NARROWED** (ADR-0082, `gfx1-graphite/`). `nm` shows
+   `skgpu::graphite`; the rrect corner is desktop; force-metal is the
+   fallback negative. Graphite is a host `libskia.a`, not a kernel
+   object.
+1b. ~~**COMPOSE0 — session chrome through osgfx / Graphite.**~~
+   **NARROWED** (ADR-0094, `gfx2-compose/`). One scene is the real
+   compositor policy. **G9** (ADR-0097) sends `GET_CAPSET_INFO`.
+   **G10** (ADR-0098) is virgl CLEAR+alpha on `virtio-gpu-gl-pci`.
+   **G11** (ADR-0107) uploads the osgfx compose buffer to that
+   3D scanout (`g11-osgfx-gl/`). **ADR-0129** (`de-graphite/`)
+   links Graphite `MakeVulkan` into `kernel.elf`. **ADR-0134**
+   (`de-graphite2/`) is the VkDevice door (Venus arm + kernel
+   ICD + one Graphite GPU pixel). **ADR-0153** (`de-graphite3/`)
+   paints a chrome rrect through Graphite `drawRRect` (serial
+   `RRECT 00C45A20`); not CPU `drawRect`. **ADR-0159**
+   (`de-graphite4/`) paints desktop/taskbar through Graphite
+   `drawRect` (serial `DESK 001C6A38`); not CPU `put_px`.
+   **ADR-0161** (`de-graphite5/`) paints curved `MakeRectXY` via
+   host-precompiled SPIR-V + ICD radius (`CURVE 00A87C14`);
+   freestanding AnalyticRRect SkSL still #GPs if invoked.
+   **ADR-0172** (`de-graphite6/`) encodes retained SPIR-V through
+   Venus CONTEXT_INIT + SUBMIT (`OSGFX VENUS SPIRV`); HOST3D blob
+   best-effort. Leftover: full lavapipe CreateShaderModule /
+   Graphite FS coverage.
+2. **GFX2 — Vulkan / MoltenVK** behind the same header. Same probe.
+3. ~~**CMOD-FFI1 — `dcc` `@bare` calls `osgfx_*`.**~~ **NARROWED**
+   (ADR-0081, `cmod-ffi1/`). DCDart calls the C module; the harness
+   samples a PPM. Vulkan / Chromium still OPEN.
+4. ~~**BROWSER0 — Chromium Content as platform WebView**~~
+   **NARROWED** (ADR-0083, `browser0/`). `nm` shows `cef_initialize`;
+   the `data:` pixel is PAGE; `--no-init` is not PAGE. Content is a
+   host CEF framework, not a kernel object.
+5. ~~**CMOD-CHROME1 — `dcc` `@bare` calls `oschrome_*`.**~~
+   **NARROWED** (ADR-0095, `cmod-chrome1/`). DCDart `@extern`s the
+   WebView; PAGE pixel matches; `--no-init` is not PAGE. Leftover:
+   Content is still not **in the running OS image**, and a guest
+   FRAME app cannot `@extern` host CEF. **DE-browse** (ADR-0115,
+   ADR-0122) links `oschrome_guest.c` plus official linux64
+   `cef_initialize` into `BROWSE.ELF`; leftover is executing
+   Content `OnPaint` (ADR-0123: 32 missing `.so`, no POSIX/glibc;
+   next binary is ring-3 libc / process ABI).
+6. **`@extern` descriptors** stay DCDart escalation 0004 (GAP-0166).
+   A platform process / C++ region of the OS image (Android
+   `webview_zygote` class) is what puts Graphite and Content **in
+   the running OS**, not the app 2 MiB window.
+7. ~~**MEDIA0 — FFmpeg as a platform decoder.**~~ **NARROWED**
+   (ADR-0103, `media0/`; **ADR-0116**, `de-media/`). Host `nm`
+   shows `avcodec_` / `avformat_`. The running `kernel.elf` now
+   links official FFmpeg for its triple; hidden `play` decodes a
+   planted clip to serial PIX (ADR-0116). **ADR-0131** blits that
+   tile onto the sit-in scanout (`de-vblit/`). **ADR-0135**
+   commits it through a `wmsurface` (`de-vwin/`). **ADR-0143
+   (`de-movie/`)** lands a second still on the same window
+   (PIX→MOV, body FRAME→FRAME2). Leftover: Graphite / Venus
+   paint of the same buffer; guest annex-B decode.
+
+**Cost of the workaround:** the host rasterizer is Graphite;
+the host browser is CEF. Vulkan is still unbuilt. QEMU scanout
+paints PAGE through `BROWSE.ELF` (ADR-0115); `nm` of that ELF
+shows official `cef_initialize` (ADR-0122). Executing Content
+`OnPaint` is leftover and **blocked** (ADR-0123 / GAP-0322):
+`libcef.so` needs 32 `.so` including `libc.so.6` and
+`ld-linux-x86-64.so.2`. ADR-0126 opened the interp door
+(`plat-dyn/`). ADR-0127 opened the RELA door (`plat-rel/`).
+ADR-0128 opened the mmap door (`plat-map/`, syscall 27).
+ADR-0130 opened the clone door (`plat-clone/`, syscall 28).
+ADR-0144 opened the dlopen door (`plat-dl/`, syscall 29) for
+our own tiny FAT `ET_DYN`. ADR-0146 opened the futex door
+(`plat-futex/`, syscall 30) so two clones sync a derived
+line. ADR-0148 opened the TLS door (`plat-tls/`, syscall 33)
+so a `%fs:` store/load reaches a derived block. ADR-0152
+opened the first libc door (`plat-libc/`): OUR tiny
+`LIBC.SO` exports `write` through `dlopen`. ADR-0154
+(`plat-huge/`) raised the platform window to **112 MiB** under
+the 128 MiB PMM floor. **ADR-0155** raised PMM/identity to
+**256 MiB** and the window to the full **189 MiB** CEF `.text`
+plant; `mmap` of that size is real and teardown frees it.
+Leftover: the rest of the 32 `.so`, and `OnPaint`.
+Do not raise `de-browse` on another thunk. A later drop must keep
+`osgfx.h` and `oschrome.h` or the language splits.
+
+---
+
+## GAP-0314 — NVMe Identify, one sector, one write, FAT, a named load, and class roots landed
+
+**Domain:** kernel (storage NVM0/NVM1/NVM2/NVM3/NVM4/NVM5/NVM6/A2)
+**Status:** NARROWED — NVM6 is green (`docs/decisions/0092-a-named-elf-loads-through-nvme.md`,
+`tests/conformance/nvm6/run.sh`). **A2 is green (ADR-0137,
+`tests/conformance/nvm-root/run.sh`).** After Identify, one I/O-queue
+NVM Read of LBA 7, one NVM Write of those planted bytes to
+LBA 11, and FAT sector I/O on that pair, the ELF loader uses the
+same pick (`elfDiskRead` → `fatDiskRead`). NVMe class `01/08/02`
+and AHCI class `01/06/01` are equal roots. Machines with neither
+still use ATA PIO. MMIO is still cacheable.
+
+The kernel walks bus 0 for class `01/08/02`, reads BAR0, loads CAP/VS,
+enables an admin pair, DMA-reads Identify Controller, creates I/O
+SQ/CQ QID 1, DMA-reads one sector, and DMA-writes one sector.
+
+**What NVM2–NVM6 worked around, and the leftover:**
+
+1. ~~**No admin queue.**~~ **NARROWED.** Three `allocFrame` calls hold
+   ASQ, ACQ and the Identify buffer. CC.EN is written. The SQ0
+   doorbell is the submission.
+2. ~~**No Identify.**~~ **NARROWED.** CNS=1, SN/VID/NN printed from
+   the controller-written buffer. `nvm2` derives `serial=` at test
+   time.
+3. ~~**An I/O queue and one sector are unbuilt.**~~ **NARROWED.**
+   Create I/O CQ (05h) + Create I/O SQ (01h) + NVM Read (02h) of
+   LBA 7. `nvm3` plants 16 bytes at test time.
+4. **MMIO is still cacheable** (GAP-0071). The CSTS/CQ poll is
+   `Volatile<u32>`, so it cannot hoist under QEMU. The mapping is still
+   wrong for hardware.
+5. ~~**A write on this path is unbuilt.**~~ **NARROWED.** NVM Write
+   (01h) of the LBA 7 plant to LBA 11. `nvm4` reads the raw image
+   after QEMU exits.
+6. ~~**FAT is not on this path.**~~ **NARROWED.** `fatDiskPick`
+   chooses NVMe when `nvmeFind` sees class `01/08/02`, else ATA PIO.
+   `nvm5` plants `PLANT.TXT` on a FAT16 volume served as `-device
+   nvme` and requires `cat` to print derived bytes. `m6-disk` /
+   `m14-fat` / `m15` / `m16` stay on ATA.
+
+7. ~~**The ELF loader still uses ATA PIO.**~~ **NARROWED.**
+   `elfDiskRead` is `fatDiskRead`. `nvm6` plants a derived `PROG.ELF`
+   on a FAT16 volume served as `-device nvme` (no IDE) and requires
+   `run prog.elf` to print host-derived write bytes and exit.
+   `m10-elf` / `m11-proc` / `m14-fat` stay on ATA.
+
+8. ~~**AHCI is a probe, not a FAT root.**~~ **NARROWED (ADR-0137,
+   `nvm-root/`).** `fatDiskPick` is class-first: `01/08/02` →
+   `nvmeIoRead`, else `01/06/01` → `ahciIoRead`, else ATA PIO.
+   The same planted ELF lists and `run`s on both DMA backends.
+   Either backend off misses. QEMU NVMe/AHCI are stand-ins. A
+   laptop vendor:device is not the success condition.
+   `m6-disk` / `m14-fat` stay on ATA.
+
+**What is still open, and the leftover:**
+
+9. **MMIO is still cacheable** (GAP-0071). Unchanged. Binary next
+   step is still S5 in `docs/design/storage.md`: runtime page-table
+   entries with PCD+PWT so a poll of CQ phase cannot be served from
+   a cacheable mapping on real hardware. A later metal smoke test
+   may attach a real disk; class is still the match. Not a SKU.
+
+---
+
+## GAP-0315 — FILES lists, copies, moves, and icons
+
+**Domain:** userland (FRAME file manager)
+**Status:** CLOSED — listing and open/cat landed (ADR-0100).
+**Copy and move landed (ADR-0118,** `core/user/frame/files.c`,
+`tests/conformance/files-fm/run.sh`). **`unlink` / `rename` landed
+(ADR-0147, `files-unl/`).** **FILES move consumes rename (ADR-0149,
+`files-mv2/`):** source name is gone after move; copy still keeps
+its source. **Icons landed (ADR-0154, `files-ico/`):** each listed
+name band gets `osxui_icon_fb` / `osgfx_icon_rows` (`.rodata`
+silhouette). `FILES_NO_ICON=1` is the pixel miss.
+
+**Leftover:** none on this gap. Subdirectories stay APP3 / APP4
+remainder if opened later.
+
+---
+
+## GAP-0316 — FFmpeg is in kernel.elf; the compositor does not blit video
+
+**Domain:** platform C (MEDIA0 / DE-media)
+**Status:** NARROWED — ADR-0116 (`de-media/`) decode; **ADR-0131
+(`tests/conformance/de-vblit/run.sh`)** lands the 64×64 RGB tile on
+the sit-in scanout at (16, 400) through `fbBlitArgb`. **ADR-0135
+(`tests/conformance/de-vwin/run.sh`)** commits that buffer through
+a `wmsurface` at (200, 80). Hidden `play` still copies planted
+`CLIP.MP4`; Start of `PLAY.ELF` kicks play; IRQ0 decodes;
+`OSMEDIA_NO_BLIT=1` prints PIX and the tile is not FRAME;
+`OSMEDIA_NO_WIN=1` keeps the raw tile and the window body is not
+FRAME. Missing file is not FRAME. Host `media0/` remains a Mac
+program.
+
+**Leftover:** a movie (more than one still). Graphite / Venus
+paint of the same buffer.
+
+**Binary next step:** decode a second frame into the same shm
+and commit damage. Not a new syscall. Not stuffing libavcodec
+into a FRAME ELF. Not Flutter. Not Graphite video.
+
+---
+
+## GAP-0317 — Sit-in Start lists FAT names; the third spawn and glyphs are leftover
+
+**Domain:** DE chrome / sit-in disk
+**Status:** NARROWED — ADR-0108 (`de-sitfat/`, `sit-in.sh`) listed the
+names. **ADR-0109 (`de-shm/`) grew `shmMax` / `wmMaxWindows` /
+`wmeventSlots` to 4.** Three derived surfaces stay mapped. Sit-in
+that holds FILES + PING can spawn SET or STUDIO. **ADR-0173 plants
+`BROWSE.ELF` / `PLAY.ELF` / `TAP.ELF` on the same sit-in FAT;** Start
+stays `WM DE START 04` (first four ELF names). Full FAT vs Start is
+documented there.
+
+**Leftover:**
+
+1. **Start stems are 8.3 glyphs (ADR-0117, `de-glyph/`).** The
+   planted four-letter name is derived foreground pixels through
+   `osgfx_fill_glyph`. **Title-bar `PID` is ADR-0132 (`de-title/`).**
+   **Panel hex pids are ADR-0136 (`de-panel/`).**
+2. **Raise Start past 04** so BROWSE / PLAY / TAP are launch rows
+   (`wmDeLaunchMax`, chrome-word packing, `wmLaunchH`). Not this
+   plant.
+3. **0107 (osgfx-gl) is a sibling.** This rung did not touch virtgpu.
+
+---
+
+## GAP-0318 — OSXUI widgets paint through osgfx; title strings leftover
+
+**Domain:** platform C (OSXUI-kit)
+**Status:** CLOSED — ADR-0113 painted buttons/panels; **ADR-0117
+(`tests/conformance/de-glyph/run.sh`) added `osxui_label` /
+`osgfx_fill_glyph`.** The strip can show an 8.3 stem. Start rows
+call the same hook. `osxui_panel` stays a colour tile so `osxui4`
+does not move. **ADR-0132 (`tests/conformance/de-title/run.sh`)
+paints title-bar `PID` through the same hook.** **ADR-0133
+(`tests/conformance/de-osxui/run.sh`) paints live Start / close /
+min through `osxui_button`.** **ADR-0136
+(`tests/conformance/de-panel/run.sh`) paints live hex pids on the
+reflection panel through `osxui_hex` / `osxui_label`.**
+
+**Leftover:** none on this gap. Configure-to-client is ADR-0142
+(`de-cfg/`). **APP4 `unlink` / `rename` is ADR-0147
+(`files-unl/`).** **FILES move consumes rename (ADR-0149,
+`files-mv2/`).** **shm grow past attach is ADR-0150
+(`shm-grow/`, syscall 34).** **shm shrink past attach is ADR-0156
+(`shm-shrink/`, syscall 35).** **multi-mapper grow/shrink is ADR-0158
+(`shm-multi/`).** **FILES icons are ADR-0154
+(`files-ico/`).** Not Flutter. Not `fdwait`.
+
+---
+
+## GAP-0319 — osgpu is the explicit app GPU; swapchain and shaders are leftover
+
+**Domain:** GPU / app framework
+**Status:** OPEN leftover after ADR-0114 (`tests/conformance/gpu-app0/run.sh`).
+`osgpu.h` names `osgpu_create` / `osgpu_submit` / `osgpu_readback`.
+Hidden `osgpug` hits G10 virgl. UI / osgfx / wm do not call it.
+The C stub returns `OSGPU_NONE` until a later syscall wraps it
+(next free number, not 11).
+
+**Leftover:**
+
+1. **Swapchain.** One dest resource, one transfer. A game that
+   flips needs a second resource and a present.
+2. **Shaders.** Submit is a CLEAR (or a reserved triangle kind).
+   No TGSI / SPIR-V app ABI. G10's hand-built stream stays kernel.
+
+**Binary next step:** a second 3D resource and a present, or a
+syscall wrapping the three C functions. Not wm in C++. Not a
+UI app calling osgpu.
+
+---
+
+## GAP-0320 — Settings toggle reached live chrome; persist/glyphs leftover
+
+**Domain:** DE Settings
+**Status:** NARROWED — ADR-0120 (`tests/conformance/de-set2/run.sh`).
+`SET.ELF` writes `CHROME.DAT` on toggle (`open` + `fdwrite`). Under
+`wm de` compose notices that file, sets bit 4 of the chrome word,
+prints `WM DE SET ON`, and paints the notify strip `wmDeSetColor`.
+A miss click does none of those. `de-set` stays the 130 local-swatch
+path (no `wm de`). No new syscall. Title-drag unmoved.
+
+**Leftover:**
+
+1. **Persist atomic.** ADR-0147 opened `unlink` / `rename`; Settings
+   can grow write-temp-and-rename. Not done here.
+2. **Glyphs.** The notify strip is a colour tile, not an 8.3 caption.
+
+**Binary next step:** Settings rewrite via rename-over, or a baked
+glyph on the notify tile. Not a new syscall.
+
+---
+
+## GAP-0321 — Studio persists a selection; emit is leftover
+
+**Domain:** userland (OSXStudio)
+**Status:** OPEN leftover after ADR-0119 (`tests/conformance/studio2b/run.sh`).
+`STUDIO.ELF` lists planted `APPS.TXT`, `spawn`s a catalog name, and
+`fdwrite`s `SEL.DAT` (4 bytes, a row index). A second Studio start
+exhibits `STUDIO2 SEL` plus that derived name. That is persist of
+**data**. It is not a builder.
+
+**Leftover — emit:**
+
+1. **No reflection.** `@extern` is a name, not a descriptor
+   (GAP-0166). Studio cannot inspect a live widget or emit a
+   new program from one.
+2. **No compiler on the box.** `elfImageMax` is 65,536. A C
+   compiler or a Dart SDK does not fit and is not claimed
+   (`osxstudio.md` STUDIO3). Host `clang` still produces the ELF.
+3. **Save is destroy-on-save.** `O_WRITE` truncates. APP4
+   `unlink` / `rename` is the later atomic idiom. Not a project
+   format.
+
+**Binary next step:** none on this prefix until DCDart ships
+descriptors *and* something that can emit (STUDIO3). Do not mark
+OSXStudio a builder because `SEL.DAT` landed.
+
+---
+
+## GAP-0322 — Content OnPaint cannot run: 32 DT_NEEDED, 189 MiB .text
+
+**Domain:** platform C (DE-browse leftover)
+**Status:** OPEN — hard process-ABI blocker (ADR-0123,
+`tests/conformance/de-browse/prove-onpaint-block.py`).
+**NARROWED** (ADR-0124, `plat-proc/`): a named platform ELF
+(`PLAT.ELF`) may `sbrk` a 16 MiB window at
+`[0x10400000, 0x11400000)`. TAP/FILES stay 64 KiB / 2 MiB.
+Same bytes as `ASK.ELF` are refused the platform increment.
+**NARROWED** (ADR-0126, `plat-dyn/`): that same name may carry
+`PT_INTERP` pointing at our `LD.SO` on the FAT. The interp
+maps the dyn ELF and jumps to `e_entry`. Missing `LD.SO` is
+still `ELF REFUSED 11`, not a silent static run. `ASK.ELF`
+with the same bytes is still 11.
+**NARROWED** (ADR-0127, `plat-rel/`): that same name may carry
+`PT_DYNAMIC`. `LD.SO` applies one `R_X86_64_64` RELA; the
+derived line is `reloc_word ^ MIX` after the reloc. The word
+is 0 in the file — skip RELA and the line is `MIX` alone.
+`ASK.ELF` with the same bytes is still 11. A `PLAT.ELF`
+without `PT_DYNAMIC` still runs as the interp door. libc is
+still not this. This is not `OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0128, `plat-map/`): that same name may
+`mmap` anonymous pages (syscall 27). `mmap(3 MiB)` maps real
+frames at `0x10400000`; `write()` of a planted string from
+that VA matches; teardown frees eight plat tables plus the
+mapped pages above `ASK.ELF` of the same bytes. A no-op
+return of heap base without new frames fails that delta.
+`ASK.ELF` is `heapRetBadArg`. 11 stays `fdwait`. Not POSIX
+`mmap`. Not `OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0130, `plat-clone/`): that same name may
+`clone(fn, stack)` (syscall 28). The child shares the
+caller's page tables, starts at `fn`, and writes a derived
+`CHILD` line. First `PROC KILL FREED` is 0 — the survivor
+still walks those tables. The last free is `ASK.ELF` of
+the same bytes plus eight platform PD tables. `ASK.ELF` is `cloneRetBadArg`. 11 stays
+`fdwait`. Not Linux `clone`. Not `futex`. Not `OnPaint`.
+Floor 87 stays.
+**NARROWED** (ADR-0144, `plat-dl/`): that same name may
+`dlopen` our tiny FAT `ET_DYN` (syscall 29). `so_mark` is
+read from the mapped pages; `MISS.SO` is NotFound; `ASK.ELF`
+of the same bytes is BadArg. Not glibc. Not `OnPaint`.
+Floor 87 stays.
+**NARROWED** (ADR-0146, `plat-futex/`): that same name may
+`futex(op, addr, val)` (syscall 30). Parent waits on a shared
+word; child stores SIG and wakes; parent writes derived
+`SYNC`. `ASK.ELF` is `futexRetBadArg`. 11 stays `fdwait`.
+Not Linux `futex`. Not TLS. Not `OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0148, `plat-tls/`): that same name may
+`setfs(base)` (syscall 33). Plants `IA32_FS_BASE` so a
+`%fs:` store/load reaches a derived TLS block. `ASK.ELF` is
+`setfsRetBadArg`. Without the MSR write the store faults at
+VA 0. 11 stays `fdwait`. Not Linux `arch_prctl`. Not
+`OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0152, `plat-libc/`): that same name may
+`dlopen` OUR tiny FAT `LIBC.SO`, resolve `write`, and call
+it (X LOADs remapped R+X). Derived `LINE` is `MARK ^ MIX`.
+`MISS.SO` is NotFound; `ASK.ELF` is BadArg. Not glibc. Not
+the 32 `DT_NEEDED`. Not 189 MiB. Not `OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0155, `plat-huge/`): that same name may
+`mmap` the full **189 MiB** CEF `.text` plant. TAP/FILES stay
+64 KiB / 2 MiB. Not the 32 `DT_NEEDED`. Not `OnPaint`.
+**NARROWED** (ADR-0157, `plat-need/`): that same name may
+carry two FAT `DT_NEEDED` (`LIBC.SO` + `LIBM.SO`); the program
+walks them, `dlopen`s each, and prints derived `LINE1` /
+`LINE2` from `write` / `need_fn`. Missing `LIBM.SO` is
+NotFound and cannot invent `LINE2`. `ASK.ELF` of the same
+bytes is `ELF REFUSED 11`. Satisfies **2 of 32** CEF
+`DT_NEEDED` stand-ins; **30 remain**. Not glibc. Not
+`OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0160, `plat-need2/`): that same name may
+carry four FAT `DT_NEEDED` (`LIBC.SO` + `LIBM.SO` +
+`LIBDL.SO` + `LIBPT.SO`); the program walks them, `dlopen`s
+each, and prints derived `LINE1`..`LINE4` from `write` /
+`need_fn` / `dl_fn` / `pt_fn`. Missing `LIBPT.SO` is
+NotFound and cannot invent `LINE4`. `ASK.ELF` of the same
+bytes is `ELF REFUSED 11`. Satisfies **4 of 32** CEF
+`DT_NEEDED` stand-ins; **28 remain**. Not glibc. Not
+`OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0162, `plat-need3/`): that same name may
+carry eight FAT `DT_NEEDED` (`LIBC.SO` + `LIBM.SO` +
+`LIBDL.SO` + `LIBPT.SO` + `LIBGB.SO` + `LIBGO.SO` +
+`LIBNP.SO` + `LIBNS.SO`); the program walks them, `dlopen`s
+each, and prints derived `LINE1`..`LINE8` from `write` /
+`need_fn` / `dl_fn` / `pt_fn` / `gb_fn` / `go_fn` /
+`np_fn` / `ns_fn`. Missing `LIBNS.SO` is NotFound and
+cannot invent `LINE8`. `ASK.ELF` of the same bytes is
+`ELF REFUSED 11`. Satisfies **8 of 32** CEF `DT_NEEDED`
+stand-ins; **24 remain**. Not glibc. Not `OnPaint`. Floor
+87 stays.
+**NARROWED** (ADR-0163, `plat-need4/`): that same name may
+carry sixteen FAT `DT_NEEDED` (ADR-0162's eight plus
+`LIBNU.SO` + `LIBSM.SO` + `LIBDB.SO` + `LIBGI.SO` +
+`LIBAT.SO` + `LIBAB.SO` + `LIBCU.SO` + `LIBX1.SO`); the
+program walks them, `dlopen`s each, and prints derived
+`LINE1`..`LINE16` from `write` / `need_fn` / `dl_fn` /
+`pt_fn` / `gb_fn` / `go_fn` / `np_fn` / `ns_fn` /
+`nu_fn` / `sm_fn` / `db_fn` / `gi_fn` / `at_fn` /
+`ab_fn` / `cu_fn` / `x1_fn`. Missing `LIBX1.SO` is
+NotFound and cannot invent `LINE16`. `ASK.ELF` of the same
+bytes is `ELF REFUSED 11`. Satisfies **16 of 32** CEF
+`DT_NEEDED` stand-ins; **16 remain**. Not glibc. Not
+`OnPaint`. Floor 87 stays.
+**NARROWED** (ADR-0165, `plat-need5/`): that same name may
+carry thirty-two FAT `DT_NEEDED` (ADR-0163's sixteen plus
+`LIBXC.SO` + `LIBXD.SO` + `LIBXE.SO` + `LIBXF.SO` +
+`LIBXR.SO` + `LIBGM.SO` + `LIBEX.SO` + `LIBXB.SO` +
+`LIBXK.SO` + `LIBCA.SO` + `LIBPG.SO` + `LIBUD.SO` +
+`LIBAS.SO` + `LIBAP.SO` + `LIBGC.SO` + `LIBLD.SO`); the
+program walks them, `dlopen`s each, and prints derived
+`LINE1`..`LINE32` from `write` / `need_fn` / … / `ld_fn`.
+Missing `LIBLD.SO` is NotFound and cannot invent `LINE32`.
+`ASK.ELF` of the same bytes is `ELF REFUSED 11`. Satisfies
+**32 of 32** CEF `DT_NEEDED` stand-ins. Not glibc. Not
+`OnPaint`. Floor 87 stays.
+
+ADR-0115 / ADR-0122 PASSed `de-browse/` at floor 87 with
+`oschrome_guest.c` `parse_rgb` plus a 558-byte official
+`cef_initialize` extract. That is not Chromium painting.
+`OnPaint` did not run.
+
+Official linux64 `libcef.so` (Spotify CEF 144.0.34, same stamp
+as macosarm64):
+
+* 1.5 GiB, `ET_DYN`, `PT_DYNAMIC`, `PT_TLS`
+* `.text` 189,095,087 bytes — 90× the 2 MiB process window
+* 1,336 undefined dynsym (`clone`, `dlopen`, `mmap64`,
+  `pthread_*` @ `GLIBC_*`)
+* 32 `DT_NEEDED`: `libdl.so.2` `libpthread.so.0`
+  `libglib-2.0.so.0` `libgobject-2.0.so.0` `libnspr4.so`
+  `libnss3.so` `libnssutil3.so` `libsmime3.so` `libdbus-1.so.3`
+  `libgio-2.0.so.0` `libatk-1.0.so.0` `libatk-bridge-2.0.so.0`
+  `libcups.so.2` `libX11.so.6` `libXcomposite.so.1`
+  `libXdamage.so.1` `libXext.so.6` `libXfixes.so.3`
+  `libXrandr.so.2` `libgbm.so.1` `libexpat.so.1` `libxcb.so.1`
+  `libxkbcommon.so.0` `libcairo.so.2` `libpango-1.0.so.0`
+  `libudev.so.1` `libasound.so.2` `libm.so.6` `libatspi.so.0`
+  `libgcc_s.so.1` `libc.so.6` `ld-linux-x86-64.so.2`
+
+The loader honours `PT_INTERP` and `PT_DYNAMIC` only on named
+`PLAT.ELF` when the 8.3 interp is on the volume (ADR-0126,
+ADR-0127). `LD.SO` applies RELA. Every other name is still
+`ELF REFUSED 11`. `elfImageMax` is 65,536. Calling the extract
+with non-null args hits `memset@plt` and `#PF`. Null args
+return 0 without leaving the extract — a thunk, refused. A
+larger FAT `CEFHOST.ELF` that still paints `rgb()` is the same
+thunk. ADR-0029 already rejected a Linux personality for
+prebuilt `.so` files. Host `browser0` `OnPaint` is not this
+QEMU.
+
+
+**NARROWED** (ADR-0166, `browse-paint/`): `oschrome_on_paint` is the
+CEF OSR callback ABI (PET_VIEW + BGRA). `load_url` stages BGRA only;
+pixels come only from the callback. `PAINT.ELF` shows PAGE;
+`--no-onpaint` / `NOPAIN.ELF` misses. Labelled OUR stand-in — not
+`nm` of `cef_initialize`, not a rename of `parse_rgb`→pixels.
+Leftover: **wire official `libcef.so`**. Floor 87 stays. TAP ≤64 KiB.
+
+**NARROWED** (ADR-0167, `cef-wire/`): a named `PLAT.ELF` may
+`dlopen` a **measured official** `CEF.SO` slice (32 verbatim
+`DT_NEEDED` names, 558-byte `cef_initialize` text, one
+official-addend `R_X86_64_64`). Map + NEEDED walk + reloc
+PASSed. Not full 1.5 GiB LOADs. Not glibc UND. Not OnPaint.
+Floor 87 stays. TAP ≤64 KiB.
+
+**NARROWED** (ADR-0168, `cef-load/`): `PLAT.ELF` maps **full
+official LOADs** (RO 42593760 + RX 189117488) from a host-backed
+plant (FAT cannot hold 1.5 GiB). Anti-vacuity vs 12 KiB slice.
+Not glibc UND. Not OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0169, `cef-plt/`): official `memset@plt` is
+bound to OUR tiny `LIBC.SO` `memset` (planted over the PLT stub).
+Derived call through the official CEF PLT address PASSes.
+Anti-vacuity: unbound PLT → `#PF` / no `LINE`. Not the rest of
+1,336 UND. Not real `libdl.so.2`. Not OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0170, `cef-und/`): measured high-traffic UND
+batch — `memset` / `memcpy` / `memmove` / `strlen` / `memcmp` —
+bound through OUR `LIBC.SO` (RX face slab + 12-byte PLT
+trampolines). **5 of 1,336** bound; **1,331** remain. `malloc`
+is absent from official libcef PLT (not claimed). Anti-vacuity:
+unbound → `#PF` / no `LINE`. Not real `libdl.so.2`. Not OnPaint.
+Floor 87 stays.
+
+**NARROWED** (ADR-0171, `cef-und2/`): grows the bound set to
+**20 of 1,336** (15+ beyond ADR-0170) — adds `bcmp` / `memchr` /
+`strncmp` / `strcpy` / `strcmp` / `strnlen` / `strncpy` /
+`strchr` / `strrchr` / `strstr` / `strcat` / `strspn` /
+`strcspn` / `strncat` / `strcasecmp`. Face slab at PLT idx ≥ 511.
+First five remain required (cef-plt / cef-und keep PASSing).
+**1,316** remain. Anti-vacuity: unbound → `#PF` / no `LINE`;
+host `libc-miss.so` drops `strcasecmp`. Not real `libdl.so.2`.
+Not OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0172, `cef-und2/`): grows the bound set to
+**50 of 1,336** (30+ beyond ADR-0171) — adds `strncasecmp` /
+wide-string / ctype / `strto*` / tiny POSIX stubs through OUR
+`LIBC.SO` (two-page RX copy). **1,286** remain. Anti-vacuity:
+host `libc-miss.so` drops `geteuid`. Not real-named `libdl.so.2`
+(FAT 8.3 leftover). Not OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0174, `cef-dl/`): real `DT_NEEDED` soname
+`libdl.so.2` (not `LIBDL.SO`) resolves via planted `SOMAP.TXT`
+(`libdl.so.2=LIBDL.SO`) onto OUR `dl_fn` face. Anti-vacuity:
+missing SOMAP → NotFound (even with `LIBDL.SO` present); missing
+`LIBDL.SO` → NotFound after alias. FAT stays 8.3 (no LFN).
+UND floor **50 / 1,336** held. Not the other 31 sonames. Not
+OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0176, `cef-somap/`): planted `SOMAP.TXT` covers
+**all 32** official CEF Linux sonames → OUR plat-need5 `LIB*.SO`
+faces. `elfDlopenNameMax=64` (FAT `fileNameMax` stays 12). Accidental
+8.3 CEF names (`libnspr4.so` / `libnss3.so`) still hit SOMAP after
+NotFound. Anti-vacuity: SOMAP missing `ld-linux-x86-64.so.2` refuses
+that name (no `LINE32`). Satisfies **32/32** real-named `DT_NEEDED`.
+UND floor raised by ADR-0178. Not OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0178, `cef-und2/`): grows the bound set to
+**100 of 1,336** (50+ beyond ADR-0172) — math / POSIX leaf stubs
+through OUR `LIBC.SO`. Face slab stays 4 KiB; `elfDlopenSymMax`
+rises to 128. Anti-vacuity: host `libc-miss.so` drops `nearbyintf`.
+**1,236** remain. Not OnPaint. Floor 87 stays.
+
+**NARROWED** (ADR-0179, `cef-und2/`): grows the bound set to
+**200 of 1,336** (100+ beyond ADR-0178) — more math / stdio /
+POSIX leaf stubs through OUR `LIBC.SO`. LIBC RX may span three
+pages; `elfDlopenSymMax` rises to 256. Anti-vacuity: host
+`libc-miss.so` drops `mktime`. **1,136** remain. Not OnPaint.
+Floor 87 stays.
+
+
+**NARROWED** (ADR-0180, `cef-und2/`): grows the bound set to
+**400 of 1,336** (200+ beyond ADR-0179) — POSIX / pthread / locale
+leaf stubs through OUR `LIBC.SO`. LIBC RX may span six pages;
+`elfDlopenSymMax` rises to 512; face slab stays 4096 B with 8-byte bodies.
+Anti-vacuity: host `libc-miss.so` drops `__udivti3`. **936** remain.
+Not OnPaint. Floor 87 stays.
+
+**Binary next step:** remaining UND, then Content `OnPaint`.
+Do not raise `de-browse` floor 87. `BROWSE.ELF` stays the thin
+FRAME client.
+
+---
+
+## GAP-0323 — Portable hardware classes: five green, one honest leftover
+
+**Domain:** kernel (storage / HID / GOP / net)
+**Status:** NARROWED — five harness PASSes; Wi-Fi remains OPEN.
+OTA plant is PASS (`ota0/`); OTA host TCP fetch is PASS
+(`ota-host/`, ADR-0151). OTA TLS 1.2 record layer is PASS
+(`ota-tls/`, ADR-0154). OTA cert store / chain verify is PASS
+(`ota-cert/`, ADR-0168). OTA TLS 1.3 is PASS (`ota-tls13/`,
+ADR-0177). Leftover on OTA: none (Wi-Fi only).
+
+| Class | ADR | Harness | Status |
+|---|---|---|---|
+| NVMe + AHCI FAT roots | 0137 | `nvm-root/` | PASS (class, not SKU) |
+| xHCI HID → kbdevent + mouse | 0138 | `hid-sess/` | PASS (no `usb-kbd` on 8042) |
+| GOP session chrome | 0141 | `gop-sess/` | PASS (OVMF aperture) |
+| VirtIO-net second NIC | 0145 | `net-virtio/` | PASS (`1af4:1041`) |
+| OTA signed plant on NIC | 0140 | `ota0/` | PASS (RX plant + FAT apply; bad sig refuses) |
+| OTA host TCP fetch | 0151 | `ota-host/` | PASS (real host; bad sig / no listener refuse) |
+| OTA TLS 1.2 record layer | 0154 | `ota-tls/` | PASS (AES128-SHA; bad cert / plain TCP refuse) |
+| OTA cert store / chain verify | 0168 | `ota-cert/` | PASS (planted CA; wrong chain → BADCERT) |
+| OTA TLS 1.3 record layer | 0177 | `ota-tls13/` | PASS (AES-128-GCM; TLS 1.2/plain refuse) |
+| 802.11 first class door | 0139 | — | OPEN — QEMU 11 has no Wi-Fi |
+
+Graphite / MakeVulkan / Venus are fenced. Syscall 11 stays `fdwait`.
+Do not mark Wi-Fi CLOSED without a real device path and a harness
+PASS. Do not relabel e1000/virtio as Wi-Fi. OTA TLS closed (1.2 + CA +
+1.3); leftover is Wi-Fi only (not plat-tls / FSGS).
+
+---
+
+## GAP-0324 — Sit-in looked tiny; the door is a QEMU viewer, not another hypervisor
+
+**Domain:** display / sit-in / Venus
+**Status:** NARROWED — ADR-0175 (`sit-in-view.sh`, `view-door/`).
+
+**Cause (measured):** Multiboot sit-in is Bochs **800×600** with cocoa
+at 1:1 (postage stamp on Retina). Venus under Docker used
+`gtk,gl=on` + default Xvfb, so `GET_DISPLAY_INFO` reported
+**~640×480** despite `xres`/`yres`; the only Mac deliverable was a
+tiny PNG (no live window). QEMU `-vnc` cannot share a GL context.
+
+**Door:** `scripts/sit-in-view.sh` — local `cocoa,zoom-to-fit=on`
+(optional `--uefi-hd` GOP 1280×720); Venus `--venus` uses
+`sdl,gl=on` + Xvfb 1280×720 + xdotool `+0+0` + **x11vnc `-rawfb` of
+guest SCAN at 1280×720** (same pixels as pmemsave PNG) **plus
+`-pipeinput` → `sit-in-view-input-bridge.py` → QMP** so Tiger
+pointer/keyboard reach PS/2 (rawfb alone is display-only). Do **not**
+`-clip 640x480` / upscale that cell — it crops the desk. Tiger
+`-FullScreen=1` letterboxes 16:9. Host VNC port **5900** by default
+(`VNC_PORT`). `sit-in.sh` defaults to zoom-to-fit. QEMU remains the
+Graphite emulator; VirtualBox / UTM-without-gl are not substitutes.
+
+**Leftover:** Homebrew cocoa cannot arm Venus (no gl device). Do not
+claim a second hypervisor runs Graphite. Fractional Mac-fill was
+retired for stair-stepped chrome; integer scale + letterbox is the
+door. Guest FB PNG is the sharpness proof — Tiger fullscreen is the
+**look** viewer for Venus, not Skia.
+
+**Pointer leftover CLOSED by ADR-0193.** Relative PS/2 + x11vnc-rawfb
++ QMP warp cannot track the Mac cursor. The clickable door is
+`sit-in-view.sh --abs`: QEMU cocoa (`oscortex-abs-pointer`) or QEMU
+`-vnc` plus `virtio-tablet-pci`. The kernel SETs `mouseWordX/Y` from
+ABS events (`virtab.dart` / `mouseAbsPlace`). USB `usb-tablet` on a
+resident xHCI poll is still OPEN — `usbHidTabletApply` is the SET
+seam, not a live interrupt IN. **Do not mass-`docker rm` every
+`oscortex-qemu-gl:local` container.** Leave `oscortex-onebar-proof`
+alone. The owner click target is the QEMU window, not Tiger :5900.
+
+**Live OTA on abs CLOSED by ADR-0199.** Pointer-only abs intentionally
+omitted NIC + `OTAKEY`/`SLOT.TXT`. `--abs` now adds SLIRP user-net +
+e1000 (same flags as `ota-host/`) and plants the OTA FAT files.
+Host serves `build/sit-in-view/ota-blob.bin` on `127.0.0.1:<port>`;
+in the OS shell: `ota get <port>` → `10.0.2.2` → `OTA OK`. No sshd.
+Leftover: DHCP/DNS beyond SLIRP; Wi-Fi (GAP-0323).
+
+---
+
+## GAP-0325 — Sit-in DE presence (taskbar / apps / titles) is visible
+
+**Domain:** DE chrome / sit-in / Venus session paint
+**Status:** NARROWED — presence + designed chrome this session.
+
+**Was:** generative desk alone with postage-stamp windows (~160×64)
+and a hairline taskbar; Start had no glyph; close/min were 10×10
+dots. Owner saw an “empty green field.” Then presence landed but
+chrome still read as flat neon stamps (hard shadow, gold strip,
+`PID` blob) — owner rejected “that can never be Skia.”
+
+**Now:**
+
+- Taskbar `wmChromeH` / `OSGFX_CHROME_H` = **48** (elevated slate
+  vgrad + top sheen); title **32** pearl; close/min **18** circles
+  with highlight via osxui → osgfx rrect (Graphite when Venus arms).
+- Soft alpha-blended drop shadow; CPU coverage-AA rrect spans;
+  Start **96×36** inset pill with glyph; slots `W0`/`W1`; note strip.
+- FILES **400×280** at (48,40); SET **300×260** at (460,48); sit-in
+  spawns both. Session titles label `FILES` / `SET` (not `PID`).
+- `de-session/` harness + `sit-in-view.sh --venus` PRESENCE probes
+  + `tigervnc-live-now.png`.
+
+**Then (ADR-0187, `de-skia-text/`) the two leftovers below that the
+owner had rejected were closed, and this entry's own diagnosis of why
+was wrong:**
+
+- **The qemu64 AA hang was ours, not qemu's.** This entry said "curved
+  Skia `drawRRect(MakeRectXY)+AA` still hangs on qemu64 in practice."
+  It hung because `osgfx_guest_crt.c`'s `sqrtf` was
+  `return __builtin_sqrtf(x)` compiled `-fno-builtin` without
+  `-fno-math-errno`, so the compiler lowered the builtin back to a call
+  to `sqrtf` — a self-recursive jump every curve measurement entered.
+  Inline `sqrtss`/`sqrtsd` fixed it. `OSGFX SKIA OPS OK 16` on serial
+  every boot covers all sixteen probe ops.
+- **Chrome shapes are Skia CPU `drawRRect`/`drawPath` with
+  `setAntiAlias(true)`**, plus `SkShaders::LinearGradient` and
+  `SkMaskFilter::MakeBlur` for elevation. `rrect_cover` demoted to the
+  no-canvas fallback. A window is one `osgfx_card_stroke` outline, not
+  four square strips.
+- **Chrome text is live TrueType outlines**, `SkPathBuilder` +
+  `drawPath` at paint time, real `hmtx` advances. Not a cell, not baked
+  masks, not `SkFont` — see GAP-0327 and ADR-0187 §1.1 for the exact
+  line.
+- Two `#GP` sources found on the way: `SkResourceCache` holding
+  bump-heap pointers across `osgfx_heap_frame_begin` (now
+  `SkGraphics::PurgeAllCaches()` first), and `saved_rsp` parked in
+  `.bss` where a paint-stack overflow could zero it (now on the stack
+  top, with a canaried guard band).
+
+**Leftover:**
+
+1. **Graphite is still not the chrome rasteriser.** Chrome AA is Skia
+   **CPU** raster. ADR-0161's Graphite `Recorder::snap` GP in
+   freestanding AnalyticRRect SkSL was **not** retested by ADR-0187 and
+   must be assumed to stand; the ICD binary-radius stamp keeps its
+   coverage and stays off live chrome. Graphite still arms for
+   PIX/RRECT/DESK proof stamps.
+2. **Start launch max stays 04** (GAP-0317) — BROWSE/PLAY/TAP on FAT
+   are not Start rows yet.
+3. **Title stem is session-painted `FILES`/`SET` by slot**, not a
+   live 8.3 name from the process table — reflective name-on-chrome
+   is a later rung.
+4. **Venus sit-in-view QMP flake** (`qmp-drive` exit 3 before
+   `virtgpuk`) can miss SCAN/PRESENCE; `de-session` Venus path is
+   the reliable Graphite proof.
+5. **The DE strip is still `osgfx_session.c`, not `DESK.ELF`.**
+   ADR-0183's direction is unchanged and unfinished; `osxui_label` now
+   routes to `osgfx_text` when it holds an `OsGfx`, which is the door,
+   not the move. Worse than unfinished: with `DESK.ELF` attached both
+   strips paint at once, because DESK's slot is frozen at 800x600 —
+   GAP-0329.
+
+**Binary next step:** the same Skia AA rrect that now returns on the
+CPU, reached through Graphite `Recorder::snap` on Venus, so chrome
+corners are GPU-rasterised rather than CPU-rasterised. **ADR-0183
+landed** (`de-desk/`): `wm gfx` blits FRAME shm after session wallpaper
+(no `OSGFX_WIN_FILL` body wipe); `DESK.ELF` is the desk-shell FRAME app
+planted/spawned with osxui taskbar paint.
+
+---
+
+## GAP-0326 — Surface protocol: four “we shouldn't lack” rungs landed; honest leftovers
+
+**Domain:** display protocol / `wm` / syscall 23
+**Status:** NARROWED — clipboard, one-level subsurfaces, integer
+scale, and two seats PASSed this session.
+
+**Landed:**
+
+| ADR | harness | what |
+|---|---|---|
+| 0183 | `wm-clip/` | kernel selection offer/take (cap-backed copy) |
+| 0184 | `wm-sub/` | child relative pose; parent move carries child |
+| 0185 | `wm-scale/` | integer buffer scale on attach+compose |
+| 0186 | `wm-seat/` | two packed focus slots on `wmMetaFocus` |
+
+Shared code: `core/kernel/wmext.dart`. No new syscall. 11 stays
+`fdwait`. `wmStore` stays 448. Not Wayland.
+
+**Leftover (binary next steps):**
+
+1. **Fractional scale** — integer only (ADR-0185).
+2. **DnD beyond clipboard** — offer/take only; no gesture path.
+3. **Deep subsurface trees / child drag** — one parent level
+   (ADR-0184).
+4. **Per-seat pointer hardware + seat-routed `kbdevent`** — two
+   focus slots; seat 0 still owns the legacy click/kbd path
+   (ADR-0186).
+
+---
+
+## GAP-0327 — Chrome text is a real outline scan-converted live; it is not a font engine
+
+**Domain:** DE chrome / text / `osgfx_text`
+**Status:** NARROWED — ADR-0187 replaced the 8×16 cell with live Skia
+outline fills. What is missing is everything above the scan-converter.
+
+**What is real, so nobody has to re-derive it:** `gen-osgfx-font.py`
+reads Roboto's `glyf` table at build time and emits each ASCII glyph's
+quadratic outline **in font units** plus its real `hmtx` advance into
+`osgfx_font_data.c`. `osgfx_text` replays those verbs into an
+`SkPathBuilder` — one path per run — and `SkCanvas::drawPath` fills it
+antialiased at a caller-chosen px size. So the size is live, the
+coverage is live, the advances are proportional. Three independent
+proofs in `de-skia-text/` (35 checks): `outline.py` on the generated C,
+`check-osgfx-font.py` re-rasterising that same C with a non-Skia
+scanline filler, and `caption.py` on the framebuffer.
+
+**Leftover (binary next steps):**
+
+1. **No `SkTypeface` / `SkFont` / `SkTextBlob`.** The guest-elf Skia is
+   built `skia_use_freetype=false`, `skia_enable_fontmgr_empty=true` —
+   no scaler context, no font manager, no TrueType parser in the image.
+   Binary next step: an `SkFontMgr` backed by a planted `.ttf` on FAT,
+   proven by `SkFont::measureText` agreeing with `osgfx_text_width` on
+   serial.
+2. **No shaping.** No GSUB/GPOS, so no kerning pairs, no ligatures, no
+   marks, no bidi, no complex scripts. Advances are `hmtx` only.
+3. **No hinting and no subpixel positioning.** Outlines are scaled
+   linearly from 2048 upem and origins snap to integers, so small text
+   has uneven stem weight — visible at 14px, not at 15px title size.
+4. **ASCII 0x20..0x7E, two weights, one size pair** (14px label, 15px
+   title). No glyph beyond `~`; a missing codepoint draws nothing.
+   `osgfx_font_data.c` is ~1740 verbs; a full BMP face is not a
+   `@rodata` table.
+5. **No glyph cache, and ADR-0191 measured that it is not the one to
+   build next.** GAP-0330's brief expected the outlines to be "likely a
+   large share" of a 40–47 ms chrome frame. Stubbing every `osgfx_text`
+   call out of a rasterising build made the tick *slower* (41.0 ms
+   against 35.9 — noise around zero), and against the cached-band
+   baseline text is **0.25 ms of a 4.46 ms rasterisation**: 5.6% of a
+   cheap frame, 0.7% of the frame ADR-0191 started from. A cache keyed
+   by char + size + colour would buy at most 0.25 ms of a 0.602 ms
+   cached tick and nothing of the miss, against a keyed A8 mask store,
+   an eviction policy and a subpixel-positioning argument. The 88% was
+   the taskbar's `SkShaders::LinearGradient`, and that has its own cache
+   now (ADR-0191 §5).
+
+   **The counter is in the OS so the next worker starts from a number
+   rather than from this paragraph.** `osgfx_text` calls
+   `osgfx_chrome_glyph_count(0)` per run and `wm pace off` prints
+   `WM CHROME ... GLYPH <n> HIT <n>`. On the `de-chrome-cache` boot that
+   read **471 scan conversions across 469 rasterisations, 0 served** —
+   one outline run per frame on a bare desktop, all misses.
+   `de-chrome-cache` asserts `GLYPH >= REGEN` (the counter is wired) and
+   `HIT == 0` (no cache exists), so landing one requires editing the
+   assertion that says none has.
+
+   **This is a bare-desktop claim and does not generalise.** A screen
+   full of window titles scan-converts one run per title per
+   rasterisation, and document volume is the case item 5 was always
+   about. `GLYPH` over `REGEN` climbing is what says the balance moved.
+6. **`osgfx_glyph.c`'s 8×16 cell still exists** for the packed-scanout
+   label path and keeps its `osgfx-glyph-aa` soft-coverage door. It is
+   soft-edged, not antialiased-by-a-rasteriser, and must not be
+   described as Skia.
+7. **`osgfx_sw.c`, `osgfx_metal.m`, `osgfx_graphite.mm` do not
+   implement `osgfx_text` / `osgfx_elevate` / `osgfx_card*`.** They are
+   not linked into `kernel.elf`; a host harness that links one and calls
+   the session paint fails to link.
+---
+
+## GAP-0328 — The GL scanout is 640x480 no matter what `xres=`/`yres=` say
+
+**Domain:** GPU / virtio-gpu / scanout geometry
+**Status:** CLOSED by ADR-0189. Found while capturing the ADR-0187
+chrome on Venus; the OS now drives 1280x720 and no longer takes the
+device's answer as a mode.
+
+**What it was.** `virtgpuk` sized the compose target from the device's
+answer to `GET_DISPLAY_INFO` (`virtgpu3d.dart`, `sw`/`sh` at
+`resp+32`/`resp+36`). The device answered **640x480** even when the
+command line said `-device virtio-gpu-gl-pci,...,xres=1200,yres=720`:
+`VIRTIO SCAN 00000000 00000000 00000280 000001E0`, then
+`WM ON BASE 00D8D000 PITCH 00000A00` — pitch 0xA00 is 2560, i.e. 640 px.
+
+**Root cause.** Not ignored properties and not a parse bug — the
+offsets were always right. QEMU seeds `req_state[0]` from
+`xres=`/`yres=`, then the UI frontend overwrites `req_state[0]` through
+`dpy_set_ui_info` with the console it actually realised, and
+`GET_DISPLAY_INFO` answers from `req_state[0]`. Last writer wins and
+the last writer is the display backend. That is the whole difference
+the previous entry recorded as "not yet identified": `shot-venus.sh`
+ran `gtk,gl=on` under `xvfb-run`, which realises a 640x480 placeholder
+console; the door runs `sdl,gl=on` sized 1280x720, which is why the
+same OS reported 1280x720 there.
+
+**Fix.** The driver picks the mode. `virtgpuModeFloor` /
+`virtgpuModeFits` (`virtgpu.dart`) override a hint that is smaller than
+1280x720 or too large for the attach path to back, and
+`RESOURCE_CREATE_3D` + `SET_SCANOUT` are sized from that choice —
+SET_SCANOUT's rect is what resizes the host console, so driving it is
+the mode set. 1280x720 is the ceiling of the *current* attach path, not
+a taste: it needs 900 backing pages (cap 1024) and exactly 4 entry
+pages (cap `virtgpuEntCap` 4), so anything larger needs that cap grown
+first.
+
+A new serial line reports what was driven, distinct from what was
+reported: `VIRTIO MODE wwwwwwww hhhhhhhh ssssssss`, `src` 1 when the
+driver overrode the hint. `sit-in-view.sh`, `sit-in-view-fb-refresh.py`
+and `probe-run.py` now take geometry from `VIRTIO MODE` and fall back
+to `VIRTIO SCAN` only if it is absent — `VIRTIO SCAN` is a readback and
+is *expected* to disagree.
+
+**Guarded by** `de-skia-text/shot-venus.sh`, which asserts
+`VIRTIO MODE 1280x720` and `WM ON BASE ... PITCH 0x1400` on the
+`gtk,gl=on` path, i.e. the path where the hint really is 640x480 and
+the override really fires. Live door proof:
+`VIRTIO MODE 00000500 000002D0 00000000`,
+`WM ON BASE 0103C000 PITCH 00001400`, capture
+`core/build/tigervnc-live-now.png` at 1280x720.
+
+**Left open, deliberately:** no `GET_EDID`, so there is still no mode
+*list* and no validation against what the host would enumerate — the
+floor is driver policy plus a fit check. The mode is a constant, not a
+negotiation, and there is no post-boot mode change. See ADR-0189 §6.
+
+**Not to be confused with** GAP-0325 leftover 4 (the Venus `qmp-drive`
+screendump flake) or with the `xvfb-run -a` park noted in
+`shot-venus.sh`: those are harness-side. Nor with GAP-0329, which this
+makes *more* visible: DESK.ELF's strip is hardcoded to an 800x600
+bottom, so at 1280x720 it floats mid-desk.
+---
+
+## GAP-0329 — Two taskbars paint whenever DESK.ELF is attached
+
+**Domain:** DE chrome / ADR-0183 desk shell / `osgfx_session.c`
+**Status:** **CLOSED by ADR-0192.** All three numbered steps below were taken
+in the order they were written, and there is now one taskbar:
+`DESK.ELF`'s, at 800x600 and at 1280x720
+(`core/build/de-one-taskbar-1280x720.png`). The three claims, in serial:
+`DESK SCREEN 0500 H 02D0` (it asks -- `wmsurface` op 9, `wmOpScreen`),
+`DESK ATT OK X 0000 Y 02A0 W 0500 H 0030` (full width, flush bottom),
+`OSGFX SESSION STRIP CLIENT` (the fallback withdrew, on committed pixels
+over the strip rect via `wmPanelStrip` -> `OSGFX_GUEST_PANEL` bit 3 --
+exactly the free bit this gap named). `de-desk` asserts all three plus
+four corner probes; `de-session`, which spawns no `DESK.ELF`, asserts the
+fallback is still there without one.
+
+**Two things this gap got wrong, both worth keeping.** It said the
+`osxui_button_fb` hang was "not the ADR-0187 `sqrtf` bug" because
+`DESK.ELF` links only `desk.o` + `osgfx_glyph.o` and so gets the weak
+no-op. The first half is right and the reasoning was wrong: with
+`osxui.c` + `osxui_fb.c` really linked the call still faulted, and the
+cause was neither float nor linkage but a stack 8 mod 16 at `_start`
+(GAP-0339). It also said "a FRAME client has no way to learn the scanout
+size ... the compositor is the only party that knows where the slot is" --
+true of the tree as it stood, and the fix was to say it, not to work
+around it.
+
+**Was:** OPEN, visible in the owner's own `tigervnc-live-now.png`.
+
+Under `wm gfx` + `wm de` with `DESK.ELF` spawned, **two** strips are
+painted every frame by two paths that never consult each other:
+
+| strip | painter | y | width | slots shown |
+|---|---|---|---|---|
+| lower, flush to the bottom edge | `paint_de_strip` in `osgfx_session.c` | `cmd->h - OSGFX_CHROME_H` (live scanout height) | `cmd->w` | `W0` **and** `W1` (reads the `HELD0`/`HELD1` mailbox flag bits) |
+| upper, floating mid-screen | the compositor blitting DESK's shm | `SURF_Y`, **hardcoded 549** in `core/user/frame/desk.c` | `WIN_W`, **hardcoded 794** | `W0` only |
+
+549 is `600 - 48 - 3`, i.e. the 800x600 bottom slot frozen into the
+client. 794 is `800 - 2*3`. At any other scanout size DESK's strip is
+both in the wrong place and the wrong width, which is exactly what the
+owner's 1280x720 shot shows: a 794-wide bar hanging in the middle of the
+desk above the real one.
+
+**Why the session strip is not simply deleted:** ADR-0183 kept it so
+that Start exists before DESK attaches, and `paint_de_strip` has no way
+to know DESK is up. `wmDeChromeDraw` (the *Dart* strip) already
+self-suppresses under `wmMetaGfx`; the C fallback has no equivalent
+guard, and `wmMeta` has no desk-shell slot.
+
+**Why this cannot be fixed by moving the constants:** a FRAME client has
+no way to learn the scanout size. `osframe.h` exposes no geometry query,
+and `configure` (ADR-0142) does not carry the screen rect. So DESK
+cannot compute its own slot, and the compositor is the only party that
+knows where the slot is.
+
+**Binary next steps, in order:**
+
+1. **Give a client its screen rect.** A new `wmOp` (9 is free; 1..8 are
+   taken) returning `(w << 32) | h` in `rax`, the way `wmOpSeatGet`
+   already returns bits in `rax`. No new syscall — 23 stays `wmsurface`,
+   11 stays `fdwait`. Harness: `DESK` prints the rect it was told and it
+   equals `VIRTIO SCAN`'s.
+2. **DESK sizes and places itself from that**, replacing `SURF_Y 549` /
+   `WIN_W 794`. Harness: assert DESK's strip pixels are flush to the
+   bottom edge at two different scanout sizes.
+3. **Suppress the fallback once DESK owns the slot.** A spare
+   `OsGfxGuestCmd.flags` bit (bit 3 is free; 0..2, 4..5, 8..9, 16..17 are
+   used) set by `wmGfxKick` when a live FRAME window covers the strip
+   rect, checked by `paint_de_strip`. Harness: exactly one strip, i.e.
+   the desk-generative wallpaper is unbroken at the old `SURF_Y`.
+
+Only after 3 is ADR-0183's "the DE owns the strip" true. Until then the
+session fallback is the strip that is actually correct at every
+resolution, and DESK's is the one that is wrong.
+
+**Related:** GAP-0325 leftover 5 (the strip is still `osgfx_session.c`,
+not `DESK.ELF`) names the ownership; this names the visible defect.
+`desk.c`'s own header comment records a separate, older problem —
+`osxui_button_fb` hung in-ELF, so DESK's pills are manual solid fills.
+That hang is **not** the ADR-0187 `sqrtf` bug: `DESK.ELF` links only
+`desk.o` + `osgfx_glyph.o`, so it gets the weak no-op `osxui_button_fb`
+and never links `osgfx_guest_crt.c` at all.
+
+---
+
+## GAP-0330 — The DE chrome re-stamp is now the whole frame
+
+**Domain:** DE chrome / `osgfx_session.c` / ADR-0187, ADR-0188
+**Status:** **CLOSED by ADR-0191.** At the median of six runs the session tick
+is **63x** cheaper (`wm fps` `K D` 43.4 ms against `K 4` 0.74 ms within one
+binary; **44x** against the pre-change build's 32.703 ms) and a full compose is
+**9.2x** cheaper within the binary, **36x** across the builds. The spread is
+wide — this host was shared with concurrent harnesses and a live door all
+afternoon and the milliseconds move ±50% run to run — so ADR-0191 §2 reports
+all five runs and the outlier rather than the best one. Harness
+`core/tests/conformance/de-chrome-cache/run.sh`, 57 checks, floors set at 10x /
+5x / 3x so a FAIL means the cache broke and not that the Mac was busy.
+`de-session` (65) and `de-pace` (63) still PASS on the final tree, and `de-pace`
+measures 48.3–49.9 fps against its 50 fps cap with the ratio to `wm pace 4`
+holding at 1.93–2.02.
+
+**Two things below turned out to be wrong, and they are left in place because
+the corrections are the finding.**
+
+1. **The invalidation condition is NOT `wmGfxChromeSig`**, which item (1)
+   proposed. The signature answers a Dart question and does not fold
+   `tone0`/`tone1`, the client's bottom-corner colours that the compositor
+   re-samples out of client shm on every kick and that `osgfx_session_paint`
+   reads. A cache keyed on it would have held a stale corner. ADR-0191 §3 has
+   the argument; the key is a fold taken in C, on the side that reads the
+   mailbox, and `de-chrome-cache/keycover.py` derives the coverage condition
+   out of both sources rather than trusting either comment.
+
+2. **The chrome is cached as ONE full-screen frame, not composited over the
+   wallpaper blit** as item (2) proposed. Two buffers would have needed a
+   coverage mask — the chrome is antialiased and its fringes blend against the
+   wallpaper — and the session already paints the wallpaper itself. One buffer
+   holding the composed result is the same 0.6 ms and no mask.
+
+**And the prediction about where the time went was wrong by two orders of
+magnitude.** The glyph outlines (GAP-0327), which the rung brief expected to
+be "likely a large share", are **0.25 ms** — 0.7% of the frame. The taskbar's
+one `SkShaders::LinearGradient` fill was **87.6%**, at ~820 ns/px, and
+`setAntiAlias(false)` on it changed nothing, so the cost was the gradient
+shader and not the coverage pass. ADR-0191 §5 has the stub-one-thing-at-a-time
+table that establishes it. That band has its own cache, keyed on width, height
+and the two colours, which is what makes a chrome frame that genuinely
+*changed* 8.8x cheaper as well.
+
+**What the original entry said, kept for the record:**
+
+ADR-0188 removed the generative wallpaper from the per-frame cost (17–23x,
+`wm fps` stage `K 8` against `K 3`). What is left of a full compose is the
+Skia session tick, and it is essentially all of it. Four runs at 800x600 on
+`-cpu qemu64`:
+
+| stage | ms/iter |
+|---|---|
+| session tick, `K 4` | 40.3 – 47.3 |
+| full compose, `K 5` | 40.3 – 44.6 |
+| cached wallpaper, `K 3` | 0.41 – 0.55 |
+| damage-limited present, `K A` | 2.7 – 3.0 |
+
+So a full compose is a session tick plus about a millisecond, and the DE's
+ceiling for a frame that must repaint chrome is **22–25 fps**. The paced path
+does not pay it — a client update is 2.7–3.0 ms and the frame clock holds a
+measured 49.7 fps against its 50 fps cap — but every chrome change does, and
+that includes a window raise, a focus change, a popover and a wallpaper
+change.
+
+**Why ADR-0188 left it alone:** a worker was concurrently rewriting chrome to
+real Skia text and shapes (ADR-0187) in the same file and the same paint path.
+Two workers restructuring one paint is how both changes get reverted.
+
+**What the fix looks like, and it already has its hard part done.** A chrome
+cache needs an invalidation condition, and `wmGfxChromeSig` in
+`core/kernel/wmpace.dart` **is** that condition: it folds every input
+`osgfx_session_paint` reads (window set and geometry, top slot, keyboard
+focus, DE and popover state and position, wallpaper mode) into one word, it is
+stamped after the tick so a fault inside Skia leaves it stale, and
+`de-pace/run.sh` already tests that damage is honoured only while it holds
+still. So:
+
+1. **Paint chrome into its own buffer, keyed by `wmGfxChromeSig`**, from the
+   same frame allocator run `wmDeskEnsure` uses (§5 of ADR-0188 has the
+   contiguity check to copy). Harness: a `WM CHROME REGEN <n>` counter that is
+   1 for a boot in which nothing raises, focuses or pops.
+2. **Composite chrome over the wallpaper blit instead of re-drawing it.** The
+   two buffers make a full compose two blits plus the client rows, which is
+   `K 3` + `K 2` territory — under 2 ms, not 40.
+3. **Only then is `wmGfxChromeFresh`'s fallback cheap.** Today a signature
+   change costs a whole session tick; after (2) it costs one Skia paint into a
+   buffer, and the *present* is a blit either way.
+
+**Related:** ADR-0188 §8 names this as the work it did not do. GAP-0329 (two
+taskbars) is a different defect in the same file and should be fixed before
+(1), because caching a wrong strip caches it harder.
+
+---
+
+## GAP-0331 — The frame clock is the PIT, not the display
+
+**Domain:** compositor pacing / ADR-0188
+**Status:** OPEN. Named by ADR-0188 §8 as a limit of the policy it chose.
+
+`wmFrameTick` runs from IRQ0. That gives the DE a real, measured refresh rate
+(49.7 fps against a stated 50 fps cap, `de-pace/run.sh`) and it is the first
+one this OS has ever had. Two things it is not:
+
+1. **It is not vsync.** There is no vblank interrupt from stdvga on the
+   Homebrew path and no fence on the Venus one, so "present" means "the
+   compositor finished writing the scanout it shares with the host". Tearing
+   against the host's own read of that scanout is possible and **unmeasured**
+   — no harness in this suite can see it, because every harness reads the
+   framebuffer with `pmemsave` after the fact rather than during a present.
+2. **The cap is expressible only in whole PIT ticks.** `wmPacePeriod` is a
+   tick count and the PIT is 100 Hz, so the rates this policy can name are
+   100, 50, 33, 25, 20, … **60 is not one of them.** A 60 Hz cap would need
+   either a faster PIT programming (and every `ticks` golden rests on the
+   current divisor, GAP-0058) or a sub-tick clock.
+
+**Binary next steps, in order:**
+
+1. **Get a real presentation signal on one path.** virtio-gpu's
+   `RESOURCE_FLUSH` completion on the control queue is the closest thing
+   available (ADR-0079, ADR-0093 already drive that queue). Harness: a
+   `WM PRESENT` line whose count equals the flush completions, on the
+   `virtio-gpu` boot rather than on stdvga.
+2. **Drive the clock from that completion instead of the tick** when it
+   exists, keeping the PIT as the fallback the stdvga path still needs.
+   Harness: `WM PACE` reports a rate that tracks the device's, not 100/N.
+3. **Only then does a cap that is not a tick divisor mean anything.**
+
+Until 1, "50 fps" means "fifty presents per wall-clock second, each of which
+finished writing memory the host reads whenever it likes".
+
+---
+
+## GAP-0332 — Coalesced damage is a bounding box, not a region
+
+**Domain:** compositor pacing / ADR-0188
+**Status:** OPEN by design, with the cost printed.
+
+`wmDamageRect` folds each mark into the **union** of everything pending, so
+two 16x16 rectangles at opposite corners of the screen present as the box that
+contains both — 480,000 pixels for 512 that changed.
+
+**Why it is a union and not a list:** a list is a queue that can overflow, and
+an overflowing damage queue has to decide what to drop, which is a correctness
+question with no good answer. The union is never wrong, only sometimes bigger
+than it had to be.
+
+**Why it has not bitten:** the measured case is one client committing small
+rectangles in one place. `de-pace/run.sh` records 226,586 marks folded into
+416 presents — a 545:1 ratio — and the presented rate held at the cap, so the
+boxes being presented were small. A DE with two clients animating in opposite
+corners is the case that would hurt, and it does not exist yet.
+
+**What the fix looks like:** a small fixed array of rectangles (four is the
+number every other compositor picked) with a merge rule — union two
+rectangles when the union is cheaper than the pair, otherwise keep both, and
+fall back to the screen when the array is full. `wmPageWDmg*` is already four
+words per rectangle in a page that has room.
+
+**Harness that would prove it:** two resident clients committing at opposite
+corners, asserting that the presented pixel count per frame is under some
+fraction of the screen. The `PX` field of `WM FRAME` already reports it.
+
+---
+
+## GAP-0333 — A client that stops committing loses its body to the cached wallpaper
+
+**Domain:** compositor pacing / ADR-0188 / `wm.dart`
+**Status:** CLOSED by ADR-0190. Root-caused, fixed, and covered by a
+time-based harness (`core/tests/conformance/de-retain`, 34 checks, 135 s
+of wall clock) that was shown to FAIL with the fix backed out.
+
+A window's chrome survived indefinitely but its **client body did not**.
+Measured on `oscortex-interactive-door` at 1280x720, one boot:
+
+| when | `SET` window | `FILES` window |
+|---|---|---|
+| at boot (`tigervnc-live-now.png`) | full file listing | full |
+| ~2 min idle (`tigervnc-live-current.png`) | empty card, chrome only | title text and buttons floating with no body at all |
+
+**The suspicion recorded here was wrong in its mechanism and right in
+its missing rule.** Damage honouring was not implicated at all. The
+actual cause: `isr_common` calls `osgfx_guest_tick` after **every**
+interrupt (`isr.S:297`), that tick paints the whole scanout whenever
+`gen` has moved, the only thing that moves `gen` is `wmGfxKick`, and
+**nothing in the session's path reads client shm** — the one client
+blit on this machine is `wmDrawWindow` (`wm.dart:857`), reached from
+`wmCompose` and nowhere else. `wmPointerTick` kicked unconditionally on
+every pointer packet, so one pointer walk handed the screen to Skia and
+erased every idle client's body permanently.
+
+It is therefore **not the slow decay it looked like**: it is one packet.
+The two minutes were how long it took the owner to move the mouse and
+then look. And it is not strictly an ADR-0188 regression — the kick
+predates it. ADR-0188 removed the always-full-compose that used to
+paper the wipe over on the next commit, and a client that commits once
+and idles has no next commit.
+
+**The rule this gap asked for was the right one** and ADR-0190 states
+it: a present must re-blit every mapped client it covered.
+`wmSessionRestore` (`wmpace.dart:990`) pays that debt on the
+instruction after the tick, Dart-only, busy-guarded; `wmGfxKick`
+records it; `wmCompose` settles it; and `wmPointerTick` no longer kicks
+for a move that would not change the picture.
+
+**The binary next step this gap set was performed** and is stricter
+than it asked: two clients that commit once and then only yield, their
+interior blocks compared byte-for-byte at T0 and after 2.8 s, 15.1 s,
+45.1 s and 135.1 s, across 60 pointer packets and 10 popover cycles
+with the frame clock armed. All intact; 40 restores, 3 266 880 pixels
+put back, no debt outstanding at the end. With `DE_RETAIN_NOFIX=1` and
+the fix reverted, both bodies die on the first pointer stage.
+
+**Remaining, and carried in ADR-0190 §7:** `wmGfxEdgeTone` is not part
+of `wmGfxChromeSig`, so an edge-tone-only change now waits for the next
+compose instead of riding an accidental pointer repaint; and an
+exhausted frame allocator leaves the debt unrecordable, in which case
+the kick still happens and the restore does not.
+
+---
+
+## GAP-0334 — Two resident clients starve the shell
+
+**Domain:** scheduler / shell / `procTick`
+**Status:** OPEN. Found by ADR-0191's harness, which is shaped around it.
+
+`de-chrome-cache/drive.py` spawns ONE client, and the first draft spawned two.
+With two resident processes the scheduler round-robins them under IRQ0 — which
+`wm pace off` deliberately leaves unmasked while a process is resident, on
+`shellTicks`' terms — the serial fills with `PROC PREEMPT` / `PROC YIELD`, and
+**the shell never reads another typed line.** A `wm pace off` typed 25 seconds
+after the second spawn produced no report at all.
+
+This is not a graphics defect and not an artefact of the harness typing too
+fast: `de-session` spawns two clients and then types nothing, which is why it
+has never seen it. The reproduction is two spawns followed by any command.
+
+**What is not known:** whether the shell's line is lost (keyboard IRQ serviced
+while a client is current, byte dropped) or merely never scheduled (shell task
+never runs long enough to reach `shellExec`). Those need different fixes and
+the serial cannot tell them apart, because the shell echoes nothing until it
+executes.
+
+**Binary next step:** a harness that spawns two clients, types `ticks`, and
+asserts the count line appears within 5 s. Then, if it fails, echo each byte
+on receipt so the two hypotheses separate.
+
+**Independently reproduced by ADR-0190's `de-retain`**, which needs two
+resident clients for its own reasons and lost the shell in exactly this way:
+every command typed after the second spawn was ignored, including `wm pace`.
+The workaround it uses — and it is a workaround, not a fix — is to type
+everything **before** the second spawn and then read the compositor's counters
+straight out of the state page in guest physical memory, locating
+`osgfx_guest_cmd` with `nm` and `pmemsave`ing it. That the serial line cannot
+be used at all after two spawns is a second, harder statement of this gap.
+
+---
+
+## GAP-0335 — The 4.46 ms chrome rasterisation is not analysed past the gradient
+
+**Domain:** DE chrome / `osgfx_session.c` / ADR-0191
+**Status:** OPEN, and it is the next rung on this line.
+
+ADR-0191 §5 took a chrome rasterisation from 35.9 ms to 4.46 ms by caching the
+taskbar gradient, and established that text is 0.25 ms of what is left. **The
+other 4.2 ms has not been taken apart.** The candidates, in the order a
+stub-one-thing-at-a-time pass should try them:
+
+1. `SkGraphics::PurgeAllCaches()`, which `tick_body` calls on **every** tick,
+   before the cache-hit check decides whether anything will be drawn. It is
+   there for a real reason (ADR-0172: bump-heap pointers in the global
+   `SkResourceCache` outlive `osgfx_heap_frame_begin`) but it is unmeasured,
+   and on a hit nothing was allocated to purge.
+2. `SkMaskFilter::MakeBlur` for the elevation rings — a real blur per elevated
+   window per rasterisation.
+3. The rrects themselves, which is the irreducible part.
+
+**Why it matters and when:** only when chrome changes every frame, which is
+dragging a window or a live popover. At 4.46 ms that is a 220 fps ceiling, so
+this is not urgent — it is recorded so the number is not mistaken for
+analysed.
+
+**Binary next step:** hoist the purge below the hit check (it is provably
+unnecessary on a blit), measure `K 4` and `K B` again, and report both.
+
+---
+
+## GAP-0336 — The taskbar band cache is one entry
+
+**Domain:** DE chrome / `osgfx_chrome.c` / ADR-0191
+**Status:** OPEN by design, and instrumented rather than fixed.
+
+`osgfx_chrome_band` holds exactly one band, keyed on `(w, h, top, bot)`. There
+is exactly one full-width radius-0 vertical gradient in the chrome today, so a
+one-entry cache is a *complete* cache of the thing it caches. A second gradient
+strip of a different height or colour pair would thrash it: every rasterisation
+would refill, and the 8.8x would quietly become 1x.
+
+**It would not be silent.** `WM BAND FILL` climbing in step with
+`WM CHROME REGEN` is exactly what thrashing looks like, and
+`de-chrome-cache/run.sh` asserts `FILL < REGEN`, so adding that second strip is
+a harness FAIL rather than a slow boot. That is the whole of the mitigation and
+it is deliberate: a two-entry cache would need an eviction rule, and there is
+no second entry to evict yet.
+
+**Binary next step, when a second gradient lands:** a small keyed table, and
+`WM BAND` gaining a per-entry line so `FILL`/`HIT` stays readable.
+
+---
+
+## GAP-0337 — A cached chrome frame is presented as a full-screen blit
+
+**Domain:** compositor / ADR-0188, ADR-0191
+**Status:** OPEN.
+
+`osgfx_chrome_present` blits `w * h` pixels — 480,000 loads and stores at
+800x600 — for any tick that reaches it, including one where a single pixel
+changed. That blit **is** the 0.602 ms `K 4` measures; the rasterisation it
+replaced was 44 ms, so this was the right trade and it is not the end of it.
+
+ADR-0188's damage path already avoids composing at all for a client commit, so
+this only bites where a session tick happens for a small reason: a pointer
+move under `wm gfx`, a caret blink, a hover highlight. What is missing is a
+**damage-limited blit out of the chrome cache** — the cache is a full-screen
+image in the scanout's own format, so presenting a sub-rectangle of it is the
+same loop with different bounds and no new state.
+
+**Binary next step:** `osgfx_chrome_present_rect(m, x, y, w, h)` plus a
+`wm fps` stage that presents a 64x64 rect out of the cache, asserted against
+`K 4` to be at least 20x cheaper. The damage rectangle is already in the
+mailbox for the gfx arm.
+
+---
+
+## GAP-0338 — Every ADR-0191 number is 800x600 stdvga on qemu64
+
+**Domain:** DE chrome / ADR-0191 / measurement
+**Status:** OPEN, and overlapping live work.
+
+The chrome frame buffer is sized from `fbGeomWidth()`/`fbGeomHeight()`, the
+band offset is recomputed on every `wmChromeBufEnsure` precisely so a
+resolution change moves it, and `wmChromeBufFree` gives the old run back before
+taking a new one. **All three of those are code-reading claims.** No harness
+boots this cache at a second resolution, and none boots it on Venus at all —
+`de-chrome-cache` is Homebrew-only 800x600.
+
+Two specific things are unproven rather than merely unmeasured:
+
+1. **A resolution change mid-boot.** The path exists (free, realloc,
+   republish the band slice) and nothing has taken it. The failure mode if the
+   band slice were *not* republished would be Skia rasterising the taskbar into
+   the middle of the cached frame, which is visible and ugly rather than
+   subtle — but that is an argument that a bug would be found, not that there
+   is none.
+2. **Venus/Graphite.** `de-session` proves the Graphite arm still arms and
+   still paints after this change, but `wm de` on Venus takes a different
+   desktop-fill arm and no `WM CHROME` report has ever been read off a Venus
+   boot.
+
+**Why now:** the worker on GAP-0328 / ADR-0189 is changing what
+`GET_DISPLAY_INFO` reports, which is exactly the input this cache sizes itself
+from. These numbers should be re-taken once that lands rather than trusted
+across it.
+
+**Binary next step:** add a second `de-chrome-cache` phase that types `fb` at a
+different mode after the first report and asserts `WM CHROME PX` grew, `REGEN`
+moved once, and the taskbar gradient probe still passes at the new width.
+
+---
+
+## GAP-0339 — A FRAME `_start` was 8 mod 16, so any SSE spill killed the app
+
+**Domain:** ring 3 ABI / `core/user/frame/` / ADR-0192
+**Status:** **CLOSED for FRAME apps by ADR-0192's `OSFRAME_START`**, and OPEN as
+a class: nothing verifies the property, and every ring-3 entry that is not a
+FRAME app still hand-rolls its own `_start`.
+
+The System V ABI says RSP is 16-byte aligned *at the instruction after* a
+`call`, which is to say a function entered by `call` sees RSP ≡ 8 (mod 16) and
+clang emits prologues on that assumption. The kernel enters ring 3 with
+`iretq` and a 16-aligned RSP. A `void _start(void)` compiled by clang is
+therefore off by 8 for its whole call tree, and the first *aligned* SSE store
+anywhere below it -- `movdqa %xmm0,-0xc0(%rbp)`, which clang emits freely when
+it vectorises an integer loop -- raises #GP(0):
+
+    FAULT 0D ERR 0000000000000000 OP 660F
+    USER FAULT VEC 0D ... RIP 0000000010002C62 CPL 3
+    PROC KILL SLOT 00
+
+**This is what "`osxui_button_fb` HANGS in-ELF" was.** `desk.c` carried that
+sentence in its header for two ADRs and hand-wrote solid-span pills because of
+it. The program was not wedged, it was reaped, and from outside the two look
+the same: no more `USER WRITE` lines. Every unaligned-stack app that never
+happened to be vectorised worked, which is why this survived so long.
+
+**What is not done:**
+
+1. **No harness asserts the alignment.** `OSFRAME_START` is used by `desk.c`
+   and correct there; nothing fails if the next FRAME app writes a plain C
+   `_start`, and it will fault only if its compiler happens to vectorise.
+   A one-instruction `test $15, %rsp` self-check in the shim, or a build-time
+   `nm`/objdump check that `_start` is the shim, would make it structural.
+2. **The other ring-3 entries are unconverted.** `core/user/**` has many
+   `_start`s (libc programs, `app1.c`, the d2/d3 probes). They are not known to
+   be broken -- they are known not to have been vectorised yet.
+3. **The kernel does not have to enter this way.** Entering with RSP ≡ 8
+   (mod 16) in `procEnterUser` would make a plain C `_start` correct and this
+   whole class disappear. That is a one-word change to the initial stack and it
+   was not made in ADR-0192 because it moves the initial-stack layout every
+   existing `_start` already reads `argc`/`argv` off.
+
+## GAP-0340 — `wmTitleH` went 18 → 32 and no ADR says so
+
+**Status:** open. **Found by:** the conformance sweep, triaging `d8-title`.
+
+ADR-0075 (title bars are chrome) specifies an 18-pixel title band, and
+`d8-title` asserted `16 <= wmTitleH <= 20` on that authority. `wmchrome.dart`
+says 32. Nothing in `core/docs/decisions/` authorises the move.
+
+The move is nonetheless **correct and forced**, which is why the code was not
+reverted:
+
+1. `wmBtnY` (`wmde.dart`) places a `wmBtnS`-tall button `wmBtnGap` down from
+   the window top and **falls back to flush-with-the-top** when
+   `wmBtnGap + wmBtnS` does not fit. With `wmBtnS = 18` and `wmBtnGap = 8` the
+   binding floor is 26, so an 18-row band did not fail loudly — it silently
+   put the close and minimise buttons on the client's first row.
+2. ADR-0187 made the caption a live Skia outline, `OSGFX_TEXT_TITLE_PX` tall,
+   drawn `SESS_TITLE_PAD_Y` down from the same top edge. An 18-row band clips
+   it.
+3. ADR-0187's own de-session measurement already reads "27 over 32 rows", so a
+   32-row band was assumed by the ADR that needed it.
+
+`d8-title` now asserts the **containment** — the band is at least
+`wmBtnGap + wmBtnS` and at least `SESS_TITLE_PAD_Y + OSGFX_TEXT_TITLE_PX`,
+every term read out of source — instead of a remembered range. That is
+strictly stronger: the old range could not even be satisfied by a band that
+fits its own buttons.
+
+**Binary next step:** amend ADR-0075 (or write a successor) stating the title
+band's height is derived from the button column and the caption box, and that
+18 was the pre-ADR-0187 bitmap-caption value.
+
+## GAP-0341 — Six byte-exact goldens encode kernel physical addresses, so any kernel edit invalidates them
+
+**Status:** open. **Found by:** regenerating M7/M9/M10/M11/M12/M13 twice in one
+afternoon during the ADR-0187/0188/0189 sweep.
+
+`m7-frames`, `m9-ring3`, `m10-elf`, `m11-proc`, `m12-heap` and `m13-libc`
+compare the whole serial capture byte-for-byte, and that capture contains
+`PMM BASE`, `PMM ALLOC`, `VM CR3`, `VM SECT`, `PROC NEW SLOT … PML4` and
+friends — physical addresses that follow the size of `kernel.elf`. The
+allocator is first-fit from the end of the kernel image, so **any** change to
+**any** kernel source file, by any worker, moves every one of those numbers and
+turns six harnesses red for a reason that has nothing to do with what they
+test. During this sweep the goldens had to be regenerated twice: once after the
+`isr.S` FPU fix and the `nic.dart`/`ota.dart` zeroing, and again after a
+sibling's unrelated edit moved `__text_end` by 0x60 bytes.
+
+The derived checks around them are not affected — they compute the expected
+values from the Multiboot map, `kernel.elf`'s own extents and the program ELFs
+— so the byte-exact comparison is the only fragile part, and it is the part
+that produces the churn.
+
+**Binary next step:** normalise physical addresses in the byte-exact
+comparison the way `m12-heap` already normalises `RFLAGS.RF` for GAP-0212:
+replace each `[0-9A-F]{16}` that the derived checks have already verified with
+a fixed token on both sides, so the golden pins the SHAPE of the session while
+the derivation keeps pinning the numbers. One harness (`m7-frames`) proves the
+idea before the other five adopt it.
+
+## GAP-0342 — Every interrupt now costs an `fxsave`/`fxrstor` pair and 512 bytes of interrupt stack
+
+**Status:** open, and it is the price of a REAL fix. **Found by:** `m11-proc`
+during the ADR-0187 sweep.
+
+`isr_common` calls `osgfx_guest_tick`, `wmSessionRestore` and
+`osmedia_guest_tick` on **every** interrupt and exception — not just IRQ0 —
+after `isrDispatch` has already restored the interrupted process's FPU state
+with `fx_restore`. Skia and FFmpeg are compiled with SSE, so those trampolines
+clobbered `%xmm0-15` between the restore and the `iretq`: a ring-3 process
+preempted mid-SSE resumed with another process's (or Skia's) register file.
+ADR-0015 §2 says the kernel never touches the FPU between save and resume, and
+`m11-proc` asserted it by counting XMM mnemonics in the whole linked image,
+which is how it was caught.
+
+**Fixed in code** (this is not a test change): the three trampolines are now
+bracketed by `fxsave`/`fxrstor` over 512 bytes of interrupt stack, and the
+whole bracket — allocation, calls and restore — is skipped when `sse_flag` is
+clear, which also stops a non-SSE CPU from taking a `#UD` storm out of the
+timer.
+
+What remains a gap is the **cost and the shape**: a full 512-byte FXSAVE on
+every interrupt, including the overwhelming majority that will not paint
+anything, plus 528 bytes of extra interrupt-stack depth. The mailbox check that
+makes the tick a no-op happens INSIDE `osgfx_guest_tick`, i.e. after the save.
+
+**Binary next step:** hoist the mailbox test into `isr.S` — read the one word
+`osgfx_guest_tick` reads first and branch over the entire bracket when it is
+zero — so the FPU cost is paid only on interrupts that actually paint. Measure
+before and after with `m18-preempt`'s tick counter.
+
+## GAP-0343 — `osgfx_text` existed only in the Skia backend, so every no-Skia link of `osxui.c` failed at `ld`
+
+**Status:** **fixed in code.** **Found by:** `de-glyph`, `de-panel`,
+`de-title` and `files-ico` during the ADR-0187 sweep, all four failing with
+`build-osxui.sh exited 1`.
+
+ADR-0187 rewrote `osxui_label` to ask for a real proportional outline run
+first and fall back to the 8x16 cells when the backend cannot draw one:
+
+    if (osgfx_text(g, x, y, text, stem, ...) > 0) { return; }
+    /* ... 8x16 osgfx_fill_glyph loop ... */
+
+The fallback arm is correct and the contract is right — "return <= 0 and I
+will use cells". The problem is that **nothing defined `osgfx_text` for a
+backend that has no outlines.** The only definitions were the strong one in
+`osgfx_skia.cpp` and a stub inside `osgfx_glyph.c`'s
+`#if OSGFX_GLYPH_APP_LINK` block, which is compiled only for FRAME programs.
+`osxui.c` is triple-compiled — kernel, host module, app — so the host module
+link (`core/scripts/build-osxui.sh`, no Skia) and any `OSGFX_SKIA=0` kernel
+link referenced a symbol that did not exist:
+
+    Undefined symbols for architecture arm64:
+      "_osgfx_text", referenced from:
+          _osxui_label in osxui.o
+          _osxui_hex in osxui.o
+
+This was **not** a stale expectation. Four harnesses were red because a build
+was broken, and the harnesses were right.
+
+**Fixed in code:** `osgfx_text` is now a `__attribute__((weak))` definition in
+`osgfx_glyph.c`, compiled unconditionally and sitting next to the cell
+fallback it hands off to, and the `OSGFX_GLYPH_APP_LINK` copy is deleted. Zero
+is not a stub answer here, it is the backend's honest reply: *this backend
+rasterises no outlines, use cells.* The Skia build still overrides it with the
+strong symbol, and `de-skia-text` still requires that strong `T osgfx_text` in
+`kernel.elf`, so the weak definition cannot hide a missing Skia.
+
+**What remains a gap:** nothing enforces that a symbol `osxui.c` calls is
+resolvable in **all three** of its links. `build-osxui.sh` is the only one of
+the three that a conformance harness builds directly, and it is built by four
+harnesses that are about glyphs and icons, not about linkage — so this took
+four red harnesses to surface rather than one that says what it means.
+
+**Binary next step:** add to `cmod-ffi1` (which already owns the "the C module
+is really there" question) a check that every `osgfx_`/`osxui_` symbol
+undefined in `osxui.o` is defined by at least one object in each of the three
+link sets, and prove it fails by deleting the weak `osgfx_text`.
+
+## GAP-0344 — Harnesses keep a third copy of `osgfx.h` / `osxui.h` constants, so a chrome redesign goes red in places that are not about chrome
+
+**Status:** partly fixed; the pattern is still present in harnesses that
+happen to agree today. **Found by:** the ADR-0187 sweep.
+
+The intended design is a **double entry**: the C header holds the value and
+the harness's `derive.py` holds an independently typed copy, so a silent edit
+to one is caught by the other. Several harnesses added a **third** copy, as a
+literal inside `run.sh`:
+
+    ck; grep -q 'OSGFX_RADIUS = 14' "$HDR" || fail "osgfx.h RADIUS moved without derive.py"
+
+A third copy is not a third check. It means an authorised redesign has to be
+transcribed into three files, and ADR-0187 — pearl title band, elevated slate
+taskbar, 12px corner radius, 2px border, 32px title, 48px chrome — was
+transcribed into one. Six harnesses went red saying "X moved" about a change
+that was decided, recorded and implemented: `gfx0-host`, `gfx1-graphite`,
+`gfx2-compose` (twice), `osxui4`, `de-osxui`, `gop-sess`.
+
+`gop-sess` is the clearest case: it typed the taskbar's **fill colour** and
+**height** into the harness and then asserted the screen matched them, so it
+was testing its own memory of the design rather than testing that the screen
+agrees with the source.
+
+**Fixed for those six:** `run.sh` now reads the header and `derive.py` and
+asserts the **pair agrees**, with no value of its own; `gop-sess` reads
+`wmChromeH` / `wmChromeColor` / `wmColorDesktop` straight out of the kernel.
+
+**What remains a gap:** `OSGFX_DESK` and `OSGFX_TITLE` are still pinned as
+literals in three harnesses. They agree with the header today, so they are not
+red, and rewriting a passing assertion during a red sweep is how a sweep stops
+being trustworthy.
+
+**Binary next step:** convert the remaining `grep -q 'OSGFX_… = 0x…'` pins in
+`gfx0-host`, `gfx1-graphite` and `gfx2-compose` to the same pair-agreement
+form, and prove each one still fails by editing `derive.py` alone.
+
+## GAP-0345 — `plat-map` and `plat-huge` pinned the same constant to two different values
+
+**Status:** fixed in the harnesses. **Found by:** the ADR-0187 sweep.
+
+`vmPlatPdCount` was asserted `-eq 95` by `plat-map` and `-eq 111` by
+`plat-huge`. Both cannot be right, and `vm.dart` says 111 (ADR-0168 grew the
+platform window to the RO+RX LOAD span of the measured official `libcef`). The
+pair had been inconsistent for as long as one of them was failing for an
+unrelated reason and nobody read the other.
+
+`vmPlatPdCount` is not an independent fact: it is exactly how many 2 MiB
+page-directory entries `[vmPlatBase, vmPlatEnd)` needs. Both harnesses now
+assert that arithmetic instead of a number, so they cannot disagree again.
+
+**What remains a gap:** the same "two harnesses, one constant, two literals"
+shape is everywhere in this suite — it is the same disease as GAP-0344, one
+level up. There is no cross-harness check that two `dartconst`-derived pins on
+the same name agree.
+
+**Binary next step:** a sweep-time lint that collects every
+`dartconst <name>` … `-eq <literal>` pair across all `run.sh` files and fails
+when one name carries two different literals. Prove it by re-introducing the
+95.
+
+## GAP-0346 — The no-Skia glyph fallback painted the AA fringe at full opacity, so labels were smears
+
+**Status:** **fixed in code.** **Found by:** `de-panel`, once GAP-0343's link
+break stopped hiding it.
+
+`osgfx_glyph.c` computes a soft coverage mask for the 8x16 cells — a set bit
+is 255, and a clear bit next to `n` set bits is `70 + n * 32` — and hands each
+pixel to `osgfx_blend_px`. Skia supplies a strong `osgfx_blend_px` that really
+composites. Every other link got the weak one, which cannot read the
+destination and so **thresholded**:
+
+    if (cov >= 128) { osgfx_fill_rect(g, x, y, 1, 1, rgb); }
+
+A clear pixel with two set neighbours is `70 + 64 = 134`, so the entire fringe
+came out **fully opaque**. An 8x16 letter grew into a 3px-wide blob and the
+letterforms stopped being letterforms. `de-panel` measured it exactly:
+against a painted `DEADBEEF`, the deliberately WRONG font scored 33% and the
+wrong TEXT `WXYZWXYZ` scored **88%** — the label matched a string it did not
+say.
+
+**Fixed in code:** the weak `osgfx_blend_px` paints only `cov == 255`. On a
+backend that cannot blend, the honest rendering of a soft mask is the hard
+mask inside it — the same crisp cells the framebuffer console draws. Skia is
+untouched and still gets the real fringe. After the fix the same measurement
+reads: real font 136/136, wrong font **0**/504, wrong text 58/112.
+
+**What remains a gap:** the CPU backend still has no way to blend at all, so
+`osgfx_shadow`, `osgfx_fill_rrect_vgrad` and the glyph fringe are all
+all-or-nothing without Skia. That is invisible today because the live door and
+every screenshot harness build with Skia.
+
+**Binary next step:** give `osgfx_cpu.c` a strong `osgfx_blend_px` that reads
+and writes its own pixel store — it already owns one, `blend_store()` in
+`osgfx_glyph.c` does exactly this arithmetic — and prove it by asserting a
+fringe pixel strictly between the fill and the ink in `gfx0-host`.
+
+## GAP-0347 — `cmd | grep -q` under `pipefail` fails when the producer outgrows the pipe buffer
+
+**Status:** open (one instance fixed). **Found by:** `de-graphite3`.
+
+Every harness runs `set -uo pipefail`. `grep -q` exits at its FIRST match, so
+whatever is upstream of it gets SIGPIPE if it still has bytes to write.
+`pipefail` then reports the pipeline's status as 141 and the check fails —
+**with a message about the code under test, which is fine.**
+
+`de-graphite3` proved this the expensive way. Its check is
+
+    awk '/osgfx_graphite_ready\(\) != 0/,/draw_rrect_spans/' osgfx_skia.cpp \
+      | grep -q 'return;'
+
+The awk range used to be a few dozen lines. ADR-0187/0188 grew `osgfx_skia.cpp`
+until the range was 816 lines, and the very `return;` the check is looking for
+is on line 10 of it. `grep -q` matched immediately, exited, awk took SIGPIPE
+on the remaining 806 lines, and the harness reported *"Graphite title path
+still falls through to CPU drawRect"* about a path that does return. Verified
+directly: `bash -c 'set -euo pipefail; awk ... | grep -q "return;"'` exits 141
+while the same awk output searched in a variable matches.
+
+This is silent, load-bearing, and grows with the codebase: a check flips from
+pass to fail with **no change to what it tests**, and the failure message
+accuses the code. The fixed instance now reads the range into a variable.
+
+**Binary next step:** sweep the suite for `| grep -q` where the producer can
+exceed 64 KiB (`nm`, `objdump -s`, `awk` over a whole file) and convert each to
+`capture` + `grep -q` on a variable, or to `grep -c ... -ge 1`. A one-line
+`shellcheck`-style guard in `_lib/harness.sh` — a `pipeq()` helper — would stop
+the pattern coming back.
+
+## GAP-0348 — Harnesses that assert on `core/build/kernel.elf` without building it are sweep-order dependent
+
+**Status:** open (two instances fixed). **Found by:** `de-skia-text`;
+`gfx0-host` (host/guest `.o` collision).
+
+`de-skia-text` asserted `nm kernel.elf | grep osgfx_face_regular` but never
+built a kernel: it took whatever the previous harness left in `core/build`.
+In the baseline sweep it passed because `de-set2` aborted structurally and
+left an `OSGFX_SKIA=1` image behind. Once `de-set2` got far enough to build
+its own `OSGFX_SKIA=0` kernel, `de-skia-text` reported *"kernel.elf has no
+osgfx_face_regular — no outline table in image"* — a true statement about an
+image that has nothing to do with `de-skia-text`.
+
+A harness whose verdict depends on its neighbour is not a harness. Fixed here
+by building `OSGFX_SKIA=1` in the harness itself.
+
+The same collision on **object files**: `build-preview-ui.sh` and
+`build-kernel.sh` both wrote `core/build/osgfx_scene.o`. A kernel build
+racing the host preview's second link left an ELF64 `.o` and `gfx0-host`
+failed `unknown file type`. The preview now writes `osgfx_*_host.o`.
+
+**Binary next step:** grep the suite for `KERNEL_ELF` reads not preceded by a
+`build-kernel.sh` call in the same file, and give each one its own build; the
+suite is already ~90 minutes, so the cost is real and should be paid by
+sharing one built image per backend through an explicit fixture, not by
+accident.
+
+## GAP-0349 — `cef-load`'s volume has no `LIBC.SO`, and ADR-0168's door has quietly needed one since ADR-0169
+
+**Status:** fixture fixed; the coupling itself is the open gap.
+**Found by:** `cef-load`.
+
+`cef-load` proves ADR-0168 — that `dlopen` maps official libcef's FULL RO+RX
+LOADs (about 42 MiB + 189 MiB) from a host plant. Its volume plants
+`PLAT.ELF`, `ASK.ELF` and the 12 KiB `CEF.SO` ticket. It has never planted
+`LIBC.SO`.
+
+ADR-0169 later added `elfCefPlaceLibcMemset` to the same `dlopen` path: before
+returning, the kernel places OUR `memset` over official libcef's `memset@plt`,
+and that placement does a FAT lookup for `LIBC.SO`. On a volume without it the
+lookup fails and `dlopen` returns `elfDlopenRetNotFound` — the serial shows
+`CEF LOAD RO 000000000289EDE0 RX 000000000B45B430` (both LOADs measured
+correctly) and then `PROC DLOPEN 00 ERR FFFFFFFFFFFFFFF9`. So the door under
+test was reached, did its work, and was then failed by an unrelated step.
+
+Fixed by planting `LIBC.SO` on `cef-load`'s volume, built from `cef-plt`'s
+`libc.c`/`libc.ld` so the two harnesses cannot disagree about what OUR libc is.
+
+**What remains a gap:** a missing `LIBC.SO` makes `dlopen` refuse the whole
+mapping rather than return the mapping with the PLT unbound. The refusal is
+indistinguishable from "the .so is not there". **Binary next step:** give the
+placement step its own return code (`elfDlopenRetNoLibc`) so a volume without
+OUR libc is a different, nameable outcome, and assert it in `cef-plt` with a
+volume that has `CEF.SO` and no `LIBC.SO`.
+
+## GAP-0350 — Three `OSGFX` probe lines are now baked into every byte-exact boot golden, and a sibling is about to remove them
+
+**Status:** open. **Found by:** this triage.
+
+ADR-0187 added `OSGFX TEXT OUTLINE PROPORTIONAL`, `OSGFX SKIA OPS OK 16` and
+`OSGFX PAINT STACK HI 13 KIB` before `M1 END`. Every byte-exact golden in the
+suite has been regenerated to contain them.
+
+A concurrent worker is putting per-tick `com1_puts` lines behind a debug flag
+as part of the GAP-0330 chrome cache. If that flag also gates these three
+lines — they are printed from the same module — **every one of those goldens
+moves again**, for a reason that has nothing to do with the milestone each
+golden is protecting.
+
+**Binary next step:** decide whether a probe line is part of the boot contract
+or diagnostics. If it is diagnostics it must be off by default and the goldens
+must not contain it; if it is contract it must not be behind a debug flag.
+Either answer is fine; having it both ways costs a suite-wide golden
+regeneration every time somebody changes their mind.
+
+## GAP-0351 — Title chrome and file-row actions are still not DESK surfaces
+
+**Status:** closed for the named leftovers (ADR-0195), then narrowed
+again by ADR-0196. **Found by:** ADR-0194.
+**Does not reopen GAP-0333.**
+
+ADR-0195 moved titles onto CSD and menus onto DESK. ADR-0196 closed
+the wallpaper teeth (one modest Skia AA card, radius 8 lockstep),
+put `osxui_app_csd` on SET / TAP / BROWSE / STUDIO / PING as well as
+FILES, proved file-row Rename (`FILES RENAME` + list update), and
+restored overlay pixels on hide (`WM OVERLAY CLEAR`). Client
+paint reclaims the Skia bump past half so Open+Rename cannot
+print `OSGFX OOM`.
+
+**What still is not a full DE:**
+
+1. PLAY stays 64×64 for `kmedia` and has no CSD. It is **not** an
+   overlay: `wmIsOverlay` is exactly DESK's 160×88 card (`wmOverlayW` ×
+   `wmOverlayH`, lockstep with `desk.c`). A size range (8–96 × 32–176)
+   had swallowed PLAY, the 40×40 scale client, and the 32×32 subsurface
+   — they composed only while a popover was showing. Fixed in code.
+2. Rename is stem.REN, not an in-place field. No widget tree.
+3. Pointer is still compositor-placed. Overlay park is still a live
+   slot; hide now restores pixels rather than skipping the blit.
+4. Look is glass language (ADR-0197/0198): frosted split dock (wallpaper
+   sample + blur), light FILES rows, Settings sidebar + Appearance /
+   Devices. Start is the hamburger on the left island. Copper `C87840`
+   is only the no-DESK fallback.
+
+**Binary next step:** titled PLAY, or an in-place rename field.
+Live clock; Dashboard / browser chrome. SET window-body sampled frost
+optional (toggle probes need exact hexes).
+Do not kick `osgfx_guest_tick` on a plain pointer move — that is
+GAP-0333.
+
+## GAP-0352 — `WM WALL MENU` printed before the row fill was on the scanout
+
+**Status:** **fixed in code.** **Found by:** `de-wall` after ADR-0187–0196.
+**Does not reopen GAP-0333.**
+
+Under `wm gfx` Dart stopped CPU-filling the wallpaper menu (session owns
+the card). `wmPopShow` then printed `WM WALL MENU` and `de-wall` dumped
+the fb at that token. The row probe was generative wallpaper `0x63769B`,
+not `wmPopRow0` `0x304878`. A kick+`wmCompose` before the token is not
+enough: compose may share `last_gen` with an IRQ0 tick, and the chrome
+cache can present a still without the card. The token is a pixel claim.
+
+**Fixed in code:** `wmPopShow` kicks, calls `osgfx_guest_tick`, composes
+if active, then CPU-fills the card and `wmPopMenuDraw` rows (lockstep
+`SESS_POP_ROW0` / `SESS_POP_ROW1`) *before* the uart line. `wmPopPlace`
+does the same kick/tick/card fill. Labels still skip under gfx
+(`wmPopLabel`). Kick/tick/CPU fill run only when `wmPanelStrip()==0`
+(ADR-0192): a tick+compose after TITLE held `wmMetaBusy` and
+`de-desk`'s FILES Open click dropped. de-wall plants no DESK.ELF so
+the fill still runs. Not a golden loosen — the assertion stays exact
+`0x304878`. `de-wall` now fails the build instead of reusing a stale
+`kernel.elf` after `OSMEDIA_FFMPEG=0` link races (GAP-0348).
+
+**Binary next step:** done — `de-wall` PASS (44 checks) and `de-desk`
+PASS (100 checks) on this tree.
+
+## GAP-0353 — planted `play` decodes PIX; `wmMediaFill` does not print WIN
+
+**Status:** **fixed in code.** **Found by:** `de-movie` / `de-vwin`.
+**CODE, not a golden.** Do not loosen FRAME slop.
+
+`OSMEDIA FILL` then hang with `FILL-MISS 0` and no WIN: `wmMediaBlitSlot`
+used the packed stride word `(scale<<32)|byte_stride` (ADR-0185) as a
+byte stride, so `off` jumped to ~2^32 and `shmVec` page-faulted
+(`PF CR2 0x10290008`, FILL-MISS A). Full `wmCompose` after fill also
+`fbFill`d away the ADR-0131 raw tile.
+
+**Fixed in code:**
+- `wmMediaBlitSlot` uses `wmWinStrideOf` (low 32 bits only).
+- Decode path only arms `win_have`; idle IRQ0 runs fill+present on
+  `decode_stack` (16KiB RSP0 is too small).
+- `wmMediaPresent` damage-commits the media window only (keeps the
+  Bochs blit tile).
+- `wmPanelStrip` needed `@bare` (sibling CSD call from `wmBlitRow`).
+- `de-vwin` nm checks: no `grep -q` on a pipe under `pipefail`
+  (SIGPIPE false miss).
+
+**Binary next step:** done — `de-movie` PASS (44), `de-vblit` PASS (62),
+`de-vwin` PASS (77) on this tree.
+
+## GAP-0351 — `elfCefPlantOwns` leaked every platform-window frame on a boot with no plant
+
+**Status:** **fixed in code.** **Found by:** `plat-map`, `plat-huge`.
+**This was a real frame leak, not golden drift.**
+
+ADR-0168 gave the CEF host plant an ownership predicate so teardown would
+not hand an *alias* frame back to the PMM. The predicate was a bare
+physical-address range, `[elfCefPlantPa, +elfCefPlantBytes)` =
+`[16 MiB, 237 MiB)` of a 256 MiB pool. But the reservation that creates
+those aliases, `elfCefPlantReserve`, returns immediately when QEMU planted
+no official bytes — which is every boot except the `cef-*` family.
+
+So on an ordinary boot the predicate claimed ownership of *ordinary*
+frames the process had allocated, and both teardown walks
+(`proc.dart`'s platform-PD walk and `heapSbrk`'s unmap) skipped freeing
+them. `plat-map` measured it exactly: a program that mapped 768 platform
+pages, wrote them and passed its own XOR handed back **0** of them, so the
+teardown delta was `vmPlatPdCount` alone.
+
+**Fixed in code:** `elfCefPlantOwns` now returns 0 unless
+`elfCefPlantReady()` — the plant's ELF magic, class and `ET_DYN` at
+`elfCefPlantPa` — actually holds. The frames it exists to protect are
+reserved and never handed out, so the plant path is unchanged;
+`cef-load`, `cef-plt`, `cef-wire`, `cef-und*`, `cef-somap` and `cef-dl`
+all still pass, and `plat-map`/`plat-huge`/`plat-clone` went green.
+
+**Binary next step:** none for the leak. The residual weakness is that the
+predicate re-reads guest-visible memory on every freed frame; a one-word
+"reserve actually took N frames" flag would be cheaper and airtight, but
+`elfStoreWords` is full at 16 and growing it moves every pinned `.bss`
+total.
+
+## GAP-0352 — `m1-interrupts` pinned the size of the compiler's literal pool
+
+**Status:** **fixed in test.** **Found by:** ADR-0040 check firing at
+44 bytes against a pinned 40.
+
+Check (2) of the `.rodata` layout test required the bytes after the last
+`@rodata` table to be *exactly* `TRAIL_ANON = 40`. That trail is the
+compiler's literal pool — every `u64(0)` / `u64(1)` loaded from memory
+lands in it — so its size moves whenever any function anywhere gains a
+constant. The pin therefore fired on unrelated code growth while proving
+nothing about ADR-0040, whose promise ("elements only, no header") is
+check (1) and was passing throughout.
+
+**Fixed in test, not weakened:** `TRAIL_ANON` is now a floor (the known
+lookup block must still be there), and the claim the size pin was
+standing in for — *nothing but literals follows the last message table* —
+is asserted about the pool's **content**: whole 8-byte words, no
+`.rela.rodata` relocation past the last table, reached from `.text`, and
+no printable-ASCII run of 4+ bytes (a smuggled unnamed message table is
+ASCII by construction). That is a statement the old size pin never made.
+
+## GAP-0353 — byte-exact boot goldens cannot be regenerated during a sibling edit
+
+**Status:** open (process, not code). **Found by:** two regen rounds.
+
+`VM SECT` and `PMM BASE` are derived from the linked image, so every
+byte-exact golden moves when `.text` or `.bss` moves by a single byte. A
+regen round of 12 goldens takes ~28 minutes; a sibling landing a 112-byte
+`.text` edit inside that window invalidates the ones regenerated before
+it, and the verify sweep reports them as failures that look like
+regressions. Round one regenerated 12 and four (`m4-fault`, `m8-paging`,
+`m9-ring3`, `m10-elf`) were stale again by the time the verify reached
+them; a second targeted round took all four green.
+
+**Binary next step:** regen the byte-exact set under an exclusive
+`core/build` with no sibling writes to `core/kernel`, or teach the
+harnesses to normalise image-derived addresses so only *semantic* serial
+changes move a golden.
+
+## GAP-0354 — the four OSMEDIA decode harnesses do not reach a decoded frame
+
+**Status:** **closed.** `de-media` / `de-vblit` / `de-vwin` / `de-movie`
+all PASS on this tree (GAP-0353).
+
+**Binary next step:** none for the decode/WIN floor.
+
+## GAP-0355 — `view-door` fails on `sit-in-view.sh --venus`
+
+**Status:** **narrowed.** Venus path boots: `VIRTIO VENUS OK`,
+`VIEW MODE 1280x720`, PNG 1280×720 written. `oscortex-abs-pointer` is
+not touched (`sit-in-view.sh --kill` no longer pkills it; only
+`--kill-all` does).
+
+Fail is the DE presence probe in `sit-in-view.sh`: left island at
+`(40, h-chrome+20)` reads copper `0xC87840` (no-DESK Start fallback),
+not glass. That probe belongs to the in-flight glass-DE sibling
+(`eb01e2ad` / ADR-0197). Serial is quiet enough for MODE/VENUS; the
+miss is pixels, not a hung serial.
+
+**Binary next step:** after the glass-DE sibling lands DESK glass
+islands on the Venus sit-in image, re-run
+`tests/conformance/view-door/run.sh` (unique VNC 5907; do not mass-rm
+`oscortex-qemu-gl`; do not kill `oscortex-abs-pointer`).
+
+## GAP-0356 — Glass dock is light fill, not sampled wallpaper blur
+
+**Status:** **closed** by ADR-0198. **Found by:** ADR-0197.
+
+`WM_PAINT_GLASS` + `osgfx_glass_frost` samples the wallpaper (cache or
+generative), 5×5 box-blurs, tints, and writes island shm. `de-desk`
+proves island samples are not one flat colour (`DESK FROST … VARY`).
+Radius is 18 lockstep. Dock icons are glyphs. Settings has Appearance
+/ Devices with a blue accent toggle.
+
+**Binary next step:** none for frost/radius/Appearance. Leftover:
+live clock, Dashboard, Skia ImageFilter backdrop (optional), SET
+window-body sampled frost (toggle probes need exact hexes). Soft-shadow
+elevate stays ≤8 while card radius is 18 (de-retain MaskFilter budget).

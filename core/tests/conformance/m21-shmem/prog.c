@@ -84,6 +84,7 @@ typedef unsigned char u8;
 #define SHM_BADPERM 0xFFFFFFFFFFFFFFF2UL
 #define SHM_NOTABLE 0xFFFFFFFFFFFFFFF1UL
 #define SHM_MAPFAIL 0xFFFFFFFFFFFFFFF0UL
+#define SHM_BADFIXED 0xFFFFFFFFFFFFFFEFUL
 
 /* Permission words, as shm.dart defines them. */
 #define SHM_R 1UL

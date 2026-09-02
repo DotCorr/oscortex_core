@@ -296,7 +296,7 @@ region is refused by generation rather than dangling.
   one-region kernel could not test a grant to a peer that already holds one. **GAP-0237.**
 * **No partial map, no offset map, no resize.** A capability names a whole region and maps it whole.
   **GAP-0234.**
-* **No file backing, no `MAP_FIXED`, no `mprotect`, no demand paging.** **GAP-0235.**
+* **No file backing, no `MAP_FIXED`, no `mprotect`, no demand paging.** **GAP-0235** — closed by ADR-0163 (`mprotect` / `MAP_FIXED`) and ADR-0164 (`shmfile` + demand).
 * **Addresses are chosen by the kernel, never by the caller** — and a region's address is a function
   of its *slot*, so it is the same number in every address space. That is worth more than the address
   space it wastes: an offset in a frame descriptor means the same thing to both peers.

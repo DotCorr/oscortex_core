@@ -1,0 +1,7 @@
+#ifndef OSGFX_WRAP_CWCHAR
+#define OSGFX_WRAP_CWCHAR
+/* libc++ cwchar and cstdio both `using ::FILE`. Hide FILE for the first. */
+#define FILE __osgfx_no_file
+#include_next <cwchar>
+#undef FILE
+#endif

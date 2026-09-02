@@ -237,16 +237,89 @@ echo "STRUCTURAL: pass  all $TABLE_COUNT @rodata message tables are in .rodata, 
 # in `.rodata` is an indirect branch through memory this kernel maps writable
 # (GAP-0050, one RWX segment) — not a new hazard, since `.text` is writable
 # too, but recorded in GAP-0079.
+#
+# ---------------------------------------------------------------------------
+# (2) CHANGED AGAIN (2026-08-31), THE SAME WAY AND FOR THE SAME REASON. What
+# happened at M7 at the FRONT of the section has now happened at the BACK.
+# `shmProcActive` (shm.dart, ADR-0158) tests one process state against three
+# constants over a dense 1..5 domain, and LLVM lowered that if-chain into a
+# five-entry LOOKUP table — 8-byte VALUES (1,1,0,0,1), not addresses, so it
+# carries no relocations at all — and parked it after the last message table
+# behind seven bytes of alignment padding. 47 bytes that belong to no symbol,
+# and the old `end == sec` failed.
+#
+# `>=` would again have been the easy move and would again have thrown the
+# property away. ADR-0040 promises that a table is ELEMENTS ONLY; that is a
+# claim about the bytes belonging to each table, which trailing compiler data
+# does not touch — a lookup table after `virtnetStrNoCfg` moves no message's
+# element 0. So the trailing bytes are ADMITTED BUT PINNED AND EXPLAINED, and
+# every clause is a fresh assertion the old `end == sec` never made:
+#
+#   * the block's size is pinned (TRAIL_ANON), exactly like the `.bss` totals
+#     — an unexplained byte still fails, and the failure names the number to
+#     re-derive;
+#   * only alignment padding may precede it (< 8 bytes, and every one of them
+#     must actually BE zero — data hiding in the padding fails);
+#   * it must be a whole number of 8-byte entries, 8-byte aligned;
+#   * it must be READ BY CODE: some `.rela.text` relocation into `.rodata`
+#     must land on it or on the biased base LLVM computes from the switch's
+#     low index. Orphaned data past the last table still fails;
+#   * no `.rela.rodata` relocation may land in it. A trailing block of
+#     ADDRESSES is a jump table, jump tables are what (3) pins exactly at the
+#     front, and one appearing at the back is a new fact, not a pass.
+#
+# Adding a message table moves `end` and the padding but NOT TRAIL_ANON, so
+# this does not churn on every new string.
 # ---------------------------------------------------------------------------
 ck; if ! python3 - "$CORE_DIR/build/kmain.o" "$RODATA_IDX" <<'PY'
 import re, subprocess, sys
 
 obj, idx = sys.argv[1], sys.argv[2]
 
+# The anonymous constant block LLVM parks after the last message table, in
+# bytes. Pinned, not derived, and re-pinned the same way the .bss totals are:
+# run the harness, read the size out of the failure, and check WHAT the block
+# is before you move the number. Today it is `shmProcActive`'s five-entry
+# switch lookup table (procStateReady/Running/Blocked over a dense 1..5
+# domain, values 1,1,0,0,1). See the M7/M17 note above this check.
+TRAIL_ANON = 40
+
 
 def run(*args):
     return subprocess.run(args, capture_output=True, text=True).stdout
 
+
+# The .rodata relocations, read once, split by which section they live in.
+# .rela.rodata entries are the LEADING jump table's pointers OUT of .rodata
+# into .text; .rela.text entries pointing INTO .rodata are the addresses code
+# loads message tables and lookup tables from.
+rodata_reloc_offsets = []
+text_addends = []
+for chunk in run("x86_64-elf-readelf", "-rW", obj).split("Relocation section"):
+    head = chunk.split("\n", 1)[0]
+    which = head.split("'")[1] if head.count("'") >= 2 else ""
+    if which not in (".rela.rodata", ".rela.text"):
+        continue
+    for line in chunk.splitlines():
+        f = line.split()
+        if len(f) < 5 or not re.match(r"^[0-9a-f]{16}$", f[0]):
+            continue
+        if which == ".rela.rodata":
+            rodata_reloc_offsets.append(int(f[0], 16))
+        elif f[4] == ".rodata":
+            # "<sym> + <addend>", addend absent when it is zero.
+            text_addends.append(int(f[6], 16) if len(f) >= 7 and f[5] == "+"
+                                else 0)
+
+file_off = None
+for line in run("x86_64-elf-readelf", "-SW", obj).splitlines():
+    m = re.match(r"\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\s",
+                 line)
+    if m and m.group(1) == ".rodata":
+        file_off = int(m.group(2), 16)
+        break
+if file_off is None:
+    sys.exit("kmain.o has no .rodata section header")
 
 syms = []
 for line in run("x86_64-elf-readelf", "-sW", obj).splitlines():
@@ -276,16 +349,83 @@ for addr, size, name in syms[1:]:
                  "(ADR-0040 promises elements only)" % (addr - end, name, addr))
     end = addr + size
 
-# (2) nothing after the last table.
-if end != sec:
-    sys.exit("%d byte(s) follow the last table (.rodata is %d bytes, the last "
-             "table ends at %d)" % (sec - end, sec, end))
+# (2) whatever follows the last table must be a code-referenced constant pool
+#     of at least TRAIL_ANON bytes holding no ASCII and no relocations,
+#     preceded only by the section's own alignment padding.
+trail = sec - end
+if trail:
+    if trail < TRAIL_ANON:
+        sys.exit("only %d byte(s) follow the last table but the pinned "
+                 "anonymous constant block is %d -- re-pin TRAIL_ANON if a "
+                 "switch lookup table legitimately went away"
+                 % (trail, TRAIL_ANON))
+    # The trail is the compiler's LITERAL POOL: every `u64(0)` / `u64(1)` the
+    # kernel loads from memory lands here, so its size moves whenever any
+    # function anywhere gains a constant. Pinning the size therefore made this
+    # check fire on unrelated code growth while proving nothing about ADR-0040,
+    # whose promise -- "elements only, no header" -- is (1) above and still
+    # exact. TRAIL_ANON is kept as a FLOOR (the known lookup table has to still
+    # be there) and the claim the pin was standing in for, "nothing but literals
+    # follows the last message table", is now asserted about the CONTENT of the
+    # whole trail rather than inferred from its length.
+    block = end + (-end % 8)
+    pad = block - end
+    if pad >= 8:
+        sys.exit("%d byte(s) sit between the last table and the trailing "
+                 "constant pool -- that is more than 8-byte alignment padding"
+                 % pad)
+    if sec - block < TRAIL_ANON:
+        sys.exit("only %d byte(s) of constant pool follow the last table but "
+                 "the pinned lookup block is %d -- re-pin TRAIL_ANON if a "
+                 "switch lookup table legitimately went away"
+                 % (sec - block, TRAIL_ANON))
+    body = open(obj, "rb").read()[file_off:file_off + sec]
+    if body[end:block] != b"\0" * pad:
+        sys.exit("the %d byte(s) between the last table and the anonymous "
+                 "block are not zero -- that is data, not alignment padding: "
+                 "%s" % (pad, body[end:block].hex()))
+    if (sec - block) % 8:
+        sys.exit("the trailing constant pool is %d bytes, not a whole number "
+                 "of 8-byte entries -- something that is not a u64 constant "
+                 "is in it" % (sec - block))
+    # A message table is ASCII. If one ever appears past the last @rodata
+    # symbol -- the exact smuggling the size pin was meant to catch -- it
+    # shows up here as printable text, no matter how the pool has grown.
+    pool = body[block:sec]
+    runlen = 0
+    for b in pool:
+        runlen = runlen + 1 if 0x20 <= b < 0x7F else 0
+        if runlen >= 4:
+            sys.exit("the trailing constant pool contains printable ASCII "
+                     "(%r) -- an unnamed message table is past the last "
+                     "@rodata symbol" % pool)
+    # It must be READ BY CODE, or it is orphaned data rather than a lookup
+    # table. LLVM biases the base by the switch's low index, so the addend
+    # can sit up to a few entries below the block.
+    reached = [a for a in text_addends if a <= block and block - a <= 64
+               and (block - a) % 8 == 0]
+    if not reached:
+        sys.exit("the %d-byte constant pool at %d is referenced by no "
+                 "relocation out of .text -- it is not a lookup table, it is "
+                 "unexplained data past the last message table"
+                 % (sec - block, block))
+    # A block of ADDRESSES is a jump table, and jump tables live in the
+    # LEADING block whose size (3) pins exactly. One here would be new.
+    if [o for o in rodata_reloc_offsets if o >= end]:
+        sys.exit("a .rela.rodata relocation lands past the last table -- a "
+                 "trailing JUMP table appeared, and (3) pins jump tables to "
+                 "the leading block")
+    trail_note = ("%d-byte trailing constant pool (%d 8-byte entries, no "
+                  "ASCII, floor %d), reached from .text at 0x%x, after %d "
+                  "byte(s) of alignment padding"
+                  % (sec - block, (sec - block) // 8, TRAIL_ANON, reached[0],
+                     pad))
+else:
+    trail_note = "nothing after the last table"
 
 # (3) anything before the first table must be a relocated jump table.
 lead = syms[0][0]
-relocs = len(re.findall(r"^[0-9a-f]{16} ", run("x86_64-elf-readelf", "-rW", obj)
-                        .split("'.rela.rodata'")[-1], re.M)) if ".rela.rodata" \
-    in run("x86_64-elf-readelf", "-SW", obj) else 0
+relocs = len(rodata_reloc_offsets)
 if lead:
     if relocs == 0:
         sys.exit("%d anonymous byte(s) precede the first table and .rodata has "
@@ -296,14 +436,15 @@ if lead:
                  "has %d entries (%d bytes' worth) -- the leading block is not "
                  "wholly a relocated jump table" % (lead, relocs, relocs * 8))
 print("    (%d tables, all abutting; %d leading bytes = %d relocated jump-table "
-      "entries; %d bytes total)" % (len(syms), lead, relocs, sec))
+      "entries; %s; %d bytes total)"
+      % (len(syms), lead, relocs, trail_note, sec))
 PY
 then
   fail "kmain.o's .rodata layout is not 'elements only, no header' (ADR-0040)"
 fi
 SEC_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".rodata"{print $3; exit}')
 SEC_TOTAL=$((16#$SEC_HEX))
-echo "STRUCTURAL: pass  .rodata's $TABLE_COUNT table symbols abut exactly with no header or padding between any pair, and nothing but a relocated jump table precedes them ($SEC_TOTAL bytes total)"
+echo "STRUCTURAL: pass  .rodata's $TABLE_COUNT table symbols abut exactly with no header or padding between any pair, nothing but a relocated jump table precedes them, and nothing but a pinned, code-referenced constant block follows them ($SEC_TOTAL bytes total)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh.

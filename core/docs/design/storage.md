@@ -1,9 +1,31 @@
 # oscortex storage — getting off PIO, and what a filesystem here is actually for
 
-**Status: DESIGN. Not an ADR, not numbered, nothing implemented, and no file outside this one was
-touched to produce it.** When a piece of this is built it gets its own numbered ADR; this file is the
+**Status: DESIGN.** When a piece of this is built it gets its own numbered ADR; this file is the
 thing those ADRs will point back at, the same way `display-protocol.md` is for the window system and
 `exec-format.md` is for the loader.
+
+**A0 (ADR-0069) landed.** The kernel finds class `01/06/01` / QEMU `8086:2922`,
+prints ABAR and CAP (`core/kernel/ahci.dart`, `tests/conformance/a0-ahci`).
+
+**A1 (ADR-0077) landed.** One `READ DMA EXT` of LBA 7 (`ahci read`). Command
+list + FIS + table + sector in one `allocFrame`. `PxCI` poll watches
+`PxIS.TFES` through `Volatile`. IDE PIO is unchanged — `m6-disk` is still
+the PIO proof.
+
+**NVM0 (ADR-0071), NVM1 (ADR-0074), NVM2 (ADR-0087), NVM3 (ADR-0088), NVM4 (ADR-0089), NVM5 (ADR-0090) and NVM6 (ADR-0092) landed.** The kernel finds class
+`01/08/02`, prints BDF + BAR0 (`tests/conformance/nvm0`), loads CAP at BAR0+0 and VS at
+BAR0+8 (`tests/conformance/nvm1`), issues one Identify Controller (admin opcode 06h,
+CNS=1) whose SN/VID/NN come from the controller (`tests/conformance/nvm2`),
+creates an I/O queue pair then reads one planted sector at LBA 7 (`core/kernel/nvme.dart`,
+`tests/conformance/nvm3`), writes that plant to LBA 11 so the host image
+can read it back (`tests/conformance/nvm4`), serves FAT through that I/O
+pair when an NVMe controller is present (`tests/conformance/nvm5`), and
+`run` / `spawn` of a named ELF reads image sectors through the same
+pick (`elfDiskRead` → `fatDiskRead` → `nvmeIoRead`,
+`tests/conformance/nvm6`). **A2 (ADR-0137)** made AHCI an equal
+`fatDiskRead` root: class `01/06/01` → `ahciIoRead` when NVMe is
+absent (`tests/conformance/nvm-root`). Machines with neither still
+use ATA PIO.
 
 **Provenance.** The brief for this document named the subject — PIO's cost, AHCI/SATA, life beyond
 FAT16, a block layer, a milestone ladder — and asserted one quantity about the write path that turns
@@ -43,7 +65,7 @@ Every row is read out of the tree and cited, so the next agent can check whether
 | 4 | `ataWait` is the only polling loop, bounded at **2²¹ iterations** — an iteration count, not a duration (GAP-0073) | `ata.dart:468`, `ata.dart:206` |
 | 5 | **Every gate in this IDT is an interrupt gate**, so `IF` is clear for the whole of every kernel entry from ring 3; a syscall cannot be preempted and a tick inside one is *not delivered* | ADR-0022 §1, ROADMAP M18, GAP-0138 |
 | 6 | `ataWriteFrom` has **exactly one caller**, `fatWriteSector`, and the harness requires it | `fat.dart:1736–1737`, ADR-0020 §8 |
-| 7 | `ataReadInto` has **four call sites**: `fat.dart:1019`, `fat.dart:1035`, `elf.dart:1122`, `elf.dart:1172` | grep |
+| 7 | `ataReadInto` has **one filesystem/loader call site**: `fatDiskRead` in `fat.dart`. `elfDiskRead` calls `fatDiskRead`. The PIO fallback is that one `if`. | grep |
 | 8 | `fatSetEntry` writes the patched FAT sector to **every copy of the FAT** — `BPB_NumFATs` is 2, so **one FAT entry change is two sector writes** | `fat.dart:1763–1781`, ADR-0020 §3 rule 1 |
 | 9 | `allocFrame` hands out **one 4096-byte frame at a time**; there is no contiguous multi-frame request, and pmm.dart's own header names a DMA buffer as the thing that would want one | `pmm.dart:1090`, `pmm.dart:127`, `pmm.dart:587` |
 | 10 | The first **128 MiB is identity-mapped** with 2 MiB pages, and QEMU is started with `-m 128M`, so for every frame `allocFrame` returns, **physical address == virtual address** | `boot.S:59,96`, `m16-filewrite/run.sh:790` |
@@ -811,11 +833,11 @@ are not one.
 
 ### 4.1 What exists
 
-`fat.dart` calls `ataReadInto` directly (`fat.dart:1019`, `fat.dart:1035`) and `ataWriteFrom` through
-exactly one wrapper, `fatWriteSector` (`fat.dart:1736`). `elf.dart` calls `ataReadInto` twice more
-(`elf.dart:1122`, `elf.dart:1172`). **Four read call sites, one write call site.** ADR-0020 §8 already
-treats "`ataWriteFrom` is defined once and called from exactly one place" as a load-bearing structural
-property that the harness enforces.
+`fatDiskRead` is the one read door: NVMe via `nvmeIoRead`, AHCI via
+`ahciIoRead`, or ATA via `ataReadInto`. `fatWriteSector` is the one write
+door (`ataWriteFrom`, `nvmeIoWrite`, or `ahciIoWrite`). `elfDiskRead`
+calls `fatDiskRead`. ADR-0020 §8's "`ataWriteFrom` is defined once and called from
+exactly one place" still holds for the PIO write — that place is still `fatWriteSector`.
 
 So the write side is *already* behind a seam, and the seam is `fatWriteSector` — which is not a block
 layer, it is a FAT-layer function that happens to be the choke point. The read side has no seam at all.

@@ -96,9 +96,22 @@ const int pciConfigData = 0xCFC;
 ///   +0x0C  cache line, latency, HEADER TYPE (23:16), BIST
 ///   +0x18  (header type 1 only) primary, SECONDARY (15:8), subordinate bus
 const int pciRegId = 0x00;
+const int pciRegCommand = 0x04;
 const int pciRegClass = 0x08;
 const int pciRegHeader = 0x0C;
 const int pciRegBusNumbers = 0x18;
+
+/// Configuration-space offset of BAR0. BAR *n* is this plus `n * 4`.
+/// `fb.dart` has the same number under [pciRegBar0]; both names are the
+/// same constant, and N0's [pciReadBar] is the general reader M5 declined
+/// to write (GAP-0067 item 3).
+const int pciRegBar = 0x10;
+
+/// Packed bus/device/function: `(bus << 16) | (dev << 11) | (fn << 8)`.
+/// That is the selector shape [pciAddr] wants, minus the enable bit and
+/// the register offset. No legal selector is all-ones, so the sentinel
+/// below cannot collide with a real device.
+const int pciBdfNone = 0xFFFFFFFF;
 
 /// Class 0x06 subclass 0x04 is a PCI-to-PCI bridge: the only header type this
 /// scan follows to another bus.
@@ -266,6 +279,25 @@ u64 pciAddr(u64 bus, u64 dev, u64 fn, u64 off) {
 u64 pciRead32(u64 bus, u64 dev, u64 fn, u64 off) {
   port_outl(u64(pciConfigAddress), pciAddr(bus, dev, fn, off));
   return port_inl(u64(pciConfigData));
+}
+
+/// Writes one 32-bit configuration register. Twin of [pciRead32]: the
+/// same selector, then `outl` to 0xCFC instead of `inl`.
+///
+/// **The upper half of offset 0x04 is the status register, and its
+/// error bits are write-1-to-clear.** A caller that reads the dword and
+/// writes it straight back clears whatever the device had latched.
+/// Writing 0 to a W1C bit is a no-op, so the command-register idiom is
+/// `pciWrite32(..., 0x04, (pciRead32(...) & 0xFFFF) | bits)`. G1
+/// (ADR-0065) and N1 (ADR-0063) both set bus-master (bit 2) that way.
+///
+/// Same non-atomicity as [pciRead32] (GAP-0067 item 6): two port
+/// accesses, and an interrupt between them would select the wrong
+/// register. Nothing in this kernel touches 0xCF8 from a handler.
+@bare
+void pciWrite32(u64 bus, u64 dev, u64 fn, u64 off, u64 value) {
+  port_outl(u64(pciConfigAddress), pciAddr(bus, dev, fn, off));
+  port_outl(u64(pciConfigData), value);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +508,49 @@ u64 pciScanBus(u64 bus, u64 depth) {
     dev = dev + u64(1);
   }
   return found;
+}
+
+/// Walks bus 0, function 0 of each slot, for class [cls] subclass [sub].
+/// Returns a packed bus/device/function, or [pciBdfNone] if nothing
+/// answered. Bus 0 only, deliberately: [fbFindVgaBar] is the same walk,
+/// and a NIC behind a bridge is a named successor, not a defect in N0.
+@bare
+u64 pciFindByClass(u64 cls, u64 sub) {
+  u64 dev = u64(0);
+  while (dev < u64(32)) {
+    final u64 id = pciRead32(u64(0), dev, u64(0), u64(pciRegId));
+    if ((id & u64(0xFFFF)) < u64(0xFFFF)) {
+      final u64 classReg = pciRead32(u64(0), dev, u64(0), u64(pciRegClass));
+      if (((classReg >> u64(24)) & u64(0xFF)) == cls) {
+        if (((classReg >> u64(16)) & u64(0xFF)) == sub) {
+          return (dev << u64(11));
+        }
+      }
+    }
+    dev = dev + u64(1);
+  }
+  return u64(pciBdfNone);
+}
+
+/// Reads BAR [n] of the packed [bdf]. A memory BAR is returned as its
+/// address with the type bits stripped. An I/O BAR, or a BAR that is not
+/// implemented, is 0 — the same refusal [fbFindVgaBar] makes for a
+/// display whose BAR0 is an I/O range.
+///
+/// This is a READ. It does not write all-ones to size the BAR and it
+/// does not write the command register. G1 added [pciWrite32]; this
+/// helper is still a reader.
+@bare
+u64 pciReadBar(u64 bdf, u64 n) {
+  final u64 bus = (bdf >> u64(16)) & u64(0xFF);
+  final u64 dev = (bdf >> u64(11)) & u64(0x1F);
+  final u64 fn = (bdf >> u64(8)) & u64(0x07);
+  final u64 off = u64(pciRegBar) + (n << u64(2));
+  final u64 bar = pciRead32(bus, dev, fn, off);
+  if ((bar & u64(1)) > u64(0)) {
+    return u64(0);
+  }
+  return bar & u64(0xFFFFFFF0);
 }
 
 /// `pci` -- enumerate the bus and say what is on it.

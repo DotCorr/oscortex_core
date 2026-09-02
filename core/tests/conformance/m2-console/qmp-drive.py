@@ -191,12 +191,18 @@ def main():
     ap.add_argument("--keys", required=True,
                     help="comma-separated script of input events, in order. An "
                          "element is a QEMU qcode (typed), `wait:<ms>` (a "
-                         "pause), `rel:<dx>:<dy>` (a POINTER MOTION of dx,dy "
-                         "device units, injected with `input-send-event`), or "
-                         "`btn:<name>:<down|up>` (a pointer BUTTON edge, e.g. "
-                         "`btn:left:down`). The last two are D1's addition and "
-                         "are what drives an emulated PS/2 mouse: `send-key` "
-                         "cannot reach the auxiliary port at all.")
+                         "pause), `down:<qcode>` / `up:<qcode>` (a single "
+                         "key edge via input-send-event, D2), `rel:<dx>:<dy>` "
+                         "(a POINTER MOTION), or `btn:<name>:<down|up>` (a "
+                         "pointer BUTTON edge). Pointer elements are D1's; "
+                         "`send-key` cannot reach the auxiliary port at all.")
+    ap.add_argument("--monitor-command-before", action="append", default=None,
+                    help="optional HMP command to run AFTER the kernel is "
+                         "interactive and BEFORE the keystrokes. Same capture "
+                         "file as --monitor-command, each preceded by a "
+                         "`=== before: <command> ===` line. G1 uses this to "
+                         "dump the q35 ECAM command register before the "
+                         "kernel writes it. Purely additive.")
     ap.add_argument("--monitor-command", action="append", default=None,
                     help="optional HMP command to run after the keystrokes "
                          "(e.g. 'info pci', or an `xp` memory dump). May be "
@@ -208,6 +214,15 @@ def main():
                          "omitted by every harness that does not need it.")
     ap.add_argument("--monitor-capture", default=None,
                     help="file to write --monitor-command's output to")
+    ap.add_argument("--addr2-from-serial", default=None,
+                    help="a SECOND regex with one capturing group, resolved the "
+                         "same way as --addr-from-serial and substituted for "
+                         "{addr2}. One window is not always enough: a kernel "
+                         "whose allocator has grown puts the structure a "
+                         "harness wants MEGABYTES away from the one it "
+                         "anchored on, and widening the single window to span "
+                         "both dumps the gap as well. Two anchors, both still "
+                         "addresses the KERNEL printed.")
     ap.add_argument("--addr-from-serial", default=None,
                     help="regex with ONE capture group, matched against the "
                          "serial capture; the captured hex number replaces "
@@ -216,9 +231,21 @@ def main():
                          "CHOSE -- reading back from wherever the kernel says "
                          "it wrote, rather than from an address the harness "
                          "assumed.")
+    ap.add_argument("--pmemsave", default=None,
+                    help="optional guest-physical dump via QMP pmemsave, "
+                         "written to this path. Requires --addr-from-serial "
+                         "and --pmemsave-size. Additive; omitted by every "
+                         "harness that does not need it.")
+    ap.add_argument("--pmemsave-size", type=int, default=None,
+                    help="byte count for --pmemsave")
     ap.add_argument("--vga-base", default="0xb8000")
     ap.add_argument("--cols", type=int, default=80)
     ap.add_argument("--rows", type=int, default=25)
+    ap.add_argument("--no-screendump", action="store_true",
+                    help="skip screendump and VGA text (virtio-gpu-gl "
+                         "has no surface / no VGA buffer)")
+    ap.add_argument("--no-quit", action="store_true",
+                    help="leave QEMU running after the script (sit-in-view)")
     args = ap.parse_args()
 
     qmp = Qmp(args.host, args.port, connect_timeout=20)
@@ -237,6 +264,21 @@ def main():
     # honest fix; the alternative (a second serial marker printed after
     # unmasking) would put M2 bytes on COM1 and break M1's byte-exact golden.
     time.sleep(0.5)
+
+    # Independent description of the machine BEFORE the keystrokes
+    # change it. G1 dumps the q35 ECAM command register here so the
+    # "before" expectation is QEMU's, not the kernel's.
+    if args.monitor_command_before:
+        if args.monitor_capture is None:
+            die("--monitor-command-before requires --monitor-capture")
+        with open(args.monitor_capture, "w", encoding="utf-8") as fh:
+            for cmdline in args.monitor_command_before:
+                fh.write(f"=== before: {cmdline} ===\n")
+                fh.write(qmp.hmp(cmdline))
+                fh.write("\n")
+        print(f"qmp-drive: wrote {args.monitor_capture} "
+              f"({len(args.monitor_command_before)} before-keystroke "
+              f"monitor command(s))")
 
     keys = [k for k in args.keys.split(",") if k]
     typed = 0
@@ -297,6 +339,23 @@ def main():
         if qcode.startswith("wait:"):
             time.sleep(int(qcode.split(":", 1)[1]) / 1000.0)
             continue
+        # D2: a single edge, not send-key's make+break pair. `down:a` /
+        # `up:a` let a harness inject depth+N presses without the matching
+        # releases, which is what makes "dropped count of exactly 3" a
+        # number rather than "twice the leftover keys".
+        if qcode.startswith("down:") or qcode.startswith("up:"):
+            edge, name = qcode.split(":", 1)
+            if not name:
+                die("malformed key-edge element %r -- want down:<qcode> or up:<qcode>"
+                    % qcode)
+            qmp.cmd("input-send-event", events=[{
+                "type": "key",
+                "data": {"down": edge == "down",
+                         "key": {"type": "qcode", "data": name}},
+            }])
+            typed += 1
+            time.sleep(0.002)
+            continue
         qmp.cmd("send-key", keys=[{"type": "qcode", "data": qcode}])
         # send-key synthesizes make AND break; a small gap keeps the 8042's
         # one-byte output buffer from being overrun before IRQ1 is serviced.
@@ -311,43 +370,79 @@ def main():
     # one. m5-pci uses `info pci` to compare the kernel's own enumeration
     # against QEMU's device model -- two different programs walking the same
     # bus, rather than a golden the kernel wrote and then agreed with.
+    addr = None
+    if args.addr_from_serial is not None:
+        blob = open(args.serial, "rb").read().decode("latin-1")
+        m = re.search(args.addr_from_serial, blob)
+        if not m:
+            die(f"--addr-from-serial {args.addr_from_serial!r} matched "
+                f"nothing in the serial capture -- the kernel never "
+                f"reported the address the monitor commands need")
+        addr = "0x" + m.group(1)
+        print(f"qmp-drive: {{addr}} = {addr} (from the serial capture)")
+
+    addr2 = None
+    if args.addr2_from_serial is not None:
+        blob = open(args.serial, "rb").read().decode("latin-1")
+        m = re.search(args.addr2_from_serial, blob)
+        if not m:
+            die(f"--addr2-from-serial {args.addr2_from_serial!r} matched "
+                f"nothing in the serial capture -- the kernel never "
+                f"reported the second address the monitor commands need")
+        addr2 = "0x" + m.group(1)
+        print(f"qmp-drive: {{addr2}} = {addr2} (from the serial capture)")
+
+    if args.pmemsave:
+        if addr is None:
+            die("--pmemsave requires --addr-from-serial")
+        if args.pmemsave_size is None:
+            die("--pmemsave requires --pmemsave-size")
+        out = os.path.abspath(args.pmemsave)
+        qmp.cmd("pmemsave", val=int(addr, 16), size=args.pmemsave_size,
+                filename=out)
+        if not os.path.exists(out):
+            die(f"pmemsave reported success but wrote no {out}")
+        got = os.path.getsize(out)
+        if got != args.pmemsave_size:
+            die(f"pmemsave wrote {got} bytes, expected {args.pmemsave_size}")
+        print(f"qmp-drive: pmemsave {out} ({got} bytes)")
+
     if args.monitor_command:
         if args.monitor_capture is None:
             die("--monitor-command requires --monitor-capture")
-        addr = None
-        if args.addr_from_serial is not None:
-            blob = open(args.serial, "rb").read().decode("latin-1")
-            m = re.search(args.addr_from_serial, blob)
-            if not m:
-                die(f"--addr-from-serial {args.addr_from_serial!r} matched "
-                    f"nothing in the serial capture -- the kernel never "
-                    f"reported the address the monitor commands need")
-            addr = "0x" + m.group(1)
-            print(f"qmp-drive: {{addr}} = {addr} (from the serial capture)")
-        with open(args.monitor_capture, "w", encoding="utf-8") as fh:
+        mode = "a" if args.monitor_command_before else "w"
+        with open(args.monitor_capture, mode, encoding="utf-8") as fh:
             for raw in args.monitor_command:
-                if "{addr}" in raw:
+                cmdline = raw
+                if "{addr2}" in cmdline:
+                    if addr2 is None:
+                        die("a --monitor-command uses {addr2} but "
+                            "--addr2-from-serial was not given")
+                    cmdline = cmdline.replace("{addr2}", addr2)
+                if "{addr}" in cmdline:
                     if addr is None:
                         die("a --monitor-command uses {addr} but "
                             "--addr-from-serial was not given")
-                    cmdline = raw.replace("{addr}", addr)
-                else:
-                    cmdline = raw
+                    cmdline = cmdline.replace("{addr}", addr)
                 fh.write(f"=== {cmdline} ===\n")
                 fh.write(qmp.hmp(cmdline))
                 fh.write("\n")
         print(f"qmp-drive: wrote {args.monitor_capture} "
               f"({len(args.monitor_command)} monitor command(s))")
 
-    qmp.cmd("screendump", filename=os.path.abspath(args.png), format="png")
-    print(f"qmp-drive: wrote {args.png}")
+    if not args.no_screendump:
+        qmp.cmd("screendump", filename=os.path.abspath(args.png), format="png")
+        print(f"qmp-drive: wrote {args.png}")
 
-    words = read_text_buffer(qmp, int(args.vga_base, 16), args.cols * args.rows)
-    with open(args.screen_text, "w", encoding="utf-8") as fh:
-        fh.write(render(words, args.cols, args.rows))
-    print(f"qmp-drive: wrote {args.screen_text}")
+        words = read_text_buffer(qmp, int(args.vga_base, 16), args.cols * args.rows)
+        with open(args.screen_text, "w", encoding="utf-8") as fh:
+            fh.write(render(words, args.cols, args.rows))
+        print(f"qmp-drive: wrote {args.screen_text}")
 
-    qmp.cmd("quit")
+    if not args.no_quit:
+        qmp.cmd("quit")
+    else:
+        print("qmp-drive: leaving QEMU running (--no-quit)")
     return 0
 
 
