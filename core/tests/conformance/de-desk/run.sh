@@ -623,7 +623,11 @@ marked = read()
 button(300, 180, "wheel-down", True)
 if not wait_new("FILES SCROLL 01", marked):
     raise SystemExit("wheel-down over FILES did not advance to offset 1")
+deadline = time.time() + 8
 after_down = read()
+while "WM FRAME " not in after_down[len(marked):] and time.time() < deadline:
+    time.sleep(0.05)
+    after_down = read()
 fresh = after_down[len(marked):]
 frames = []
 for line in fresh.splitlines():
