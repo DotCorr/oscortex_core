@@ -72,6 +72,11 @@ typedef unsigned int u32;
 #define SCROLL_THUMB_MIN 20UL
 #define SCROLL_TRACK 0x003A4654UL
 #define SCROLL_THUMB 0x00869BB0UL
+#define MENU_SELECTED 0x006884A0UL
+#define SCAN_ESC 0x01UL
+#define SCAN_ENTER 0x1CUL
+#define SCAN_UP 0x48UL
+#define SCAN_DOWN 0x50UL
 #define MODE_WRITE 1UL
 #define ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
 
@@ -117,6 +122,7 @@ static u64 menu_on;
 static u64 menu_row;
 static u64 menu_x;
 static u64 menu_y;
+static u64 menu_sel;
 static u64 scroll_off;
 #if FILES_NO_ICON == 0
 static u64 csd_noted;
@@ -152,6 +158,8 @@ static const char msg_csd[] = "FILES CSD";
 static const char cap_files[] = "FILES";
 #endif
 static const char msg_menu[] = "FILES MENU";
+static const char msg_menu_esc[] = "FILES MENU ESC";
+static const char msg_menu_sel[] = "FILES MENU SEL ";
 static const char msg_fopen[] = "FILES OPEN ";
 static const char msg_fren[] = "FILES RENAME ";
 static const char ext_cpy[] = "CPY";
@@ -498,6 +506,8 @@ static void commit_files_rect(u64 y, u64 h) {
 static void paint_file_menu(void) {
   u64 mx = menu_x;
   u64 my = menu_y;
+  u64 row0 = menu_sel == 0 ? MENU_SELECTED : OSXUI_MENU_ROW0;
+  u64 row1 = menu_sel == 1 ? MENU_SELECTED : OSXUI_MENU_ROW1;
   if (mx + FILE_MENU_W > files_w) {
     mx = files_w - FILE_MENU_W;
   }
@@ -507,12 +517,12 @@ static void paint_file_menu(void) {
   osxui_app_rrect(files_h, mx, my, FILE_MENU_W, FILE_MENU_H, OSXUI_MENU_R,
                   OSXUI_MENU_BG);
   osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD, FILE_MENU_W - 8UL,
-                  OSXUI_MENU_ROW_H - 2UL, 4UL, OSXUI_MENU_ROW0);
+                  OSXUI_MENU_ROW_H - 2UL, 4UL, row0);
   osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + 4UL, "Open", 4,
                  WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
   osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H,
                   FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL,
-                  OSXUI_MENU_ROW1);
+                  row1);
   osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL,
                  "Rename", 6, WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
 }
@@ -660,6 +670,7 @@ static void files_on_event(u64 ev) {
     menu_row = row_at_y(ry, files_names);
     menu_x = rx;
     menu_y = ry;
+    menu_sel = 0;
     menu_on = 1;
     wr(msg_menu, sizeof(msg_menu) - 1);
     files_repaint();
@@ -679,6 +690,7 @@ static void files_on_event(u64 ev) {
           ry < (my + FILE_MENU_H)) {
         u64 row = (ry - my - OSXUI_MENU_PAD) / OSXUI_MENU_ROW_H;
         menu_on = 0;
+        menu_sel = row;
         if (row == 0) {
           do_file_open(menu_row);
         }
@@ -691,6 +703,48 @@ static void files_on_event(u64 ev) {
       menu_on = 0;
       files_repaint();
     }
+    return;
+  }
+  if (typ == WMEVENT_TYPE_LEAVE) {
+    if (menu_on > 0) {
+      menu_on = 0;
+      files_repaint_body();
+    }
+  }
+}
+
+static void files_on_key(u64 ev) {
+  u64 scan;
+  unsigned at;
+  if (menu_on == 0 || (ev & KBD_BIT_BREAK) != 0) {
+    return;
+  }
+  scan = ev & 0xFFUL;
+  if (scan == SCAN_ESC) {
+    menu_on = 0;
+    wr(msg_menu_esc, sizeof(msg_menu_esc) - 1);
+    files_repaint_body();
+    return;
+  }
+  if ((ev & KBD_BIT_EXT) != 0) {
+    if (scan == SCAN_UP || scan == SCAN_DOWN) {
+      menu_sel = menu_sel == 0 ? 1UL : 0UL;
+      at = put(0, msg_menu_sel);
+      at = puthex(at, menu_sel, 1);
+      emit(at);
+      files_repaint_body();
+    }
+    return;
+  }
+  if (scan == SCAN_ENTER) {
+    u64 selected = menu_sel;
+    menu_on = 0;
+    if (selected == 0) {
+      do_file_open(menu_row);
+    } else {
+      do_file_rename(menu_row);
+    }
+    files_repaint_body();
   }
 }
 
@@ -1099,6 +1153,7 @@ void files_main(u64 sp) {
 
   for (;;) {
     u64 ev;
+    u64 key;
     u64 got;
     got = 0;
     ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
@@ -1106,6 +1161,12 @@ void files_main(u64 sp) {
       files_on_event(ev);
       got = 1;
       ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
+    }
+    key = sys1(SYS_KBDEVENT, KBD_OP_POP);
+    while (key != KBD_EMPTY) {
+      files_on_key(key);
+      got = 1;
+      key = sys1(SYS_KBDEVENT, KBD_OP_POP);
     }
     if (got == 0 && menu_on == 0) {
       volatile u64 spin = 0;

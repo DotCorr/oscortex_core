@@ -387,9 +387,33 @@ void wmContextShow(u64 x, u64 y) {
   }
   if (wmDeOn() > u64(0)) {
     if (wmTitleHit(hit, x, y) > u64(0)) {
+      if (wmIsPanel(hit) < u64(1)) {
+        wmFocusTo(hit);
+        if (wmMeta(u64(wmMetaTop)) != hit) {
+          final u64 oldTop = wmMeta(u64(wmMetaTop));
+          wmSetMeta(u64(wmMetaTop), hit);
+          wmBumpMeta(u64(wmMetaRaises));
+          u64 px = wmRepaintWindow(oldTop);
+          px = px + wmRepaintWindow(hit);
+          wmSetMeta(u64(wmMetaRectPixels),
+              wmMeta(u64(wmMetaRectPixels)) + px);
+        }
+      }
       uartWrite(Rodata.addressOf(wmStrCtxTitle), u64(12));
       uartNewline();
       return;
+    }
+    if (wmIsPanel(hit) < u64(1)) {
+      wmFocusTo(hit);
+      if (wmMeta(u64(wmMetaTop)) != hit) {
+        final u64 oldTop = wmMeta(u64(wmMetaTop));
+        wmSetMeta(u64(wmMetaTop), hit);
+        wmBumpMeta(u64(wmMetaRaises));
+        u64 px = wmRepaintWindow(oldTop);
+        px = px + wmRepaintWindow(hit);
+        wmSetMeta(u64(wmMetaRectPixels),
+            wmMeta(u64(wmMetaRectPixels)) + px);
+      }
     }
     uartWrite(Rodata.addressOf(wmStrCtxFile), u64(11));
     uartNewline();

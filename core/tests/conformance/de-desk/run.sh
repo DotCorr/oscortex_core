@@ -674,10 +674,23 @@ if "FILES MENU" not in read():
 if read().count("WM WALL MENU") != 1:
     raise SystemExit("a non-desk right-click opened set-background")
 press(316, 192, "left", "FILES OPEN")
+# Right-click focuses FILES, so its popup owns Escape and arrow/Enter.
+press(300, 180, "right", "WM CTX FILE")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
+if not wait_new("FILES MENU ESC", marked):
+    raise SystemExit("Escape did not dismiss the FILES context menu")
 press(300, 180, "right", "WM CTX FILE")
 if "FILES MENU" not in read():
     raise SystemExit("second file-row right-click did not open FILES menu")
-press(316, 216, "left", "FILES RENAME")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
+if not wait_new("FILES MENU SEL 1", marked):
+    raise SystemExit("Down did not select Rename in the FILES menu")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
+if not wait_new("FILES RENAME", marked):
+    raise SystemExit("Enter did not activate Rename in the FILES menu")
 # Rename's files_repaint is a full CSD + row-outline batch. Start
 # clicks during that paint are dropped (IF off / wmMetaBusy).
 time.sleep(1.2)
@@ -754,6 +767,10 @@ ck; [[ "$ROW_ADV" -ne "$ROW_CELL" ]] \
 echo "FILES rows: $ROW_LINE"
 ck; grep -q 'FILES MENU' "$SER" \
   || fail "file-row right-click did not show FILES Open/Rename"
+ck; grep -q 'FILES MENU ESC' "$SER" \
+  || fail "Escape did not dismiss the FILES context menu"
+ck; grep -q 'FILES MENU SEL 1' "$SER" \
+  || fail "keyboard navigation did not select the second context row"
 ck; grep -q 'FILES OPEN' "$SER" \
   || fail "FILES Open menu item did not run"
 ck; grep -q 'FILES RENAME' "$SER" \
