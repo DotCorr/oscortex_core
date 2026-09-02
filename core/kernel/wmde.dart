@@ -1271,6 +1271,8 @@ void wmDeStartShow() {
     }
   }
   wmSetMeta(u64(wmMetaPop), u64(wmPopLaunch));
+  wmSetMeta(u64(wmMetaPopXY),
+      (u64(8) << u64(32)) | wmLaunchY());
   final u64 n = wmDeLaunchN();
   uartWrite(Rodata.addressOf(wmStrDeStart), u64(12));
   uartPutHex(n, u64(2));
@@ -1289,6 +1291,9 @@ void wmDePanelShow() {
     }
   }
   wmSetMeta(u64(wmMetaPop), u64(wmPopPanel));
+  wmSetMeta(u64(wmMetaPopXY),
+      ((fbGeomWidth() - u64(wmOverlayW) - u64(8)) << u64(32)) |
+          wmPanelY());
   uartWrite(Rodata.addressOf(wmStrDeList), u64(11));
   uartPutHex(wmHeldCount(), u64(2));
   uartNewline();

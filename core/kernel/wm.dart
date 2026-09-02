@@ -2093,9 +2093,6 @@ void wmOverlayRestore() {
 /// 1 for DESK's 160×88 menu overlay (ADR-0195 / ADR-0196).
 @bare
 u64 wmIsOverlay(u64 wI) {
-  if (wmWinParentOf(wI) >= u64(wmMaxWindows)) {
-    return u64(0);
-  }
   if (wmIsPanel(wI) > u64(0)) {
     return u64(0);
   }
@@ -2609,6 +2606,11 @@ u64 wmRepaintRect(u64 x, u64 y, u64 w, u64 h) {
 u64 wmRepaintWindow(u64 wI) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
+  }
+  if (wmIsOverlay(wI) > u64(0)) {
+    if (wmOverlayParked(wI) > u64(0)) {
+      return u64(0);
+    }
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
   if (wmIsPanel(wI) > u64(0)) {
