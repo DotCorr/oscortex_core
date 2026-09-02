@@ -213,7 +213,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     q = Qmp(port)
     base, pitch = fb_geometry(serial)
-    report = {"static_vacated": [], "latency_ms": []}
+    report = {"static_vacated": [], "event_to_dump_completion_ms": []}
     frame = 0
 
     # Static save-under sweeps over wallpaper and dock.
@@ -251,7 +251,9 @@ def main():
         ):
             raise RuntimeError("save-under trail remained at %r" % (point,))
         report["static_vacated"].append(list(point))
-        report["latency_ms"].append(round(latency, 2))
+        # Includes a synchronous 1.9 MiB pmemsave and PNG write. This is an
+        # upper bound on observation, not a claim about guest present latency.
+        report["event_to_dump_completion_ms"].append(round(latency, 2))
         frame += 1
 
     # Pipeline more than the old 16-event ring without QMP round-trip pacing.
@@ -318,9 +320,13 @@ def main():
     write_png(final_path, pitch, final)
 
     report["mean_event_to_dump_ms"] = round(
-        sum(report["latency_ms"]) / len(report["latency_ms"]), 2
+        sum(report["event_to_dump_completion_ms"])
+        / len(report["event_to_dump_completion_ms"]),
+        2,
     )
-    report["max_event_to_dump_ms"] = max(report["latency_ms"])
+    report["max_event_to_dump_ms"] = max(
+        report["event_to_dump_completion_ms"]
+    )
     report["artifact"] = final_path
     with open(os.path.join(out_dir, "report.json"), "w") as f:
         json.dump(report, f, indent=2)
