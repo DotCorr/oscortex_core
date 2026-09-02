@@ -572,6 +572,15 @@ void wmMoveOp(u64 frame, u64 ptr, u64 id) {
   wmeventEnqueueConfigure(slot);
   u64 px = wmRepaintRect(ox, oy, ww + b + b, hh + b + b);
   px = px + wmRepaintWindow(slot);
+  if (wmIsOverlay(slot) > u64(0)) {
+    if (wmOverlayParked(slot) > u64(0)) {
+      /* Hiding a client menu must also invalidate the retained session
+       * chrome. A rectangle repaint alone is later overwritten by the cached
+       * frame that still contains the menu, recreating the stale card. */
+      wmCompose();
+      px = fbGeomWidth() * fbGeomHeight();
+    }
+  }
   // Children of this root: their abs moved; repaint them too.
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
@@ -659,6 +668,15 @@ u64 wmPack8(u64 addr) {
 /// `op = wmOpScreen`. Word 2 is WM_SCREEN_*; answer in rax.
 @bare
 void wmScreenOp(u64 frame, u64 ptr, u64 id) {
+  if ((wmMeta(u64(wmMetaRectPixels)) &
+          u64(wmRectComposePending)) >
+      u64(0)) {
+    wmSetMeta(
+        u64(wmMetaRectPixels),
+        wmMeta(u64(wmMetaRectPixels)) &
+            u64(0x7FFFFFFFFFFFFFFF));
+    wmCompose();
+  }
   final u64 kind = wmDesc(ptr, u64(wmDescArg2));
   if (kind == u64(0)) {
     userSetFrame(frame, u64(userFrameRax),

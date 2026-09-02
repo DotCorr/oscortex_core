@@ -601,6 +601,10 @@ const int wmMetaBusy = 16;
 /// through [wmMetaPixels] instead: a commit is a frame, a drag step is not.
 const int wmMetaRectPixels = 17;
 
+/// High bit of [wmMetaRectPixels]: drag/resize changed session-owned chrome
+/// and a task-context compose is owed. DESK's SCREEN_POP poll pays it.
+const int wmRectComposePending = 0x8000000000000000;
+
 /// Pointer ticks dropped because a composition was in progress. **A dropped
 /// tick is a dropped FRAME, not a lost event** -- `mouseApplyX/Y` have already
 /// moved the pointer, so the next tick sees the accumulated position.
@@ -843,9 +847,11 @@ void wmBlitRow(u64 wI, u64 py) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
-    if (h > u64(wmChromeH)) {
-      if (py < u64(wmTitleH)) {
-        x1 = u64(0);
+    if (wmPanelStrip() < u64(1)) {
+      if (h > u64(wmChromeH)) {
+        if (py < u64(wmTitleH)) {
+          x1 = u64(0);
+        }
       }
     }
     /* Corner inset must not reopen a title-band skip (x1==0). That
@@ -874,6 +880,9 @@ void wmBlitRow(u64 wI, u64 py) {
        * value. Repeated panel commits must be idempotent rather than building
        * alpha on top of last frame's glass. */
       u64 under = wmDeskPixel(x + px, y + py);
+      if (under == u64(wmNoPixel)) {
+        under = wmChromeCachePixel(x + px, y + py);
+      }
       if (under == u64(wmNoPixel)) {
         under =
             Volatile<u32>.fromAddress(fbPixelAddr(x + px, y + py)).value.toU64();
@@ -1122,11 +1131,18 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   u64 rh = u64(0);
   if (full > u64(0)) {
     px = wmRepaintWindow(slot);
-    rx = wmAbsX(slot) - u64(wmBorder);
-    ry = wmAbsY(slot) - u64(wmBorder);
     final u64 g = wmWin(slot, u64(wmWinGeom));
-    rw = wmGeomW(g) + u64(wmBorder) + u64(wmBorder);
-    rh = wmGeomH(g) + u64(wmBorder) + u64(wmBorder);
+    if (wmIsPanel(slot) > u64(0)) {
+      rx = wmAbsX(slot);
+      ry = wmAbsY(slot);
+      rw = wmGeomW(g);
+      rh = wmGeomH(g);
+    } else {
+      rx = wmAbsX(slot) - u64(wmBorder);
+      ry = wmAbsY(slot) - u64(wmBorder);
+      rw = wmGeomW(g) + u64(wmBorder) + u64(wmBorder);
+      rh = wmGeomH(g) + u64(wmBorder) + u64(wmBorder);
+    }
     if (wmMeta(u64(wmMetaTop)) == slot) {
       u64 i = u64(0);
       while (i < u64(wmMaxWindows)) {
@@ -1192,8 +1208,13 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     if (wmWindowUsable(slot) > u64(0)) {
       final u64 g = wmWin(slot, u64(wmWinGeom));
       final u64 b = u64(wmBorder);
-      wmMaybeDrawPointer(wmAbsX(slot) - b, wmAbsY(slot) - b,
-          wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+      if (wmIsPanel(slot) > u64(0)) {
+        wmMaybeDrawPointer(
+            wmAbsX(slot), wmAbsY(slot), wmGeomW(g), wmGeomH(g));
+      } else {
+        wmMaybeDrawPointer(wmAbsX(slot) - b, wmAbsY(slot) - b,
+            wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+      }
     }
     if (wmMeta(u64(wmMetaTop)) == slot) {
       u64 i = u64(0);
@@ -1203,8 +1224,13 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
             px = px + wmRepaintWindow(i);
             final u64 g = wmWin(i, u64(wmWinGeom));
             final u64 b = u64(wmBorder);
-            wmMaybeDrawPointer(wmAbsX(i) - b, wmAbsY(i) - b,
-                wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+            if (wmIsPanel(i) > u64(0)) {
+              wmMaybeDrawPointer(
+                  wmAbsX(i), wmAbsY(i), wmGeomW(g), wmGeomH(g));
+            } else {
+              wmMaybeDrawPointer(wmAbsX(i) - b, wmAbsY(i) - b,
+                  wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+            }
           }
         }
         i = i + u64(1);
@@ -1469,6 +1495,9 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinOffsetW), off);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWMax0) + slot, u64(0));
+  }
   // THE NEWEST SURFACE IS ON TOP. That is the whole of this compositor's
   // stacking policy, it is one line, and `display-protocol.md` §0.1 is explicit
   // that window management is compositor policy and not protocol.
@@ -2076,9 +2105,6 @@ void wmOverlayRestore() {
 /// 1 for DESK's 160×88 menu overlay (ADR-0195 / ADR-0196).
 @bare
 u64 wmIsOverlay(u64 wI) {
-  if (wmWinParentOf(wI) >= u64(wmMaxWindows)) {
-    return u64(0);
-  }
   if (wmIsPanel(wI) > u64(0)) {
     return u64(0);
   }
@@ -2397,7 +2423,10 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
       (((y - wy) * scale) * stride) + (((x - wx) * scale) << u64(2));
   final u64 src = wmRegionPixel(vec, off);
   if (wmIsPanel(wI) > u64(0)) {
-    final u64 under = wmDeskPixel(x, y);
+    u64 under = wmDeskPixel(x, y);
+    if (under == u64(wmNoPixel)) {
+      under = wmChromeCachePixel(x, y);
+    }
     if (under != u64(wmNoPixel)) {
       return wmPanelSrcOver(src, under);
     }
@@ -2593,7 +2622,16 @@ u64 wmRepaintWindow(u64 wI) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
+  if (wmIsOverlay(wI) > u64(0)) {
+    if (wmOverlayParked(wI) > u64(0)) {
+      return u64(0);
+    }
+  }
   final u64 g = wmWin(wI, u64(wmWinGeom));
+  if (wmIsPanel(wI) > u64(0)) {
+    return wmRepaintRect(
+        wmAbsX(wI), wmAbsY(wI), wmGeomW(g), wmGeomH(g));
+  }
   final u64 b = u64(wmBorder);
   return wmRepaintRect(wmAbsX(wI) - b, wmAbsY(wI) - b,
       wmGeomW(g) + b + b, wmGeomH(g) + b + b);
@@ -2682,7 +2720,14 @@ void wmGrab(u64 x, u64 y) {
   if (wmChromeHit(x, y) > u64(0)) {
     return;
   }
-  final u64 hit = wmHit(x, y);
+  u64 hit = wmHit(x, y);
+  final u64 de = wmDeOn();
+  if (de > u64(0)) {
+    final u64 geomHit = wmDeGeomHit(x, y);
+    if (geomHit < u64(wmMaxWindows)) {
+      hit = geomHit;
+    }
+  }
   if (hit >= u64(wmMaxWindows)) {
     // D9: a desktop click returns the keyboard to the shell. Focus
     // is the last [wmHit] window until it dies or this path runs.
@@ -2690,7 +2735,6 @@ void wmGrab(u64 x, u64 y) {
     wmFocusTo(u64(wmMaxWindows));
     return;
   }
-  final u64 de = wmDeOn();
   u64 title = u64(0);
   u64 resize = u64(0);
   if (de > u64(0)) {
@@ -2884,7 +2928,8 @@ void wmResizeStep(u64 x, u64 y) {
    * frame and reused the damage scratch with two different extents. */
   final u64 px = wmRepaintUnion2(
       rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
-  wmSetMeta(u64(wmMetaRectPixels), px);
+  wmSetMeta(
+      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
   uartWrite(Rodata.addressOf(wmStrW), u64(3));
@@ -2953,7 +2998,8 @@ void wmDragStep(u64 x, u64 y) {
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
   wmeventEnqueueConfigure(wI);
   u64 px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
-  wmSetMeta(u64(wmMetaRectPixels), px);
+  wmSetMeta(
+      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
   wmBumpMeta(u64(wmMetaMoves));
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
   uartPutHex(wI, u64(1));
@@ -3009,6 +3055,7 @@ void wmPointerTick() {
   final u64 left = bits & u64(1);
   final u64 right = (bits >> u64(1)) & u64(1);
   final u64 was = wmMeta(u64(wmMetaButtons));
+  final u64 dragBefore = wmMeta(u64(wmMetaDrag));
   final u64 wasLeft = was & u64(1);
   final u64 wasRight = (was >> u64(1)) & u64(1);
   // Right PRESS: compositor consumes it. No drag, no client click.
@@ -3034,7 +3081,16 @@ void wmPointerTick() {
     wmSetMeta(u64(wmMetaCurX), x);
     wmSetMeta(u64(wmMetaCurY), y);
     if (wmGfxChromeFresh() < u64(1)) {
-      wmGfxKick();
+      /* Drag/resize changes the Skia chrome key. Do not kick that raster from
+       * the pointer IRQ: the configure event makes the client commit, and its
+       * syscall performs the required full compose in safe task context.
+       * Kicking here enters Skia from isr_common and can leave only wallpaper
+       * before the client-restore half runs. */
+      if (dragBefore < u64(1)) {
+        if (wmMeta(u64(wmMetaDrag)) < u64(1)) {
+          wmGfxKick();
+        }
+      }
     }
   } else {
     if (ox != x) {

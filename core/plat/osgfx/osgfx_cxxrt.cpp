@@ -32,7 +32,10 @@ double remainder(double x, double y) { return __builtin_remainder(x, y); }
 namespace std {
 inline namespace __1 {
 
-void __libcpp_verbose_abort(char const *, ...) noexcept { for (;;) {} }
+void __libcpp_verbose_abort(char const *, ...) { for (;;) {} }
+
+template string operator+<char, char_traits<char>, allocator<char>>(
+    const char *, const string &);
 
 string to_string(int v) {
   char b[32];

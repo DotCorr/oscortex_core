@@ -188,6 +188,8 @@ void wmGfxKick() {
   u64 mailbox = u64(0);
   u64 win0 = u64(0);
   u64 win1 = u64(0);
+  u64 win0Slot = u64(wmMaxWindows);
+  u64 win1Slot = u64(wmMaxWindows);
   u64 pop = u64(0);
   u64 packed = u64(0);
   u64 gen = u64(0);
@@ -202,18 +204,29 @@ void wmGfxKick() {
     }
     desk = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailDesk)).value;
     wall = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailWall)).value;
-    /* Prefer held geom so title chrome paints even if region probe lags. */
-    if (wmWindowHeld(u64(0)) > u64(0)) {
-      win0 = wmWin(u64(0), u64(wmWinGeom));
-    }
-    if (wmWindowHeld(u64(1)) > u64(0)) {
-      win1 = wmWin(u64(1), u64(wmWinGeom));
-    }
-    if (wmWindowUsable(u64(0)) > u64(0)) {
-      win0 = wmWin(u64(0), u64(wmWinGeom));
-    }
-    if (wmWindowUsable(u64(1)) > u64(0)) {
-      win1 = wmWin(u64(1), u64(wmWinGeom));
+    /* The mailbox has two chrome/preserve slots, not "physical WM slots 0
+     * and 1". Keep DESK's panel as the first preserve hole, skip its parked
+     * menu, and use the second slot for the first ordinary window. Copying
+     * physical slot 1 painted the menu at the upper-left; dropping the panel
+     * instead let a retained full-screen present erase the dock. */
+    u64 i = u64(0);
+    while (i < u64(wmMaxWindows)) {
+      u64 preserve = wmWindowUsable(i);
+      if (wmIsPanel(i) > u64(0)) {
+        preserve = wmWindowHeld(i);
+      }
+      if (preserve > u64(0)) {
+        if (wmIsOverlay(i) < u64(1)) {
+          if (win0Slot >= u64(wmMaxWindows)) {
+            win0Slot = i;
+            win0 = wmWin(i, u64(wmWinGeom));
+          } else if (win1Slot >= u64(wmMaxWindows)) {
+            win1Slot = i;
+            win1 = wmWin(i, u64(wmWinGeom));
+          }
+        }
+      }
+      i = i + u64(1);
     }
     if (wmMeta(u64(wmMetaPop)) > u64(0)) {
       packed = wmMeta(u64(wmMetaPopXY));
@@ -226,13 +239,17 @@ void wmGfxKick() {
     if ((desk >> u64(32)) > u64(0)) {
       flags = flags | u64(osgfxGuestWallImg);
     }
-    flags = flags | ((wmMeta(u64(wmMetaTop)) & u64(3)) << u64(osgfxGuestTopShift));
+    u64 chromeTop = u64(0);
+    if (wmMeta(u64(wmMetaTop)) == win1Slot) {
+      chromeTop = u64(1);
+    }
+    flags = flags | (chromeTop << u64(osgfxGuestTopShift));
     flags = flags |
         ((wmMeta(u64(wmMetaPop)) & u64(3)) << u64(osgfxGuestPopShift));
-    if (wmWindowHeld(u64(0)) > u64(0)) {
+    if (win0Slot < u64(wmMaxWindows)) {
       flags = flags | u64(osgfxGuestHeld0);
     }
-    if (wmWindowHeld(u64(1)) > u64(0)) {
+    if (win1Slot < u64(wmMaxWindows)) {
       flags = flags | u64(osgfxGuestHeld1);
     }
     if (wmPanelStrip() > u64(0)) {

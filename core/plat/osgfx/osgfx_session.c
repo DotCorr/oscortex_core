@@ -367,6 +367,7 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   if (panel != 0 && client_noted == 0) {
     client_noted = 1;
     com1_puts("OSGFX SESSION CHROME CLIENT\n");
+    com1_puts("OSGFX SESSION STRIP CLIENT\n");
   }
   /* There is no pre-DESK fallback strip. Keep real wallpaper behind the
    * future panel so its transparent carrier and rounded ends reveal the desk

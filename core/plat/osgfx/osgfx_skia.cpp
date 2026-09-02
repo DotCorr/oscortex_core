@@ -102,13 +102,28 @@ struct OsGfx {
 
 static OsGfx g_one;
 static OsGfx client_g;
+static int resource_cache_disabled;
 
 static void drop_skia_before_rewind(void) {
+  if (!resource_cache_disabled) {
+    /*
+     * The freestanding CRT's free() is a no-op and frame reclamation rewinds
+     * its bump arena. Keep Skia from retaining resource records across a
+     * rewind; otherwise a later cache traversal can dereference overwritten
+     * records.
+     */
+    SkGraphics::SetResourceCacheTotalByteLimit(0);
+    resource_cache_disabled = 1;
+  }
   g_one.owned.reset();
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
-  SkGraphics::PurgeAllCaches();
+  /*
+   * Do not traverse the process-global cache here. Per-frame shadows avoid
+   * cached mask filters below, and the zero-byte budget keeps other
+   * unreferenced resources from crossing this frame boundary.
+   */
   osgfx_heap_frame_begin();
 }
 
@@ -661,8 +676,6 @@ void osgfx_fill_rrect_vgrad(OsGfx *g, int x, int y, int w, int h, int radius,
  * drop shadow, not a ring of hand-blended coverage. */
 void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
                   uint32_t rgb) {
-  SkCanvas *c;
-  SkPaint paint;
   int alpha;
   int yy;
   int xx;
@@ -673,7 +686,6 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
   int oh;
   int orad;
   uint32_t col;
-  SkScalar sigma;
 
   if (g == 0 || w <= 0 || h <= 0) {
     return;
@@ -682,23 +694,14 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
   if (col == 0) {
     col = 0x00081018u;
   }
-  c = canvas_of(g);
-  if (c != 0) {
-    sigma = (SkScalar)(blur > 0 ? blur : 12) / 3.0f;
-    if (sigma < 1.0f) {
-      sigma = 1.0f;
-    }
-    if (sigma > 12.0f) {
-      sigma = 12.0f;
-    }
-    paint.setAntiAlias(true);
-    paint.setStyle(SkPaint::kFill_Style);
-    paint.setColor(SkColorSetARGB(96, (col >> 16) & 0xff, (col >> 8) & 0xff,
-                                 col & 0xff));
-    paint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, sigma));
-    c->drawRRect(chrome_rrect(x, y, w, h, radius), paint);
-    return;
-  }
+  (void)blur;
+  /*
+   * SkMaskFilter::MakeBlur installs mask resources in Skia's process-global
+   * cache. That cache cannot share the freestanding frame bump arena: records
+   * survive a rewind and later hang in SkResourceCache::remove. Keep the
+   * bounded premultiplied-alpha fallback for shadows; shapes and text continue
+   * through Skia's AA paths without creating cached blur masks.
+   */
   ox = x + 6;
   oy = y + 10;
   ow = w + 4;

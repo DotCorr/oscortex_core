@@ -219,6 +219,13 @@ final List<u8> wmStrMin = const [
   u8(0x57), u8(0x20),
 ];
 
+/// `'WM MAX W '` -- 9 bytes.
+@rodata
+final List<u8> wmStrMax = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4D), u8(0x41), u8(0x58), u8(0x20),
+  u8(0x57), u8(0x20),
+];
+
 /// `'WM REST W '` -- 10 bytes.
 @rodata
 final List<u8> wmStrRest = const [
@@ -373,6 +380,12 @@ u64 wmMinX(u64 wI) {
   return wmCloseX(wI) - u64(wmBtnGap) - u64(wmBtnS);
 }
 
+/// Maximise-button origin X for window [wI].
+@bare
+u64 wmMaxX(u64 wI) {
+  return wmMinX(wI) - u64(wmBtnGap) - u64(wmBtnS);
+}
+
 /// Title-button origin Y for window [wI].
 @bare
 u64 wmBtnY(u64 wI) {
@@ -424,6 +437,31 @@ u64 wmMinHit(u64 wI, u64 x, u64 y) {
     return u64(0);
   }
   final u64 bx = wmMinX(wI);
+  final u64 by = wmBtnY(wI);
+  if (x < bx) {
+    return u64(0);
+  }
+  if (y < by) {
+    return u64(0);
+  }
+  if (x >= (bx + u64(wmBtnS))) {
+    return u64(0);
+  }
+  if (y >= (by + u64(wmBtnS))) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+@bare
+u64 wmMaxHit(u64 wI, u64 x, u64 y) {
+  if (wmDeOn() < u64(1)) {
+    return u64(0);
+  }
+  if (wmWindowUsable(wI) < u64(1)) {
+    return u64(0);
+  }
+  final u64 bx = wmMaxX(wI);
   final u64 by = wmBtnY(wI);
   if (x < bx) {
     return u64(0);
@@ -517,13 +555,11 @@ u64 wmSlotX(u64 wI) {
 }
 
 /// The held window whose taskbar slot contains ([x], [y]), or
-/// [wmMaxWindows]. Off while a panel owns the strip (ADR-0197).
+/// [wmMaxWindows]. With DESK up these slots occupy the clear gap between its
+/// left and right islands, providing a restore target without a second bar.
 @bare
 u64 wmSlotHit(u64 x, u64 y) {
   if (wmDeOn() < u64(1)) {
-    return u64(wmMaxWindows);
-  }
-  if (wmPanelStrip() > u64(0)) {
     return u64(wmMaxWindows);
   }
   if (y < wmStartY()) {
@@ -1271,11 +1307,15 @@ void wmDeStartShow() {
     }
   }
   wmSetMeta(u64(wmMetaPop), u64(wmPopLaunch));
+  wmSetMeta(u64(wmMetaPopXY),
+      (u64(8) << u64(32)) | wmLaunchY());
   final u64 n = wmDeLaunchN();
   uartWrite(Rodata.addressOf(wmStrDeStart), u64(12));
   uartPutHex(n, u64(2));
   uartNewline();
-  final u64 unused = wmLaunchDraw();
+  if (wmPanelStrip() < u64(1)) {
+    final u64 unused = wmLaunchDraw();
+  }
 }
 
 /// Opens the reflection panel and prints the live list.
@@ -1289,10 +1329,15 @@ void wmDePanelShow() {
     }
   }
   wmSetMeta(u64(wmMetaPop), u64(wmPopPanel));
+  wmSetMeta(u64(wmMetaPopXY),
+      ((fbGeomWidth() - u64(wmOverlayW) - u64(8)) << u64(32)) |
+          wmPanelY());
   uartWrite(Rodata.addressOf(wmStrDeList), u64(11));
   uartPutHex(wmHeldCount(), u64(2));
   uartNewline();
-  final u64 unused = wmPanelDraw();
+  if (wmPanelStrip() < u64(1)) {
+    final u64 unused = wmPanelDraw();
+  }
 }
 
 /// Spawns the ELF cached at launch row [row] through the named load
@@ -1427,6 +1472,46 @@ void wmRestWindow(u64 wI) {
   final u64 unused = wmRepaintWindow(wI);
 }
 
+/// Toggle saved geometry against the largest rectangle the attached backing
+/// store can safely supply. [wmClampSize] keeps this inside stride/pages.
+@bare
+void wmToggleMaxWindow(u64 wI) {
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  final u64 at = u64(wmPageWMax0) + wI;
+  final u64 old = wmWin(wI, u64(wmWinGeom));
+  final u64 saved = wmPage(at);
+  final u64 b = u64(wmBorder);
+  u64 next = saved;
+  if (saved < u64(1)) {
+    wmPageSet(at, old);
+    final u64 size = wmClampSize(
+        wI, b, b, fbGeomWidth() - b - b,
+        fbGeomHeight() - u64(wmChromeH) - b - b);
+    next = wmPackGeom(
+        b, b, size >> u64(32), size & u64(0xFFFFFFFF));
+  } else {
+    wmPageSet(at, u64(0));
+  }
+  wmSetWin(wI, u64(wmWinGeom), next);
+  wmSetMeta(u64(wmMetaTop), wI);
+  wmeventEnqueueConfigure(wI);
+  final u64 px = wmRepaintUnion2(
+      wmGeomX(old) - b, wmGeomY(old) - b,
+      wmGeomW(old) + b + b, wmGeomH(old) + b + b,
+      wmGeomX(next) - b, wmGeomY(next) - b,
+      wmGeomW(next) + b + b, wmGeomH(next) + b + b);
+  wmSetMeta(
+      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  uartWrite(Rodata.addressOf(wmStrMax), u64(9));
+  uartPutHex(wI, u64(1));
+  uartNewline();
+}
+
 /// 1 if `wm de` is on and ([x], [y]) is on window [wI]'s SE resize
 /// handle. The handle is the last [wmResizeEdge] pixels of the
 /// content plus the border. Title-drag and close/min sit at the top;
@@ -1466,6 +1551,36 @@ u64 wmResizeHit(u64 wI, u64 x, u64 y) {
     return u64(0);
   }
   return u64(1);
+}
+
+/// Topmost window whose compositor-owned title or resize geometry contains
+/// ([x], [y]). Under gfx those pixels deliberately return [wmNoPixel] from
+/// [wmWindowPixel] because session Skia owns their raster; input must still
+/// hit the geometry rather than fall through to the desktop.
+@bare
+u64 wmDeGeomHit(u64 x, u64 y) {
+  final u64 top = wmMeta(u64(wmMetaTop));
+  if (top < u64(wmMaxWindows)) {
+    if (wmTitleHit(top, x, y) > u64(0)) {
+      return top;
+    }
+    if (wmResizeHit(top, x, y) > u64(0)) {
+      return top;
+    }
+  }
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (i != top) {
+      if (wmTitleHit(i, x, y) > u64(0)) {
+        return i;
+      }
+      if (wmResizeHit(i, x, y) > u64(0)) {
+        return i;
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
 }
 
 /// Left-press DE policy. Returns 1 if the press was consumed.
@@ -1515,6 +1630,10 @@ u64 wmDeGrab(u64 x, u64 y) {
   while (i < u64(wmMaxWindows)) {
     if (wmCloseHit(i, x, y) > u64(0)) {
       wmCloseWindow(i);
+      return u64(1);
+    }
+    if (wmMaxHit(i, x, y) > u64(0)) {
+      wmToggleMaxWindow(i);
       return u64(1);
     }
     if (wmMinHit(i, x, y) > u64(0)) {
