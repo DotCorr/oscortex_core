@@ -2452,13 +2452,15 @@ u64 wmPixelAt(u64 x, u64 y) {
 
 /// Repaints one scanline segment from [wmPixelAt] into scratch at [sbase].
 @bare
-void wmRepaintScratchRow(u64 sbase, u64 x, u64 y, u64 w, u64 sw) {
+void wmRepaintScratchRow(
+    u64 sbase, u64 x, u64 y, u64 w, u64 sw, u64 scratchY) {
   u64 i = u64(0);
   while (i < w) {
     final u64 c = wmPixelAt(x + i, y);
     if (c != u64(wmNoPixel)) {
-      Pointer<u32>.fromAddress(sbase + (((y * sw) + i) << u64(2))).value =
-          c.toU32();
+      Pointer<u32>.fromAddress(
+              sbase + (((scratchY * sw) + i) << u64(2)))
+          .value = c.toU32();
     }
     i = i + u64(1);
   }
@@ -2466,10 +2468,12 @@ void wmRepaintScratchRow(u64 sbase, u64 x, u64 y, u64 w, u64 sw) {
 
 /// Blits one scratch row to scanout.
 @bare
-void wmRepaintBlitRow(u64 sbase, u64 x, u64 y, u64 w, u64 sw) {
+void wmRepaintBlitRow(
+    u64 sbase, u64 x, u64 y, u64 w, u64 sw, u64 scratchY) {
   u64 i = u64(0);
   while (i < w) {
-    final u64 c = Pointer<u32>.fromAddress(sbase + (((y * sw) + i) << u64(2)))
+    final u64 c = Pointer<u32>.fromAddress(
+            sbase + (((scratchY * sw) + i) << u64(2)))
         .value
         .toU64();
     fbPutPixel(x + i, y, c);
@@ -2546,8 +2550,11 @@ u64 wmRepaintRect(u64 x, u64 y, u64 w, u64 h) {
   if (scratch > u64(0)) {
     u64 j = u64(0);
     while (j < hh) {
-      wmRepaintScratchRow(scratch, x, y + j, ww, ww);
-      wmRepaintBlitRow(scratch, x, y + j, ww, ww);
+      /* Scratch is a compact ww×hh rectangle. Indexing it by the absolute
+       * screen row wrote far beyond the allocation during drag/resize and
+       * then blitted unrelated rows back as teal warp. */
+      wmRepaintScratchRow(scratch, x, y + j, ww, ww, j);
+      wmRepaintBlitRow(scratch, x, y + j, ww, ww, j);
       j = j + u64(1);
     }
     return area;
@@ -2853,8 +2860,10 @@ void wmResizeStep(u64 x, u64 y) {
   final u64 rh = oh + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
   wmeventEnqueueConfigure(wI);
-  u64 px = wmRepaintRect(rx, ry, rw, rh);
-  px = px + wmRepaintWindow(wI);
+  /* Compose old∪new once. Two independent repaints exposed an intermediate
+   * frame and reused the damage scratch with two different extents. */
+  final u64 px = wmRepaintUnion2(
+      rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
   wmSetMeta(u64(wmMetaRectPixels), px);
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
