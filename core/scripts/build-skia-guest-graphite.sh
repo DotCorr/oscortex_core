@@ -2,6 +2,10 @@
 # Graphite + Vulkan objects for kernel.elf (x86_64-unknown-none-elf).
 # Not Mac Metal. Not a host libskia.a. MakeVulkan still needs a VkDevice.
 set -euo pipefail
+if [[ "${OSCORTEX_SKIP_GRAPHITE:-0}" == 1 ]]; then
+  echo "build-skia-guest-graphite: skipped by OSCORTEX_SKIP_GRAPHITE" >&2
+  exit 1
+fi
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$CORE/build/skia/src"
 OUT="$CORE/build/skia/out/guest-elf-graphite"
