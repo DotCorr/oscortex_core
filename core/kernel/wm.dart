@@ -879,6 +879,9 @@ void wmBlitRow(u64 wI, u64 py) {
        * alpha on top of last frame's glass. */
       u64 under = wmDeskPixel(x + px, y + py);
       if (under == u64(wmNoPixel)) {
+        under = wmChromeCachePixel(x + px, y + py);
+      }
+      if (under == u64(wmNoPixel)) {
         under =
             Volatile<u32>.fromAddress(fbPixelAddr(x + px, y + py)).value.toU64();
       }
@@ -2415,7 +2418,10 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
       (((y - wy) * scale) * stride) + (((x - wx) * scale) << u64(2));
   final u64 src = wmRegionPixel(vec, off);
   if (wmIsPanel(wI) > u64(0)) {
-    final u64 under = wmDeskPixel(x, y);
+    u64 under = wmDeskPixel(x, y);
+    if (under == u64(wmNoPixel)) {
+      under = wmChromeCachePixel(x, y);
+    }
     if (under != u64(wmNoPixel)) {
       return wmPanelSrcOver(src, under);
     }
