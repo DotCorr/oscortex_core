@@ -962,7 +962,9 @@ ck; grep -q 'WM MAX W' "$SER" \
   || fail "title max did not toggle FILES"
 ck; ! grep -q 'OSGFX OOM' "$SER" \
   || fail "Skia bump exhausted after combined daily-drive input"
-ck; ! grep -q 'M1 FAULT' "$SER" \
+# M1 FAULT 06 is the deliberate boot #UD before M1 END. A later vector,
+# USER FAULT, or M4 FAULT is a real daily-drive crash.
+ck; ! sed -n '/^M1 END/,$p' "$SER" | grep -qE '^(M1|M4|USER) FAULT' \
   || fail "kernel faulted under combined daily-drive input"
 
 echo
