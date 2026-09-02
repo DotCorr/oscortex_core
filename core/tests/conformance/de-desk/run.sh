@@ -136,6 +136,16 @@ ck; grep -q 'wmPointerBlit' "$CORE_DIR/kernel/wm.dart" \
   || fail "wm does not blit a Skia sprite"
 ck; grep -q 'wmContextShow' "$CORE_DIR/kernel/wmpop.dart" \
   || fail "no contextual right-click"
+ck; python3 - "$CORE_DIR/kernel/wmpop.dart" <<'PY' \
+  || fail "right-click focus does not publish refreshed session chrome"
+import sys
+s = open(sys.argv[1]).read()
+b = s[s.index("void wmContextFocus("):s.index("void wmContextShow(")]
+for token in ("wmFocusTo(hit);", "wmGfxKick();", "osgfx_guest_tick();",
+              "wmCompose();"):
+    if token not in b:
+        raise SystemExit("wmContextFocus missing " + token)
+PY
 ck; grep -q 'final u64 geomHit = wmDeGeomHit' "$CORE_DIR/kernel/wmpop.dart" \
   || fail "CSD title context clicks still fall through as wallpaper"
 ck; grep -q 'WM_SCREEN_NAME' "$CORE_DIR/user/frame/osframe.h" \

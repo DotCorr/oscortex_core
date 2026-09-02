@@ -358,6 +358,43 @@ void wmPopShow(u64 x, u64 y) {
 
 /// Classify a right press (ADR-0194). Wallpaper menu only on empty desk.
 @bare
+void wmContextFocus(u64 hit) {
+  if (wmIsPanel(hit) > u64(0)) {
+    return;
+  }
+  final u64 oldFocus = wmFocusLive();
+  final u64 oldTop = wmMeta(u64(wmMetaTop));
+  wmFocusTo(hit);
+  if (oldTop != hit) {
+    wmSetMeta(u64(wmMetaTop), hit);
+    wmBumpMeta(u64(wmMetaRaises));
+  }
+  u64 chromeChanged = u64(0);
+  if (oldFocus != hit + u64(1)) {
+    chromeChanged = u64(1);
+  }
+  if (oldTop != hit) {
+    chromeChanged = u64(1);
+  }
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (chromeChanged > u64(0)) {
+      wmGfxKick();
+      osgfx_guest_tick();
+      if (wmActive() > u64(0)) {
+        wmCompose();
+      }
+    }
+    return;
+  }
+  if (oldTop != hit) {
+    u64 px = wmRepaintWindow(oldTop);
+    px = px + wmRepaintWindow(hit);
+    wmSetMeta(
+        u64(wmMetaRectPixels), wmMeta(u64(wmMetaRectPixels)) + px);
+  }
+}
+
+@bare
 void wmContextShow(u64 x, u64 y) {
   if (wmChromeHit(x, y) > u64(0)) {
     uartWrite(Rodata.addressOf(wmStrCtxNone), u64(11));
@@ -387,34 +424,12 @@ void wmContextShow(u64 x, u64 y) {
   }
   if (wmDeOn() > u64(0)) {
     if (wmTitleHit(hit, x, y) > u64(0)) {
-      if (wmIsPanel(hit) < u64(1)) {
-        wmFocusTo(hit);
-        if (wmMeta(u64(wmMetaTop)) != hit) {
-          final u64 oldTop = wmMeta(u64(wmMetaTop));
-          wmSetMeta(u64(wmMetaTop), hit);
-          wmBumpMeta(u64(wmMetaRaises));
-          u64 px = wmRepaintWindow(oldTop);
-          px = px + wmRepaintWindow(hit);
-          wmSetMeta(u64(wmMetaRectPixels),
-              wmMeta(u64(wmMetaRectPixels)) + px);
-        }
-      }
+      wmContextFocus(hit);
       uartWrite(Rodata.addressOf(wmStrCtxTitle), u64(12));
       uartNewline();
       return;
     }
-    if (wmIsPanel(hit) < u64(1)) {
-      wmFocusTo(hit);
-      if (wmMeta(u64(wmMetaTop)) != hit) {
-        final u64 oldTop = wmMeta(u64(wmMetaTop));
-        wmSetMeta(u64(wmMetaTop), hit);
-        wmBumpMeta(u64(wmMetaRaises));
-        u64 px = wmRepaintWindow(oldTop);
-        px = px + wmRepaintWindow(hit);
-        wmSetMeta(u64(wmMetaRectPixels),
-            wmMeta(u64(wmMetaRectPixels)) + px);
-      }
-    }
+    wmContextFocus(hit);
     uartWrite(Rodata.addressOf(wmStrCtxFile), u64(11));
     uartNewline();
     final u64 wx = wmAbsX(hit);
