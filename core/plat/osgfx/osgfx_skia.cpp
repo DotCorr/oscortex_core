@@ -119,7 +119,12 @@ static void drop_skia_before_rewind(void) {
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
-  SkGraphics::PurgeAllCaches();
+  /*
+   * Do not traverse the process-global cache here. Its records were allocated
+   * from the frame bump arena and can already point into a rewound generation;
+   * PurgeAllCaches then hangs in SkResourceCache::remove. The zero-byte budget
+   * above prevents new unreferenced records surviving a frame.
+   */
   osgfx_heap_frame_begin();
 }
 
