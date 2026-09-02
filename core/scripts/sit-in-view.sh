@@ -444,11 +444,15 @@ hit = False
 for attempt in range(12):
     marked = open(ser, encoding="latin-1").read()
     n = marked.count("MOUSE ABS")
-    place_abs(tx, ty)
-    time.sleep(0.12)
-    # Place then press — combined abs+btn during wmMetaBusy can drop the
-    # edge; bare abs does not print MOUSE ABS (button-edge announce).
-    send_once([{"type": "btn", "data": {"button": "left", "down": True}}])
+    # Coordinates and the edge are one tablet report. Splitting these into
+    # separate QMP commands allowed a busy compositor to observe the press at
+    # the previous position, and the old proof therefore retried around the
+    # race instead of testing the input contract.
+    send_once([
+        {"type": "abs", "data": {"axis": "x", "value": abs_x}},
+        {"type": "abs", "data": {"axis": "y", "value": abs_y}},
+        {"type": "btn", "data": {"button": "left", "down": True}},
+    ])
     deadline = time.time() + 1.8
     while time.time() < deadline:
         text = open(ser, encoding="latin-1").read()
@@ -458,7 +462,11 @@ for attempt in range(12):
                 break
         time.sleep(0.04)
     if not got or not abs_ok(got[0], got[1]):
-        send_once([{"type": "btn", "data": {"button": "left", "down": False}}])
+        send_once([
+            {"type": "abs", "data": {"axis": "x", "value": abs_x}},
+            {"type": "abs", "data": {"axis": "y", "value": abs_y}},
+            {"type": "btn", "data": {"button": "left", "down": False}},
+        ])
         time.sleep(0.08 * (attempt + 1))
         continue
     print("sit-in-view: INPUT abs pass  MOUSE ABS X %04X Y %04X (want %d,%d)" % (
@@ -471,7 +479,11 @@ for attempt in range(12):
             hit = True
             break
         time.sleep(0.05)
-    send_once([{"type": "btn", "data": {"button": "left", "down": False}}])
+    send_once([
+        {"type": "abs", "data": {"axis": "x", "value": abs_x}},
+        {"type": "abs", "data": {"axis": "y", "value": abs_y}},
+        {"type": "btn", "data": {"button": "left", "down": False}},
+    ])
     if hit:
         break
     time.sleep(0.2)

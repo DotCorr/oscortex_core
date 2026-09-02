@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=63
+ASSERTIONS_REQUIRED=64
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -241,7 +241,10 @@ ck; grep -q 'osgfx_fill_desk_generative' "$CORE_DIR/build/kernel.map" \
   || fail "kernel.map has no osgfx_fill_desk_generative"
 # The wallpaper cache is a RUNNING-OS thing, not a host module: the symbol the
 # C generator reads its buffer address out of must be the kernel's own mailbox.
-ck; x86_64-elf-nm "$KERNEL_ELF" | grep -qE '[[:space:]][DdBb][[:space:]]+osgfx_guest_cmd$' \
+capture_sh NM_OUT NM_STATUS -- "x86_64-elf-nm '$KERNEL_ELF'"
+ck; [[ $NM_STATUS -eq 0 ]] \
+  || fail "x86_64-elf-nm could not read kernel.elf"
+ck; grep -qE '[[:space:]][DdBb][[:space:]]+osgfx_guest_cmd$' <<<"$NM_OUT" \
   || fail "kernel.elf has no osgfx_guest_cmd — the state page has no mailbox to live in"
 echo "BUILD: pass  cached generator linked into kernel.elf"
 

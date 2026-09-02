@@ -1489,9 +1489,15 @@ void wmToggleMaxWindow(u64 wI) {
   u64 next = saved;
   if (saved < u64(1)) {
     wmPageSet(at, old);
-    final u64 size = wmClampSize(
-        wI, b, b, fbGeomWidth() - b - b,
-        fbGeomHeight() - u64(wmChromeH) - b - b);
+    u64 size = u64(0);
+    if (wmWinResizableOf(wI) > u64(0)) {
+      size = ((fbGeomWidth() - b - b) << u64(32)) |
+          (fbGeomHeight() - u64(wmChromeH) - b - b);
+    } else {
+      size = wmClampSize(
+          wI, b, b, fbGeomWidth() - b - b,
+          fbGeomHeight() - u64(wmChromeH) - b - b);
+    }
     next = wmPackGeom(
         b, b, size >> u64(32), size & u64(0xFFFFFFFF));
   } else {
@@ -1500,6 +1506,14 @@ void wmToggleMaxWindow(u64 wI) {
   wmSetWin(wI, u64(wmWinGeom), next);
   wmSetMeta(u64(wmMetaTop), wI);
   wmeventEnqueueConfigure(wI);
+  if (saved < u64(1)) {
+    if (wmWinResizableOf(wI) > u64(0)) {
+      uartWrite(Rodata.addressOf(wmStrMax), u64(9));
+      uartPutHex(wI, u64(1));
+      uartNewline();
+      return;
+    }
+  }
   final u64 px = wmRepaintUnion2(
       wmGeomX(old) - b, wmGeomY(old) - b,
       wmGeomW(old) + b + b, wmGeomH(old) + b + b,

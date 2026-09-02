@@ -370,7 +370,13 @@ void wmContextShow(u64 x, u64 y) {
     uartNewline();
     return;
   }
-  final u64 hit = wmHit(x, y);
+  u64 hit = wmHit(x, y);
+  if (wmDeOn() > u64(0)) {
+    final u64 geomHit = wmDeGeomHit(x, y);
+    if (geomHit < u64(wmMaxWindows)) {
+      hit = geomHit;
+    }
+  }
   if (hit >= u64(wmMaxWindows)) {
     if (wmDeOn() > u64(0)) {
       wmPopShow(x, y);

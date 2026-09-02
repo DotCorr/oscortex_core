@@ -526,16 +526,30 @@ final List<u8> mouseStrAbsY = const [
 /// SET absolute pointer position from a tablet (ADR-0193). Not accumulated.
 @bare
 void mouseAbsPlace(u64 x, u64 y, u64 buttons, u64 announce) {
-  mouseSetState(u64(mouseWordX), x);
-  mouseSetState(u64(mouseWordY), y);
+  u64 px = x;
+  u64 py = y;
+  final u64 width = fbGeomWidth();
+  final u64 height = fbGeomHeight();
+  if (width > u64(0)) {
+    if (px >= width) {
+      px = width - u64(1);
+    }
+  }
+  if (height > u64(0)) {
+    if (py >= height) {
+      py = height - u64(1);
+    }
+  }
+  mouseSetState(u64(mouseWordX), px);
+  mouseSetState(u64(mouseWordY), py);
   mouseSetState(u64(mouseWordButtons), buttons & u64(0xFF));
   mouseBump(u64(mouseWordPackets));
   if (announce > u64(0)) {
     uartWrite(Rodata.addressOf(mouseStrAbs), u64(10));
     uartWrite(Rodata.addressOf(mouseStrAbsX), u64(3));
-    uartPutHex(x, u64(4));
+    uartPutHex(px, u64(4));
     uartWrite(Rodata.addressOf(mouseStrAbsY), u64(3));
-    uartPutHex(y, u64(4));
+    uartPutHex(py, u64(4));
     uartNewline();
   }
   wmPointerTick();
@@ -907,6 +921,15 @@ void mouseComplete() {
   if ((b0 & u64(mousePktOverflow)) > u64(0)) {
     mouseBump(u64(mouseWordOverflows));
     mouseReportOvf(b0);
+    return;
+  }
+  /*
+   * QEMU can keep its emulated PS/2 mouse active while virtio-tablet owns the
+   * host pointer. Applying both streams makes relative packets overwrite the
+   * absolute axes (and can synthesize a second button edge). Drain the packet
+   * for 8042 framing, but let exactly one device own pointer state.
+   */
+  if ((mouseInitFlags() & u64(mouseFlagTablet)) > u64(0)) {
     return;
   }
   final u64 b1 = mouseState(u64(mouseWordB1));

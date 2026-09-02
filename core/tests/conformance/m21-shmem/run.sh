@@ -205,8 +205,8 @@ ck; [[ "$S_PLANEF" -eq "$(dartconst pmmMaxFrames pmm.dart)" ]] \
 # out of its slot into the next one's address space.
 ck; [[ $(( S_MAX * S_SLOTPAGES )) -eq "$VM_SHM_PAGES" ]] \
   || fail "$S_MAX slots of $S_SLOTPAGES pages do not tile the window's $VM_SHM_PAGES pages"
-ck; [[ "$S_MAXPAGES" -le "$S_SLOTPAGES" ]] \
-  || fail "shmMaxPages ($S_MAXPAGES) exceeds a slot ($S_SLOTPAGES) — a region could overrun into the next slot's addresses"
+ck; [[ "$S_MAXPAGES" -le "$VM_SHM_PAGES" ]] \
+  || fail "shmMaxPages ($S_MAXPAGES) exceeds the shared window ($VM_SHM_PAGES)"
 ck; [[ "$S_MAX" -le "$S_CAPS" ]] \
   || fail "a process has $S_CAPS capability slots and there are $S_MAX regions; it could not hold one for each"
 

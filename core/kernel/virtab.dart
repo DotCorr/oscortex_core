@@ -32,11 +32,20 @@ const int virtabCfgAbsInfo = 0x12;
 const int virtabAbsX = 0;
 const int virtabAbsY = 1;
 
-const int virtabQSize = 16;
-const int virtabOffAvail = 0x100;
-const int virtabOffUsed = 0x140;
-const int virtabOffEvt = 0x1E0;
-const int virtabOffHdr = 0x280;
+/*
+ * A host pointer can report faster than the 100 Hz PIT poll. Sixteen event
+ * slots held only five X/Y/SYN reports, so a short fast sweep exhausted the
+ * ring and the final absolute position could be dropped. Sixty-four slots
+ * still fit comfortably in the one donated page:
+ *
+ *   desc  000..3ff   avail 400..483   used 500..703
+ *   event 800..9ff   header a00..
+ */
+const int virtabQSize = 64;
+const int virtabOffAvail = 0x400;
+const int virtabOffUsed = 0x500;
+const int virtabOffEvt = 0x800;
+const int virtabOffHdr = 0xA00;
 const int virtabMagic = 0x54414231;
 
 const int virtabEvSyn = 0x00;
@@ -48,7 +57,7 @@ const int virtabBtnLeft = 0x110;
 const int virtabBtnRight = 0x111;
 const int virtabBtnMiddle = 0x112;
 const int virtabDefaultMax = 32767;
-const int virtabPollCap = 16;
+const int virtabPollCap = 64;
 
 /// `"vtab"` -- 4 bytes.
 @rodata
@@ -242,6 +251,7 @@ void virtabInit(u64 announce) {
     virtabFail(announce, u64(5));
     return;
   }
+  virtgpuRamPut32(frame + u64(virtabOffHdr) + u64(32), qsz);
   virtgpuCfgPut16(cfg, u64(virtgpuCfgQSize), qsz);
   virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), frame);
   virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), frame + u64(virtabOffAvail));
@@ -329,7 +339,23 @@ void virtabApply(u64 hdr, u64 ev) {
   }
   if (typ == u64(virtabEvSyn)) {
     if (code == u64(0)) {
-      virtabCommit(hdr);
+      final u64 buttons = virtgpuRamGet32(hdr + u64(24));
+      final u64 prev = virtgpuRamGet32(hdr + u64(28));
+      if (buttons != prev) {
+        /*
+         * Never coalesce a button edge: its X/Y and button state are one
+         * atomic report and press+release may both arrive in one PIT period.
+         */
+        virtgpuRamPut32(hdr + u64(36), u64(0));
+        virtabCommit(hdr);
+      } else {
+        /*
+         * Bare motion is last-position-wins. Painting every queued SYN made
+         * one IRQ perform up to five save-under cycles and exposed all those
+         * intermediate positions as visible jitter.
+         */
+        virtgpuRamPut32(hdr + u64(36), u64(1));
+      }
     }
   }
 }
@@ -360,6 +386,13 @@ void virtabPoll() {
   if (virtgpuRamGet32(hdr) != u64(virtabMagic)) {
     return;
   }
+  final u64 qsz = virtgpuRamGet32(hdr + u64(32));
+  if (qsz < u64(1)) {
+    return;
+  }
+  if (qsz > u64(virtabQSize)) {
+    return;
+  }
   final u64 used = virtgpuRamGet16(frame + u64(virtabOffUsed) + u64(2));
   u64 last = virtgpuRamGet16(hdr + u64(4));
   u64 n = u64(0);
@@ -368,14 +401,14 @@ void virtabPoll() {
       virtgpuRamPut16(hdr + u64(4), last);
       return;
     }
-    final u64 slot = last & u64(15);
+    final u64 slot = last % qsz;
     final u64 descId =
         virtgpuRamGet32(frame + u64(virtabOffUsed) + u64(4) + (slot << u64(3)));
-    if (descId < u64(virtabQSize)) {
+    if (descId < qsz) {
       virtabApply(hdr, frame + u64(virtabOffEvt) + (descId << u64(3)));
       final u64 aidx = virtgpuRamGet16(frame + u64(virtabOffAvail) + u64(2));
       virtgpuRamPut16(
-          frame + u64(virtabOffAvail) + u64(4) + ((aidx & u64(15)) << u64(1)),
+          frame + u64(virtabOffAvail) + u64(4) + ((aidx % qsz) << u64(1)),
           descId);
       virtgpuRamPut16(frame + u64(virtabOffAvail) + u64(2), aidx + u64(1));
     }
@@ -389,6 +422,10 @@ void virtabPoll() {
   final u64 naddr = virtgpuNotifyAddr(u64(0), found, u64(0), cfg);
   if (naddr > u64(0)) {
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
+  }
+  if (virtgpuRamGet32(hdr + u64(36)) > u64(0)) {
+    virtgpuRamPut32(hdr + u64(36), u64(0));
+    virtabCommit(hdr);
   }
 }
 

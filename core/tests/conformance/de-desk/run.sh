@@ -23,6 +23,7 @@ DESK_C="$CORE_DIR/user/frame/desk.c"
 ADR="$CORE_DIR/docs/decisions/0183-desk-shell-is-a-frame-app.md"
 SESS="$CORE_DIR/plat/osgfx/osgfx_session.c"
 WM="$CORE_DIR/kernel/wm.dart"
+SHM="$CORE_DIR/kernel/shm.dart"
 SITFAT="$CORE_DIR/tests/conformance/de-sitfat"
 
 fail() {
@@ -55,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=106
+ASSERTIONS_REQUIRED=123
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -133,6 +134,8 @@ ck; grep -q 'wmPointerBlit' "$CORE_DIR/kernel/wm.dart" \
   || fail "wm does not blit a Skia sprite"
 ck; grep -q 'wmContextShow' "$CORE_DIR/kernel/wmpop.dart" \
   || fail "no contextual right-click"
+ck; grep -q 'final u64 geomHit = wmDeGeomHit' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "CSD title context clicks still fall through as wallpaper"
 ck; grep -q 'WM_SCREEN_NAME' "$CORE_DIR/user/frame/osframe.h" \
   || fail "no screen name op for desk pills"
 ck; [[ -f "$CORE_DIR/docs/decisions/0194-skia-pointer-and-contextual-menus.md" ]] \
@@ -153,6 +156,88 @@ ck; grep -q 'WM_SCREEN_POP' "$CORE_DIR/user/frame/osframe.h" \
   || fail "no SCREEN_POP for DESK menus"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES does not paint CSD titles"
+ck; grep -q 'files_stride \* files_cap_h' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not size native backing from target dimensions"
+ck; grep -q 'SYS_SHMGROW' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not grow backing for native maximize"
+ck; grep -q 'WM_OP_BACKING' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not publish its grown native stride"
+ck; grep -q 'void wmBackingOp' "$CORE_DIR/kernel/wmext.dart" \
+  || fail "WM does not validate native backing updates"
+ck; ! grep -q 'WM_SURFACE_VIEWPORT' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES still requests raster viewport scaling"
+ck; grep -q 'u64 shmVaFind' "$SHM" \
+  || fail "SHM still strands large native surfaces in fixed 128-page slots"
+ck; python3 - "$SHM" <<'PY' \
+  || fail "SHM native-surface bound is unsafe or too small"
+import re, sys
+s = open(sys.argv[1]).read()
+n = int(re.search(r"const int shmMaxPages = (\d+);", s).group(1))
+sys.exit(0 if 424 <= n <= 510 else 1)
+PY
+ck; grep -q 'wmPointerPending' "$WM" \
+  || fail "pointer packets arriving during composition are still discarded"
+ck; grep -q 'wmeventEnqueue(panel, x, y)' "$WM" \
+  || fail "fallback chrome does not dispatch unmatched client dock clicks"
+ck; grep -q 'u64 wmPanelWindow' "$CORE_DIR/kernel/wmgfx.dart" \
+  || fail "dock dispatch confuses panel ownership with a window slot"
+ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
+  || fail "dock presses still raise or drag the DESK panel"
+ck; grep -q 'def button(x, y, btn, down):' "$0" \
+  || fail "QMP button transitions do not carry absolute tablet coordinates"
+ck; python3 - "$WM" <<'PY' \
+  || fail "damage can repaint before restoring pointer save-under"
+import sys
+s = open(sys.argv[1]).read()
+for sig in ("void wmComposeRect(", "void wmComposeCommitGfx("):
+    body = s[s.index(sig):]
+    body = body[:body.index("\n}\n")]
+    restore = body.index("wmPointerRestore();")
+    repaint = min(i for i in (
+        body.find("wmRepaintRect("), body.find("wmRepaintWindow("))
+        if i >= 0)
+    place = body.index("wmPointerPlace(")
+    if not restore < repaint < place:
+        raise SystemExit("%s ordering is restore=%d repaint=%d place=%d"
+                         % (sig, restore, repaint, place))
+PY
+ck; python3 - "$CORE_DIR/kernel/mouse.dart" <<'PY' \
+  || fail "PS/2 still mutates axes after the tablet is armed"
+import sys
+s = open(sys.argv[1]).read()
+body = s[s.index("void mouseComplete()"):]
+body = body[:body.index("\n}\n")]
+guard = body.index("mouseFlagTablet")
+apply = body.index("mouseApplyX(")
+if guard >= apply or "return;" not in body[guard:apply]:
+    raise SystemExit("tablet arbitration is not before relative-axis apply")
+PY
+ck; python3 - "$CORE_DIR/kernel/virtab.dart" <<'PY' \
+  || fail "tablet queue/coalescing cannot preserve fast final positions"
+import re, sys
+s = open(sys.argv[1]).read()
+q = int(re.search(r"const int virtabQSize = (\d+);", s).group(1))
+cap = int(re.search(r"const int virtabPollCap = (\d+);", s).group(1))
+if q < 64 or cap < q:
+    raise SystemExit("tablet queue=%d poll-cap=%d, need at least 64" % (q, cap))
+apply = s[s.index("void virtabApply("):s.index("void virtabPoll(")]
+if "buttons != prev" not in apply or "virtabCommit(hdr);" not in apply:
+    raise SystemExit("button edges are coalesced instead of committed atomically")
+poll = s[s.index("void virtabPoll("):s.index("void shellVtab(")]
+if poll.rfind("virtabCommit(hdr);") < poll.index("while (last != used)"):
+    raise SystemExit("motion is not committed after the ring is drained")
+PY
+ck; python3 - "$CORE_DIR/scripts/sit-in-view.sh" <<'PY' \
+  || fail "live Start proof still splits absolute position from button edge"
+import sys
+s = open(sys.argv[1]).read()
+loop = s[s.index("for attempt in range(12):"):]
+loop = loop[:loop.index("deadline = time.time() + 1.8")]
+call = loop[loop.index("send_once(["):]
+call = call[:call.index("])") + 2]
+if call.count('"type": "abs"') != 2 or '"type": "btn"' not in call:
+    raise SystemExit("press report is not abs-X + abs-Y + button")
+PY
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/set.c" \
   || fail "SET does not paint CSD titles"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/tap.c" \
@@ -458,12 +543,18 @@ def place(x, y):
                 return
             time.sleep(0.04)
 
+def button(x, y, btn, down):
+    ax, ay = abs_xy(x, y)
+    q.cmd("input-send-event", events=[
+        {"type": "abs", "data": {"axis": "x", "value": ax}},
+        {"type": "abs", "data": {"axis": "y", "value": ay}},
+        {"type": "btn", "data": {"button": btn, "down": down}}])
+
 def press(x, y, btn, token):
     marked = read()
     place(x, y)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": btn, "down": True}}])
+    button(x, y, btn, True)
     if not wait_new(token, marked):
         tail = [ln for ln in read().splitlines()
                 if "MOUSE" in ln or "WM CTX" in ln or "WM WALL" in ln
@@ -471,8 +562,7 @@ def press(x, y, btn, token):
         raise SystemExit("no %s after click @ (%d,%d) last=%s"
                          % (token, x, y, tail[-8:]))
     time.sleep(0.08)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": btn, "down": False}}])
+    button(x, y, btn, False)
     time.sleep(0.35)
 
 # Wake the tablet before the first classified click.
@@ -483,11 +573,9 @@ time.sleep(0.2)
 press(400, 300, "right", "WM WALL MENU")
 place(16, 20)
 time.sleep(0.1)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": True}}])
+button(16, 20, "left", True)
 time.sleep(0.08)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(16, 20, "left", False)
 time.sleep(0.5)
 
 # Dock Files icon (right island, second icon) launches FILES.ELF.
@@ -496,16 +584,13 @@ for _ in range(8):
     marked = read()
     place(592, 572)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}}])
+    button(592, 572, "left", True)
     if wait_new("DESK LAUNCH FILES.ELF", marked, timeout=1.5) or wait_new(
             "FILES READY", marked, timeout=1.5):
         files_ok = True
-        q.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "left", "down": False}}])
+        button(592, 572, "left", False)
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}}])
+    button(592, 572, "left", False)
     time.sleep(0.25)
 if not files_ok:
     tail = [ln for ln in read().splitlines()
@@ -523,26 +608,21 @@ time.sleep(0.4)
 press(350, 55, "right", "WM CTX TITLE")
 place(16, 20)
 time.sleep(0.1)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": True}}])
+button(16, 20, "left", True)
 time.sleep(0.08)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(16, 20, "left", False)
 time.sleep(0.8)
 got_file = False
 for _ in range(6):
     marked = read()
     place(300, 180)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "right", "down": True}}])
+    button(300, 180, "right", True)
     if wait_new("WM CTX FILE", marked, timeout=1.5):
         got_file = True
-        q.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "right", "down": False}}])
+        button(300, 180, "right", False)
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "right", "down": False}}])
+    button(300, 180, "right", False)
     time.sleep(0.25)
 if not got_file:
     tail = [ln for ln in read().splitlines()
@@ -566,44 +646,39 @@ for _ in range(8):
     marked = read()
     place(262, 572)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}}])
+    button(262, 572, "left", True)
     if wait_new("WM DE START", marked, timeout=1.5):
         started = True
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}}])
+    button(262, 572, "left", False)
     time.sleep(0.25)
 if not started:
     raise SystemExit("no WM DE START after Start click")
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(262, 572, "left", False)
 time.sleep(0.35)
-# Place first so we know the tablet IRQ landed (IF is on), then press.
-# A combined abs+btn during a session tick is dropped: wmPointerTick
-# sees wmMetaBusy and the edge never retries.
+# Each transition includes absolute coordinates. Button-only virtio-tablet
+# reports are not guaranteed to produce a packet; wmPointerPending preserves
+# a complete report that arrives during a compositor pass.
 spawned = False
 for _ in range(8):
     marked = read()
     place(40, 500)
     time.sleep(0.08)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}}])
+    button(40, 500, "left", True)
     if wait_new("WM DE SPAWN", marked, timeout=1.2):
         spawned = True
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}}])
+    button(40, 500, "left", False)
     time.sleep(0.2)
 if not spawned:
     raise SystemExit("no WM DE SPAWN after launch-row click")
+deadline = time.time() + 12
+while "SET CSD" not in read() and time.time() < deadline:
+    time.sleep(0.05)
 if "SET CSD" not in read():
-    marked = read()
-    if not wait_new("SET CSD", marked, timeout=12):
-        raise SystemExit("Start row 1 did not paint SET CSD")
+    raise SystemExit("Start row 1 did not paint SET CSD")
 time.sleep(0.08)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(40, 500, "left", False)
 time.sleep(0.35)
 print("contextual + Start spawn tokens ok")
 PY
@@ -647,8 +722,8 @@ ck; grep -q 'WM DE START' "$SER" \
   || fail "Start click did not open launch list"
 ck; grep -q 'WM DE SPAWN' "$SER" \
   || fail "Start row did not spawn by name"
-ck; grep -q 'WM OVERLAY CLEAR' "$SER" \
-  || fail "overlay hide did not restore the menu surface"
+ck; grep -q 'DESK MENU 0' "$SER" \
+  || fail "DESK overlay was not parked before Start interaction"
 ck; ! grep -q 'OSGFX OOM' "$SER" \
   || fail "Skia bump exhausted after FILES rename"
 

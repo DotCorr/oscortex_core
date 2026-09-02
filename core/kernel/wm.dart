@@ -433,7 +433,7 @@ const int wmDescStride = 6;
 /// ATTACH: byte offset of pixel (0, 0) within the region. **An OFFSET and not
 /// a pointer** -- see this file's header §3.
 const int wmDescOffset = 7;
-const int wmViewportFlag = 0x8000000000000000;
+const int wmResizableFlag = 0x8000000000000000;
 const int wmOffsetMask = 0x7FFFFFFFFFFFFFFF;
 
 /// COMMIT: the client's own frame counter, echoed into the transcript so that
@@ -611,6 +611,8 @@ const int wmRectComposePending = 0x8000000000000000;
 /// tick is a dropped FRAME, not a lost event** -- `mouseApplyX/Y` have already
 /// moved the pointer, so the next tick sees the accumulated position.
 const int wmMetaDropped = 18;
+const int wmPointerPending = 0x8000000000000000;
+const int wmPointerDropMask = 0x7FFFFFFFFFFFFFFF;
 
 /// Keyboard focus. PLUS ONE, the same idiom as [wmMetaDrag]: 0 means the
 /// shell (and any ring-3 reader) may drain syscall 24; window 0 is
@@ -842,34 +844,7 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 scale = wmWinScaleOf(wI);
   final u64 stride = wmWinStrideOf(wI);
   final u64 off = wmWinOffsetOf(wI);
-  final u64 pages = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages));
-  final u64 bytes = pages << u64(vmPageShift);
-  u64 sourceW = stride >> u64(2);
-  u64 sourceH = u64(1);
-  if (bytes > off) {
-    sourceH = (bytes - off) ~/ stride;
-  }
-  if (scale > u64(1)) {
-    sourceW = sourceW ~/ scale;
-    sourceH = sourceH ~/ scale;
-  }
-  u64 sourceY = py;
-  if (wmWinViewportOf(wI) > u64(0)) {
-    if (h > sourceH) {
-      if (py >= u64(wmTitleH)) {
-        if (sourceH > u64(wmTitleH)) {
-          sourceY = u64(wmTitleH) +
-              (((py - u64(wmTitleH)) * (sourceH - u64(wmTitleH))) ~/
-                  (h - u64(wmTitleH)));
-        } else {
-          sourceY = (py * sourceH) ~/ h;
-        }
-      } else {
-        sourceY = (py * sourceH) ~/ h;
-      }
-    }
-  }
-  final u64 rowOff = off + ((sourceY * scale) * stride);
+  final u64 rowOff = off + ((py * scale) * stride);
   final u64 panel = wmIsPanel(wI);
   u64 x0 = u64(0);
   u64 x1 = w;
@@ -902,13 +877,7 @@ void wmBlitRow(u64 wI, u64 py) {
   }
   u64 px = x0;
   while (px < x1) {
-    u64 sourceX = px;
-    if (wmWinViewportOf(wI) > u64(0)) {
-      if (w > sourceW) {
-        sourceX = (px * sourceW) ~/ w;
-      }
-    }
-    final u64 boff = rowOff + ((sourceX * scale) << u64(2));
+    final u64 boff = rowOff + ((px * scale) << u64(2));
     final u64 src = wmRegionPixel(vec, boff);
     if (panel > u64(0)) {
       /* Resolve against the stable wallpaper layer, not the previous scanout
@@ -987,10 +956,16 @@ void wmPublishFrameQ(u64 px, u64 quiet) {
   final u64 cy = mouseState(u64(mouseWordY));
   wmSetMeta(u64(wmMetaCurX), cx);
   wmSetMeta(u64(wmMetaCurY), cy);
+  final u64 dropped = wmMeta(u64(wmMetaDropped));
+  final u64 pending = dropped & u64(wmPointerPending);
+  wmSetMeta(u64(wmMetaDropped), dropped & u64(wmPointerDropMask));
   wmSetMeta(u64(wmMetaBusy), u64(0));
   wmSetMeta(u64(wmMetaPixels), px);
   wmBumpMeta(u64(wmMetaFrames));
   if (quiet > u64(0)) {
+    if (pending > u64(0)) {
+      wmPointerTick();
+    }
     return;
   }
   uartWrite(Rodata.addressOf(wmStrFrame), u64(11));
@@ -1005,6 +980,9 @@ void wmPublishFrameQ(u64 px, u64 quiet) {
   uartWrite(Rodata.addressOf(wmStrY), u64(3));
   uartPutHex(cy, u64(4));
   uartNewline();
+  if (pending > u64(0)) {
+    wmPointerTick();
+  }
 }
 
 @bare
@@ -1120,8 +1098,22 @@ void wmComposeRect(u64 x, u64 y, u64 w, u64 h) {
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
+  /*
+   * A damage pass may cross the visible sprite. Restore BEFORE resolving the
+   * changed pixels: restoring afterwards writes the old save-under over the
+   * new client frame, and capturing before restore saves cursor ink as the
+   * next underlay. Both failures leave a trail on the following move.
+   */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerRestore();
+  }
   final u64 px = wmRepaintRect(x, y, w, h);
-  wmMaybeDrawPointer(x, y, w, h);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerPlace(
+        mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  } else {
+    wmMaybeDrawPointer(x, y, w, h);
+  }
   wmPublishFrame(px);
 }
 
@@ -1166,6 +1158,12 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
   wmDePrefApply();
+  /*
+   * Client damage is allowed underneath the pointer. The old implementation
+   * repainted first and restored afterwards, which put stale pre-commit
+   * pixels back on the screen and could copy pointer AA into save-under.
+   */
+  wmPointerRestore();
   u64 px = u64(0);
   u64 rx = u64(0);
   u64 ry = u64(0);
@@ -1209,10 +1207,17 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
   if (wmPaced() > u64(0)) {
     wmDamageRect(rx, ry, rw, rh);
+    wmPointerPlace(
+        mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+    final u64 dropped = wmMeta(u64(wmMetaDropped));
+    final u64 pending = dropped & u64(wmPointerPending);
+    wmSetMeta(u64(wmMetaDropped), dropped & u64(wmPointerDropMask));
     wmSetMeta(u64(wmMetaBusy), u64(0));
+    if (pending > u64(0)) {
+      wmPointerTick();
+    }
     return;
   }
-  wmPointerRestore();
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPublishFrame(px);
 }
@@ -1230,12 +1235,6 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     return;
   }
   if (fbState(u64(fbStateBase)) < u64(1)) {
-    return;
-  }
-  /* Viewport geometry changes both sampling scale and server-owned chrome;
-   * retained rectangle damage cannot reuse either safely. */
-  if (wmWinViewportOf(slot) > u64(0)) {
-    wmCompose();
     return;
   }
   /* Under `wm gfx`, honour damage when chrome is fresh; else full compose. */
@@ -1477,7 +1476,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 w = wmDesc(ptr, u64(wmDescW));
   final u64 hh = wmDesc(ptr, u64(wmDescH));
   final u64 rawOff = wmDesc(ptr, u64(wmDescOffset));
-  final u64 viewport = rawOff & u64(wmViewportFlag);
+  final u64 resizable = rawOff & u64(wmResizableFlag);
   final u64 off = rawOff & u64(wmOffsetMask);
   final u64 r = wmResolve(h);
   if (r == u64(shmMax)) {
@@ -1542,7 +1541,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinGen), shmReg(r, u64(shmRegGen)));
   wmSetWin(slot, u64(wmWinGeom), wmPackGeom(x, y, w, hh));
   wmSetWin(slot, u64(wmWinStride), (scale << u64(32)) | stride);
-  wmSetWin(slot, u64(wmWinOffsetW), off | viewport);
+  wmSetWin(slot, u64(wmWinOffsetW), off | resizable);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
   if (wmPageAddr() > u64(0)) {
@@ -1793,7 +1792,7 @@ void wmReport() {
   uartWrite(Rodata.addressOf(wmStrRaises), u64(8));
   uartPutHex(wmMeta(u64(wmMetaRaises)), u64(8));
   uartWrite(Rodata.addressOf(wmStrDrops), u64(7));
-  uartPutHex(wmMeta(u64(wmMetaDropped)), u64(8));
+  uartPutHex(wmMeta(u64(wmMetaDropped)) & u64(wmPointerDropMask), u64(8));
   uartNewline();
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
@@ -2470,38 +2469,8 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
   final u64 stride = wmWinStrideOf(wI);
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
   final u64 baseOff = wmWinOffsetOf(wI);
-  u64 sourceX = x - wx;
-  u64 sourceY = y - wy;
-  if (wmWinViewportOf(wI) > u64(0)) {
-    final u64 pages = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages));
-    final u64 bytes = pages << u64(vmPageShift);
-    u64 sourceW = stride >> u64(2);
-    u64 sourceH = u64(1);
-    if (bytes > baseOff) {
-      sourceH = (bytes - baseOff) ~/ stride;
-    }
-    if (scale > u64(1)) {
-      sourceW = sourceW ~/ scale;
-      sourceH = sourceH ~/ scale;
-    }
-    if (ww > sourceW) {
-      sourceX = (sourceX * sourceW) ~/ ww;
-    }
-    if (wh > sourceH) {
-      if (sourceY >= u64(wmTitleH)) {
-        if (sourceH > u64(wmTitleH)) {
-          sourceY = u64(wmTitleH) +
-              (((sourceY - u64(wmTitleH)) *
-                      (sourceH - u64(wmTitleH))) ~/
-                  (wh - u64(wmTitleH)));
-        } else {
-          sourceY = (sourceY * sourceH) ~/ wh;
-        }
-      } else {
-        sourceY = (sourceY * sourceH) ~/ wh;
-      }
-    }
-  }
+  final u64 sourceX = x - wx;
+  final u64 sourceY = y - wy;
   final u64 off = baseOff +
       ((sourceY * scale) * stride) + ((sourceX * scale) << u64(2));
   final u64 src = wmRegionPixel(vec, off);
@@ -2801,6 +2770,17 @@ void wmGrab(u64 x, u64 y) {
     wmPopHide();
   }
   if (wmChromeHit(x, y) > u64(0)) {
+    /* DE policy targets (Start, task slots) were offered first above. When
+     * DESK owns the panel, the rest of this strip is client input (dock
+     * icons), not fallback chrome to swallow. */
+    if (wmDeOn() < u64(1)) {
+      return;
+    }
+    final u64 panel = wmPanelWindow();
+    if (panel >= u64(wmMaxWindows)) {
+      return;
+    }
+    wmeventEnqueue(panel, x, y);
     return;
   }
   u64 hit = wmHit(x, y);
@@ -2839,6 +2819,12 @@ void wmGrab(u64 x, u64 y) {
         wmeventEnqueue(hit, x, y);
       }
     }
+  }
+  /* Panels receive presses, but remain the desktop's back layer. Raising,
+   * focusing, or dragging one applies titled-window border geometry to a
+   * borderless surface flush with the screen edge. */
+  if (wmIsPanel(hit) > u64(0)) {
+    return;
   }
   // D9: click-to-focus. PLUS ONE so window 0 is expressible.
   // ADR-0142: under `wm de` a change is enter/leave on the ring.
@@ -2938,13 +2924,11 @@ u64 wmClampSize(u64 wI, u64 ox, u64 oy, u64 nw, u64 nh) {
     maxW = maxW ~/ scale;
     maxH = maxH ~/ scale;
   }
-  if (wmWinViewportOf(wI) < u64(1)) {
-    if (w > maxW) {
-      w = maxW;
-    }
-    if (h > maxH) {
-      h = maxH;
-    }
+  if (w > maxW) {
+    w = maxW;
+  }
+  if (h > maxH) {
+    h = maxH;
   }
   final u64 b = u64(wmBorder);
   if ((ox + w + b) > fbGeomWidth()) {
@@ -3119,7 +3103,11 @@ void wmPointerTick() {
   // runs in a syscall with interrupts on, and two painters in one framebuffer
   // is a torn frame drawn against two different stacking orders.
   if (wmMeta(u64(wmMetaBusy)) > u64(0)) {
-    wmBumpMeta(u64(wmMetaDropped));
+    final u64 dropped =
+        wmMeta(u64(wmMetaDropped)) & u64(wmPointerDropMask);
+    wmSetMeta(u64(wmMetaDropped),
+        ((dropped + u64(1)) & u64(wmPointerDropMask)) |
+            u64(wmPointerPending));
     return;
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
