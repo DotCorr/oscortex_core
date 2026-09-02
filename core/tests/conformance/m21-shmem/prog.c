@@ -97,6 +97,7 @@ typedef unsigned char u8;
 
 #define PORT 0
 #define PAGES 4UL
+#define SHM_MAX_PAGES 510UL
 #define PAGEB 4096UL
 #define MSGMAX 64
 #define SPINMAX 4096
@@ -327,7 +328,7 @@ static void producer(u64 ep) {
   expect("TWICE", shmgrant(ep, h), SHM_TWICE);
   /*    OUT-OF-RANGE LENGTHS, both ends. */
   expect("LEN0", shmcreate(0), SHM_BADLEN);
-  expect("LENBIG", shmcreate(257UL), SHM_BADLEN);
+  expect("LENBIG", shmcreate(SHM_MAX_PAGES + 1UL), SHM_BADLEN);
   expect("LENHUGE", shmcreate(0xFFFFFFFFFFFFFFFFUL), SHM_BADLEN);
 
   /* 7. Send the FRAME DESCRIPTOR. Eight u64, 64 bytes, on M20's channel,

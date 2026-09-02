@@ -383,8 +383,6 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   seed = 0xD074A17u;
   if (user != 0) {
     seed = user;
-  } else if (cmd->gen != 0) {
-    seed = (uint32_t)(cmd->gen * 0x9E3779B1u);
   }
   frame = (uint32_t)cmd->gen;
   if (user != 0) {
@@ -393,15 +391,12 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   if ((cmd->flags & OSGFX_GUEST_WALL_IMG) != 0) {
     osgfx_fill_rect(g, 0, 0, ww, desk_h, (uint32_t)cmd->wall & 0x00ffffffu);
   } else if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-    /* Hot path: desk cache (ADR-0188). Cold: osgfx_fill_desk_generative. */
+    /* The cached entry point owns both paths: on a miss it generates into
+     * Dart's buffer, stamps the key, and blits; on a hit it only blits.
+     * Calling the uncached generator while HAVE is zero would leave HAVE zero
+     * forever, so the cache could never reach its hot path. */
     if (cmd->wmpage != 0) {
-      const volatile uint64_t *pg =
-          (const volatile uint64_t *)(uintptr_t)cmd->wmpage;
-      if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
-        osgfx_fill_desk_cached(fb, pitch, 0, 0, ww, desk_h, seed);
-      } else {
-        osgfx_fill_desk_generative(fb, pitch, 0, 0, ww, desk_h, seed, frame);
-      }
+      osgfx_fill_desk_cached(fb, pitch, 0, 0, ww, desk_h, seed);
     } else {
       osgfx_fill_desk_generative(fb, pitch, 0, 0, ww, desk_h, seed, frame);
     }

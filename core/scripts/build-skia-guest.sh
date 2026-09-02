@@ -64,7 +64,9 @@ skia_use_xps=false
 skia_enable_tools=false
 extra_cflags=[\"-DSK_CPU_LIMIT_SSE2\",\"-DSKCMS_FORCE_BASELINE\"]
 "
-  ( cd "$SRC" && "$SRC/bin/gn" gen "$OUT" --args="$ARGS" )
+  # OUT is a sibling of SRC, so current GN releases cannot infer the source
+  # root from the output path. State it explicitly for fresh checkouts.
+  ( cd "$SRC" && "$SRC/bin/gn" gen "$OUT" --root="$SRC" --args="$ARGS" )
   # GN's Mac toolchain archives with libtool. Objects are ELF; use elf ar.
   python3 - "$OUT/toolchain.ninja" <<'PY'
 import pathlib, sys

@@ -39,7 +39,7 @@ PAGE_BYTES = 4096
 # `shm.dart`'s geometry.
 SHM_MAX = 4
 SLOT_PAGES = 128
-MAX_PAGES = 128
+MAX_PAGES = 510
 
 # The test's own protocol. prog.c carries the same numbers.
 PAGES = 4
@@ -104,6 +104,7 @@ def main():
         "shm_end": SHM_END,
         "shm_pd_index": SHM_PD_INDEX,
         "user_end": USER_END,
+        "max_pages": MAX_PAGES,
         "pages": PAGES,
         "region": REGION,
         "region_va": region_va(REGION),
