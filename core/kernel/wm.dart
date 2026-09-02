@@ -2461,6 +2461,13 @@ void wmRepaintScratchRow(
       Pointer<u32>.fromAddress(
               sbase + (((scratchY * sw) + i) << u64(2)))
           .value = c.toU32();
+    } else {
+      /* Session-owned AA/chrome means "keep the visible pixel", not "leave
+       * this reused scratch cell untouched". Blitting an untouched cell
+       * resurrected pixels from an older damage rectangle. */
+      Pointer<u32>.fromAddress(
+              sbase + (((scratchY * sw) + i) << u64(2)))
+          .value = Volatile<u32>.fromAddress(fbPixelAddr(x + i, y)).value;
     }
     i = i + u64(1);
   }
