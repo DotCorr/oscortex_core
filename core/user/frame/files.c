@@ -648,6 +648,7 @@ static void try_strip(u64 names, u32 swatch) {
   if (va >= WM_RET_FLOOR) {
     return;
   }
+  va = va + SURF_OFFSET;
 
   files_h = h;
   files_va = va;

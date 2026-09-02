@@ -371,7 +371,9 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
     com1_puts("OSGFX SESSION CHROME\n");
   }
   panel = (cmd->flags & OSGFX_GUEST_PANEL) != 0;
-  session_csd = panel;
+  /* Client panels own the bottom strip, not ordinary-window title chrome.
+   * Keep title controls in the session so they follow live geometry. */
+  session_csd = 0;
   if (panel != 0 && client_noted == 0) {
     client_noted = 1;
     com1_puts("OSGFX SESSION CHROME CLIENT\n");
