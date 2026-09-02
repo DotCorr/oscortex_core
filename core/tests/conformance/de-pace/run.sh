@@ -162,7 +162,10 @@ if 'OSGFX_WMPAGE_W_DESK_HAVE' in body:
 if not re.search(r'if \(cmd->wmpage != 0\) \{\s*'
                  r'osgfx_fill_desk_cached\(', body):
     raise SystemExit('a published state page does not enter the cache function')
-print('    a cold cache enters osgfx_fill_desk_cached, which generates, stamps and blits')
+if re.search(r'seed\s*=\s*[^;]*cmd->gen', src, re.S):
+    raise SystemExit('the default wallpaper seed depends on the per-present generation; '
+                     'the cache key changes on every full paint')
+print('    a cold cache enters osgfx_fill_desk_cached, and its default seed is frame-stable')
 PY"
 ck; [[ $COLD_STATUS -eq 0 ]] || { echo "$COLD_OUT" >&2; fail "the wallpaper cache cannot transition from cold to hot"; }
 echo "$COLD_OUT"

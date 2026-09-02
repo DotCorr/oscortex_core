@@ -383,8 +383,6 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   seed = 0xD074A17u;
   if (user != 0) {
     seed = user;
-  } else if (cmd->gen != 0) {
-    seed = (uint32_t)(cmd->gen * 0x9E3779B1u);
   }
   frame = (uint32_t)cmd->gen;
   if (user != 0) {
