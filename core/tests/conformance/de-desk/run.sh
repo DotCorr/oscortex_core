@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=113
+ASSERTIONS_REQUIRED=114
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -173,6 +173,8 @@ ck; grep -q 'wmPanelStrip() >= u64(wmMaxWindows)' "$WM" \
   || fail "fallback chrome still swallows unmatched client dock clicks"
 ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
   || fail "dock presses still raise or drag the DESK panel"
+ck; grep -q 'def button(x, y, btn, down):' "$0" \
+  || fail "QMP button transitions do not carry absolute tablet coordinates"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/set.c" \
   || fail "SET does not paint CSD titles"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/tap.c" \
@@ -478,12 +480,18 @@ def place(x, y):
                 return
             time.sleep(0.04)
 
+def button(x, y, btn, down):
+    ax, ay = abs_xy(x, y)
+    q.cmd("input-send-event", events=[
+        {"type": "abs", "data": {"axis": "x", "value": ax}},
+        {"type": "abs", "data": {"axis": "y", "value": ay}},
+        {"type": "btn", "data": {"button": btn, "down": down}}])
+
 def press(x, y, btn, token):
     marked = read()
     place(x, y)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": btn, "down": True}}])
+    button(x, y, btn, True)
     if not wait_new(token, marked):
         tail = [ln for ln in read().splitlines()
                 if "MOUSE" in ln or "WM CTX" in ln or "WM WALL" in ln
@@ -491,8 +499,7 @@ def press(x, y, btn, token):
         raise SystemExit("no %s after click @ (%d,%d) last=%s"
                          % (token, x, y, tail[-8:]))
     time.sleep(0.08)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": btn, "down": False}}])
+    button(x, y, btn, False)
     time.sleep(0.35)
 
 # Wake the tablet before the first classified click.
@@ -503,11 +510,9 @@ time.sleep(0.2)
 press(400, 300, "right", "WM WALL MENU")
 place(16, 20)
 time.sleep(0.1)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": True}}])
+button(16, 20, "left", True)
 time.sleep(0.08)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(16, 20, "left", False)
 time.sleep(0.5)
 
 # Dock Files icon (right island, second icon) launches FILES.ELF.
@@ -516,16 +521,13 @@ for _ in range(8):
     marked = read()
     place(592, 572)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}}])
+    button(592, 572, "left", True)
     if wait_new("DESK LAUNCH FILES.ELF", marked, timeout=1.5) or wait_new(
             "FILES READY", marked, timeout=1.5):
         files_ok = True
-        q.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "left", "down": False}}])
+        button(592, 572, "left", False)
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}}])
+    button(592, 572, "left", False)
     time.sleep(0.25)
 if not files_ok:
     tail = [ln for ln in read().splitlines()
@@ -543,26 +545,21 @@ time.sleep(0.4)
 press(350, 55, "right", "WM CTX TITLE")
 place(16, 20)
 time.sleep(0.1)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": True}}])
+button(16, 20, "left", True)
 time.sleep(0.08)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(16, 20, "left", False)
 time.sleep(0.8)
 got_file = False
 for _ in range(6):
     marked = read()
     place(300, 180)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "right", "down": True}}])
+    button(300, 180, "right", True)
     if wait_new("WM CTX FILE", marked, timeout=1.5):
         got_file = True
-        q.cmd("input-send-event", events=[
-            {"type": "btn", "data": {"button": "right", "down": False}}])
+        button(300, 180, "right", False)
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "right", "down": False}}])
+    button(300, 180, "right", False)
     time.sleep(0.25)
 if not got_file:
     tail = [ln for ln in read().splitlines()
@@ -586,34 +583,29 @@ for _ in range(8):
     marked = read()
     place(262, 572)
     time.sleep(0.12)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}}])
+    button(262, 572, "left", True)
     if wait_new("WM DE START", marked, timeout=1.5):
         started = True
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}}])
+    button(262, 572, "left", False)
     time.sleep(0.25)
 if not started:
     raise SystemExit("no WM DE START after Start click")
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(262, 572, "left", False)
 time.sleep(0.35)
-# Place first so we know the tablet IRQ landed (IF is on), then press.
-# A combined abs+btn during a session tick is dropped: wmPointerTick
-# sees wmMetaBusy and the edge never retries.
+# Each transition includes absolute coordinates. Button-only virtio-tablet
+# reports are not guaranteed to produce a packet; wmPointerPending preserves
+# a complete report that arrives during a compositor pass.
 spawned = False
 for _ in range(8):
     marked = read()
     place(40, 500)
     time.sleep(0.08)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}}])
+    button(40, 500, "left", True)
     if wait_new("WM DE SPAWN", marked, timeout=1.2):
         spawned = True
         break
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}}])
+    button(40, 500, "left", False)
     time.sleep(0.2)
 if not spawned:
     raise SystemExit("no WM DE SPAWN after launch-row click")
@@ -622,8 +614,7 @@ if "SET CSD" not in read():
     if not wait_new("SET CSD", marked, timeout=12):
         raise SystemExit("Start row 1 did not paint SET CSD")
 time.sleep(0.08)
-q.cmd("input-send-event", events=[
-    {"type": "btn", "data": {"button": "left", "down": False}}])
+button(40, 500, "left", False)
 time.sleep(0.35)
 print("contextual + Start spawn tokens ok")
 PY
