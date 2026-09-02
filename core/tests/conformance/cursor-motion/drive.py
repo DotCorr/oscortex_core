@@ -48,6 +48,25 @@ class Qmp:
                 raise RuntimeError("%s: %s" % (execute, reply["error"]))
             return reply.get("return")
 
+    def input_pipeline(self, batches):
+        """Queue input commands without per-command round trips."""
+        for ident, events in enumerate(batches):
+            msg = {
+                "execute": "input-send-event",
+                "id": ident,
+                "arguments": {"events": events},
+            }
+            self.f.write(json.dumps(msg) + "\n")
+        self.f.flush()
+        replies = 0
+        while replies < len(batches):
+            reply = json.loads(self.f.readline())
+            if "event" in reply:
+                continue
+            if "error" in reply:
+                raise RuntimeError("input-send-event: %s" % reply["error"])
+            replies += 1
+
 
 def serial_text(path):
     return open(path, encoding="latin-1", errors="replace").read()
@@ -212,15 +231,12 @@ def main():
         report["latency_ms"].append(round(latency, 2))
         frame += 1
 
-    # Fill more than the old 16-event ring while vCPUs cannot poll it.
-    q.cmd("stop")
+    # Pipeline more than the old 16-event ring without QMP round-trip pacing.
     burst = [
         (40 + i * 32, 80 + i * 21)
         for i in range(20)
     ]
-    for x, y in burst:
-        place(q, x, y)
-    q.cmd("cont")
+    q.input_pipeline([abs_events(x, y) for x, y in burst])
     time.sleep(0.2)
     got = mouse_state(q, serial)
     want = burst[-1]
