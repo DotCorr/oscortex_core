@@ -601,6 +601,10 @@ const int wmMetaBusy = 16;
 /// through [wmMetaPixels] instead: a commit is a frame, a drag step is not.
 const int wmMetaRectPixels = 17;
 
+/// High bit of [wmMetaRectPixels]: drag/resize changed session-owned chrome
+/// and a task-context compose is owed. DESK's SCREEN_POP poll pays it.
+const int wmRectComposePending = 0x8000000000000000;
+
 /// Pointer ticks dropped because a composition was in progress. **A dropped
 /// tick is a dropped FRAME, not a lost event** -- `mouseApplyX/Y` have already
 /// moved the pointer, so the next tick sees the accumulated position.
@@ -2913,7 +2917,8 @@ void wmResizeStep(u64 x, u64 y) {
    * frame and reused the damage scratch with two different extents. */
   final u64 px = wmRepaintUnion2(
       rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
-  wmSetMeta(u64(wmMetaRectPixels), px);
+  wmSetMeta(
+      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
   uartWrite(Rodata.addressOf(wmStrW), u64(3));
@@ -2982,7 +2987,8 @@ void wmDragStep(u64 x, u64 y) {
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
   wmeventEnqueueConfigure(wI);
   u64 px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
-  wmSetMeta(u64(wmMetaRectPixels), px);
+  wmSetMeta(
+      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
   wmBumpMeta(u64(wmMetaMoves));
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
   uartPutHex(wI, u64(1));
