@@ -627,6 +627,13 @@ if [[ -n "${SITIN_DISPLAY:-}" ]]; then
 elif ! qemu-system-x86_64 -display help 2>&1 | grep -q cocoa; then
   DISPLAY_ARG="-display none"
 fi
+if [[ "$ABS_DOOR" == 1 && "$DISPLAY_ARG" == "-display cocoa"* &&
+      "$DISPLAY_ARG" != *"show-cursor="* ]]; then
+  # The compositor already paints the Skia guest sprite. Hiding Cocoa's host
+  # cursor leaves one authority on the absolute tablet path instead of two
+  # arrows that separate while the window is scaled.
+  DISPLAY_ARG="${DISPLAY_ARG},show-cursor=off"
+fi
 
 # Abs door: SLIRP user-net + e1000 (same as ota-host/). Pointer-only abs
 # previously omitted NIC on purpose; live OTA needs 10.0.2.2 (ADR-0199).

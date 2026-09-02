@@ -284,6 +284,27 @@ u64 wmPopDraw() {
 
 /// Clears the flag and restores the rectangle from [wmPixelAt]. No-op if
 /// the popover is already off.
+///
+/// Under gfx the chrome cache includes the popover. Repainting from that
+/// cache after clearing the flag merely copied the old menu back onto the
+/// screen. Regenerate the session frame first; [wmCompose] then restores live
+/// client bodies over the new no-pop chrome frame.
+@bare
+void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmPanelStrip() < u64(1)) {
+      wmChromeBufInvalidate();
+      wmGfxKick();
+      osgfx_guest_tick();
+      if (wmActive() > u64(0)) {
+        wmCompose();
+      }
+      return;
+    }
+  }
+  final u64 unused = wmRepaintRect(x, y, w, h);
+}
+
 @bare
 void wmPopHide() {
   if (wmMeta(u64(wmMetaPop)) == u64(1)) {
@@ -291,7 +312,7 @@ void wmPopHide() {
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
     wmSetMeta(u64(wmMetaPop), u64(0));
-    final u64 unused = wmRepaintRect(ox, oy, u64(wmPopW), u64(wmPopH));
+    wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
   }
 }
 

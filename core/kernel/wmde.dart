@@ -856,12 +856,12 @@ void wmDePopHide() {
   final u64 k = wmMeta(u64(wmMetaPop));
   if (k == u64(wmPopLaunch)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
-    final u64 unused = wmRepaintRect(
+    wmPopDamageRestore(
         wmLaunchX(), wmLaunchY(), u64(wmLaunchW), u64(wmLaunchH));
   }
   if (k == u64(wmPopPanel)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
-    final u64 unused2 = wmRepaintRect(
+    wmPopDamageRestore(
         wmPanelX(), wmPanelY(), u64(wmPanelW), u64(wmPanelH));
   }
 }
