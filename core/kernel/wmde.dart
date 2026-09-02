@@ -1277,7 +1277,9 @@ void wmDeStartShow() {
   uartWrite(Rodata.addressOf(wmStrDeStart), u64(12));
   uartPutHex(n, u64(2));
   uartNewline();
-  final u64 unused = wmLaunchDraw();
+  if (wmPanelStrip() < u64(1)) {
+    final u64 unused = wmLaunchDraw();
+  }
 }
 
 /// Opens the reflection panel and prints the live list.
@@ -1297,7 +1299,9 @@ void wmDePanelShow() {
   uartWrite(Rodata.addressOf(wmStrDeList), u64(11));
   uartPutHex(wmHeldCount(), u64(2));
   uartNewline();
-  final u64 unused = wmPanelDraw();
+  if (wmPanelStrip() < u64(1)) {
+    final u64 unused = wmPanelDraw();
+  }
 }
 
 /// Spawns the ELF cached at launch row [row] through the named load

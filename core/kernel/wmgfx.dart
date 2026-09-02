@@ -188,6 +188,8 @@ void wmGfxKick() {
   u64 mailbox = u64(0);
   u64 win0 = u64(0);
   u64 win1 = u64(0);
+  u64 win0Slot = u64(wmMaxWindows);
+  u64 win1Slot = u64(wmMaxWindows);
   u64 pop = u64(0);
   u64 packed = u64(0);
   u64 gen = u64(0);
@@ -202,18 +204,27 @@ void wmGfxKick() {
     }
     desk = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailDesk)).value;
     wall = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailWall)).value;
-    /* Prefer held geom so title chrome paints even if region probe lags. */
-    if (wmWindowHeld(u64(0)) > u64(0)) {
-      win0 = wmWin(u64(0), u64(wmWinGeom));
-    }
-    if (wmWindowHeld(u64(1)) > u64(0)) {
-      win1 = wmWin(u64(1), u64(wmWinGeom));
-    }
-    if (wmWindowUsable(u64(0)) > u64(0)) {
-      win0 = wmWin(u64(0), u64(wmWinGeom));
-    }
-    if (wmWindowUsable(u64(1)) > u64(0)) {
-      win1 = wmWin(u64(1), u64(wmWinGeom));
+    /* The mailbox has two chrome slots, not "physical WM slots 0 and 1".
+     * DESK occupies slot 0 with its panel and slot 1 with a parked menu, so
+     * copying those physical slots hid FILES' title in slot 2 and painted the
+     * parked menu as a stale upper-left card. Select the first two ordinary
+     * held windows and translate focus to the mailbox index. */
+    u64 i = u64(0);
+    while (i < u64(wmMaxWindows)) {
+      if (wmWindowHeld(i) > u64(0)) {
+        if (wmIsPanel(i) < u64(1)) {
+          if (wmIsOverlay(i) < u64(1)) {
+            if (win0Slot >= u64(wmMaxWindows)) {
+              win0Slot = i;
+              win0 = wmWin(i, u64(wmWinGeom));
+            } else if (win1Slot >= u64(wmMaxWindows)) {
+              win1Slot = i;
+              win1 = wmWin(i, u64(wmWinGeom));
+            }
+          }
+        }
+      }
+      i = i + u64(1);
     }
     if (wmMeta(u64(wmMetaPop)) > u64(0)) {
       packed = wmMeta(u64(wmMetaPopXY));
@@ -226,13 +237,17 @@ void wmGfxKick() {
     if ((desk >> u64(32)) > u64(0)) {
       flags = flags | u64(osgfxGuestWallImg);
     }
-    flags = flags | ((wmMeta(u64(wmMetaTop)) & u64(3)) << u64(osgfxGuestTopShift));
+    u64 chromeTop = u64(0);
+    if (wmMeta(u64(wmMetaTop)) == win1Slot) {
+      chromeTop = u64(1);
+    }
+    flags = flags | (chromeTop << u64(osgfxGuestTopShift));
     flags = flags |
         ((wmMeta(u64(wmMetaPop)) & u64(3)) << u64(osgfxGuestPopShift));
-    if (wmWindowHeld(u64(0)) > u64(0)) {
+    if (win0Slot < u64(wmMaxWindows)) {
       flags = flags | u64(osgfxGuestHeld0);
     }
-    if (wmWindowHeld(u64(1)) > u64(0)) {
+    if (win1Slot < u64(wmMaxWindows)) {
       flags = flags | u64(osgfxGuestHeld1);
     }
     if (wmPanelStrip() > u64(0)) {
