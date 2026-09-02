@@ -211,7 +211,11 @@ void wmGfxKick() {
      * instead let a retained full-screen present erase the dock. */
     u64 i = u64(0);
     while (i < u64(wmMaxWindows)) {
-      if (wmWindowHeld(i) > u64(0)) {
+      u64 preserve = wmWindowUsable(i);
+      if (wmIsPanel(i) > u64(0)) {
+        preserve = wmWindowHeld(i);
+      }
+      if (preserve > u64(0)) {
         if (wmIsOverlay(i) < u64(1)) {
           if (win0Slot >= u64(wmMaxWindows)) {
             win0Slot = i;
