@@ -837,6 +837,7 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 x = wmAbsX(wI);
   final u64 y = wmAbsY(wI);
   final u64 w = wmGeomW(g);
+  final u64 h = wmGeomH(g);
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
   final u64 scale = wmWinScaleOf(wI);
   final u64 stride = wmWinStrideOf(wI);
@@ -872,7 +873,6 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 panel = wmIsPanel(wI);
   u64 x0 = u64(0);
   u64 x1 = w;
-  u64 h = wmGeomH(g);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
