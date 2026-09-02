@@ -139,6 +139,23 @@ void osgfx_fill_rect(OsGfx *g, int x, int y, int w, int h, uint32_t rgb) {
   }
 }
 
+/* This host-only backend deliberately has no outline rasterizer. Returning
+ * zero is the osgfx_text ABI's "unavailable" result and lets osxui_label use
+ * its bitmap fallback; without the symbol the standalone headless harness no
+ * longer linked after chrome text moved to Skia outlines. */
+int osgfx_text(OsGfx *g, int x, int y, const char *s, int n, int size_px,
+               int weight, uint32_t rgb) {
+  (void)g;
+  (void)x;
+  (void)y;
+  (void)s;
+  (void)n;
+  (void)size_px;
+  (void)weight;
+  (void)rgb;
+  return 0;
+}
+
 #if !OSGFX_NO_RRECT
 void osgfx_fill_rrect(OsGfx *g, int x, int y, int w, int h, int radius,
                       uint32_t rgb) {
