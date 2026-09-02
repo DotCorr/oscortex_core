@@ -2792,6 +2792,12 @@ void wmGrab(u64 x, u64 y) {
       }
     }
   }
+  /* Panels receive presses, but remain the desktop's back layer. Raising,
+   * focusing, or dragging one applies titled-window border geometry to a
+   * borderless surface flush with the screen edge. */
+  if (wmIsPanel(hit) > u64(0)) {
+    return;
+  }
   // D9: click-to-focus. PLUS ONE so window 0 is expressible.
   // ADR-0142: under `wm de` a change is enter/leave on the ring.
   wmFocusTo(hit);
