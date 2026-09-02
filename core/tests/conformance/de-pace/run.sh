@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=64
+ASSERTIONS_REQUIRED=65
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -71,6 +71,7 @@ SKIA_TEXT="$CORE_DIR/tests/conformance/de-skia-text"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
 PACE_DART="$CORE_DIR/kernel/wmpace.dart"
 DESK_C="$CORE_DIR/plat/osgfx/osgfx_desk.c"
+SESSION_C="$CORE_DIR/plat/osgfx/osgfx_session.c"
 GUEST_H="$CORE_DIR/plat/osgfx/osgfx_guest.h"
 WM_DART="$CORE_DIR/kernel/wm.dart"
 
@@ -147,6 +148,24 @@ print('    desk_blit divides nothing; desk_rgb_n takes nx/ny pre-divided')
 PY"
 ck; [[ $LOOP_STATUS -eq 0 ]] || { echo "$LOOP_OUT" >&2; fail "the per-frame path still does the field arithmetic"; }
 echo "$LOOP_OUT"
+capture_sh COLD_OUT COLD_STATUS -- "python3 - '$SESSION_C' <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r'else if \(\(cmd->flags & OSGFX_GUEST_DE\) != 0\) \{(.*?)'
+              r'\n  \} else if \(graphite_ready', src, re.S)
+if not m:
+    raise SystemExit('the DE wallpaper arm is gone')
+body = m.group(1)
+if 'OSGFX_WMPAGE_W_DESK_HAVE' in body:
+    raise SystemExit('the session gates the cached entry point on DESK_HAVE; '
+                     'a cold cache can never stamp its first key')
+if not re.search(r'if \(cmd->wmpage != 0\) \{\s*'
+                 r'osgfx_fill_desk_cached\(', body):
+    raise SystemExit('a published state page does not enter the cache function')
+print('    a cold cache enters osgfx_fill_desk_cached, which generates, stamps and blits')
+PY"
+ck; [[ $COLD_STATUS -eq 0 ]] || { echo "$COLD_OUT" >&2; fail "the wallpaper cache cannot transition from cold to hot"; }
+echo "$COLD_OUT"
 
 # 1d. THE GFX ARM OF wmComposeCommit NO LONGER THROWS THE DAMAGE AWAY, AND
 # EVERY PIXEL THE SESSION OWNS IS STILL DECLINED. Both halves, because either
