@@ -847,9 +847,11 @@ void wmBlitRow(u64 wI, u64 py) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
-    if (h > u64(wmChromeH)) {
-      if (py < u64(wmTitleH)) {
-        x1 = u64(0);
+    if (wmPanelStrip() < u64(1)) {
+      if (h > u64(wmChromeH)) {
+        if (py < u64(wmTitleH)) {
+          x1 = u64(0);
+        }
       }
     }
     /* Corner inset must not reopen a title-band skip (x1==0). That
@@ -1493,6 +1495,9 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinOffsetW), off);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWMax0) + slot, u64(0));
+  }
   // THE NEWEST SURFACE IS ON TOP. That is the whole of this compositor's
   // stacking policy, it is one line, and `display-protocol.md` §0.1 is explicit
   // that window management is compositor policy and not protocol.

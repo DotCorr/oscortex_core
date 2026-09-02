@@ -245,6 +245,9 @@ const int wmPageWScratchBuf = 375;
 const int wmPageWScratchPx = 376;
 const int wmPageWScratchFrames = 377;
 
+/// Pre-maximise geometry, one word per physical window slot. Zero = restored.
+const int wmPageWMax0 = 378;
+
 const int wmPageFlagPaced = 1;
 const int wmPageFlagDamage = 2;
 const int wmPageFlagFull = 4;

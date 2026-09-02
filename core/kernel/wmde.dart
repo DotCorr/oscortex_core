@@ -219,6 +219,13 @@ final List<u8> wmStrMin = const [
   u8(0x57), u8(0x20),
 ];
 
+/// `'WM MAX W '` -- 9 bytes.
+@rodata
+final List<u8> wmStrMax = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4D), u8(0x41), u8(0x58), u8(0x20),
+  u8(0x57), u8(0x20),
+];
+
 /// `'WM REST W '` -- 10 bytes.
 @rodata
 final List<u8> wmStrRest = const [
@@ -373,6 +380,12 @@ u64 wmMinX(u64 wI) {
   return wmCloseX(wI) - u64(wmBtnGap) - u64(wmBtnS);
 }
 
+/// Maximise-button origin X for window [wI].
+@bare
+u64 wmMaxX(u64 wI) {
+  return wmMinX(wI) - u64(wmBtnGap) - u64(wmBtnS);
+}
+
 /// Title-button origin Y for window [wI].
 @bare
 u64 wmBtnY(u64 wI) {
@@ -424,6 +437,31 @@ u64 wmMinHit(u64 wI, u64 x, u64 y) {
     return u64(0);
   }
   final u64 bx = wmMinX(wI);
+  final u64 by = wmBtnY(wI);
+  if (x < bx) {
+    return u64(0);
+  }
+  if (y < by) {
+    return u64(0);
+  }
+  if (x >= (bx + u64(wmBtnS))) {
+    return u64(0);
+  }
+  if (y >= (by + u64(wmBtnS))) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+@bare
+u64 wmMaxHit(u64 wI, u64 x, u64 y) {
+  if (wmDeOn() < u64(1)) {
+    return u64(0);
+  }
+  if (wmWindowUsable(wI) < u64(1)) {
+    return u64(0);
+  }
+  final u64 bx = wmMaxX(wI);
   final u64 by = wmBtnY(wI);
   if (x < bx) {
     return u64(0);
@@ -1436,6 +1474,46 @@ void wmRestWindow(u64 wI) {
   final u64 unused = wmRepaintWindow(wI);
 }
 
+/// Toggle saved geometry against the largest rectangle the attached backing
+/// store can safely supply. [wmClampSize] keeps this inside stride/pages.
+@bare
+void wmToggleMaxWindow(u64 wI) {
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  final u64 at = u64(wmPageWMax0) + wI;
+  final u64 old = wmWin(wI, u64(wmWinGeom));
+  final u64 saved = wmPage(at);
+  final u64 b = u64(wmBorder);
+  u64 next = saved;
+  if (saved < u64(1)) {
+    wmPageSet(at, old);
+    final u64 size = wmClampSize(
+        wI, b, b, fbGeomWidth() - b - b,
+        fbGeomHeight() - u64(wmChromeH) - b - b);
+    next = wmPackGeom(
+        b, b, size >> u64(32), size & u64(0xFFFFFFFF));
+  } else {
+    wmPageSet(at, u64(0));
+  }
+  wmSetWin(wI, u64(wmWinGeom), next);
+  wmSetMeta(u64(wmMetaTop), wI);
+  wmeventEnqueueConfigure(wI);
+  final u64 px = wmRepaintUnion2(
+      wmGeomX(old) - b, wmGeomY(old) - b,
+      wmGeomW(old) + b + b, wmGeomH(old) + b + b,
+      wmGeomX(next) - b, wmGeomY(next) - b,
+      wmGeomW(next) + b + b, wmGeomH(next) + b + b);
+  wmSetMeta(
+      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  uartWrite(Rodata.addressOf(wmStrMax), u64(9));
+  uartPutHex(wI, u64(1));
+  uartNewline();
+}
+
 /// 1 if `wm de` is on and ([x], [y]) is on window [wI]'s SE resize
 /// handle. The handle is the last [wmResizeEdge] pixels of the
 /// content plus the border. Title-drag and close/min sit at the top;
@@ -1554,6 +1632,10 @@ u64 wmDeGrab(u64 x, u64 y) {
   while (i < u64(wmMaxWindows)) {
     if (wmCloseHit(i, x, y) > u64(0)) {
       wmCloseWindow(i);
+      return u64(1);
+    }
+    if (wmMaxHit(i, x, y) > u64(0)) {
+      wmToggleMaxWindow(i);
       return u64(1);
     }
     if (wmMinHit(i, x, y) > u64(0)) {
