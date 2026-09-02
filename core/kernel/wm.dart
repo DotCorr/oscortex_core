@@ -870,9 +870,15 @@ void wmBlitRow(u64 wI, u64 py) {
     final u64 boff = rowOff + ((px * scale) << u64(2));
     final u64 src = wmRegionPixel(vec, boff);
     if (panel > u64(0)) {
-      final u64 dst =
-          Volatile<u32>.fromAddress(fbPixelAddr(x + px, y + py)).value.toU64();
-      fbPutPixel(x + px, y + py, wmPanelSrcOver(src, dst));
+      /* Resolve against the stable wallpaper layer, not the previous scanout
+       * value. Repeated panel commits must be idempotent rather than building
+       * alpha on top of last frame's glass. */
+      u64 under = wmDeskPixel(x + px, y + py);
+      if (under == u64(wmNoPixel)) {
+        under =
+            Volatile<u32>.fromAddress(fbPixelAddr(x + px, y + py)).value.toU64();
+      }
+      fbPutPixel(x + px, y + py, wmPanelSrcOver(src, under));
     } else {
       fbPutPixel(x + px, y + py, src);
     }
@@ -2389,7 +2395,14 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
   final u64 off = wmWin(wI, u64(wmWinOffsetW)) +
       (((y - wy) * scale) * stride) + (((x - wx) * scale) << u64(2));
-  return wmRegionPixel(vec, off);
+  final u64 src = wmRegionPixel(vec, off);
+  if (wmIsPanel(wI) > u64(0)) {
+    final u64 under = wmDeskPixel(x, y);
+    if (under != u64(wmNoPixel)) {
+      return wmPanelSrcOver(src, under);
+    }
+  }
+  return src;
 }
 
 /// Bright for the window on top, dim for everything under it.
