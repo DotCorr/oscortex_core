@@ -64,7 +64,6 @@ typedef unsigned int u32;
 #define LAB_PAD_X 20UL
 #define LAB_FG 0x00202830UL
 #define ICON_FG 0x00405060UL
-#define WIN_PAGES 110UL
 #define SURF_OFFSET 1024UL
 #define YIELD_SPIN 40000UL
 #define ROW_H 28UL
@@ -624,14 +623,32 @@ static void try_strip(u64 names, u32 swatch) {
   u64 h;
   u64 va;
   u64 frames;
+  u64 screen;
+  u64 pages;
 
-  files_cap_w = WIN_W;
-  files_cap_h = WIN_H;
+  screen = osxui_app_screen();
+  files_cap_w = screen >> 32;
+  files_cap_h = screen & 0xFFFFFFFFUL;
+  /* wmToggleMaxWindow leaves a 3px border on both sides and the 48px dock
+   * plus borders below. Allocate that exact native client area. */
+  if (files_cap_w > 6UL) {
+    files_cap_w = files_cap_w - 6UL;
+  }
+  if (files_cap_h > 54UL) {
+    files_cap_h = files_cap_h - 54UL;
+  }
+  if (files_cap_w < WIN_W) {
+    files_cap_w = WIN_W;
+  }
+  if (files_cap_h < WIN_H) {
+    files_cap_h = WIN_H;
+  }
   files_w = WIN_W;
   files_height = WIN_H;
-  files_stride = WIN_W * 4UL;
+  files_stride = files_cap_w * 4UL;
+  pages = (SURF_OFFSET + files_stride * files_cap_h + 4095UL) / 4096UL;
 
-  h = sys1(SYS_SHMCREATE, WIN_PAGES);
+  h = sys1(SYS_SHMCREATE, pages);
   if (h >= WM_RET_FLOOR) {
     return;
   }
@@ -643,7 +660,7 @@ static void try_strip(u64 names, u32 swatch) {
   desc[WM_DESC_W] = WIN_W;
   desc[WM_DESC_H] = WIN_H;
   desc[WM_DESC_STRIDE] = files_stride;
-  desc[WM_DESC_OFFSET] = WM_SURFACE_VIEWPORT | SURF_OFFSET;
+  desc[WM_DESC_OFFSET] = SURF_OFFSET;
   va = sys1(SYS_WMSURFACE, (u64)&desc[0]);
   if (va >= WM_RET_FLOOR) {
     return;

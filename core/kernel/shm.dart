@@ -94,7 +94,11 @@ const int shmSlotPages = 128;
 /// 38 pages (240x160). Configuring `shmMax` 1 / `shmSlotPages` 512 still
 /// fits a full-screen frame and changes no ABI -- GAP-0237. ADR-0109 took
 /// four slots so the DE can hold Start's apps, not one big slot.
-const int shmMaxPages = 128;
+/* A region may use the shared window's free extent. The two final vector
+ * words are file metadata, leaving 510 physical-page entries. */
+const int shmMaxPages = 510;
+const int shmMapsMask = 0xFFFFFFFF;
+const int shmBaseShift = 32;
 
 // ---------------------------------------------------------------------------
 // The storage. See ADR-0021 and `docs/design/memory.md` §2.4.
@@ -705,11 +709,80 @@ void shmSetVecFilePack(u64 vec, u64 pack) {
 // Geometry helpers.
 // ---------------------------------------------------------------------------
 
-/// The window virtual address region [r] occupies. A function of the SLOT, so
-/// it is the same number in every address space -- see [shmSlotPages].
+/// Stable page offset allocated to region [r], packed above its map count.
+@bare
+u64 shmRegionBasePage(u64 r) {
+  return shmReg(r, u64(shmRegMaps)) >> u64(shmBaseShift);
+}
+
+@bare
+u64 shmRegionMaps(u64 r) {
+  return shmReg(r, u64(shmRegMaps)) & u64(shmMapsMask);
+}
+
+@bare
+void shmSetRegionMaps(u64 r, u64 maps) {
+  shmSetReg(r, u64(shmRegMaps),
+      (shmRegionBasePage(r) << u64(shmBaseShift)) |
+          (maps & u64(shmMapsMask)));
+}
+
+/// The stable virtual address allocated to region [r].
 @bare
 u64 shmRegionVa(u64 r) {
-  return u64(vmShmBase) + (r * u64(shmSlotPages) * u64(vmPageBytes));
+  return u64(vmShmBase) + (shmRegionBasePage(r) * u64(vmPageBytes));
+}
+
+/// First-fit contiguous extent in the 512-page shared window.
+@bare
+u64 shmVaFind(u64 pages) {
+  u64 at = u64(0);
+  while ((at + pages) <= u64(vmShmPages)) {
+    u64 moved = u64(0);
+    u64 r = u64(0);
+    while (r < u64(shmMax)) {
+      if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
+        final u64 lo = shmRegionBasePage(r);
+        final u64 hi = lo + shmReg(r, u64(shmRegPages));
+        if (at < hi) {
+          if ((at + pages) > lo) {
+            at = hi;
+            moved = u64(1);
+          }
+        }
+      }
+      r = r + u64(1);
+    }
+    if (moved < u64(1)) {
+      return at;
+    }
+  }
+  return u64(vmShmPages);
+}
+
+@bare
+u64 shmVaCanGrow(u64 region, u64 pages) {
+  final u64 lo = shmRegionBasePage(region);
+  final u64 hi = lo + pages;
+  if (hi > u64(vmShmPages)) {
+    return u64(0);
+  }
+  u64 r = u64(0);
+  while (r < u64(shmMax)) {
+    if (r != region) {
+      if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
+        final u64 otherLo = shmRegionBasePage(r);
+        final u64 otherHi = otherLo + shmReg(r, u64(shmRegPages));
+        if (lo < otherHi) {
+          if (hi > otherLo) {
+            return u64(0);
+          }
+        }
+      }
+    }
+    r = r + u64(1);
+  }
+  return u64(1);
 }
 
 /// The calling process's id, or 0 if the caller is not a process.
@@ -1356,6 +1429,11 @@ void shmSysCreate(u64 frame) {
     shmRefuse(frame, u64(shmSysCreateNo), pages, u64(shmRetNoCap));
     return;
   }
+  final u64 basePage = shmVaFind(pages);
+  if ((basePage + pages) > u64(vmShmPages)) {
+    shmRefuse(frame, u64(shmSysCreateNo), pages, u64(shmRetNoSpace));
+    return;
+  }
   final u64 gen = shmMeta(u64(shmMetaGen)) + u64(1);
   if (gen > u64(0xFFFFFFFF)) {
     // A handle carries a 32-bit generation. Unreachable on any real boot --
@@ -1397,7 +1475,7 @@ void shmSysCreate(u64 frame) {
   shmSetReg(r, u64(shmRegGen), gen);
   shmSetReg(r, u64(shmRegOwner), id);
   shmSetReg(r, u64(shmRegRefs), u64(1));
-  shmSetReg(r, u64(shmRegMaps), u64(0));
+  shmSetReg(r, u64(shmRegMaps), basePage << u64(shmBaseShift));
   shmSetReg(r, u64(shmRegGrants), u64(0));
   shmSetReg(r, u64(shmRegState), u64(shmRegLive));
   final u64 me = shmMapPages(r, u64(1), u64(0), pages);
@@ -1407,7 +1485,7 @@ void shmSysCreate(u64 frame) {
     shmRefuse(frame, u64(shmSysCreateNo), pages, me);
     return;
   }
-  shmSetReg(r, u64(shmRegMaps), u64(1));
+  shmSetRegionMaps(r, u64(1));
   shmSetMeta(u64(shmMetaGen), gen);
   shmSetCap(s, ci, shmCapPack(r, u64(shmPermRw), u64(1), u64(1), u64(0), pages, gen));
   shmBumpMeta(u64(shmMetaCreates));
@@ -1674,7 +1752,7 @@ void shmSysMap(u64 frame) {
       s,
       ci,
       shmCapPack(r, shmCapPerms(c), u64(1), whole, lo, packCount, shmCapGen(c)));
-  shmSetReg(r, u64(shmRegMaps), shmReg(r, u64(shmRegMaps)) + u64(1));
+  shmSetRegionMaps(r, shmRegionMaps(r) + u64(1));
   shmBumpMeta(u64(shmMetaMaps));
   final u64 va = expectVa;
   uartWrite(Rodata.addressOf(shmStrMap), u64(10));
@@ -1690,7 +1768,7 @@ void shmSysMap(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrVa), u64(4));
   uartPutHex(va, u64(16));
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
-  uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+  uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
   shmPageReport(r);
   userSetFrame(frame, u64(userFrameRax), va);
@@ -1741,7 +1819,7 @@ void shmSysDrop(u64 frame) {
   if (shmCapMapped(c) > u64(0)) {
     final u64 pages = shmReg(r, u64(shmRegPages));
     shmUnmapPages(r, shmCapLo(c), shmCapHi(c, pages));
-    shmSetReg(r, u64(shmRegMaps), shmReg(r, u64(shmRegMaps)) - u64(1));
+    shmSetRegionMaps(r, shmRegionMaps(r) - u64(1));
   }
   shmSetCap(s, ci, u64(0));
   final u64 refs = shmReg(r, u64(shmRegRefs)) - u64(1);
@@ -1752,7 +1830,7 @@ void shmSysDrop(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrRefs), u64(6));
   uartPutHex(refs, u64(4));
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
-  uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+  uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
   if (refs < u64(1)) {
     shmRegionDestroy(r);
@@ -1818,6 +1896,10 @@ void shmSysGrow(u64 frame) {
     shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetBadLen));
     return;
   }
+  if (shmVaCanGrow(r, want) < u64(1)) {
+    shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetNoSpace));
+    return;
+  }
   // Caller must already have this region mapped. Other mappers are
   // updated in place via [shmMapRangeAll] (ADR-0158).
   if (shmCapMapped(c) < u64(1)) {
@@ -1877,7 +1959,7 @@ void shmSysGrow(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrVa), u64(4));
   uartPutHex(va, u64(16));
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
-  uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+  uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
   userSetFrame(frame, u64(userFrameRax), u64(0));
 }
@@ -1972,7 +2054,7 @@ void shmSysShrink(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrVa), u64(4));
   uartPutHex(va, u64(16));
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
-  uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+  uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
   userSetFrame(frame, u64(userFrameRax), u64(0));
 }
@@ -2273,6 +2355,11 @@ void shmSysFile(u64 frame) {
     shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoCap));
     return;
   }
+  final u64 basePage = shmVaFind(pages);
+  if ((basePage + pages) > u64(vmShmPages)) {
+    shmRefuse(frame, u64(shmSysFileNo), pages, u64(shmRetNoSpace));
+    return;
+  }
   final u64 gen = shmMeta(u64(shmMetaGen)) + u64(1);
   if (gen > u64(0xFFFFFFFF)) {
     shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoSpace));
@@ -2296,7 +2383,8 @@ void shmSysFile(u64 frame) {
   shmSetReg(r, u64(shmRegGen), gen);
   shmSetReg(r, u64(shmRegOwner), id);
   shmSetReg(r, u64(shmRegRefs), u64(1));
-  shmSetReg(r, u64(shmRegMaps), u64(1));
+  shmSetReg(r, u64(shmRegMaps),
+      (basePage << u64(shmBaseShift)) | u64(1));
   shmSetReg(r, u64(shmRegGrants), u64(0));
   shmSetReg(r, u64(shmRegState), u64(shmRegLiveFile));
   shmSetMeta(u64(shmMetaGen), gen);
@@ -2352,9 +2440,9 @@ void shmReleaseOwner(u64 s) {
       if (r < u64(shmMax)) {
         if (shmReg(r, u64(shmRegState)) == u64(shmRegLive)) {
           if (shmCapMapped(c) > u64(0)) {
-            final u64 m = shmReg(r, u64(shmRegMaps));
+            final u64 m = shmRegionMaps(r);
             if (m > u64(0)) {
-              shmSetReg(r, u64(shmRegMaps), m - u64(1));
+              shmSetRegionMaps(r, m - u64(1));
             }
           }
           final u64 refs = shmReg(r, u64(shmRegRefs));
@@ -2366,7 +2454,7 @@ void shmReleaseOwner(u64 s) {
           uartWrite(Rodata.addressOf(shmStrRefs), u64(6));
           uartPutHex(shmReg(r, u64(shmRegRefs)), u64(4));
           uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
-          uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+          uartPutHex(shmRegionMaps(r), u64(4));
           uartNewline();
           if (shmReg(r, u64(shmRegRefs)) < u64(1)) {
             shmRegionDestroy(r);

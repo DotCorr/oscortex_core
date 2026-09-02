@@ -23,6 +23,7 @@ DESK_C="$CORE_DIR/user/frame/desk.c"
 ADR="$CORE_DIR/docs/decisions/0183-desk-shell-is-a-frame-app.md"
 SESS="$CORE_DIR/plat/osgfx/osgfx_session.c"
 WM="$CORE_DIR/kernel/wm.dart"
+SHM="$CORE_DIR/kernel/shm.dart"
 SITFAT="$CORE_DIR/tests/conformance/de-sitfat"
 
 fail() {
@@ -55,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=106
+ASSERTIONS_REQUIRED=111
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -153,6 +154,21 @@ ck; grep -q 'WM_SCREEN_POP' "$CORE_DIR/user/frame/osframe.h" \
   || fail "no SCREEN_POP for DESK menus"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES does not paint CSD titles"
+ck; grep -q 'files_stride \* files_cap_h' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not size native backing from target dimensions"
+ck; ! grep -q 'WM_SURFACE_VIEWPORT' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES still requests raster viewport scaling"
+ck; grep -q 'u64 shmVaFind' "$SHM" \
+  || fail "SHM still strands large native surfaces in fixed 128-page slots"
+ck; python3 - "$SHM" <<'PY' \
+  || fail "SHM native-surface bound is unsafe or too small"
+import re, sys
+s = open(sys.argv[1]).read()
+n = int(re.search(r"const int shmMaxPages = (\d+);", s).group(1))
+sys.exit(0 if 424 <= n <= 510 else 1)
+PY
+ck; grep -q 'wmPointerPending' "$WM" \
+  || fail "pointer packets arriving during composition are still discarded"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/set.c" \
   || fail "SET does not paint CSD titles"
 ck; grep -q 'osxui_app_csd' "$CORE_DIR/user/frame/tap.c" \
