@@ -1245,6 +1245,7 @@ static const uint64_t WM_RET_FLOOR = 0xFFFFFFFFFFFFFF00ULL;
 static const uint64_t WM_RET_BADPTR = 0xFFFFFFFFFFFFFFFCULL;
 static const uint64_t WM_RET_NOWIN = 0xFFFFFFFFFFFFFFF6ULL;
 static const uint64_t WM_RET_SMALL = 0xFFFFFFFFFFFFFFF5ULL;
+static int client_rrect_noted;
 
 extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
                                        uint64_t h, uint64_t scr_x,
@@ -1303,6 +1304,10 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
   g = &client_g;
   if (kind == 1) {
     osgfx_fill_rrect(g, x, y, rw, rh, rad, (uint32_t)c0);
+    if (g->canvas != 0 && client_rrect_noted == 0) {
+      client_rrect_noted = 1;
+      com1_puts("OSGFX CLIENT SHAPE SKIA RRECT\n");
+    }
     (void)osgfx_flush(g);
     return 0;
   }
