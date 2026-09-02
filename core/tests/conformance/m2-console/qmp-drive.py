@@ -75,14 +75,21 @@ class Qmp:
         self.version = greeting["QMP"]["version"]["qemu"]
         self.cmd("qmp_capabilities")
 
-    def _read(self):
+    def _read(self, allow_eof=False):
         # Asynchronous EVENTS (RESET, SHUTDOWN, ...) are interleaved with
         # command replies on the same stream and must be skipped, or the very
         # first reply read would be a RESET event and every subsequent read
         # would be off by one.
         while True:
-            line = self.f.readline()
+            try:
+                line = self.f.readline()
+            except ConnectionResetError:
+                if allow_eof:
+                    return {}
+                raise
             if not line:
+                if allow_eof:
+                    return {}
                 die("QMP connection closed unexpectedly")
             msg = json.loads(line)
             if "event" in msg:
@@ -95,7 +102,10 @@ class Qmp:
             msg["arguments"] = args
         self.f.write(json.dumps(msg) + "\n")
         self.f.flush()
-        reply = self._read()
+        # QEMU may close the socket before Python receives the empty success
+        # reply to `quit`. At this point the command itself is the shutdown;
+        # accepting EOF for no other command keeps every runtime read strict.
+        reply = self._read(allow_eof=name == "quit")
         if "error" in reply:
             die(f"QMP command {name} failed: {reply['error']}")
         return reply.get("return")
