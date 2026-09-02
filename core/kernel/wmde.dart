@@ -1477,6 +1477,32 @@ u64 wmResizeHit(u64 wI, u64 x, u64 y) {
   return u64(1);
 }
 
+/// Topmost window whose compositor-owned title or resize geometry contains
+/// ([x], [y]). Under gfx those pixels deliberately return [wmNoPixel] from
+/// [wmWindowPixel] because session Skia owns their raster; input must still
+/// hit the geometry rather than fall through to the desktop.
+@bare
+u64 wmDeGeomHit(u64 x, u64 y) {
+  final u64 top = wmMeta(u64(wmMetaTop));
+  if (top < u64(wmMaxWindows)) {
+    if (wmTitleHit(top, x, y) > u64(0) ||
+        wmResizeHit(top, x, y) > u64(0)) {
+      return top;
+    }
+  }
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (i != top) {
+      if (wmTitleHit(i, x, y) > u64(0) ||
+          wmResizeHit(i, x, y) > u64(0)) {
+        return i;
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
 /// Left-press DE policy. Returns 1 if the press was consumed.
 @bare
 u64 wmDeGrab(u64 x, u64 y) {

@@ -2705,7 +2705,14 @@ void wmGrab(u64 x, u64 y) {
   if (wmChromeHit(x, y) > u64(0)) {
     return;
   }
-  final u64 hit = wmHit(x, y);
+  u64 hit = wmHit(x, y);
+  final u64 de = wmDeOn();
+  if (de > u64(0)) {
+    final u64 geomHit = wmDeGeomHit(x, y);
+    if (geomHit < u64(wmMaxWindows)) {
+      hit = geomHit;
+    }
+  }
   if (hit >= u64(wmMaxWindows)) {
     // D9: a desktop click returns the keyboard to the shell. Focus
     // is the last [wmHit] window until it dies or this path runs.
@@ -2713,7 +2720,6 @@ void wmGrab(u64 x, u64 y) {
     wmFocusTo(u64(wmMaxWindows));
     return;
   }
-  final u64 de = wmDeOn();
   u64 title = u64(0);
   u64 resize = u64(0);
   if (de > u64(0)) {
