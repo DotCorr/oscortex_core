@@ -133,8 +133,16 @@ def announced_state(q, serial, x, y):
     while time.time() < deadline:
         match = pattern.search(serial_text(serial)[before:])
         if match:
+            got = int(match.group(1), 16), int(match.group(2), 16)
+            released = len(serial_text(serial))
             button(q, x, y, "middle", False)
-            return int(match.group(1), 16), int(match.group(2), 16)
+            # Consume the release report so the next edge cannot mistake it
+            # for its own down report when PIT polling is delayed.
+            while time.time() < deadline:
+                if pattern.search(serial_text(serial)[released:]):
+                    return got
+                time.sleep(0.03)
+            raise RuntimeError("middle-button release produced no state")
         time.sleep(0.03)
     raise RuntimeError("middle-button edge produced no absolute state")
 
