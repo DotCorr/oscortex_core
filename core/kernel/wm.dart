@@ -876,7 +876,7 @@ void wmBlitRow(u64 wI, u64 py) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
-    if (wmPanelStrip() < u64(1)) {
+    if (panel < u64(1)) {
       if (h > u64(wmChromeH)) {
         if (py < u64(wmTitleH)) {
           x1 = u64(0);
@@ -1034,6 +1034,13 @@ void wmCompose() {
   // middle of this -- a commit composes inside a syscall with interrupts on --
   // and [wmPointerTick] returns without painting while it is set.
   wmSetMeta(u64(wmMetaBusy), u64(1));
+  /* Full composition overwrites the old sprite and its underlay. Keeping
+   * HAVE would make the final placement restore pre-compose pixels first. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmPageAddr() > u64(0)) {
+      wmPageSet(u64(wmPageWPtrHave), u64(0));
+    }
+  }
   wmReap();
   u64 px = u64(0);
   /* ADR-0183: under `wm gfx`, session paints wallpaper (+ title/taskbar

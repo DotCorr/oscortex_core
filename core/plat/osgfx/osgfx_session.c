@@ -39,6 +39,7 @@ enum {
   SESS_BTN_PAD_Y = 7,
   SESS_CLOSE = 0x00D45050,
   SESS_MIN = 0x00D4A840,
+  SESS_MAX = 0x0068B078,
   SESS_CLOSE_HI = 0x00F0A0A0,
   SESS_MIN_HI = 0x00F0D080,
   SESS_POP_ROW0 = 0x00304878,
@@ -64,7 +65,8 @@ enum {
   /* Traffic-light rim: one shade down from the fill, so the disc reads as
    * a control instead of a flat dot. Skia AA does the edge. */
   SESS_CLOSE_RIM = 0x00A03A3A,
-  SESS_MIN_RIM = 0x00A87C28
+  SESS_MIN_RIM = 0x00A87C28,
+  SESS_MAX_RIM = 0x00487850
 };
 
 const char osgfx_session_door[] = "osgfx-session-tick";
@@ -175,6 +177,10 @@ static int win_min_x(int wx, int ww) {
   return win_close_x(wx, ww) - SESS_BTN_GAP - SESS_BTN_S;
 }
 
+static int win_max_x(int wx, int ww) {
+  return win_min_x(wx, ww) - SESS_BTN_GAP - SESS_BTN_S;
+}
+
 static int win_btn_y(int wy) {
   return wy + SESS_BTN_PAD_Y;
 }
@@ -273,8 +279,10 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
   if (w < 8 || h < 8) {
     return;
   }
-  bx = win_min_x(x, w);
   by = win_btn_y(y);
+  bx = win_max_x(x, w);
+  paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MAX, SESS_MAX_RIM);
+  bx = win_min_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MIN, SESS_MIN_RIM);
   bx = win_close_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_CLOSE, SESS_CLOSE_RIM);
