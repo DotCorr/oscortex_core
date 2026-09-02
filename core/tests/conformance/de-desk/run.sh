@@ -668,8 +668,8 @@ ck; grep -q 'WM DE START' "$SER" \
   || fail "Start click did not open launch list"
 ck; grep -q 'WM DE SPAWN' "$SER" \
   || fail "Start row did not spawn by name"
-ck; grep -q 'WM OVERLAY CLEAR' "$SER" \
-  || fail "overlay hide did not restore the menu surface"
+ck; grep -q 'DESK MENU 0' "$SER" \
+  || fail "DESK overlay was not parked before Start interaction"
 ck; ! grep -q 'OSGFX OOM' "$SER" \
   || fail "Skia bump exhausted after FILES rename"
 
