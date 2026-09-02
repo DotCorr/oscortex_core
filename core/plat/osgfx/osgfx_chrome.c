@@ -259,9 +259,10 @@ static void chrome_copy_span(uint32_t *drow, const uint32_t *srow, int x0,
 }
 
 /* WHAT A TICK PAYS. Row copies with rectangular holes for live FRAME
- * bodies. The chrome cache holds wallpaper in those holes; a full-screen
- * present is what emptied FILES/SET after the first pointer kick. Restore
- * still owes the re-blit (ADR-0190 kick gate unmoved). */
+ * bodies. The chrome cache holds wallpaper in those holes, but copying it
+ * would empty FILES/SET; preserving both body spans makes a cached present
+ * non-destructive. wmSessionRestore remains the fallback for a direct,
+ * uncached session paint. */
 static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
                         int h, uint64_t win0, uint64_t win1, int csd) {
   int yy;

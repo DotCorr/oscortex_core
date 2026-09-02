@@ -9,9 +9,10 @@
 #   `isrDispatch`, on every interrupt. That tick returns immediately while
 #   `m->gen == last_gen`, so what decides whether the session paints is who
 #   last moved `gen` — and the only thing that moves it is `wmGfxKick`. When
-#   the tick does paint it writes the WHOLE scanout, and nothing in that path
-#   reads a client's shared memory. The one client blit on this machine is
-#   `wmDrawWindow`, reached from `wmCompose` and nowhere else.
+#   the tick originally painted the WHOLE scanout, and nothing in that path
+#   read a client's shared memory. The chrome cache now has the stronger hot
+#   path: its scanout blit cuts rectangular holes for both live client bodies.
+#   `wmSessionRestore` remains the uncached fallback.
 #
 #   So a kick that was not part of a compose — and `wmPointerTick` made one on
 #   EVERY pointer packet — handed the screen to Skia and left every mapped
@@ -31,9 +32,8 @@
 # WHAT IS ASSERTED, and it is deliberately the strictest form available: the
 # two clients' interior blocks are read out of guest physical memory with
 # `pmemsave` at T0 and after every stage, and compared BYTE FOR BYTE. Not
-# "still roughly there". Identical, after a minute of elapsed time, twenty
-# pointer packets, twenty un-composed session presents and an armed frame
-# clock.
+# "still roughly there". Identical, after two minutes of elapsed time, forty
+# pointer packets, forty cached chrome blits and an armed frame clock.
 #
 # Usage: bash run.sh
 # Exit:  0 PASS, 1 FAIL, 2 setup error.
@@ -53,20 +53,7 @@ setup_error() { echo "DE-retain: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=36
-
-# A harness for a regression has to be shown to catch the regression, and the
-# structural section below reads the source, so with the fix backed out it
-# would stop at the first grep and never boot anything. `DE_RETAIN_NOFIX=1`
-# skips that section only: everything after it — the build, the clients, the
-# clock, the byte comparison — runs unchanged, and the run is expected to FAIL
-# on the bodies. That is the evidence in ADR-0190 §6, and it is not a mode any
-# green run uses.
-NOFIX="${DE_RETAIN_NOFIX:-0}"
-if [[ "$NOFIX" == "1" ]]; then
-  ASSERTIONS_REQUIRED=1
-  echo "DE-retain: DE_RETAIN_NOFIX=1 — structural section skipped, expecting FAIL"
-fi
+ASSERTIONS_REQUIRED=37
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -94,8 +81,8 @@ WM_DART="$CORE_DIR/kernel/wm.dart"
 PACE_DART="$CORE_DIR/kernel/wmpace.dart"
 GFX_DART="$CORE_DIR/kernel/wmgfx.dart"
 ISR_S="$CORE_DIR/boot/isr.S"
+CHROME_C="$CORE_DIR/plat/osgfx/osgfx_chrome.c"
 
-if [[ "$NOFIX" != "1" ]]; then
 echo "=== STRUCTURAL ==="
 # 1a. THE RESTORE IS ON THE TRAMPOLINE, ON THE INSTRUCTION AFTER THE TICK.
 # One frame later is not good enough and neither is "some later compose": the
@@ -197,8 +184,30 @@ ck; ! grep -qE '^@bss' "$PACE_DART" \
   || fail "wmpace.dart declares @bss — eleven harnesses assert the .bss total"
 ck; grep -q 'const int wmPageWSessionOwed' "$PACE_DART" \
   || fail "the session debt is not a state-page word"
-echo "STRUCTURAL: pass  restore on the trampoline, Dart-only, page-backed, pointer gated"
-fi
+
+# 1f. THE CACHED PATH DOES NOT CREATE DEBT IN THE FIRST PLACE. It copies the
+# chrome frame around the union of both live client-body spans. Checking only
+# one slot would preserve whichever window happened to be first and erase the
+# other while every single-window test remained green.
+capture_sh HOLE_OUT HOLE_STATUS -- "python3 - '$CHROME_C' <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r'static void chrome_blit\(.*?\) \{(.*?)^\}', src, re.M | re.S)
+if not m:
+    raise SystemExit('chrome_blit is gone')
+body = m.group(1)
+for geom in ('win0', 'win1'):
+    if 'chrome_body_span(%s' % geom not in body:
+        raise SystemExit('chrome_blit does not cut a body hole for %s' % geom)
+if 'chrome_copy_span' not in body:
+    raise SystemExit('chrome_blit no longer copies row spans around its holes')
+if not all(token in body for token in ('cut0', 'cut1')):
+    raise SystemExit('chrome_blit no longer forms the union of overlapping body holes')
+print('    chrome_blit copies around the union of both live client-body spans')
+PY"
+ck; [[ $HOLE_STATUS -eq 0 ]] || { echo "$HOLE_OUT" >&2; fail "cached chrome presents can overwrite a client body"; }
+echo "$HOLE_OUT"
+echo "STRUCTURAL: pass  restore fallback on trampoline, cached blit preserves both body holes"
 
 echo
 echo "=== BUILD ==="
@@ -206,10 +215,8 @@ capture_sh BUILD_OUT BUILD_STATUS -- "OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_
 echo "$BUILD_OUT" | tail -3
 ck; [[ $BUILD_STATUS -eq 0 ]] || { echo "$BUILD_OUT" >&2; fail "build-kernel.sh exited $BUILD_STATUS"; }
 ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
-if [[ "$NOFIX" != "1" ]]; then
 ck; grep -q 'wmSessionRestore' "$CORE_DIR/build/kernel.map" \
   || fail "kernel.map has no wmSessionRestore — the trampoline would call a symbol that is not there"
-fi
 # The counters below are read out of guest physical memory rather than off the
 # serial line, because two resident clients ping-pong through procTick and the
 # shell never runs again — so no command can ask for the report after the
@@ -287,10 +294,13 @@ RESTORE_SKIP=$(jget restore_skip)
 OWED_END=$(jget owed_at_end)
 BLIT0=$(jget desk_blits_t0)
 BLIT=$(jget desk_blits)
+CHROME0=$(jget chrome_blits_t0)
+CHROME=$(jget chrome_blits)
 MOUSE=$(jget mouse_packets)
 MENUS=$(jget wall_menus)
 echo "    ${TOTAL}s of elapsed time, $MOUSE pointer packets, $MENUS popovers"
 echo "    session presents after T0: desk BLIT $BLIT0 -> $BLIT"
+echo "    cached chrome presents after T0: BLIT $CHROME0 -> $CHROME"
 echo "    restores $RESTORES, pixels $RESTORE_PX, deferred $RESTORE_SKIP, owed at end $OWED_END"
 
 # The interval has to be long enough to be the interval from the bug report.
@@ -335,30 +345,33 @@ echo "$BLOCK_OUT"
 ck; [[ "$MOUSE" -gt 20 ]] \
   || fail "only $MOUSE pointer packets reached the compositor"
 ck; [[ "$MENUS" -gt 5 ]] \
-  || fail "only $MENUS popovers opened — the chrome signature barely moved, so the un-composed session present this ADR is about was barely exercised"
+  || fail "only $MENUS popovers opened — the chrome signature barely moved, so cached body-hole preservation was barely exercised"
 ck; [[ "$BLIT" -gt "$BLIT0" ]] \
   || fail "the session never presented after T0 (desk BLIT held at $BLIT0) — the retention this harness asserts was never tested"
-ck; [[ "$RESTORES" -gt 0 ]] \
-  || fail "wmSessionRestore never ran, so the bodies below survived for some other reason and ADR-0190's mechanism is unproven"
-ck; [[ "$RESTORE_PX" -gt 0 ]] \
-  || fail "the restores put back zero pixels"
+ck; [[ "$CHROME" -gt "$CHROME0" ]] \
+  || fail "the chrome cache never blitted after T0 — its client-body holes were not exercised"
+ck; [[ $(( CHROME - CHROME0 )) -ge $(( MENUS * 2 )) ]] \
+  || fail "only $(( CHROME - CHROME0 )) cached chrome blits for $MENUS open/close cycles — both sides of each transition were not presented"
 # NO DEBT LEFT STANDING. An owed restore at the end of a ninety-second quiet
 # window is a screen that is wrong and has no interrupt left to fix it.
 ck; [[ "$OWED_END" -eq 0 ]] \
   || fail "a session present was still owed a client re-blit after the whole idle window"
 
-# THE SKIP COUNTER IS NOT ALLOWED TO BE THE WHOLE STORY. A restore deferred
-# because a compose held wmMetaBusy is correct; a restore that is ALWAYS
-# deferred is a repair that never runs, and the only reason the pixels would
-# still be there is that nothing overwrote them.
-ck; python3 -c "import sys; sys.exit(0 if int(sys.argv[1]) > int(sys.argv[2]) else 1)" \
-  "$RESTORES" "$RESTORE_SKIP" \
-  || fail "restores $RESTORES did not exceed deferrals $RESTORE_SKIP — the busy guard is starving the repair"
+# If the uncached fallback did run, it must have restored real client pixels
+# and must not have been starved by the busy guard. Zero restores is expected
+# when every measured present used the cached hole-preserving blitter.
+ck; python3 - "$RESTORES" "$RESTORE_PX" "$RESTORE_SKIP" <<'PY' \
+  || fail "the uncached restore fallback ran without restoring client pixels"
+import sys
+n, px, skip = map(int, sys.argv[1:])
+if n > 0 and (px < 1 or n <= skip):
+    raise SystemExit(1)
+PY
 
 if [[ -f "$PNG" ]]; then
   echo "    PNG: $PNG"
 fi
-echo "BOOT: pass  two idle clients kept their bodies through ${TOTAL}s and $((BLIT - BLIT0)) session presents"
+echo "BOOT: pass  two idle clients kept their bodies through ${TOTAL}s and $((CHROME - CHROME0)) cached chrome presents"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-retain: PASS — ADR-0190 ($ASSERTIONS checks)"

@@ -203,8 +203,9 @@ const int wmPageWBandHit = 38;
 /// [wmGfxKick] sets it, because a kick is the only thing that makes
 /// `osgfx_guest_tick` paint: the tick returns at `m->gen == last_gen` and a
 /// kick is what moves `gen`. [wmSessionRestore] — which `isr_common` calls on
-/// the instruction after the tick — clears it and re-blits, and [wmCompose]
-/// clears it because it does its own blit in the same frame.
+/// the instruction after the tick — clears it and re-blits after an uncached
+/// direct paint. The chrome-cache blitter preserves client-body holes itself;
+/// [wmCompose] clears the conservative debt because either path is settled.
 const int wmPageWSessionOwed = 39;
 
 /// Restores performed, client pixels they put back, and interrupts on which a
@@ -1463,11 +1464,11 @@ void wmChromeReportLine() {
 
 /// `WM RESTORE N <n> PX <n> SKIP <n>` -- ADR-0190.
 ///
-/// N is how many times a session present was followed by the client re-blit
-/// that keeps its body on the screen, PX is the client pixels those restores
-/// put back, and SKIP is how many were deferred to the next interrupt because
-/// a compose held [wmMetaBusy]. A boot with N at zero and a live client is a
-/// boot in which GAP-0333 is back.
+/// N is how many uncached session presents needed a following client re-blit,
+/// PX is the client pixels those restores put back, and SKIP is how many were
+/// deferred to the next interrupt because a compose held [wmMetaBusy]. N may
+/// remain zero when every present used the chrome-cache blitter, which cuts
+/// holes for live client bodies before touching the scanout.
 @bare
 void wmRestoreReportLine() {
   uartWrite(Rodata.addressOf(wmRestoreStrLine), u64(13));
