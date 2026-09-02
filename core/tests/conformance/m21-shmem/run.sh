@@ -86,7 +86,16 @@ done
 # and Dart resolves library identity through real paths.
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m21.XXXXXX")" || setup_error "mktemp failed"
 WORKDIR="$(cd "$WORKDIR" && pwd -P)"
-cleanup() { [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"; }
+cleanup() {
+  if [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]]; then
+    mkdir -p "$CORE_DIR/build"
+    [[ -f "$WORKDIR/share/serial.txt" ]] &&
+      cp "$WORKDIR/share/serial.txt" "$CORE_DIR/build/m21-last-serial.txt" || true
+    [[ -f "$WORKDIR/share/qemu.log" ]] &&
+      cp "$WORKDIR/share/qemu.log" "$CORE_DIR/build/m21-last-qemu.log" || true
+    rm -rf "$WORKDIR"
+  fi
+}
 trap cleanup EXIT
 
 KERNEL_ELF="$CORE_DIR/build/kernel.elf"
