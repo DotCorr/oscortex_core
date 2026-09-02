@@ -2751,9 +2751,12 @@ void wmGrab(u64 x, u64 y) {
     if (wmDeOn() < u64(1)) {
       return;
     }
-    if (wmPanelStrip() >= u64(wmMaxWindows)) {
+    final u64 panel = wmPanelStrip();
+    if (panel >= u64(wmMaxWindows)) {
       return;
     }
+    wmeventEnqueue(panel, x, y);
+    return;
   }
   u64 hit = wmHit(x, y);
   final u64 de = wmDeOn();

@@ -169,8 +169,8 @@ sys.exit(0 if 424 <= n <= 510 else 1)
 PY
 ck; grep -q 'wmPointerPending' "$WM" \
   || fail "pointer packets arriving during composition are still discarded"
-ck; grep -q 'wmPanelStrip() >= u64(wmMaxWindows)' "$WM" \
-  || fail "fallback chrome still swallows unmatched client dock clicks"
+ck; grep -q 'wmeventEnqueue(panel, x, y)' "$WM" \
+  || fail "fallback chrome does not dispatch unmatched client dock clicks"
 ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
   || fail "dock presses still raise or drag the DESK panel"
 ck; grep -q 'def button(x, y, btn, down):' "$0" \
