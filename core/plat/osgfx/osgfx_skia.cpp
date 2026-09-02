@@ -127,6 +127,7 @@ static SkColor sk_rgb(uint32_t rgb) {
 
 static void bind(OsGfx *g) {
   SkImageInfo info;
+  SkAlphaType alpha_type;
   if (g == 0 || g->px == 0 || g->w < 1 || g->h < 1 || g->pitch < g->w * 4) {
     return;
   }
@@ -136,8 +137,13 @@ static void bind(OsGfx *g) {
    * out wrong (this is why AA never looked like AA here). kOpaque makes
    * Skia treat the destination alpha as 1.0, which is what the framebuffer
    * actually means; it writes 0xFF back into the ignored alpha byte. */
-  info = SkImageInfo::Make(g->w, g->h, kBGRA_8888_SkColorType,
-                           kOpaque_SkAlphaType);
+  /* The scanout is logically opaque even though its unused high byte is
+   * zero. Client WM_PAINT targets are different: they are premultiplied
+   * surfaces which the panel compositor later SRC_OVERs. Treating those as
+   * opaque made Skia resolve every AA edge against transparent black and
+   * then store A=255, producing the dock/icon black fringe. */
+  alpha_type = (g == &client_g) ? kPremul_SkAlphaType : kOpaque_SkAlphaType;
+  info = SkImageInfo::Make(g->w, g->h, kBGRA_8888_SkColorType, alpha_type);
   g->owned = SkCanvas::MakeRasterDirect(info, g->px, (size_t)g->pitch);
   g->canvas = g->owned.get();
 }

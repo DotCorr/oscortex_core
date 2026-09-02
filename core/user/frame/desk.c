@@ -330,6 +330,11 @@ static void frost_copy_in(u64 x, u64 y, u64 w, u64 h, const u32 *cache) {
 }
 
 static void paint_frost_islands(u64 wall_key) {
+  /* Elevation is outside the cached frost rectangles, so repaint it after
+   * clear_bar on both cache hits and misses. This avoids square/orphan dock
+   * ends while keeping the expensive wallpaper blur cached. */
+  osxui_app_island_shadow(shm_h, LEFT_X, ISLAND_Y, LEFT_W, ISLAND_H);
+  osxui_app_island_shadow(shm_h, right_x, ISLAND_Y, RIGHT_W, ISLAND_H);
   if (wall_key != 0UL && wall_key == frost_key) {
     frost_copy_in(LEFT_X, ISLAND_Y, FROST_L_W, FROST_ISLE_H, frost_left);
     frost_copy_in(right_x, ISLAND_Y, FROST_R_W, FROST_ISLE_H, frost_right);

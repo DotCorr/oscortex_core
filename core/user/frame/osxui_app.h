@@ -337,6 +337,8 @@ static inline void osxui_app_move(unsigned long h, unsigned long x,
 #define OSXUI_GLASS_FG_MUTED 0x00506070UL
 #define OSXUI_GLASS_SHADOW 0x00081018UL
 #define OSXUI_ICON_TILE 0x00F8FAFCUL
+#define OSXUI_ICON_TILE_TOP 0x00FFFFFFUL
+#define OSXUI_ICON_TILE_BOT 0x00E8EEF4UL
 #define OSXUI_GLASS_R 18UL
 #define OSXUI_ISLAND_R 20UL
 #define OSXUI_ICON_R 10UL
@@ -392,13 +394,19 @@ static inline void osxui_app_icon_btn(unsigned long h, unsigned long x,
 static inline void osxui_app_icon_tile(unsigned long h, unsigned long x,
                                        unsigned long y, unsigned long s) {
   osxui_app_elevate(h, x, y + 2, s, s, OSXUI_ICON_R, OSXUI_GLASS_SHADOW);
-  osxui_app_icon_btn(h, x, y, s, OSXUI_ICON_TILE);
+  osxui_app_vgrad(h, x, y, s, s, OSXUI_ICON_R, OSXUI_ICON_TILE_TOP,
+                  OSXUI_ICON_TILE_BOT);
+  osxui_app_rrect(h, x + 3UL, y + 1UL, s - 6UL, 1UL, 1UL,
+                  OSXUI_GLASS_HAIR);
 }
 
 static inline void osxui_app_clock(unsigned long h, unsigned long x,
                                    unsigned long y, const char *text,
                                    unsigned long n) {
-  osxui_app_label_box(h, x, y, 120, 16, text, n, WM_TEXT_LABEL_PX,
+  /* The left island gives the clock a 92px column. The previous 120px box
+   * overlapped the status run beginning at x+100, which read as doubled
+   * glyphs and stray dark pixels at small scales. */
+  osxui_app_label_box(h, x, y, 92, 18, text, n, WM_TEXT_LABEL_PX,
                       WM_TEXT_MEDIUM, OSXUI_GLASS_FG);
 }
 
