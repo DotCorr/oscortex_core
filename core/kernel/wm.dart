@@ -2909,11 +2909,10 @@ void wmResizeStep(u64 x, u64 y) {
   final u64 rh = oh + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
   wmeventEnqueueConfigure(wI);
-  /* Geometry changes invalidate the retained session chrome as well as the
-   * client rectangles. A rectangle-only repaint is overwritten by the old
-   * retained frame on the next tick, blanking clients or leaving trails. */
-  wmCompose();
-  final u64 px = fbGeomWidth() * fbGeomHeight();
+  /* Compose old∪new once. Two independent repaints exposed an intermediate
+   * frame and reused the damage scratch with two different extents. */
+  final u64 px = wmRepaintUnion2(
+      rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
   wmSetMeta(u64(wmMetaRectPixels), px);
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
@@ -2982,8 +2981,7 @@ void wmDragStep(u64 x, u64 y) {
   final u64 oh = h + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
   wmeventEnqueueConfigure(wI);
-  wmCompose();
-  u64 px = fbGeomWidth() * fbGeomHeight();
+  u64 px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
   wmSetMeta(u64(wmMetaRectPixels), px);
   wmBumpMeta(u64(wmMetaMoves));
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
@@ -3040,6 +3038,7 @@ void wmPointerTick() {
   final u64 left = bits & u64(1);
   final u64 right = (bits >> u64(1)) & u64(1);
   final u64 was = wmMeta(u64(wmMetaButtons));
+  final u64 dragBefore = wmMeta(u64(wmMetaDrag));
   final u64 wasLeft = was & u64(1);
   final u64 wasRight = (was >> u64(1)) & u64(1);
   // Right PRESS: compositor consumes it. No drag, no client click.
@@ -3065,7 +3064,16 @@ void wmPointerTick() {
     wmSetMeta(u64(wmMetaCurX), x);
     wmSetMeta(u64(wmMetaCurY), y);
     if (wmGfxChromeFresh() < u64(1)) {
-      wmGfxKick();
+      /* Drag/resize changes the Skia chrome key. Do not kick that raster from
+       * the pointer IRQ: the configure event makes the client commit, and its
+       * syscall performs the required full compose in safe task context.
+       * Kicking here enters Skia from isr_common and can leave only wallpaper
+       * before the client-restore half runs. */
+      if (dragBefore < u64(1)) {
+        if (wmMeta(u64(wmMetaDrag)) < u64(1)) {
+          wmGfxKick();
+        }
+      }
     }
   } else {
     if (ox != x) {
