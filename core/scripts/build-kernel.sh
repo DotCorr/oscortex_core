@@ -31,6 +31,8 @@ setup_error() {
 DCDART_HOME="${DCDART_HOME:-$REPO_DIR/../DCDart}"
 [[ -d "$DCDART_HOME" ]] || setup_error "DCDART_HOME not found at $DCDART_HOME (set DCDART_HOME explicitly, or checkout DCDart as a sibling of $REPO_DIR — see core/README.md)"
 [[ -f "$DCDART_HOME/core/dcc/bin/dcc.dart" ]] || setup_error "$DCDART_HOME does not look like a DCDart checkout (missing core/dcc/bin/dcc.dart)"
+COMPAT_PROBE="$SCRIPT_DIR/verify-dcdart-compat.sh"
+[[ -f "$COMPAT_PROBE" ]] || setup_error "missing DCDart compatibility probe: $COMPAT_PROBE"
 
 # NOTE (ADR-0043): a `dcc` on PATH is deliberately NOT used any more, even when
 # one exists. `dcc` derives the prelude it type-checks annotations against from
@@ -58,11 +60,13 @@ command -v dart >/dev/null 2>&1 || setup_error "dart not found on PATH (source e
 # is actually on disk (a dirty tree is NOT the commit it claims to be, which is
 # the case a hash alone cannot catch).
 #
-# A MISMATCH IS A WARNING, NOT A FAILURE, AND THAT IS DELIBERATE FOR NOW: the
-# pin is currently behind the only toolchain on this machine that can build the
-# kernel at all, so failing here would take all 24 harnesses red for a reason
-# that is not theirs. Set OSCORTEX_REQUIRE_PIN=1 to make it fatal -- and that
-# should become the default the moment the pin and the toolchain agree.
+# A mismatch is a warning by default.  With OSCORTEX_REQUIRE_PIN=1, an exact
+# clean match passes immediately.  A different or dirty checkout must instead
+# pass verify-dcdart-compat.sh, which compiles and inspects the load-bearing
+# Volatile, @rodata/GlobalDCE and no-FP semantics.  This fallback is necessary
+# because 02631a77 was rewritten out of the public DCDart repository; rejecting
+# a Mac's surviving compatible checkout by identity would make the pin a
+# permanent build deadlock.
 DCDART_DESC="(not a git checkout)"
 DCDART_FULL=""
 DCDART_DIRTY=""
@@ -86,13 +90,18 @@ if [[ -n "$DCDART_FULL" && "$DCDART_FULL" != "$PIN_WANT"* && "$PIN_WANT" != "(no
   echo "build-kernel: WARNING — the toolchain is NOT the pinned commit. This kernel is being built" >&2
   echo "              against $DCDART_DESC and DCDART_PIN.txt claims $PIN_WANT. Either bump the pin" >&2
   echo "              deliberately after a green sweep, or point DCDART_HOME at the pinned commit." >&2
-  [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]] && setup_error "toolchain $DCDART_DESC != pinned $PIN_WANT (OSCORTEX_REQUIRE_PIN=1)"
 fi
 if [[ -n "$DCDART_DIRTY" ]]; then
   echo "build-kernel: WARNING — the toolchain working tree is DIRTY, so '$DCDART_DESC' does not identify it." >&2
   echo "              A build that picks up somebody's in-flight compiler change can move every" >&2
   echo "              byte-exact golden in this suite for a reason no commit in THIS repo explains." >&2
-  [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]] && setup_error "toolchain working tree is dirty (OSCORTEX_REQUIRE_PIN=1)"
+fi
+if [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]] &&
+   { [[ -n "$DCDART_DIRTY" ]] || [[ -z "$DCDART_FULL" ]] ||
+     [[ "$DCDART_FULL" != "$PIN_WANT"* ]]; }; then
+  echo "build-kernel: exact clean pin unavailable; proving compiler compatibility" >&2
+  bash "$COMPAT_PROBE" "$DCDART_HOME" \
+    || setup_error "toolchain is neither an exact clean pin nor probe-compatible"
 fi
 
 if ! command -v clang >/dev/null 2>&1; then
