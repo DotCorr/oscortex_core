@@ -108,8 +108,17 @@ static void drop_skia_before_rewind(void) {
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
-  SkGraphics::PurgeAllCaches();
-  osgfx_heap_frame_begin();
+  /*
+   * The freestanding CRT's free() is a no-op. PurgeAllCaches walks Skia
+   * resource records allocated by that CRT, while heap_frame_begin rewinds
+   * the same bump arena. A cache record retained across one frame therefore
+   * points into memory the next frame can overwrite; the next purge calls
+   * through its corrupted vtable and #GPs in SkResourceCache::remove.
+   *
+   * Keep the arena monotonic until the CRT has a lifetime-aware allocator.
+   * Resetting the canvases releases their live references without traversing
+   * or recycling storage that global Skia caches may still own.
+   */
 }
 
 static uint64_t last_gen;
