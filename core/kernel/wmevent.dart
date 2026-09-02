@@ -58,6 +58,10 @@ const int wmeventTypeLeave = 4;
 /// Right-press on a client body (ADR-0194). FILES row menu door.
 const int wmeventTypeContext = 5;
 
+/// Pointer-axis scroll over a client body. The signed 8-bit wheel delta is
+/// stored in bits 48..55: 0xff is one step up, 0x01 one step down.
+const int wmeventTypeScroll = 6;
+
 /// Empty [wmeventPop]. Type 0 is not a stored event.
 const int wmeventEmpty = 0;
 
@@ -204,6 +208,53 @@ void wmeventPushCoalesceConfigure(u64 w, u64 ev) {
   wmeventPush(w, ev);
 }
 
+/// Pushes a scroll event, coalescing adjacent same-direction wheel reports.
+///
+/// A physical wheel and a touchpad can outpace a FRAME client's polling loop.
+/// Keeping the newest accumulated delta avoids filling the eight-slot ring
+/// with motion while preserving button/configure ordering. Opposite directions
+/// stay separate so a down/up pair is observable instead of cancelling.
+@bare
+void wmeventPushCoalesceScroll(u64 w, u64 ev) {
+  if (w >= u64(wmeventSlots)) {
+    return;
+  }
+  final u64 n = wmeventState(w, u64(wmeventWordCount));
+  if (n > u64(0)) {
+    final u64 tail = wmeventState(w, u64(wmeventWordTail));
+    final u64 prevI =
+        (tail + u64(wmeventDepth) - u64(1)) & u64(wmeventDepth - 1);
+    final u64 prev = wmeventState(w, u64(wmeventWordEvents) + prevI);
+    if ((prev & u64(0xFFFF)) ==
+        (ev & u64(0xFFFF))) {
+      final u64 a = (prev >> u64(48)) & u64(0xFF);
+      final u64 b = (ev >> u64(48)) & u64(0xFF);
+      final u64 aNeg = a & u64(0x80);
+      final u64 bNeg = b & u64(0x80);
+      if ((aNeg > u64(0) && bNeg > u64(0)) ||
+          (aNeg < u64(1) && bNeg < u64(1))) {
+        u64 sum = u64(0);
+        if (aNeg > u64(0)) {
+          u64 mag = (u64(0x100) - a) + (u64(0x100) - b);
+          if (mag > u64(127)) {
+            mag = u64(127);
+          }
+          sum = u64(0x100) - mag;
+        } else {
+          sum = a + b;
+          if (sum > u64(127)) {
+            sum = u64(127);
+          }
+        }
+        wmeventSetState(w, u64(wmeventWordEvents) + prevI,
+            (ev & u64(0x00FFFFFFFFFFFFFF)) | (sum << u64(48)));
+        return;
+      }
+    }
+  }
+  wmeventPush(w, ev);
+}
+
 /// Pops the oldest event on window [w]'s ring, or 0 if empty.
 @bare
 u64 wmeventPop(u64 w) {
@@ -335,6 +386,44 @@ void wmeventEnqueue(u64 wI, u64 x, u64 y) {
   final u64 rx = x - wmAbsX(wI);
   final u64 ry = y - wmAbsY(wI);
   wmeventPush(wI, wmeventPack(wI, rx, ry));
+}
+
+/// Routes a signed wheel delta to the client body currently under the pointer.
+///
+/// Scrolling follows hover, not keyboard focus. Desktop, title chrome, resize
+/// handles, and the panel intentionally consume no client scroll event.
+@bare
+void wmeventEnqueueScroll(u64 x, u64 y, u64 delta) {
+  if (wmActive() < u64(1)) {
+    return;
+  }
+  final u64 d = delta & u64(0xFF);
+  if (d < u64(1)) {
+    return;
+  }
+  final u64 hit = wmHit(x, y);
+  if (hit >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmIsPanel(hit) > u64(0)) {
+    return;
+  }
+  if (wmDeOn() > u64(0)) {
+    if (wmTitleHit(hit, x, y) > u64(0)) {
+      return;
+    }
+    if (wmResizeHit(hit, x, y) > u64(0)) {
+      return;
+    }
+  }
+  final u64 rx = x - wmAbsX(hit);
+  final u64 ry = y - wmAbsY(hit);
+  final u64 ev = u64(wmeventTypeScroll)
+      | ((hit & u64(0xFF)) << u64(8))
+      | ((rx & u64(0xFFFF)) << u64(16))
+      | ((ry & u64(0xFFFF)) << u64(32))
+      | (d << u64(48));
+  wmeventPushCoalesceScroll(hit, ev);
 }
 
 /// Tells window [wI]'s owner the compositor geom. Gated on `wm de` so

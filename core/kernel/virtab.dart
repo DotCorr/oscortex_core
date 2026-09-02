@@ -50,9 +50,11 @@ const int virtabMagic = 0x54414231;
 
 const int virtabEvSyn = 0x00;
 const int virtabEvKey = 0x01;
+const int virtabEvRel = 0x02;
 const int virtabEvAbs = 0x03;
 const int virtabAbsCodeX = 0x00;
 const int virtabAbsCodeY = 0x01;
+const int virtabRelWheel = 0x08;
 const int virtabBtnLeft = 0x110;
 const int virtabBtnRight = 0x111;
 const int virtabBtnMiddle = 0x112;
@@ -337,8 +339,30 @@ void virtabApply(u64 hdr, u64 ev) {
     virtgpuRamPut32(hdr + u64(24), bits);
     return;
   }
+  if (typ == u64(virtabEvRel)) {
+    if (code == u64(virtabRelWheel)) {
+      /*
+       * Linux REL_WHEEL is signed 32-bit; the FRAME protocol needs the low
+       * signed byte (QEMU emits -1/1). Keep it until SYN_REPORT so the pending
+       * ABS axes and wheel target are one coherent report.
+       */
+      if ((value & u64(0xFF)) > u64(0)) {
+        virtgpuRamPut32(hdr + u64(40), value & u64(0xFF));
+      }
+    }
+    return;
+  }
   if (typ == u64(virtabEvSyn)) {
     if (code == u64(0)) {
+      final u64 wheel = virtgpuRamGet32(hdr + u64(40));
+      if (wheel > u64(0)) {
+        virtgpuRamPut32(hdr + u64(36), u64(0));
+        virtgpuRamPut32(hdr + u64(40), u64(0));
+        virtabCommit(hdr);
+        wmeventEnqueueScroll(
+            mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)), wheel);
+        return;
+      }
       final u64 buttons = virtgpuRamGet32(hdr + u64(24));
       final u64 prev = virtgpuRamGet32(hdr + u64(28));
       if (buttons != prev) {

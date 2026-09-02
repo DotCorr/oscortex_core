@@ -944,7 +944,10 @@ void mouseComplete() {
   mouseApplyY(b0, b2);
   mouseSetState(u64(mouseWordButtons), b0 & u64(mousePktButtons));
   if (mouseState(u64(mouseWordSize)) > u64(mousePacketPlain)) {
-    mouseApplyWheel(mouseState(u64(mouseWordB3)));
+    final u64 wheel = mouseState(u64(mouseWordB3));
+    mouseApplyWheel(wheel);
+    wmeventEnqueueScroll(
+        mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)), wheel);
   }
   mouseBump(u64(mouseWordPackets));
   mouseReportPacket();

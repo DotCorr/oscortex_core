@@ -39,7 +39,7 @@ typedef unsigned int u32;
 #define CHUNK 512UL
 #define REC 32UL
 #define NAME_MAX 12U
-#define CAT_MAX 8U
+#define CAT_MAX 16U
 #define WIN_W 400UL
 #define WIN_H 280UL
 #define SURF_X 48UL
@@ -67,6 +67,11 @@ typedef unsigned int u32;
 #define SURF_OFFSET 1024UL
 #define YIELD_SPIN 40000UL
 #define ROW_H 28UL
+#define SCROLL_TRACK_W 4UL
+#define SCROLL_TRACK_PAD 6UL
+#define SCROLL_THUMB_MIN 20UL
+#define SCROLL_TRACK 0x003A4654UL
+#define SCROLL_THUMB 0x00869BB0UL
 #define MODE_WRITE 1UL
 #define ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
 
@@ -313,6 +318,38 @@ static u32 band_colour(u64 i) {
   return (u32)SURF_BAND1;
 }
 
+static void paint_scrollbar(u64 h, u64 names, u64 visible) {
+  u64 body_h;
+  u64 track_h;
+  u64 thumb_h;
+  u64 travel;
+  u64 max_off;
+  u64 thumb_y;
+  u64 x;
+  if (names <= visible || files_w <= (SCROLL_TRACK_PAD + SCROLL_TRACK_W)) {
+    return;
+  }
+  body_h = files_height > TITLE_H ? files_height - TITLE_H : 0;
+  if (body_h <= (SCROLL_TRACK_PAD * 2UL)) {
+    return;
+  }
+  track_h = body_h - SCROLL_TRACK_PAD * 2UL;
+  thumb_h = (track_h * visible) / names;
+  if (thumb_h < SCROLL_THUMB_MIN) {
+    thumb_h = SCROLL_THUMB_MIN;
+  }
+  if (thumb_h > track_h) {
+    thumb_h = track_h;
+  }
+  travel = track_h - thumb_h;
+  max_off = names - visible;
+  thumb_y = TITLE_H + SCROLL_TRACK_PAD + (travel * scroll_off) / max_off;
+  x = files_w - SCROLL_TRACK_PAD - SCROLL_TRACK_W;
+  osxui_app_rrect(h, x, TITLE_H + SCROLL_TRACK_PAD, SCROLL_TRACK_W, track_h,
+                  2UL, SCROLL_TRACK);
+  osxui_app_rrect(h, x, thumb_y, SCROLL_TRACK_W, thumb_h, 2UL, SCROLL_THUMB);
+}
+
 static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
   volatile u32 *p = (volatile u32 *)va;
 #if FILES_NO_ICON
@@ -413,6 +450,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
       row = row + 1;
     }
   }
+  paint_scrollbar(h, names, visible);
 #endif
 }
 
@@ -444,14 +482,14 @@ static u64 row_at_y(u64 y, u64 names) {
   return row;
 }
 
-static void commit_files(void) {
+static void commit_files_rect(u64 y, u64 h) {
   files_seq = files_seq + 1;
   desc[WM_DESC_OP] = WM_OP_COMMIT;
   desc[WM_DESC_HANDLE] = files_h;
   desc[WM_DESC_X] = 0;
-  desc[WM_DESC_Y] = 0;
+  desc[WM_DESC_Y] = y;
   desc[WM_DESC_W] = files_w;
-  desc[WM_DESC_H] = files_height;
+  desc[WM_DESC_H] = h;
   desc[WM_DESC_STRIDE] = files_seq;
   desc[WM_DESC_OFFSET] = 0;
   (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
@@ -487,7 +525,20 @@ static void files_repaint(void) {
   if (menu_on > 0) {
     paint_file_menu();
   }
-  commit_files();
+  commit_files_rect(0, files_height);
+}
+
+static void files_repaint_body(void) {
+  u64 body_h;
+  if (files_h == 0 || files_height <= TITLE_H) {
+    return;
+  }
+  paint_all(files_h, files_va, files_names, files_swatch);
+  if (menu_on > 0) {
+    paint_file_menu();
+  }
+  body_h = files_height - TITLE_H;
+  commit_files_rect(TITLE_H, body_h);
 }
 
 static void do_file_open(u64 row) {
@@ -570,6 +621,9 @@ static void files_on_event(u64 ev) {
         files_height > TITLE_H ? (files_height - TITLE_H) : files_height;
     u64 visible = body_h / ROW_H;
     u64 max_off = 0;
+    u64 before = scroll_off;
+    u64 magnitude = delta;
+    u64 dirty = menu_on;
     unsigned at;
     if (visible < 1UL) {
       visible = 1UL;
@@ -577,19 +631,29 @@ static void files_on_event(u64 ev) {
     if (files_names > visible) {
       max_off = files_names - visible;
     }
-    if (delta == 0xFFUL) {
-      if (scroll_off < max_off) {
-        scroll_off = scroll_off + 1UL;
+    /* REL_WHEEL/PS2: negative is wheel-up (toward list start), positive
+     * wheel-down. Coalesced events may carry a magnitude greater than one. */
+    if ((delta & 0x80UL) != 0) {
+      magnitude = 0x100UL - delta;
+      if (magnitude > scroll_off) {
+        scroll_off = 0;
+      } else {
+        scroll_off = scroll_off - magnitude;
       }
     } else {
-      if (scroll_off > 0) {
-        scroll_off = scroll_off - 1UL;
+      if (magnitude > (max_off - scroll_off)) {
+        scroll_off = max_off;
+      } else {
+        scroll_off = scroll_off + magnitude;
       }
     }
+    menu_on = 0;
     at = put(0, msg_scroll);
     at = puthex(at, scroll_off, 2);
     emit(at);
-    files_repaint();
+    if (dirty > 0 || scroll_off != before) {
+      files_repaint_body();
+    }
     return;
   }
   if (typ == WMEVENT_TYPE_CONTEXT) {

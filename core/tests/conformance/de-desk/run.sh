@@ -183,6 +183,12 @@ ck; grep -q 'wmPointerPending' "$WM" \
   || fail "pointer packets arriving during composition are still discarded"
 ck; grep -q 'wmeventEnqueue(panel, x, y)' "$WM" \
   || fail "fallback chrome does not dispatch unmatched client dock clicks"
+ck; grep -q 'wmeventEnqueueScroll' "$CORE_DIR/kernel/wmevent.dart" \
+  || fail "wheel deltas are not routed to the hovered client"
+ck; grep -q 'wmeventPushCoalesceScroll' "$CORE_DIR/kernel/wmevent.dart" \
+  || fail "wheel bursts can fill the client event ring"
+ck; grep -q 'virtabRelWheel' "$CORE_DIR/kernel/virtab.dart" \
+  || fail "virtio tablet drops REL_WHEEL"
 ck; grep -q 'u64 wmPanelWindow' "$CORE_DIR/kernel/wmgfx.dart" \
   || fail "dock dispatch confuses panel ownership with a window slot"
 ck; grep -q 'if (wmIsPanel(hit) > u64(0))' "$WM" \
@@ -609,6 +615,32 @@ else:
     raise SystemExit("FILES did not become READY after dock click")
 time.sleep(0.4)
 
+# Real virtio-input REL_WHEEL over the FILES body. Down advances the list,
+# up returns it to the beginning. The serial offsets make both direction and
+# a non-vacuous long list observable; frame PX proves this is body damage,
+# not a whole-screen repaint.
+marked = read()
+button(300, 180, "wheel-down", True)
+if not wait_new("FILES SCROLL 01", marked):
+    raise SystemExit("wheel-down over FILES did not advance to offset 1")
+after_down = read()
+fresh = after_down[len(marked):]
+frames = []
+for line in fresh.splitlines():
+    if "WM FRAME " in line and " PX " in line:
+        try:
+            frames.append(int(line.split(" PX ", 1)[1].split()[0], 16))
+        except ValueError:
+            pass
+if not frames or min(frames) <= 0 or min(frames) >= GW * GH:
+    raise SystemExit("scroll repaint was vacuous/full-screen: %r" % frames[-4:])
+marked = after_down
+button(300, 180, "wheel-up", True)
+if not wait_new("FILES SCROLL 00", marked):
+    raise SystemExit("wheel-up over FILES did not return to offset 0")
+print("FILES wheel down/up offsets 01/00; damage pixels %d" % min(frames))
+time.sleep(0.3)
+
 press(350, 55, "right", "WM CTX TITLE")
 place(16, 20)
 time.sleep(0.1)
@@ -704,6 +736,10 @@ ck; grep -q 'FILES CSD' "$SER" \
 ck; grep -q 'OSGFX CLIENT TEXT OUTLINE' "$SER" \
   || fail "no client outline run reached osgfx_text"
 ck; grep -q 'FILES STRIP' "$SER" || fail "FILES never committed a surface"
+ck; grep -q 'FILES SCROLL 01' "$SER" \
+  || fail "wheel-down did not advance the FILES list"
+ck; grep -q 'FILES SCROLL 00' "$SER" \
+  || fail "wheel-up did not return the FILES list"
 ROW_LINE=$(grep -o 'FILES ROW OUTLINE ADV [0-9]* CELL [0-9]*' "$SER" | tail -1)
 ck; [[ -n "$ROW_LINE" ]] || fail "FILES printed no row caption measurement"
 ROW_ADV=$(printf '%s' "$ROW_LINE" | awk '{print $5}')
