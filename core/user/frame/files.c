@@ -64,7 +64,6 @@ typedef unsigned int u32;
 #define LAB_PAD_X 20UL
 #define LAB_FG 0x00202830UL
 #define ICON_FG 0x00405060UL
-#define WIN_PAGES 110UL
 #define YIELD_SPIN 40000UL
 #define ROW_H 28UL
 #define MODE_WRITE 1UL
@@ -103,6 +102,11 @@ static u64 files_va;
 static u64 files_names;
 static u32 files_swatch;
 static u64 files_seq;
+static u64 files_w = WIN_W;
+static u64 files_height = WIN_H;
+static u64 files_stride = WIN_W * 4UL;
+static u64 files_cap_w = WIN_W;
+static u64 files_cap_h = WIN_H;
 static u64 menu_on;
 static u64 menu_row;
 static u64 menu_x;
@@ -314,12 +318,12 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
   (void)h;
 #endif
   u64 py = 0;
-  u64 body_h = WIN_H;
+  u64 body_h = files_height;
   u64 band_h = ROW_H;
   u64 visible;
   u64 max_off;
   if (body_h > TITLE_H) {
-    body_h = WIN_H - TITLE_H;
+    body_h = files_height - TITLE_H;
   }
   visible = body_h / band_h;
   if (visible < 1UL) {
@@ -332,7 +336,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
   if (scroll_off > max_off) {
     scroll_off = max_off;
   }
-  while (py < WIN_H) {
+  while (py < files_height) {
     u64 px = 0;
     u32 c = (u32)SURF_FILL;
     if (names > 0) {
@@ -343,7 +347,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
         }
       }
     }
-    while (px < WIN_W) {
+    while (px < files_w) {
       u64 hit = 0;
       if (swatch != 0) {
         if (px >= SWATCH_X) {
@@ -357,24 +361,24 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
         }
       }
       if (hit > 0) {
-        p[py * WIN_W + px] = swatch;
+        p[py * (files_stride / 4UL) + px] = swatch;
       } else {
-        p[py * WIN_W + px] = c;
+        p[py * (files_stride / 4UL) + px] = c;
       }
       px = px + 1;
     }
     py = py + 1;
   }
 #if FILES_NO_ICON == 0
-  osxui_app_csd(h, WIN_W, cap_files, 5);
+  osxui_app_csd(h, files_w, cap_files, 5);
   if (csd_noted == 0) {
     csd_noted = 1;
     wr(msg_csd, sizeof(msg_csd) - 1);
   }
   if (names > 0) {
     u64 row = 0;
-    u64 wh = (WIN_W << 32) | WIN_H;
-    u64 pitch = WIN_W * 4UL;
+    u64 wh = (files_w << 32) | files_height;
+    u64 pitch = files_stride;
     while (row < visible) {
       u64 src = scroll_off + row;
       u64 iy;
@@ -384,7 +388,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
         break;
       }
       iy = TITLE_H + row * band_h;
-      if (iy + band_h > WIN_H) {
+      if (iy + band_h > files_height) {
         break;
       }
       xy = (ICON_PAD_X << 32) | iy;
@@ -395,7 +399,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
       }
       if (nlab > 0U) {
         if (band_h > 8UL) {
-          osxui_app_rrect(h, 6UL, iy + 2UL, WIN_W - 12UL, band_h - 4UL, 10UL,
+          osxui_app_rrect(h, 6UL, iy + 2UL, files_w - 12UL, band_h - 4UL, 10UL,
                           (src & 1UL) ? SURF_BAND1 : SURF_BAND0);
         }
         u64 adv = osxui_app_label_box(h, LAB_PAD_X, iy, 0, band_h,
@@ -415,12 +419,12 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
 #define FILE_MENU_H 56UL
 
 static u64 row_at_y(u64 y, u64 names) {
-  u64 body_h = WIN_H;
+  u64 body_h = files_height;
   u64 band_h = ROW_H;
   u64 row;
   u64 visible;
   if (body_h > TITLE_H) {
-    body_h = WIN_H - TITLE_H;
+    body_h = files_height - TITLE_H;
   }
   visible = body_h / band_h;
   if (visible < 1UL) {
@@ -445,8 +449,8 @@ static void commit_files(void) {
   desc[WM_DESC_HANDLE] = files_h;
   desc[WM_DESC_X] = 0;
   desc[WM_DESC_Y] = 0;
-  desc[WM_DESC_W] = WIN_W;
-  desc[WM_DESC_H] = WIN_H;
+  desc[WM_DESC_W] = files_w;
+  desc[WM_DESC_H] = files_height;
   desc[WM_DESC_STRIDE] = files_seq;
   desc[WM_DESC_OFFSET] = 0;
   (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
@@ -455,11 +459,11 @@ static void commit_files(void) {
 static void paint_file_menu(void) {
   u64 mx = menu_x;
   u64 my = menu_y;
-  if (mx + FILE_MENU_W > WIN_W) {
-    mx = WIN_W - FILE_MENU_W;
+  if (mx + FILE_MENU_W > files_w) {
+    mx = files_w - FILE_MENU_W;
   }
-  if (my + FILE_MENU_H > WIN_H) {
-    my = WIN_H - FILE_MENU_H;
+  if (my + FILE_MENU_H > files_height) {
+    my = files_height - FILE_MENU_H;
   }
   osxui_app_rrect(files_h, mx, my, FILE_MENU_W, FILE_MENU_H, OSXUI_MENU_R,
                   OSXUI_MENU_BG);
@@ -530,9 +534,22 @@ static void files_on_event(u64 ev) {
   u64 typ = ev & 0xFFUL;
   u64 rx = (ev >> 16) & 0xFFFFUL;
   u64 ry = (ev >> 32) & 0xFFFFUL;
+  if (typ == WMEVENT_TYPE_CONFIGURE) {
+    u64 nw = (ev >> 40) & 0xFFFUL;
+    u64 nh = (ev >> 52) & 0xFFFUL;
+    if (nw > 0 && nh > 0 && nw <= files_cap_w && nh <= files_cap_h) {
+      if (nw != files_w || nh != files_height) {
+        files_w = nw;
+        files_height = nh;
+        files_repaint();
+      }
+    }
+    return;
+  }
   if (typ == WMEVENT_TYPE_SCROLL) {
     u64 delta = (ev >> 48) & 0xFFUL;
-    u64 body_h = WIN_H > TITLE_H ? (WIN_H - TITLE_H) : WIN_H;
+    u64 body_h =
+        files_height > TITLE_H ? (files_height - TITLE_H) : files_height;
     u64 visible = body_h / ROW_H;
     u64 max_off = 0;
     unsigned at;
@@ -570,11 +587,11 @@ static void files_on_event(u64 ev) {
     if (menu_on > 0) {
       u64 mx = menu_x;
       u64 my = menu_y;
-      if (mx + FILE_MENU_W > WIN_W) {
-        mx = WIN_W - FILE_MENU_W;
+      if (mx + FILE_MENU_W > files_w) {
+        mx = files_w - FILE_MENU_W;
       }
-      if (my + FILE_MENU_H > WIN_H) {
-        my = WIN_H - FILE_MENU_H;
+      if (my + FILE_MENU_H > files_height) {
+        my = files_height - FILE_MENU_H;
       }
       if (rx >= mx && rx < (mx + FILE_MENU_W) && ry >= my &&
           ry < (my + FILE_MENU_H)) {
@@ -599,8 +616,24 @@ static void try_strip(u64 names, u32 swatch) {
   u64 h;
   u64 va;
   u64 frames;
+  u64 screen;
+  u64 pages;
 
-  h = sys1(SYS_SHMCREATE, WIN_PAGES);
+  screen = osxui_app_screen();
+  files_cap_w = screen >> 32;
+  files_cap_h = screen & 0xFFFFFFFFUL;
+  if (files_cap_w < WIN_W) {
+    files_cap_w = WIN_W;
+  }
+  if (files_cap_h < WIN_H) {
+    files_cap_h = WIN_H;
+  }
+  files_w = WIN_W;
+  files_height = WIN_H;
+  files_stride = files_cap_w * 4UL;
+  pages = (files_stride * files_cap_h + 4095UL) / 4096UL;
+
+  h = sys1(SYS_SHMCREATE, pages);
   if (h >= WM_RET_FLOOR) {
     return;
   }
@@ -611,7 +644,7 @@ static void try_strip(u64 names, u32 swatch) {
   desc[WM_DESC_Y] = SURF_Y;
   desc[WM_DESC_W] = WIN_W;
   desc[WM_DESC_H] = WIN_H;
-  desc[WM_DESC_STRIDE] = 0;
+  desc[WM_DESC_STRIDE] = files_stride;
   desc[WM_DESC_OFFSET] = 0;
   va = sys1(SYS_WMSURFACE, (u64)&desc[0]);
   if (va >= WM_RET_FLOOR) {
