@@ -202,11 +202,11 @@ ck; python3 - "$CORE_DIR/kernel/wmde.dart" <<'PY' \
 import sys
 s = open(sys.argv[1]).read()
 body = s[s.index("u64 wmDeGrab("):s.index("void wmDeCmd(")]
-hit = body.find("wmHit(")
+geom = body.find("wmDeGeomHit(")
 close = body.find("wmCloseHit(")
 walk = body.find("while (i < u64(wmMaxWindows))")
-if hit < 0 or close < 0 or hit > close:
-    raise SystemExit("wmDeGrab does not resolve z-order before CSD")
+if geom < 0 or close < 0 or geom > close:
+    raise SystemExit("wmDeGrab does not use title geom before CSD")
 if walk >= 0 and walk < close:
     raise SystemExit("CSD still walks every slot")
 PY

@@ -1692,9 +1692,16 @@ u64 wmDeGrab(u64 x, u64 y) {
     }
     return u64(1);
   }
-  /* CSD buttons belong to the topmost window under the pointer. A buried
-   * FILES min/max/close must not fire through SET's title. */
-  final u64 hit = wmHit(x, y);
+  /* CSD buttons belong to the topmost title under the pointer. Client
+   * CSD makes wmWindowPixel a hole in the title band, so wmHit alone
+   * falls through to the window underneath. wmDeGeomHit is the same
+   * title/resize override wmGrab uses. A buried FILES min must not
+   * fire through SET's title. */
+  u64 hit = wmHit(x, y);
+  final u64 geomHit = wmDeGeomHit(x, y);
+  if (geomHit < u64(wmMaxWindows)) {
+    hit = geomHit;
+  }
   if (hit < u64(wmMaxWindows)) {
     if (wmIsPanel(hit) < u64(1)) {
       if (wmWinOverlay(hit) < u64(1)) {
