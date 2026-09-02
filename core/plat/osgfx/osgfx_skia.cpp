@@ -17,7 +17,6 @@
 #include "osgfx_guest.h"
 #include "osgfx_session.h"
 
-#include "include/core/SkGraphics.h"
 #include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkClipOp.h"
@@ -102,25 +101,19 @@ struct OsGfx {
 
 static OsGfx g_one;
 static OsGfx client_g;
-static int resource_cache_disabled;
 
 static void drop_skia_before_rewind(void) {
-  if (!resource_cache_disabled) {
-    /*
-     * The freestanding CRT's free() is a no-op and frame reclamation rewinds
-     * its bump arena. A Skia cache entry surviving that rewind points into
-     * storage the next frame may overwrite, so a later cache purge can call
-     * through a corrupted resource vtable. A zero-byte cache budget makes
-     * every unreferenced entry leave while its allocation is still valid.
-     */
-    SkGraphics::SetResourceCacheTotalByteLimit(0);
-    resource_cache_disabled = 1;
-  }
   g_one.owned.reset();
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
-  SkGraphics::PurgeAllCaches();
+  /*
+   * Do not instantiate or traverse Skia's process-global resource cache.
+   * Its records use the freestanding bump allocator, while this CPU-raster
+   * path owns only the two canvases reset above. Rewinding after those owners
+   * are gone is bounded; PurgeAllCaches left cache records crossing a rewind
+   * and later called through an overwritten resource vtable.
+   */
   osgfx_heap_frame_begin();
 }
 
