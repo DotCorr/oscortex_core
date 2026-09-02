@@ -672,10 +672,11 @@ for _ in range(8):
     time.sleep(0.2)
 if not spawned:
     raise SystemExit("no WM DE SPAWN after launch-row click")
+deadline = time.time() + 12
+while "SET CSD" not in read() and time.time() < deadline:
+    time.sleep(0.05)
 if "SET CSD" not in read():
-    marked = read()
-    if not wait_new("SET CSD", marked, timeout=12):
-        raise SystemExit("Start row 1 did not paint SET CSD")
+    raise SystemExit("Start row 1 did not paint SET CSD")
 time.sleep(0.08)
 button(40, 500, "left", False)
 time.sleep(0.35)
