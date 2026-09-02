@@ -1044,8 +1044,8 @@ void wmCompose() {
      * counter for the restore path. Allocate both before publishing wmpage
      * through wmGfxKick; wm de is the only mode that consumes them. */
     if (wmDeOn() > u64(0)) {
-      wmDeskEnsure();
-      wmChromeBufEnsure();
+      final u64 deskReady = wmDeskEnsure();
+      final u64 chromeReady = wmChromeBufEnsure();
     }
     wmGfxKick();
     osgfx_guest_tick();
