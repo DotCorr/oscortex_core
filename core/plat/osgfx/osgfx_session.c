@@ -71,6 +71,8 @@ const char osgfx_session_door[] = "osgfx-session-tick";
 const char osgfx_session_chrome_door[] = "osgfx-session-chrome";
 
 static int chrome_noted;
+static int title_noted;
+static int held0_noted;
 
 static void unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *x = (int)((g >> 48) & 0xffffu);
@@ -276,7 +278,10 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MIN, SESS_MIN_RIM);
   bx = win_close_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_CLOSE, SESS_CLOSE_RIM);
-  com1_puts("OSGFX TITLE CLOSE\n");
+  if (title_noted == 0) {
+    title_noted = 1;
+    com1_puts("OSGFX TITLE CLOSE\n");
+  }
   if (slot == 0) {
     cap = "FILES";
     cap_n = 5;
@@ -414,7 +419,10 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
       if (held0 != 0) {
         paint_de_title_controls(g, fb, pitch, ww, hh, held0, 0);
       } else {
-        com1_puts("OSGFX TITLE HELD0 0\n");
+        if (held0_noted == 0) {
+          held0_noted = 1;
+          com1_puts("OSGFX TITLE HELD0 0\n");
+        }
       }
       if (held1 != 0) {
         paint_de_title_controls(g, fb, pitch, ww, hh, held1, 1);
