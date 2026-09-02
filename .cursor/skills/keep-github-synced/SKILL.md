@@ -48,11 +48,23 @@ If `origin/compositor` does not exist:
 
 - Do **not** invent a parallel Skia stack on `milestones-m1-m6`.
 - Get a Mac/self-hosted agent (or human) to push COMP first.
-- Self-hosted Mac worker for this repo has been: display name `~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro`. Task/subagents from managed Linux often **do not** bind that worker — if `uname` is Linux and there is no COMP tree, you are not on the Mac.
+- Self-hosted Mac worker: display name `~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro`, workerId `54470311-d074-5e4c-a8c1-e3cc777eac29`. Parent Task must bind `usePrivateWorker` / that workerId. Nested Linux agents **cannot** re-home — if `uname` is Linux and there is no COMP tree, stop and dispatch Mac.
+
+## Critical DE bugs that only live on Mac COMP
+
+See `.cursor/mac-de-critical-fixes.md`. Screenshot proof: QEMU
+`oscortex-abs-pointer` purple wallpaper with teal mouse trails + Start flash.
+
+1. **Fallback Start strip** — `osgfx_session.c` `paint_de_strip` before DESK
+   attaches (ADR-0192 / GAP-0329). **Delete** that path; boot must not flash
+   old Start / legacy chrome.
+2. **Mouse trails / smear / row warp** — pointer save-under /
+   `wmOverlayRestore` / `desk_blit` damage restore. Cursor and window moves
+   must restore underlay cleanly (no teal trails on wallpaper / dock tear).
 
 ## What belongs on the push
 
-Include: `core/` kernel + osgfx + wm, sit-in / sit-in-view scripts, DE harnesses, related ADRs, this skill.
+Include: `core/` kernel + osgfx + wm, sit-in / sit-in-view scripts, DE harnesses, related ADRs, this skill, `.cursor/mac-de-critical-fixes.md`.
 
 Exclude: secrets, credentials, huge `out/` / object trees unless the repo already tracks them by design.
 
