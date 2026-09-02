@@ -1,0 +1,34 @@
+{
+  "host": {
+    "uname": "Linux cursor 6.12.94+ x86_64",
+    "workspace": "/workspace",
+    "branch_started": "milestones-m1-m6",
+    "branch_pushed": "cursor/alpha-compositing-mac-notes-32af",
+    "origin_compositor": "MISSING"
+  },
+  "screenshots": {
+    "milestones_live_qemu_fb": "/opt/cursor/artifacts/oscortex-milestones-fb-console.png",
+    "milestones_copy_for_parent": "/workspace/.cursor/artifacts/oscortex-milestones-fb-console.png",
+    "mac_de_bug_evidence": "/opt/cursor/artifacts/oscortex-mac-de-alpha-trails-bug.png",
+    "mac_de_bug_copy_for_parent": "/workspace/.cursor/artifacts/oscortex-mac-de-alpha-trails-bug.png",
+    "notes": "Live shot is milestones fb console (no Skia DE on this host). Mac DE PNG shows black glass corners + teal mouse trails."
+  },
+  "fixed_on_this_host": [
+    "Documented alpha/SRC_OVER / transparent-clear / premul AA fix plan in .cursor/mac-de-critical-fixes.md §0",
+    "Updated keep-github-synced skill with glass black-halo as critical Mac bug #1",
+    "Captured live QEMU screendump of running milestones OS (fb console)"
+  ],
+  "not_fixed_here_requires_mac_comp": [
+    "Glass / rounded-rect alpha compositing (black halo)",
+    "Delete paint_de_strip Start fallback flash",
+    "Mouse trail / wmOverlayRestore / desk_blit damage"
+  ],
+  "mac_worker": {
+    "workerId": "54470311-d074-5e4c-a8c1-e3cc777eac29",
+    "displayName": "~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro",
+    "connected": true,
+    "eligibleForSubagent": true,
+    "sharedAssignmentAllowed": true
+  },
+  "unblock": "Parent Task must bind workerId 54470311-d074-5e4c-a8c1-e3cc777eac29. On Darwin COMP: fix glass clear+SRC_OVER, delete paint_de_strip, fix pointer restore, sit-in-view --abs, push origin HEAD:compositor."
+}

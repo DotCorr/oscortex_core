@@ -53,12 +53,19 @@ If `origin/compositor` does not exist:
 ## Critical DE bugs that only live on Mac COMP
 
 See `.cursor/mac-de-critical-fixes.md`. Screenshot proof: QEMU
-`oscortex-abs-pointer` purple wallpaper with teal mouse trails + Start flash.
+`oscortex-abs-pointer` purple wallpaper with teal mouse trails + Start flash
++ **black surrounds on rounded glass** (dock / islands). Cloud milestones can
+only screendump the `fb` text console — never treat that as DE proof.
 
-1. **Fallback Start strip** — `osgfx_session.c` `paint_de_strip` before DESK
+1. **Alpha / glass black halo** — rounded corners and frosted chrome show
+   black surroundings instead of wallpaper. Clear scratch to transparent 0;
+   blit with **SRC_OVER** (premul), not SRC; soft AA corners must be real
+   alpha (`osgfx_blend_px` / `rrect_cover`), not black fill outside the
+   curve. ADR-0198 `osgfx_glass_frost` + radius lockstep.
+2. **Fallback Start strip** — `osgfx_session.c` `paint_de_strip` before DESK
    attaches (ADR-0192 / GAP-0329). **Delete** that path; boot must not flash
    old Start / legacy chrome.
-2. **Mouse trails / smear / row warp** — pointer save-under /
+3. **Mouse trails / smear / row warp** — pointer save-under /
    `wmOverlayRestore` / `desk_blit` damage restore. Cursor and window moves
    must restore underlay cleanly (no teal trails on wallpaper / dock tear).
 
