@@ -204,23 +204,21 @@ void wmGfxKick() {
     }
     desk = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailDesk)).value;
     wall = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailWall)).value;
-    /* The mailbox has two chrome slots, not "physical WM slots 0 and 1".
-     * DESK occupies slot 0 with its panel and slot 1 with a parked menu, so
-     * copying those physical slots hid FILES' title in slot 2 and painted the
-     * parked menu as a stale upper-left card. Select the first two ordinary
-     * held windows and translate focus to the mailbox index. */
+    /* The mailbox has two chrome/preserve slots, not "physical WM slots 0
+     * and 1". Keep DESK's panel as the first preserve hole, skip its parked
+     * menu, and use the second slot for the first ordinary window. Copying
+     * physical slot 1 painted the menu at the upper-left; dropping the panel
+     * instead let a retained full-screen present erase the dock. */
     u64 i = u64(0);
     while (i < u64(wmMaxWindows)) {
       if (wmWindowHeld(i) > u64(0)) {
-        if (wmIsPanel(i) < u64(1)) {
-          if (wmIsOverlay(i) < u64(1)) {
-            if (win0Slot >= u64(wmMaxWindows)) {
-              win0Slot = i;
-              win0 = wmWin(i, u64(wmWinGeom));
-            } else if (win1Slot >= u64(wmMaxWindows)) {
-              win1Slot = i;
-              win1 = wmWin(i, u64(wmWinGeom));
-            }
+        if (wmIsOverlay(i) < u64(1)) {
+          if (win0Slot >= u64(wmMaxWindows)) {
+            win0Slot = i;
+            win0 = wmWin(i, u64(wmWinGeom));
+          } else if (win1Slot >= u64(wmMaxWindows)) {
+            win1Slot = i;
+            win1 = wmWin(i, u64(wmWinGeom));
           }
         }
       }
