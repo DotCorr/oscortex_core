@@ -810,9 +810,11 @@ void wmPaintOp(u64 frame, u64 ptr, u64 id) {
     ww = wmGeomW(g) * scale;
     hh = wmGeomH(g) * scale;
     pitch = wmWinStrideOf(slot);
-    final u64 vec = shmReg(wmWin(slot, u64(wmWinReg)), u64(shmRegVec));
+    final u64 reg = wmWin(slot, u64(wmWinReg));
     final u64 off = wmWinOffsetOf(slot);
-    px = shmVec(vec, off >> u64(vmPageShift)) + (off & u64(vmPageMask));
+    /* Skia spans rows and pages. Physical frames in a region are not
+     * contiguous; the stable SHM virtual extent is. */
+    px = shmRegionVa(reg) + off;
     scr_x = wmAbsX(slot);
     scr_y = wmAbsY(slot);
   }
