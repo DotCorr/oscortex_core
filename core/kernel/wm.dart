@@ -2594,6 +2594,10 @@ u64 wmRepaintWindow(u64 wI) {
     return u64(0);
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
+  if (wmIsPanel(wI) > u64(0)) {
+    return wmRepaintRect(
+        wmAbsX(wI), wmAbsY(wI), wmGeomW(g), wmGeomH(g));
+  }
   final u64 b = u64(wmBorder);
   return wmRepaintRect(wmAbsX(wI) - b, wmAbsY(wI) - b,
       wmGeomW(g) + b + b, wmGeomH(g) + b + b);
