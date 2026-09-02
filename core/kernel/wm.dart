@@ -2745,7 +2745,15 @@ void wmGrab(u64 x, u64 y) {
     wmPopHide();
   }
   if (wmChromeHit(x, y) > u64(0)) {
-    return;
+    /* DE policy targets (Start, task slots) were offered first above. When
+     * DESK owns the panel, the rest of this strip is client input (dock
+     * icons), not fallback chrome to swallow. */
+    if (wmDeOn() < u64(1)) {
+      return;
+    }
+    if (wmPanelStrip() >= u64(wmMaxWindows)) {
+      return;
+    }
   }
   u64 hit = wmHit(x, y);
   final u64 de = wmDeOn();
