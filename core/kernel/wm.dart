@@ -2236,6 +2236,9 @@ void wmPointerRestore() {
   if (wmPage(u64(wmPageWPtrHave)) < u64(1)) {
     return;
   }
+  /* Clear first: a missing/corrupt backing page must not leave a permanent
+   * fake HAVE that makes every later move believe stale pixels were saved. */
+  wmPageSet(u64(wmPageWPtrHave), u64(0));
   final u64 buf = wmPage(u64(wmPageWPtrPix));
   if (buf < u64(1)) {
     return;
@@ -2262,7 +2265,6 @@ void wmPointerRestore() {
     }
     row = row + u64(1);
   }
-  wmPageSet(u64(wmPageWPtrHave), u64(0));
 }
 
 /// Capture save-under and draw the sprite at ([x], [y]).
@@ -2272,6 +2274,9 @@ void wmPointerPlace(u64 x, u64 y) {
     mouseDrawCursor(x, y);
     return;
   }
+  /* Place owns the ordering invariant, so no caller can stamp a second arrow
+   * without first putting back the pixels under the previous one. */
+  wmPointerRestore();
   wmPointerEnsure();
   final u64 buf = wmPage(u64(wmPageWPtrPix));
   if (buf < u64(1)) {
@@ -2286,15 +2291,11 @@ void wmPointerPlace(u64 x, u64 y) {
       u64 c = u64(wmColorDesktop);
       if (px < fbGeomWidth()) {
         if (py < fbGeomHeight()) {
-          final u64 at = wmPixelAt(px, py);
-          if (at != u64(wmNoPixel)) {
-            c = at;
-          } else {
-            final u64 cache = wmChromeCachePixel(px, py);
-            if (cache != u64(wmNoPixel)) {
-              c = cache;
-            }
-          }
+          /* Save what is actually visible. Re-resolving wmPixelAt here loses
+           * session AA, premultiplied panel edges, and freshly painted chrome,
+           * which made restore stamp flat teal holes into those pixels. */
+          c = Volatile<u32>.fromAddress(fbPixelAddr(px, py)).value.toU64() &
+              u64(0x00FFFFFF);
         }
       }
       Pointer<u32>.fromAddress(buf + (((row * u64(wmPtrW)) + col) << u64(2)))
@@ -2966,6 +2967,15 @@ void wmPointerTick() {
   wmReap();
   final u64 x = mouseState(u64(mouseWordX));
   final u64 y = mouseState(u64(mouseWordY));
+  u64 erased = u64(0);
+  /* Interaction handlers below may repaint, move, minimise, or open chrome.
+   * Remove the old sprite before any of them changes its saved underlay. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmPage(u64(wmPageWPtrHave)) > u64(0)) {
+      erased = u64(wmPtrW) * u64(wmPtrH);
+    }
+    wmPointerRestore();
+  }
   final u64 bits = mouseState(u64(mouseWordButtons));
   final u64 left = bits & u64(1);
   final u64 right = (bits >> u64(1)) & u64(1);
@@ -2990,17 +3000,7 @@ void wmPointerTick() {
   wmDragStep(x, y);
   final u64 ox = wmMeta(u64(wmMetaCurX));
   final u64 oy = wmMeta(u64(wmMetaCurY));
-  u64 erased = u64(0);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (ox != x) {
-      wmPointerRestore();
-      erased = u64(wmPtrW) * u64(wmPtrH);
-    } else {
-      if (oy != y) {
-        wmPointerRestore();
-        erased = u64(wmPtrW) * u64(wmPtrH);
-      }
-    }
     wmPointerPlace(x, y);
     wmSetMeta(u64(wmMetaCurX), x);
     wmSetMeta(u64(wmMetaCurY), y);
