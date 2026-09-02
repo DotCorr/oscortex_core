@@ -1,0 +1,46 @@
+{
+  "agent": "DE-007..015 crayon UI polish",
+  "bcId": "bc-46dcbde8-f7d2-5bb5-b947-c32a652e6497",
+  "branch": "cursor/de-visual-polish-6497",
+  "owned": ["DE-002", "DE-007", "DE-008", "DE-009", "DE-010", "DE-011", "DE-012", "DE-013", "DE-014", "DE-015"],
+  "blocked": true,
+  "reason": "wrong_host_linux_no_comp_origin_compositor_missing",
+  "host_proof": {
+    "uname": "Linux cursor 6.12.94+ x86_64",
+    "workspace": "/workspace",
+    "plat_osgfx": false,
+    "origin_compositor": "MISSING",
+    "privateWorkerId": null,
+    "usePrivateWorker": false
+  },
+  "mac_worker": {
+    "workerId": "54470311-d074-5e4c-a8c1-e3cc777eac29",
+    "displayName": "~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro",
+    "connected": true,
+    "eligibleForSubagent": true,
+    "sharedAssignmentAllowed": true
+  },
+  "deliverables": {
+    "patch_notes": ".cursor/patches/DE-visual-polish.md",
+    "screenshots": [
+      "/opt/cursor/artifacts/DE-visual-baseline-mac-sitin.png",
+      "/opt/cursor/artifacts/DE-visual-overview-crayon.png",
+      "/opt/cursor/artifacts/DE-visual-dock-ends.png",
+      "/opt/cursor/artifacts/DE-visual-island-card.png",
+      "/opt/cursor/artifacts/DE-visual-panel-metrics.png",
+      "/opt/cursor/artifacts/DE-visual-crayon-icons.png",
+      "/opt/cursor/artifacts/DE-visual-wallpaper-banding.png"
+    ]
+  },
+  "p0_coordination": {
+    "do_not_clobber": ["DE-001", "DE-003", "DE-004", "DE-005", "DE-006"],
+    "sibling_patch_branches": [
+      "cursor/de-001-alpha-glass-96cb",
+      "cursor/de-003-pointer-trails-746b",
+      "cursor/de-004-kill-fallback-82cb",
+      "cursor/de-005-006-winops-b648"
+    ],
+    "rebase_onto": "origin/compositor tip when Mac pushes it"
+  },
+  "unblock": "Parent must Task-bind workerId 54470311-d074-5e4c-a8c1-e3cc777eac29. On Darwin COMP: rebase compositor tip, apply Waves A–D from .cursor/patches/DE-visual-polish.md, sit-in-view --abs, push origin HEAD:compositor."
+}
