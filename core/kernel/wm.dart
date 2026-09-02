@@ -2590,6 +2590,14 @@ u64 wmPixelAt(u64 x, u64 y) {
     return chrome;
   }
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    /* Title-band holes are wmNoPixel so client shm cannot stamp over
+     * session pearl. A damage pass that then fell through to wallpaper
+     * erased FILES/SET captions after every body commit. Restore the
+     * cached session title before the desk. */
+    final u64 cached = wmChromeCachePixel(x, y);
+    if (cached != u64(wmNoPixel)) {
+      return cached;
+    }
     return wmDeskPixel(x, y);
   }
   return u64(wmColorDesktop);

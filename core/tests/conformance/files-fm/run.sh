@@ -55,9 +55,9 @@ export OSMEDIA_FFMPEG=0
 # Floor: Linux executes 147 portable checks. macOS adds two seven-check
 # hdiutil inspections (before and after the guest mutates the FAT image).
 # Keep each platform's anti-vacuity floor equal to the work it can execute.
-ASSERTIONS_REQUIRED=147
+ASSERTIONS_REQUIRED=151
 if command -v hdiutil >/dev/null 2>&1; then
-  ASSERTIONS_REQUIRED=161
+  ASSERTIONS_REQUIRED=165
 fi
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-readelf \
@@ -173,7 +173,15 @@ ck; grep -q 'wmeventTypeScroll' "$CORE_DIR/kernel/wmevent.dart" \
   || fail "wmevent.dart has no scroll type"
 ck; grep -q 'wmeventEnqueueScroll' "$CORE_DIR/kernel/mouse.dart" \
   || fail "mouse.dart does not enqueue scroll"
-echo "STRUCTURAL: pass  :ROOT in fileSysOpen, fdwrite copy, rename move, no fatLookup branch, no help, fileStore 2560, wmeventStore last, wheel scroll"
+ck; grep -q 'list_sel' "$FILES_C" \
+  || fail "files.c has no list_sel"
+ck; grep -q 'FILES SEL' "$FILES_C" \
+  || fail "files.c does not print FILES SEL"
+ck; grep -q 'FILES BACK' "$FILES_C" \
+  || fail "files.c does not print FILES BACK"
+ck; grep -q 'FILES EMPTY' "$FILES_C" \
+  || fail "files.c does not print FILES EMPTY"
+echo "STRUCTURAL: pass  :ROOT in fileSysOpen, fdwrite copy, rename move, no help, fileStore 2560, wmeventStore last, wheel scroll, list sel"
 
 echo
 echo "=== PROGRAMS ==="

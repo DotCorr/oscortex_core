@@ -106,6 +106,23 @@ final List<u8> wmStrPopImage = const [
   u8(0x49), u8(0x6D), u8(0x61), u8(0x67), u8(0x65),
 ];
 
+/// `'Close'` -- 5 bytes. Title/dock context row.
+@rodata
+final List<u8> wmStrPopClose = const [
+  u8(0x43), u8(0x6C), u8(0x6F), u8(0x73), u8(0x65),
+];
+
+/// `'Raise'` -- 5 bytes. Title/dock context row.
+@rodata
+final List<u8> wmStrPopRaise = const [
+  u8(0x52), u8(0x61), u8(0x69), u8(0x73), u8(0x65),
+];
+
+/// Compositor card kinds. 2/3 are DESK launch/panel (wmde.dart).
+const int wmPopWall = 1;
+const int wmPopWin = 4;
+const int wmPopDock = 5;
+
 /// `'WM WALL REGEN '` -- 14 bytes.
 @rodata
 final List<u8> wmStrWallRegen = const [
@@ -162,6 +179,34 @@ final List<u8> wmStrCtxNone = const [
   u8(0x4E), u8(0x4F), u8(0x4E), u8(0x45),
 ];
 
+/// `'WM CTX DOCK'` -- 11 bytes.
+@rodata
+final List<u8> wmStrCtxDock = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x44), u8(0x4F), u8(0x43), u8(0x4B),
+];
+
+/// `'WM WIN MENU'` -- 11 bytes.
+@rodata
+final List<u8> wmStrWinMenu = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x57), u8(0x49), u8(0x4E), u8(0x20),
+  u8(0x4D), u8(0x45), u8(0x4E), u8(0x55),
+];
+
+/// `'WM DOCK MENU'` -- 12 bytes.
+@rodata
+final List<u8> wmStrDockMenu = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x4F), u8(0x43), u8(0x4B),
+  u8(0x20), u8(0x4D), u8(0x45), u8(0x4E), u8(0x55),
+];
+
+/// `'WM RAISE W '` -- 11 bytes.
+@rodata
+final List<u8> wmStrRaise = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x52), u8(0x41), u8(0x49), u8(0x53),
+  u8(0x45), u8(0x20), u8(0x57), u8(0x20),
+];
+
 // ---------------------------------------------------------------------------
 // Draw, hit, show, hide. [wmCompose], [wmPixelAt], [wmPointerTick] and
 // [wmGrab] are the callers. GAP-0302: this is the start of a right-click
@@ -174,11 +219,63 @@ u64 wmPopOn() {
   return wmMeta(u64(wmMetaPop));
 }
 
+/// 1 if [k] is a compositor-owned two-row card (wall / window / dock).
+@bare
+u64 wmPopIsCard(u64 k) {
+  if (k == u64(wmPopWall)) {
+    return u64(1);
+  }
+  if (k == u64(wmPopWin)) {
+    return u64(1);
+  }
+  if (k == u64(wmPopDock)) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// Focused or top usable non-panel window, else [wmMaxWindows].
+@bare
+u64 wmPopTarget() {
+  final u64 f = wmFocusLive();
+  if (f > u64(0)) {
+    final u64 w = f - u64(1);
+    if (wmWindowUsable(w) > u64(0)) {
+      if (wmIsPanel(w) < u64(1)) {
+        return w;
+      }
+    }
+  }
+  final u64 t = wmMeta(u64(wmMetaTop));
+  if (t < u64(wmMaxWindows)) {
+    if (wmWindowUsable(t) > u64(0)) {
+      if (wmIsPanel(t) < u64(1)) {
+        return t;
+      }
+    }
+  }
+  return u64(wmMaxWindows);
+}
+
+/// Raise [wI] and print `WM RAISE`.
+@bare
+void wmPopRaise(u64 wI) {
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  wmSetMeta(u64(wmMetaTop), wI);
+  wmFocusTo(wI);
+  uartWrite(Rodata.addressOf(wmStrRaise), u64(11));
+  uartPutHex(wI, u64(1));
+  uartNewline();
+  final u64 unused = wmRepaintWindow(wI);
+}
+
 /// 1 if the popover is showing and ([x], [y]) is inside it.
 @bare
 u64 wmPopHit(u64 x, u64 y) {
   u64 hit = u64(0);
-  if (wmMeta(u64(wmMetaPop)) == u64(1)) {
+  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
@@ -255,10 +352,21 @@ void wmPopLabel(u64 ox, u64 oy, u64 row, u64 text) {
 /// Paints the wallpaper menu rows + labels when `wm de` is on.
 @bare
 void wmPopMenuDraw(u64 ox, u64 oy) {
+  final u64 k = wmMeta(u64(wmMetaPop));
   wmFillRect(ox + u64(4), oy + u64(wmPopRowPad), u64(wmPopW) - u64(8),
       u64(wmPopRowH) - u64(2), u64(wmPopRow0));
   wmFillRect(ox + u64(4), oy + u64(wmPopRowPad) + u64(wmPopRowH),
       u64(wmPopW) - u64(8), u64(wmPopRowH) - u64(2), u64(wmPopRow1));
+  if (k == u64(wmPopWin)) {
+    wmPopLabel(ox, oy, u64(0), Rodata.addressOf(wmStrPopClose));
+    wmPopLabel(ox, oy, u64(1), Rodata.addressOf(wmStrPopRaise));
+    return;
+  }
+  if (k == u64(wmPopDock)) {
+    wmPopLabel(ox, oy, u64(0), Rodata.addressOf(wmStrPopRaise));
+    wmPopLabel(ox, oy, u64(1), Rodata.addressOf(wmStrPopClose));
+    return;
+  }
   wmPopLabel(ox, oy, u64(0), Rodata.addressOf(wmStrPopRegen));
   wmPopLabel(ox, oy, u64(1), Rodata.addressOf(wmStrPopImage));
 }
@@ -269,7 +377,7 @@ void wmPopMenuDraw(u64 ox, u64 oy) {
 @bare
 u64 wmPopDraw() {
   u64 px = u64(0);
-  if (wmMeta(u64(wmMetaPop)) == u64(1)) {
+  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
@@ -307,7 +415,7 @@ void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
 
 @bare
 void wmPopHide() {
-  if (wmMeta(u64(wmMetaPop)) == u64(1)) {
+  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
@@ -322,8 +430,8 @@ void wmPopHide() {
 /// GAP-0352: under `wm gfx` with no DESK panel, kick+tick+CPU fill the
 /// card before `WM WALL MENU` so the fb dump sees row colours.
 @bare
-void wmPopShow(u64 x, u64 y) {
-  if (wmMeta(u64(wmMetaPop)) == u64(1)) {
+void wmPopShowKind(u64 x, u64 y, u64 kind) {
+  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
     wmPopHide();
   }
   if (wmMeta(u64(wmMetaPop)) > u64(1)) {
@@ -337,7 +445,7 @@ void wmPopShow(u64 x, u64 y) {
   if (oy + u64(wmPopH) > fbGeomHeight()) {
     oy = fbGeomHeight() - u64(wmPopH);
   }
-  wmSetMeta(u64(wmMetaPop), u64(1));
+  wmSetMeta(u64(wmMetaPop), kind);
   wmSetMeta(u64(wmMetaPopXY), (ox << u64(32)) | oy);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     if (wmPanelStrip() < u64(1)) {
@@ -351,9 +459,23 @@ void wmPopShow(u64 x, u64 y) {
   wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
   if (wmDeOn() > u64(0)) {
     wmPopMenuDraw(ox, oy);
-    uartWrite(Rodata.addressOf(wmStrWallMenu), u64(12));
-    uartNewline();
+    if (kind == u64(wmPopWin)) {
+      uartWrite(Rodata.addressOf(wmStrWinMenu), u64(11));
+      uartNewline();
+    } else {
+      if (kind == u64(wmPopDock)) {
+        uartWrite(Rodata.addressOf(wmStrDockMenu), u64(12));
+        uartNewline();
+      } else {
+        uartWrite(Rodata.addressOf(wmStrWallMenu), u64(12));
+        uartNewline();
+      }
+    }
   }
+}
+
+void wmPopShow(u64 x, u64 y) {
+  wmPopShowKind(x, y, u64(wmPopWall));
 }
 
 /// Classify a right press (ADR-0194). Wallpaper menu only on empty desk.
@@ -397,6 +519,14 @@ void wmContextFocus(u64 hit) {
 @bare
 void wmContextShow(u64 x, u64 y) {
   if (wmChromeHit(x, y) > u64(0)) {
+    if (wmDeOn() > u64(0)) {
+      if (x >= (fbGeomWidth() ~/ u64(2))) {
+        uartWrite(Rodata.addressOf(wmStrCtxDock), u64(11));
+        uartNewline();
+        wmPopShowKind(x, y, u64(wmPopDock));
+        return;
+      }
+    }
     uartWrite(Rodata.addressOf(wmStrCtxNone), u64(11));
     uartNewline();
     return;
@@ -427,6 +557,7 @@ void wmContextShow(u64 x, u64 y) {
       wmContextFocus(hit);
       uartWrite(Rodata.addressOf(wmStrCtxTitle), u64(12));
       uartNewline();
+      wmPopShowKind(x, y, u64(wmPopWin));
       return;
     }
     wmContextFocus(hit);
@@ -603,7 +734,7 @@ void wmWallImage() {
   uartNewline();
 }
 
-/// Left-click on a showing wallpaper menu. Returns 1 if consumed.
+/// Left-click on a showing compositor card. Returns 1 if consumed.
 @bare
 u64 wmPopWallClick(u64 x, u64 y) {
   if (wmDeOn() < u64(1)) {
@@ -612,13 +743,38 @@ u64 wmPopWallClick(u64 x, u64 y) {
   if (wmPopHit(x, y) < u64(1)) {
     return u64(0);
   }
+  final u64 k = wmMeta(u64(wmMetaPop));
   final u64 row = wmPopRowAt(x, y);
   wmPopHide();
-  if (row == u64(0)) {
-    wmWallRegen();
-  }
-  if (row == u64(1)) {
-    wmWallImage();
+  if (k == u64(wmPopWin)) {
+    final u64 w = wmPopTarget();
+    if (w < u64(wmMaxWindows)) {
+      if (row == u64(0)) {
+        wmCloseWindow(w);
+      }
+      if (row == u64(1)) {
+        wmPopRaise(w);
+      }
+    }
+  } else {
+    if (k == u64(wmPopDock)) {
+      final u64 w = wmPopTarget();
+      if (w < u64(wmMaxWindows)) {
+        if (row == u64(0)) {
+          wmPopRaise(w);
+        }
+        if (row == u64(1)) {
+          wmCloseWindow(w);
+        }
+      }
+    } else {
+      if (row == u64(0)) {
+        wmWallRegen();
+      }
+      if (row == u64(1)) {
+        wmWallImage();
+      }
+    }
   }
   if (wmActive() > u64(0)) {
     wmCompose();

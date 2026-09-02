@@ -52,6 +52,8 @@ typedef unsigned int u32;
 #define SURF_FILL 0x00F4F6FAUL
 #define SURF_BAND0 0x00E8EEF4UL
 #define SURF_BAND1 0x00DEE6F0UL
+#define SURF_SEL 0x00B8C8D8UL
+#define SURF_EMPTY_FG 0x00405060UL
 /* First-three-bytes probe (ADR-0100). Lives in the title band the
  * compositor does not blit, so it cannot sit on a file row as a stray
  * grey slab (the owner screenshot at 320,16, then 372,252). Serial hex
@@ -74,9 +76,13 @@ typedef unsigned int u32;
 #define SCROLL_THUMB 0x00869BB0UL
 #define MENU_SELECTED 0x006884A0UL
 #define SCAN_ESC 0x01UL
+#define SCAN_BKSP 0x0EUL
+#define SCAN_TAB 0x0FUL
 #define SCAN_ENTER 0x1CUL
 #define SCAN_UP 0x48UL
 #define SCAN_DOWN 0x50UL
+#define SCAN_LEFT 0x4BUL
+#define SCAN_RIGHT 0x4DUL
 #define MODE_WRITE 1UL
 #define ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
 
@@ -124,6 +130,9 @@ static u64 menu_x;
 static u64 menu_y;
 static u64 menu_sel;
 static u64 scroll_off;
+static u64 list_sel;
+static u64 files_err;
+static u64 empty_noted;
 #if FILES_NO_ICON == 0
 static u64 csd_noted;
 #endif
@@ -162,6 +171,13 @@ static const char msg_menu_esc[] = "FILES MENU ESC";
 static const char msg_menu_sel[] = "FILES MENU SEL ";
 static const char msg_fopen[] = "FILES OPEN ";
 static const char msg_fren[] = "FILES RENAME ";
+static const char msg_sel[] = "FILES SEL ";
+static const char msg_back[] = "FILES BACK";
+static const char msg_empty[] = "FILES EMPTY";
+static const char msg_err[] = "FILES ERR";
+static const char msg_key[] = "FILES KEY ";
+static const char lab_empty[] = "Empty";
+static const char lab_error[] = "Error";
 static const char ext_cpy[] = "CPY";
 static const char ext_mov[] = "MOV";
 static const char ext_ren[] = "REN";
@@ -389,7 +405,11 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
       if (py >= TITLE_H) {
         u64 row = scroll_off + (py - TITLE_H) / band_h;
         if (row < names) {
-          c = band_colour(row);
+          if (row == list_sel) {
+            c = (u32)SURF_SEL;
+          } else {
+            c = band_colour(row);
+          }
         }
       }
     }
@@ -445,8 +465,12 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
       }
       if (nlab > 0U) {
         if (band_h > 8UL) {
+          u64 fill = (src & 1UL) ? SURF_BAND1 : SURF_BAND0;
+          if (src == list_sel) {
+            fill = SURF_SEL;
+          }
           osxui_app_rrect(h, 6UL, iy + 2UL, files_w - 12UL, band_h - 4UL, 10UL,
-                          (src & 1UL) ? SURF_BAND1 : SURF_BAND0);
+                          fill);
         }
         u64 adv = osxui_app_label_box(h, LAB_PAD_X, iy, 0, band_h,
                                       dotted[src], nlab, WM_TEXT_LABEL_PX,
@@ -459,6 +483,19 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
     }
   }
   paint_scrollbar(h, names, visible);
+  if (names == 0) {
+    if (files_err > 0) {
+      osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_error, 5,
+                     WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, SURF_EMPTY_FG);
+    } else {
+      osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_empty, 5,
+                     WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, SURF_EMPTY_FG);
+    }
+    if (empty_noted == 0) {
+      empty_noted = 1;
+      wr(msg_empty, sizeof(msg_empty) - 1);
+    }
+  }
 #endif
 }
 
@@ -551,9 +588,165 @@ static void files_repaint_body(void) {
   commit_files_rect(TITLE_H, body_h);
 }
 
+static u64 files_visible(void) {
+  u64 body_h = files_height > TITLE_H ? (files_height - TITLE_H) : 0;
+  u64 visible = body_h / ROW_H;
+  if (visible < 1UL) {
+    visible = 1UL;
+  }
+  return visible;
+}
+
+static void files_emit_sel(void) {
+  unsigned at = put(0, msg_sel);
+  at = puthex(at, list_sel, 2);
+  emit(at);
+}
+
+static void files_set_sel(u64 row) {
+  u64 visible;
+  u64 max_off;
+  if (row >= files_names) {
+    return;
+  }
+  list_sel = row;
+  visible = files_visible();
+  max_off = 0;
+  if (files_names > visible) {
+    max_off = files_names - visible;
+  }
+  if (list_sel < scroll_off) {
+    scroll_off = list_sel;
+  }
+  if (list_sel >= (scroll_off + visible)) {
+    scroll_off = list_sel - visible + 1UL;
+    if (scroll_off > max_off) {
+      scroll_off = max_off;
+    }
+  }
+  files_emit_sel();
+}
+
+static char scan_letter(u64 scan) {
+  if (scan == 0x10UL) {
+    return 'Q';
+  }
+  if (scan == 0x11UL) {
+    return 'W';
+  }
+  if (scan == 0x12UL) {
+    return 'E';
+  }
+  if (scan == 0x13UL) {
+    return 'R';
+  }
+  if (scan == 0x14UL) {
+    return 'T';
+  }
+  if (scan == 0x15UL) {
+    return 'Y';
+  }
+  if (scan == 0x16UL) {
+    return 'U';
+  }
+  if (scan == 0x17UL) {
+    return 'I';
+  }
+  if (scan == 0x18UL) {
+    return 'O';
+  }
+  if (scan == 0x19UL) {
+    return 'P';
+  }
+  if (scan == 0x1EUL) {
+    return 'A';
+  }
+  if (scan == 0x1FUL) {
+    return 'S';
+  }
+  if (scan == 0x20UL) {
+    return 'D';
+  }
+  if (scan == 0x21UL) {
+    return 'F';
+  }
+  if (scan == 0x22UL) {
+    return 'G';
+  }
+  if (scan == 0x23UL) {
+    return 'H';
+  }
+  if (scan == 0x24UL) {
+    return 'J';
+  }
+  if (scan == 0x25UL) {
+    return 'K';
+  }
+  if (scan == 0x26UL) {
+    return 'L';
+  }
+  if (scan == 0x2CUL) {
+    return 'Z';
+  }
+  if (scan == 0x2DUL) {
+    return 'X';
+  }
+  if (scan == 0x2EUL) {
+    return 'C';
+  }
+  if (scan == 0x2FUL) {
+    return 'V';
+  }
+  if (scan == 0x30UL) {
+    return 'B';
+  }
+  if (scan == 0x31UL) {
+    return 'N';
+  }
+  if (scan == 0x32UL) {
+    return 'M';
+  }
+  return 0;
+}
+
+static void files_type_sel(char letter) {
+  u64 i;
+  unsigned at;
+  if (letter == 0 || files_names == 0) {
+    return;
+  }
+  i = 0;
+  while (i < files_names) {
+    char c = dotted[i][0];
+    if (c >= 'a' && c <= 'z') {
+      c = (char)(c - ('a' - 'A'));
+    }
+    if (c == letter) {
+      at = put(0, msg_key);
+      line[at++] = letter;
+      emit(at);
+      files_set_sel(i);
+      files_repaint_body();
+      return;
+    }
+    i = i + 1;
+  }
+}
+
+static void files_go_back(void) {
+  list_sel = 0;
+  scroll_off = 0;
+  menu_on = 0;
+  wr(msg_back, sizeof(msg_back) - 1);
+  files_repaint();
+}
+
 static void do_file_open(u64 row) {
   unsigned at;
   if (row >= files_names) {
+    files_err = 1;
+    wr(msg_err, sizeof(msg_err) - 1);
+    files_repaint();
     return;
   }
   cat_file(dotted[row], dotlen[row]);
@@ -677,6 +870,14 @@ static void files_on_event(u64 ev) {
     return;
   }
   if (typ == WMEVENT_TYPE_PRESS) {
+    if (menu_on == 0) {
+      u64 row = row_at_y(ry, files_names);
+      if (row < files_names) {
+        files_set_sel(row);
+        files_repaint_body();
+      }
+      return;
+    }
     if (menu_on > 0) {
       u64 mx = menu_x;
       u64 my = menu_y;
@@ -716,36 +917,67 @@ static void files_on_event(u64 ev) {
 static void files_on_key(u64 ev) {
   u64 scan;
   unsigned at;
-  if (menu_on == 0 || (ev & KBD_BIT_BREAK) != 0) {
+  if ((ev & KBD_BIT_BREAK) != 0) {
     return;
   }
   scan = ev & 0xFFUL;
-  if (scan == SCAN_ESC) {
-    menu_on = 0;
-    wr(msg_menu_esc, sizeof(msg_menu_esc) - 1);
-    files_repaint_body();
-    return;
-  }
-  if ((ev & KBD_BIT_EXT) != 0) {
-    if (scan == SCAN_UP || scan == SCAN_DOWN) {
-      menu_sel = menu_sel == 0 ? 1UL : 0UL;
-      at = put(0, msg_menu_sel);
-      at = puthex(at, menu_sel, 1);
-      emit(at);
+  if (menu_on > 0) {
+    if (scan == SCAN_ESC) {
+      menu_on = 0;
+      wr(msg_menu_esc, sizeof(msg_menu_esc) - 1);
+      files_repaint_body();
+      return;
+    }
+    if ((ev & KBD_BIT_EXT) != 0) {
+      if (scan == SCAN_UP || scan == SCAN_DOWN) {
+        menu_sel = menu_sel == 0 ? 1UL : 0UL;
+        at = put(0, msg_menu_sel);
+        at = puthex(at, menu_sel, 1);
+        emit(at);
+        files_repaint_body();
+      }
+      return;
+    }
+    if (scan == SCAN_ENTER) {
+      u64 selected = menu_sel;
+      menu_on = 0;
+      if (selected == 0) {
+        do_file_open(menu_row);
+      } else {
+        do_file_rename(menu_row);
+      }
       files_repaint_body();
     }
     return;
   }
-  if (scan == SCAN_ENTER) {
-    u64 selected = menu_sel;
-    menu_on = 0;
-    if (selected == 0) {
-      do_file_open(menu_row);
-    } else {
-      do_file_rename(menu_row);
-    }
-    files_repaint_body();
+  if (scan == SCAN_ESC || scan == SCAN_BKSP) {
+    files_go_back();
+    return;
   }
+  if ((ev & KBD_BIT_EXT) != 0) {
+    if (scan == SCAN_UP) {
+      if (list_sel > 0) {
+        files_set_sel(list_sel - 1UL);
+        files_repaint_body();
+      }
+    }
+    if (scan == SCAN_DOWN) {
+      if ((list_sel + 1UL) < files_names) {
+        files_set_sel(list_sel + 1UL);
+        files_repaint_body();
+      }
+    }
+    if (scan == SCAN_LEFT) {
+      files_go_back();
+    }
+    return;
+  }
+  if (scan == SCAN_ENTER) {
+    do_file_open(list_sel);
+    files_repaint_body();
+    return;
+  }
+  files_type_sel(scan_letter(scan));
 }
 
 static void try_strip(u64 names, u32 swatch) {
@@ -1059,6 +1291,8 @@ void files_main(u64 sp) {
     n = put(0, msg_open);
     n = puthex(n, fd & 0xFFFFFFFFUL, 8);
     emit(n);
+    files_err = 1;
+    list_sel = CAT_MAX;
     try_strip(0, 0);
     wr(msg_ready, sizeof(msg_ready) - 1);
     for (;;) {
@@ -1147,6 +1381,11 @@ void files_main(u64 sp) {
     if (swatch == 0) {
       swatch = 0x00010101UL;
     }
+  }
+  if (names > 0) {
+    list_sel = 0;
+  } else {
+    list_sel = CAT_MAX;
   }
   try_strip(names, swatch);
   wr(msg_ready, sizeof(msg_ready) - 1);

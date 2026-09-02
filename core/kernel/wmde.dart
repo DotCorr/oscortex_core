@@ -233,6 +233,13 @@ final List<u8> wmStrRest = const [
   u8(0x20), u8(0x57), u8(0x20),
 ];
 
+/// `'WM FOCUS '` -- 9 bytes.
+@rodata
+final List<u8> wmStrFocus = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x46), u8(0x4F), u8(0x43), u8(0x55),
+  u8(0x53), u8(0x20),
+];
+
 /// `'WM DE START '` -- 12 bytes.
 @rodata
 final List<u8> wmStrDeStart = const [
@@ -1595,6 +1602,51 @@ u64 wmDeGeomHit(u64 x, u64 y) {
     i = i + u64(1);
   }
   return u64(wmMaxWindows);
+}
+
+/// Tab / Shift-Tab: next or previous live non-panel window.
+@bare
+void wmFocusCycle(u64 back) {
+  if (wmDeOn() < u64(1)) {
+    return;
+  }
+  final u64 n = u64(wmMaxWindows);
+  u64 cur = u64(0);
+  final u64 start = wmFocusLive();
+  if (start > u64(0)) {
+    cur = start - u64(1);
+  }
+  u64 i = u64(0);
+  while (i < n) {
+    u64 cand = u64(0);
+    if (back > u64(0)) {
+      if (cur < u64(1)) {
+        cand = n - u64(1);
+      } else {
+        cand = cur - u64(1);
+      }
+    } else {
+      cand = cur + u64(1);
+      if (cand >= n) {
+        cand = u64(0);
+      }
+    }
+    cur = cand;
+    if (wmWindowUsable(cand) > u64(0)) {
+      if (wmIsPanel(cand) < u64(1)) {
+        if (wmWinOverlay(cand) < u64(1)) {
+          wmSetMeta(u64(wmMetaTop), cand);
+          wmFocusTo(cand);
+          uartWrite(Rodata.addressOf(wmStrFocus), u64(9));
+          uartPutHex(cand, u64(1));
+          uartNewline();
+          final u64 unused = wmRepaintWindow(cand);
+          return;
+        }
+      }
+    }
+    i = i + u64(1);
+  }
 }
 
 /// Left-press DE policy. Returns 1 if the press was consumed.

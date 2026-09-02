@@ -28,9 +28,9 @@
 //    using one donated word in core/boot/kdata.S (`kbd_prefix`). Arrow keys
 //    emit nothing at all. 0xE1 (Pause, a six-byte sequence) is STILL wrong in
 //    the same way -- GAP-0055 item 2 is narrowed, not closed.
-// 4. No shift, no caps lock, no control. Modifier scancodes map to 0x00 and
-//    are ignored, so output is always the unshifted US-QWERTY character.
-//    Same reason: state. GAP-0055.
+// 4. Caps lock and control are still ignored (GAP-0055). Left/right shift
+//    make/break now set bits 1 and 2 of the donated prefix word so Tab can
+//    cycle windows backward. Translation to ASCII is still unshifted.
 
 part of 'kmain.dart';
 
@@ -255,14 +255,33 @@ void picUnmaskTimerAndKeyboard() {
 @bare
 void kbdHandle() {
   final u8 scancode = Port.inb(u16(kbdData));
+  u64 pref = kbdPrefix();
 
   if (scancode == u8(0xE0)) {
-    kbdSetPrefix(u64(1));
+    kbdSetPrefix(pref | u64(1));
     return;
   }
+  /* Shift lives in bits 1..2 of the donated prefix word so Tab can
+   * cycle windows without a new .bss slot. Bit 0 stays the E0 latch. */
+  if (scancode == u8(0x2A)) {
+    pref = pref | u64(2);
+    kbdSetPrefix(pref);
+  }
+  if (scancode == u8(0x36)) {
+    pref = pref | u64(4);
+    kbdSetPrefix(pref);
+  }
+  if (scancode == u8(0xAA)) {
+    pref = pref & u64(0xFFFFFFFFFFFFFFFD);
+    kbdSetPrefix(pref);
+  }
+  if (scancode == u8(0xB6)) {
+    pref = pref & u64(0xFFFFFFFFFFFFFFFB);
+    kbdSetPrefix(pref);
+  }
   u64 ext = u64(0);
-  if (kbdPrefix() > u64(0)) {
-    kbdSetPrefix(u64(0));
+  if ((pref & u64(1)) > u64(0)) {
+    kbdSetPrefix(pref & u64(0xFFFFFFFFFFFFFFFE));
     ext = u64(kbdqBitExt);
   }
 
@@ -271,5 +290,19 @@ void kbdHandle() {
     ev = ev | u64(kbdqBitBreak);
   }
   ev = ev | ext;
+  if ((ev & u64(kbdqBitBreak)) < u64(1)) {
+    if (ext < u64(1)) {
+      if ((ev & u64(0xFF)) == u64(0x0F)) {
+        if (wmDeOn() > u64(0)) {
+          u64 back = u64(0);
+          if ((kbdPrefix() & u64(6)) > u64(0)) {
+            back = u64(1);
+          }
+          wmFocusCycle(back);
+          return;
+        }
+      }
+    }
+  }
   kbdqPush(ev);
 }

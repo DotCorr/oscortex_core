@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=124
+ASSERTIONS_REQUIRED=148
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -197,6 +197,34 @@ ck; grep -q 'wmeventEnqueueScroll' "$CORE_DIR/kernel/wmevent.dart" \
   || fail "wheel deltas are not routed to the hovered client"
 ck; grep -q 'wmeventPushCoalesceScroll' "$CORE_DIR/kernel/wmevent.dart" \
   || fail "wheel bursts can fill the client event ring"
+ck; grep -q 'void wmFocusCycle' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "Tab does not cycle window focus"
+ck; grep -q 'wmFocusCycle(back)' "$CORE_DIR/kernel/keyboard.dart" \
+  || fail "IRQ1 does not hand Tab to the compositor"
+ck; grep -q 'wmPopWin' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "title right-click has no window menu kind"
+ck; grep -q 'wmPopDock' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "dock right-click has no dock menu kind"
+ck; python3 - "$WM" <<'PY' \
+  || fail "title-band damage still falls through to wallpaper"
+import sys
+s = open(sys.argv[1]).read()
+body = s[s.index("u64 wmPixelAt("):s.index("void wmRepaintScratchRow(")]
+if body.find("wmChromeCachePixel") < 0 or body.find("wmDeskPixel") < 0:
+    raise SystemExit("wmPixelAt does not restore title chrome from cache")
+if body.find("wmChromeCachePixel") > body.find("return wmDeskPixel"):
+    raise SystemExit("chrome cache is read after wallpaper fallback")
+PY
+ck; grep -q 'list_sel' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no list selection"
+ck; grep -q 'FILES BACK' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no back/escape path"
+ck; grep -q 'FILES EMPTY' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no empty-state token"
+ck; grep -q 'FILES ERR' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no error-state token"
+ck; grep -q 'scan_letter' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not type-select names"
 ck; grep -q 'virtabRelWheel' "$CORE_DIR/kernel/virtab.dart" \
   || fail "virtio tablet drops REL_WHEEL"
 ck; grep -q 'u64 wmPanelWindow' "$CORE_DIR/kernel/wmgfx.dart" \
@@ -762,6 +790,81 @@ if "SET CSD" not in read():
 time.sleep(0.08)
 button(40, 500, "left", False)
 time.sleep(0.35)
+
+# Focus FILES by clicking a row, then keyboard-select / back / type-ahead.
+press(300, 160, "left", "FILES SEL")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
+if not wait_new("FILES SEL", marked):
+    raise SystemExit("Down did not move FILES selection")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
+if not wait_new("FILES BACK", marked):
+    raise SystemExit("Escape did not reset FILES list")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "s"}])
+if not wait_new("FILES KEY S", marked):
+    raise SystemExit("typing S did not type-select a FILES row")
+
+# Tab cycles keyboard focus between the two live clients.
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "tab"}])
+if not wait_new("WM FOCUS", marked):
+    raise SystemExit("Tab did not cycle window focus")
+
+# Title context is a Close/Raise card, not only a classify token.
+press(350, 55, "right", "WM WIN MENU")
+place(16, 20)
+time.sleep(0.1)
+button(16, 20, "left", True)
+time.sleep(0.08)
+button(16, 20, "left", False)
+time.sleep(0.3)
+
+# Dock right-click is a Raise/Close card, not chrome-none.
+press(650, 572, "right", "WM DOCK MENU")
+place(16, 20)
+time.sleep(0.1)
+button(16, 20, "left", True)
+time.sleep(0.08)
+button(16, 20, "left", False)
+time.sleep(0.3)
+
+# CSD min / gap-slot restore / max / SE resize clamp.
+# FILES attaches at (48,40) 400x280. Slot 1 sits in the island gap at x=212.
+# SE-corner drag past the screen edge must clamp, not vanish.
+place(444, 316)
+time.sleep(0.08)
+button(444, 316, "left", True)
+time.sleep(0.08)
+place(790, 580)
+time.sleep(0.15)
+button(790, 580, "left", False)
+time.sleep(0.25)
+press(405, 57, "left", "WM MIN")
+started = False
+for _ in range(8):
+    marked = read()
+    place(220, 572)
+    time.sleep(0.1)
+    button(220, 572, "left", True)
+    if wait_new("WM REST", marked, timeout=1.2):
+        started = True
+        break
+    button(220, 572, "left", False)
+    time.sleep(0.2)
+if not started:
+    raise SystemExit("task slot did not restore the minimised window")
+button(220, 572, "left", False)
+time.sleep(0.25)
+press(379, 57, "left", "WM MAX")
+
+# Sustained combined input: wheel + move + click must not OOM or fault.
+for i in range(8):
+    button(300, 180, "wheel-down" if (i & 1) == 0 else "wheel-up", True)
+    place(200 + i * 12, 140 + (i * 7) % 40)
+    time.sleep(0.04)
+press(300, 160, "left", "FILES SEL")
 print("contextual + Start spawn tokens ok")
 PY
 
@@ -814,8 +917,28 @@ ck; grep -q 'WM DE SPAWN' "$SER" \
   || fail "Start row did not spawn by name"
 ck; grep -q 'DESK MENU 0' "$SER" \
   || fail "DESK overlay was not parked before Start interaction"
+ck; grep -q 'FILES SEL' "$SER" \
+  || fail "FILES row was not selected"
+ck; grep -q 'FILES BACK' "$SER" \
+  || fail "Escape did not reset FILES navigation"
+ck; grep -q 'FILES KEY S' "$SER" \
+  || fail "typing did not jump to a FILES name"
+ck; grep -q 'WM FOCUS' "$SER" \
+  || fail "Tab did not publish a focus cycle"
+ck; grep -q 'WM WIN MENU' "$SER" \
+  || fail "title right-click did not open Close/Raise"
+ck; grep -q 'WM DOCK MENU' "$SER" \
+  || fail "dock right-click did not open Raise/Close"
+ck; grep -q 'WM MIN W' "$SER" \
+  || fail "title min did not minimise FILES"
+ck; grep -q 'WM REST W' "$SER" \
+  || fail "task slot did not restore the minimised window"
+ck; grep -q 'WM MAX W' "$SER" \
+  || fail "title max did not toggle FILES"
 ck; ! grep -q 'OSGFX OOM' "$SER" \
-  || fail "Skia bump exhausted after FILES rename"
+  || fail "Skia bump exhausted after combined daily-drive input"
+ck; ! grep -q 'M1 FAULT' "$SER" \
+  || fail "kernel faulted under combined daily-drive input"
 
 echo
 # The floor, which this harness printed a count against but never GATED on
