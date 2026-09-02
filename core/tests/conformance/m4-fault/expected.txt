@@ -1,0 +1,102 @@
+OSCORTEX M0 OK
+MB FLAGS 0000024F
+MB LOW 0000027F
+MB UPP 0001FB80
+MB MAP 000000A8 00009000
+MB E 0000000000000000 000000000009FC00 00000001
+MB E 000000000009FC00 0000000000000400 00000002
+MB E 00000000000F0000 0000000000010000 00000002
+MB E 0000000000100000 0000000007EE0000 00000001
+MB E 0000000007FE0000 0000000000020000 00000002
+MB E 00000000FFFC0000 0000000000040000 00000002
+MB E 000000FD00000000 0000000300000000 00000002
+MB END
+M1 IDT 0100
+M1 EXC 03 0000000000000000
+M1 PIC 20
+M1 TICKS 0000000000000064
+M1 FAULT 06 0000000000000000
+M1 END
+crash
+crash: usage: crash ud | crash div
+oscortex> crash ud
+CRASH: executing an invalid opcode (#UD)
+FAULT 06 ERR 0000000000000000 OP 0F0B
+FAULT RECOVERED 0001 -- faulting computation abandoned, shell resumed
+oscortex> help
+commands:
+  help          this list
+  clear         clear the screen, home the cursor
+  mem           multiboot memory map + total usable RAM
+  ticks         prove the PIT tick counter advances
+  cpu           CPUID vendor, brand and leaf limits
+  pci           enumerate the PCI bus
+  fb            framebuffer console: BAR0, mode 0320x0258x20 hex = 800x600x32
+  disk id       ATA PIO IDENTIFY: model and sector count
+  disk read <n> read one 512-byte sector, hexdumped as it arrives
+  frames        physical frame allocator: totals and its own footprint
+  frames test   allocate 64 frames, prove them distinct, give them back
+  frames drain  allocate every free frame, then prove the next one fails
+  frames leave  <n>: allocate until exactly <n> frames are free
+  frames refill free every frame drain took, back to the baseline count
+  alloc         allocate one 4KiB frame, print its physical address
+  free <addr>   free one frame by physical address
+  vm            the kernel's own page tables: sizes and permissions
+  vmtest <what> prove W^X: ro nx must fault, rw x must not
+  user          run a ring-3 payload: syscall in, syscall out
+  user gp       ring 3 executes mov %cr3 -- must #GP
+  user pf       ring 3 stores into kernel memory -- must #PF USER
+  user badint   ring 3 uses a DPL-0 gate -- must #GP
+  user badptr   ring 3 hands write a kernel pointer -- refused
+  user hold     run a ring-3 payload that never exits (last command)
+  user pages    TSS, gate DPLs, and how many pages ring 3 can reach
+  run <lba>     load an ELF program from that disk sector and run it
+  run <name>    load an ELF program from the filesystem by name and run it
+                the words after <name> become the program's argv (at most 8)
+  fs            FAT16: mount the primary master and report its geometry
+  ls            list the root directory: name, size, first cluster
+  cat <name>    print a file, following its FAT cluster chain
+  proc          the process table, the CR4 SSE bits, and each slot
+  proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
+  proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
+  proc coop     <lbaA> <lbaB>: cooperative -- only `yield` switches
+  proc spin     <lbaA> <lbaB> <quanta>: preemptive, ends after <quanta>
+  proc sched    the scheduler's policy, quantum and per-slot counters
+  crash ud      fault on purpose (#UD) and come back
+  crash div     fault on purpose (#DE) and come back
+  echo <rest>   print the rest of the line
+oscortex> crash div
+CRASH: dividing by zero (#DE)
+FAULT 00 ERR 0000000000000000 OP 48F7
+FAULT RECOVERED 0002 -- faulting computation abandoned, shell resumed
+oscortex> mem
+MB FLAGS 0000024F
+MB LOW 0000027F
+MB UPP 0001FB80
+MB MAP 000000A8 00009000
+MB E 0000000000000000 000000000009FC00 00000001
+MB E 000000000009FC00 0000000000000400 00000002
+MB E 00000000000F0000 0000000000010000 00000002
+MB E 0000000000100000 0000000007EE0000 00000001
+MB E 0000000007FE0000 0000000000020000 00000002
+MB E 00000000FFFC0000 0000000000040000 00000002
+MB E 000000FD00000000 0000000300000000 00000002
+MB END
+MEM USABLE 0000000007F7FC00
+MEM MIB 0000007F
+oscortex> ticks
+TICKS 0000000000000064 +0010 LIVE
+oscortex> cpu
+CPU VENDOR AuthenticAMD
+CPU BRAND QEMU Virtual CPU version 2.5+
+CPU LEAF 0000000D EXT 8000000A
+oscortex> clear
+oscortex> crash ud
+CRASH: executing an invalid opcode (#UD)
+FAULT 06 ERR 0000000000000000 OP 0F0B
+FAULT RECOVERED 0003 -- faulting computation abandoned, shell resumed
+oscortex> cpu
+CPU VENDOR AuthenticAMD
+CPU BRAND QEMU Virtual CPU version 2.5+
+CPU LEAF 0000000D EXT 8000000A
+oscortex> 

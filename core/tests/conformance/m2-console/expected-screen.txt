@@ -1,0 +1,25 @@
+MB E 000000FD00000000 0000000300000000 00000002
+MB END
+M1 IDT 0100
+M1 EXC 03 0000000000000000
+M1 PIC 20
+M1 TICKS 0000000000000064
+M1 FAULT 06 0000000000000000
+M1 END
+
+OSCORTEX M3 SHELL  VGA 80x25 + PS/2 IRQ1  8042 drained: 0
+oscortex> oscortex 2026
+oscortex: unknown command: oscortex 2026
+oscortex> ac
+oscortex: unknown command: ac
+oscortex> scroll1
+oscortex: unknown command: scroll1
+oscortex> scroll2
+oscortex: unknown command: scroll2
+oscortex> scroll3
+oscortex: unknown command: scroll3
+oscortex> scroll4
+oscortex: unknown command: scroll4
+oscortex> scroll5
+oscortex: unknown command: scroll5
+oscortex>

@@ -4,22 +4,46 @@ Everything buildable lives here. See the repo root `README.md` for the project o
 
 | Path | Contains | Status |
 |---|---|---|
-| `boot/` | `boot.S` — Multiboot1 header, 32-bit entry, GDT + PAE page tables, long-mode transition | **done, verified** |
-| `kernel/` | `kmain.dart` — `@bare` DCDart kernel entry point (COM1 init + proof-of-life message) | **done, verified** |
+| `boot/` | `boot.S` — Multiboot1 header, 32-bit entry, GDT + PAE page tables, long-mode transition, EBX stash → `kmain(mbInfo)` | **done, verified** |
+| `boot/isr.S` | M1: 256 ISR stubs + `iretq`, IDT and tick-counter storage, stub-address table, and the `@extern` C-ABI helpers DCDart calls (`lidt`/`cli`/`sti`/`int3`/`hlt`), plus M2's `idle_forever` (`sti; hlt; jmp`) and M3's `idle_once` (`sti; hlt; ret` — returns, so the shell's wait loop can live in DCDart; `sti` and `hlt` must stay adjacent, which the M3 harness asserts by disassembly). M4 adds `shell_run_forever`/`fault_resume` (record RSP; reset RSP to it after a fault — the whole recovery mechanism, in assembly because DCDart cannot read a register), `divide_by_zero` (a real `#DE`, which DCDart cannot produce — GAP-0063) and `cpu_probe` (`cpuid`). M8 adds `cr0_read`/`cr2_read`/`cr3_read`/`paging_install` (privileged control-register access, and CR2 is not addressable memory at all) and `vm_exec_probe`/`vm_exec_ok` (an indirect call — a function pointer, which DCDart does not have — and a lone `ret` in `.text` to aim it at as a control). M9 adds `enter_user` (the `iretq` into ring 3: segment registers, a hand-built interrupt frame, and every general-purpose register scrubbed so ring 3 starts knowing nothing), `user_return` (`fault_resume`'s sibling — the `exit` syscall's stack switch back into `shellUser`), `tr_read` (`str`) and `tlb_invlpg` (`invlpg`, the first thing in this kernel that has ever edited a live mapping). `ltr` is deliberately NOT here: it writes the busy bit into the TSS descriptor, which since M8 is on a read-only page, so it runs in `boot.S` (ADR-0013 §2, GAP-0086) | **done, verified** |
+| `boot/kdata.S` | **M17 (ADR-0021): 96 bytes, five symbols.** DCDart grew `@bss` mutable statics (its ADR-0051) and 13952 of the 14048 donated bytes moved into the DCDart files that own them, taking sixteen `@extern` accessors with them; `kmain.o` declares 44 externs where it declared 60, and **zero lines outside a storage seam changed**. What is left is what assembly itself writes BY NAME, which a LOCAL `@bss` symbol cannot be: `cpu_info` (64, written by `cpu_probe`) and the two resume/guard pairs `shell_resume_rsp`/`_ok` and `user_resume_rsp`/`_ok`, which hold a stack pointer DCDart cannot touch. GAP-0053 is closed; GAP-0134 tracks the residue. The historical description of the 9664 donated bytes this row used to carry is in GAP-0053 and in ADR-0021 §1. | **done, verified** |
+| `kernel/` | `kmain.dart` (library root) + `proc.dart` (M11: PROCESSES — a four-slot process table, a per-process address space (its own PML4, PDPT and page directory from the allocator, the kernel's mappings copied in, `CR3` switched on every transition), a **cooperative** `yield` syscall whose whole context switch is copying the 22-word interrupt frame `isr_common` already builds out to one slot and another slot's 22 words in, a 512-byte FXSAVE area per process **built rather than captured** — zeroed and then written with control word 0x037F and MXCSR 0x1F80, because `fxsave` would capture the previous process's XMM registers and because a reserved MXCSR bit is a #GP inside `fxrstor` — and a teardown that runs on the exit path and the fault path both; `proc`, `proc run <lbaA> <lbaB>` and `proc cross <lbaA> <lbaB>`) + `elf.dart` (M10: THE ELF LOADER — an ELF64 reader that validates `e_ident`, `e_type`, `e_machine` and every program header and **refuses 25 different things by name** rather than guessing at one; a segment loader that takes a frame per page, zeroes it, copies the file bytes in through a scratch frame and maps it with W and X **derived from `p_flags`**; an entry-point check read back out of the live tables; and a teardown that removes the whole page-directory entry, on the fault path as well as the exit path) + `user.dart` (M9: RING 3 — two DPL-3 segment descriptors' worth of privilege, an `int 0x80` gate whose DPL is 3 and whose 255 siblings' is 0, three syscalls (`exit`, `write` with a real pointer check, `whoami` which reports the CS the CPU pushed), six hand-written machine-code payloads totalling 136 `@rodata` bytes (119 of instructions, plus a 17-byte message), each disassembled back out of the object file by the harness, and a teardown that runs on the fault path as well as the exit path so a payload that dies does not leave a user-accessible page behind) + `vm.dart` (M8: THE ADDRESS SPACE — a 4-level page table built in DCDart from six `allocFrame()` frames, `.text` R+X, `.rodata` R+NX, `.data`/`.bss` RW+NX, self-checked page by page before `CR3` is written and refusing to switch rather than triple-faulting; the `vm` report walks the LIVE tables rather than restating what it built, and `vmtest ro|nx|rw|x` is two deliberate faults and their two controls; M9 adds `vmMapUser`/`vmClearUser`, a deliberately narrow map/unmap that flips U/S and W/NX on a leaf that already exists and invalidates it, plus `vmEffective`/`vmCountUser`; **M10 adds the real `map(va, pa, flags)`** — `vmProgMap`/`vmProgUnmap`/`vmProgTableInstall`/`vmProgTableRemove`, bounded to one 2MiB window at 256MiB and one level of table, allocating nothing so no mapping can fail half-way through, and REFUSING a writable+executable request outright) + `pmm.dart` (M7: the physical memory manager — a bitmap over 4KiB frames built from the Multiboot map, `allocFrame`/`freeFrame` with double-free and out-of-range detection, and a STORAGE SEAM of exactly three functions that is the whole mutable-statics migration plan) + `pci.dart` (M5: PCI configuration-space enumeration over `0xCF8`/`0xCFC`, multi-function bit, bridge recursion, class-name decode; retains nothing and costs zero donated `.bss`) + `ata.dart` (M6: ATA PIO on the primary channel — IDENTIFY, LBA28 single-sector READ SECTORS, BSY honoured before DRQ, every wait iteration-bounded, and **no buffer**: it prints each 16-bit word as it arrives, so it costs zero donated `.bss`; **M10 adds `ataReadInto(lba, dst)`**, which reads a sector into an address the CALLER owns — still zero donated `.bss`, and the answer to M6's *"the kernel can now read a disk and has nowhere to put what it read"*) + `fb.dart` (M5 part 2: a linear framebuffer console — BAR0 found by PCI class, a Bochs VBE mode set, 8x16 glyphs blitted from a 1536-byte `@rodata` font with a visible fallback box; 32 donated bytes, no scrolling) + `uart.dart` (16550 driver, LSR polling, `uartWrite` over `@rodata` byte tables) + `multiboot.dart` (Multiboot1 info parsing) + `interrupts.dart` (IDT, PIC, PIT, handlers) + `vga.dart` (M2: 80x25 text console, scrolling, CRTC cursor, and `conPutc` — the one seam that mirrors every byte to both outputs) + `keyboard.dart` (M2/M3: IRQ1, scan-code set 1 → ASCII through a 128-byte `@rodata` table, `0xE0` extended-key prefix consumed as a unit) + `shell.dart` (M3: prompt, line editor, byte-compare command dispatch, and the task-context main loop; M4: `cpu`, `crash ud`/`crash div`, and `shellRecover()` — the first thing that runs on the recovered stack; M6: `disk id` and `disk read <lba>`, the first command that takes a parsed numeric argument; M9: `user`, `user gp`, `user pf`, `user badint`, `user badptr`, `user hold` and `user pages`, of which four are designed to fail because a privilege boundary is proved by refusals; M10: `run <lba>`, which loads and runs an ELF program off a disk). `part`/`part of`, NOT imports — `dcc` compiles one library per object file (ADR-0003, known-gaps GAP-0004 item 4) | **done, verified** |
 | `link/` | `kernel.ld` — link script, `elf32-i386` output (QEMU's Multiboot loader rejects a 64-bit container), `ENTRY(_start)`, load base `0x100000` | **done, verified** |
-| `tests/conformance/m0-boot/` | `run.sh` — real build, real QEMU boot, exact captured-serial-byte assertion | **`M0-boot: PASS`** |
-| `scripts/` | `build-kernel.sh` (dcc build + assemble + link), `verify-freestanding.sh` (copied from the DCDart repo, adapted) | **done** |
+| `tests/conformance/m0-boot/` | `run.sh` — real build, real QEMU boot, exact first-line serial-byte assertion (was whole-file; see ADR-0003 Decision 7) | **`M0-boot: PASS`** |
+| `tests/conformance/mb-info/` | `run.sh` + `expected.txt` — real build, real QEMU boot at `-m 128M`, exact 433-byte assertion through `MB END` | **`mb-info: PASS`** |
+| `tests/conformance/m1-interrupts/` | `run.sh` + `expected.txt` — real build, structural checks (no red zone, `ud2` survives codegen, 2048-byte stub table, `@rodata` tables in `.rodata` with no header, no `.got`), real QEMU boot, exact WHOLE-capture (544-byte) assertion | **`M1-interrupts: PASS`** |
+| `tests/conformance/m2-console/` | `run.sh` + `qmp-drive.py` + `expected.txt` + `expected-screen.txt` — real build, structural checks (VGA MMIO stores survive `-O2`, uncoalesced; 128-byte scancode table; 16 bytes of donated `.bss`), real QEMU boot with a QMP endpoint, real `send-key` keystroke injection into the emulated PS/2 controller, then THREE assertions: 603-byte serial byte-for-byte (M1's golden checked mechanically as a prefix), the 80x25 VGA text buffer read from guest physical memory byte-for-byte, and a PNG screenshot at `core/build/screenshot.png` | **`M2-console: PASS`** |
+| `boot/portio.S` | M5: 16- and 32-bit port I/O — `port_in{w,l}`/`port_out{w,l}`, four instructions and no protocol. Exists ONLY because DCDart's `Port` is byte-wide (its ADR-0029) and PCI configuration mechanism #1 is only decoded for doubleword accesses; the narrow language ask is filed as known-gaps GAP-0066 and this file is deleted when it lands — **which it has: DCDart `b3f0ed9` adds all four, and this repo's pin predates it.** M6 added a third caller rather than a fifth function: the ATA data register at `0x1F0` is 16 bits wide and is read through the same `port_inw`. Passes `verify-freestanding.sh` standalone (no undefined symbols), which is now the second assembly object that does | **done, verified** |
+| `scripts/` | `build-kernel.sh` (dcc build + assemble `boot.S`/`isr.S`/`kdata.S`/`portio.S` + link), `verify-freestanding.sh` (copied from the DCDart repo, adapted) | **done** |
 | `tools/bare-symbol-allowlist.txt` | consumed by `verify-freestanding.sh` | starts empty |
-| `docs/` | `decisions/` (ADRs), `known-gaps.md`, `escalations/` | 1 ADR, 3 gaps |
+| `tests/conformance/m3-shell/` | `run.sh` + `expected.txt` + `expected-screen.txt`, reusing m2-console's `qmp-drive.py` — real build, five structural checks (M3's four shell state words at 8 bytes each — the exact `.bss` TOTAL moved to m4-fault, GAP-0065; a 256-byte line buffer that agrees with `shellLineMax`; eight command/message tables at exactly the sizes the dispatcher compares; `idle_once` is exactly `sti; hlt; ret`; the 128-byte scancode table), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/`kernel.elf`, then TWO real QEMU boots: a driven shell session asserted six ways (2213-byte serial byte-for-byte with M1's golden as a mechanical prefix; **zero** bytes from backspaces and arrows at an empty prompt; the `mem` re-walk identical to the boot dump; the 80x25 framebuffer from guest memory; a PNG at `core/build/screenshot-shell.png`) and a **negative control** boot whose different key sequence must fail both goldens | **`M3-shell: PASS`** |
+| `tests/conformance/m4-fault/` | `run.sh` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` — real build, eight structural checks (M4's own three donated words at 8 bytes each — the exact `.bss` TOTAL moved to m5-pci at M5, GAP-0069; a 64-byte CPUID block; `divide_by_zero` is exactly `xor; xor; mov $1; div %rcx` with the encoding `48 f7 f1`; `fault_resume` is exactly `cli; guard; load %rsp; align; call; call; jmp`; `shell_run_forever` records `%rsp` and arms the guard; `cpu_probe` issues exactly five `cpuid`s; `shellCrashUd` keeps a CONDITIONAL `ud2`; 18 `@rodata` tables at exactly the sizes their call sites pass), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/`kernel.elf`, then TWO real QEMU boots (`-m 128M -cpu qemu64`): a session with three deliberate faults asserted nine ways (2363-byte serial byte-for-byte with M1's golden as a mechanical prefix; both fault vectors with the opcode bytes read AT the faulting RIP; each recovery immediately followed by a command that produced output; a fault counter reaching `0003`; `ticks` still live after two faults; the `mem` re-walk identical to the boot dump; the framebuffer from guest memory; a PNG at `core/build/screenshot-fault.png`) and a **negative control** boot that also faults and also recovers | **`M4-fault: PASS`** |
+| `tests/conformance/m5-pci/` | `run.sh` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` (which gained three OPTIONAL flags — repeatable `--monitor-command`, `--monitor-capture`, and `--addr-from-serial`, which substitutes an address the KERNEL printed into a monitor command; no other harness passes any of them) — real build, five structural checks (donated `.bss` exactly 424 — PCI added none, the framebuffer console added 32; `port_inl`/`port_outl` encode as exactly `ed`/`ef`, not their byte or 16-bit siblings; 16 `@rodata` tables at the sizes their call sites pass; `pciClassNames` validated record-by-record and the 96-glyph font validated glyph-by-glyph, both out of the object file), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/**`portio.o`**/`kernel.elf` (29 declared externs), then FOUR real QEMU boots (`-m 128M -cpu qemu64 -vga std`): a driven session asserted against a 2147-byte serial golden **and against QEMU's own `info pci` device-for-device**; a **framebuffer boot** that must discover BAR0, set 800x600x32, and produce **6528 pixels in guest memory matching the banner re-rendered from the kernel's own font** — plus the measured fact that `0xB8000` stops being a text buffer once the mode is set; a **bridge boot** with `-device pci-bridge` that must follow the bridge to bus 01 and find the e1000 behind it; and a **negative control** | **`M5-pci: PASS`** |
+| `tests/conformance/m6-disk/` | `run.sh` + `make-image.py` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` unchanged — real build, four structural checks (donated `.bss` still exactly 424, so the disk driver added **zero**; `port_inw` encodes as exactly `66 ed`, because a byte or doubleword access to an ATA data port desynchronises the drive's own sector-buffer pointer; `ataWait`'s `0x200000` iteration bound survives into the compiled code; 18 `@rodata` tables at the sizes their call sites pass), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/`portio.o`/`kernel.elf` (**29** declared externs — unchanged, M6 added no assembly), a deterministic 128-sector image generated and re-verified from the filesystem, then THREE real QEMU boots (`-m 128M -cpu qemu64 -vga std`): a driven session asserted against a 6780-byte serial golden **and, sector by sector, against the bytes `make-image.py` wrote** — the expectation computed by calling the generator, never typed — plus a capacity cross-checked against the image's real size and against QEMU's own `info block`, and two `disk id` lines that are byte-identical across a deliberate `crash ud`; a **one-flipped-bit control** whose dump must differ at exactly that byte; and a **no-drive control** that must report `DISK ERR NODEV ST 00` and print no hexdump line anywhere | **`M6-disk: PASS`** |
+| `tests/conformance/m7-frames/` | `run.sh` + `derive.py` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` unchanged — real build, **eight** structural checks (donated `.bss` 424 -> **5096**; `pmm_store` is one 4672-byte symbol; **the storage seam is exactly three call sites** and `pmm_store_addr` appears in no other kernel source — the one check here that protects a *future* change, namely the DCDart mutable-statics migration; `boot.S`'s identity map equals the allocator's bound, multiplied out from both sources; `derive.py`'s independent copy of the frame geometry equals `pmm.dart`'s; the image extents come from `kernel.ld` with `pmm_store` inside them; the `0x8000` frame bound survives into the compiled code; 53 `@rodata` sizes), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/`portio.o`/`kernel.elf` (**32** declared externs — 29 plus `pmm_store_addr`, `kernel_image_start`, `kernel_image_end`; `kdata.o` still clean standalone), then FOUR real QEMU boots (`-cpu qemu64 -vga std`): a driven session asserted against a 2997-byte serial golden **and against numbers `derive.py` recomputes from the boot's own memory-map lines and the ELF's kernel extents** — so regenerating the golden cannot make a wrong allocator pass — with the whole 4096-byte bitmap read out of **guest physical memory** and matched bit-for-bit; a **drained boot** where N allocations must leave all 32768 bits set, which is what makes "no frame handed out twice" a proof; a **256MiB boot** that must report the exact frame count above the bound and say `CAPPED`; and a **32MiB negative control** whose every number must change | **`M7-frames: PASS`** |
+| `tests/conformance/m8-paging/` | `run.sh` + `derive.py` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` unchanged — real build, **12** structural checks (the linker no longer warns about an RWX segment; exactly three `PT_LOAD`s with flags `R E`/`R`/`RW`, each 4KiB-aligned, with `.text` alone beside `.multiboot` and `.rodata` alone; the six section boundaries from `kernel.ld` ordered, page-aligned where permissions change, and the image inside the 4MiB 4KiB-page window; donated `.bss` 5096 -> **5224**; `vm_store` one 128-byte symbol; **the storage seam is exactly ONE call site**; the mapped extent equals the allocator's bound; the page geometry multiplied out against itself and against `derive.py`'s independent copy; m7's derivation reserving the same six page-table frames; `CR0.WP` and `EFER.NXE` present in `boot.S`; 49 `@rodata` sizes), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/`portio.o`/`kernel.elf` (**44** declared externs — 32 plus M8's twelve; `kdata.o` still clean standalone), then FOUR real QEMU boots: a driven session asserted against a 3445-byte serial golden **and against the LIVE PAGE TABLES read out of guest physical memory at the CR3 QEMU itself reports**, walked by `derive.py`'s own x86-64 four-level walk (ANDing every level, checking every page is identity-mapped) — `.text` RW=0/NX=0, `.rodata` RW=0/NX=1, `.data`+`.bss` RW=1/NX=1, page by page over the linker's ranges, with `[128MiB, 1GiB)` unmapped — where a **write to a `@rodata` table raises #PF** (err 3, the right CR2, decoded `PRESENT WRITE SUPER DATA`) and an **instruction fetch from it raises #PF** (err 0x11, `FETCH`), the canary's eight bytes are unchanged in all three reports, and the two controls (a store to a writable page, a call to an executable page) run FIRST and clean; a **`-cpu qemu64,nx=off` boot** where `vmtest nx` must SURVIVE and `vmtest ro` must still fault; a **32MiB boot**; and a **drain/refill boot** proving the allocator cannot reach the six page-table frames and `free <PML4>` is refused `ERR RESERVED` | **`M8-paging: PASS`** |
+| `tests/conformance/m9-ring3/` | `run.sh` + `derive.py` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` unchanged — real build, **9** structural checks (the three GDT selectors are one number in `boot.S` and `user.dart` rather than two copies; the ACCESSED bit pre-set on all four segment descriptors and `ltr` in `boot.S` and NOT in `isr.S`, because both are writes into a GDT that M8 made read-only; donated `.bss` 5224 -> **5368** with `user_store` one 128-byte symbol; **the storage seam is exactly ONE call site**; the saved-register frame offsets `user.dart` reads RECOMPUTED from `isr_common`'s push order; the syscall gate's attribute byte `0x8E | DPL 3`; 48 `@rodata` sizes; `userCodeSizes`' six bytes against the payload symbols' real sizes; and **all six payloads disassembled out of `kmain.o`**, each required to still contain the one instruction it exists to execute), `verify-freestanding.sh` on `kmain.o`/`kdata.o`/`portio.o`/`kernel.elf` (**52** declared externs — 44 plus M9's eight), then FOUR real QEMU boots: a driven session asserted against a 6084-byte serial golden where a payload runs at **CPL 3 with CS 0023 read out of the frame the CPU pushed**, `mov %cr3` raises #GP, a store into kernel `.bss` raises **#PF error 7 with the USER bit** at exactly the address ring 3 aimed at with the target word verified unchanged, `int $3` through a DPL-0 gate raises #GP 0x1A, and a syscall handed a kernel pointer is refused with ring 3 seeing the refusal; a **`user hold` boot stopped mid-payload** where QEMU's own `info registers` says CPL=3 and the LIVE page tables show exactly **2 of 1024** window pages user-accessible — the payload's — while the GDT's user descriptors are DPL 3, the TSS descriptor is **busy** with a real RSP0 and no I/O bitmap, and exactly one of 256 IDT gates has DPL 3; a **32MiB boot**; and a **drained-allocator boot** where `user` refuses instead of entering ring 3 | **`M9-ring3: PASS`** |
+| `tests/conformance/m10-elf/` | `run.sh` + `derive.py` + `build-prog.sh` + `prog.c` + `prog.ld` + `make-image.py` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` unchanged — real build of the KERNEL **and of a freestanding static ELF64 program** (`clang -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -O2` + `x86_64-elf-ld -T prog.ld`), then **seven programs written onto a disk** of which six are the good one with ONE field changed; **8** structural checks (donated `.bss` 5368 -> **5496** with `elf_store` one 128-byte symbol and STILL no sector buffer; **the storage seam is exactly ONE call site**; **every `e_*`/`p_*` byte offset in `elf.dart` used to decode the program that was just built and compared against what `x86_64-elf-readelf` reports for the same field**; the 2MiB program window multiplied out against itself, against `derive.py` and against the address `prog.ld` links at; W^X refused independently by `elfCheckPhdr` and `vmProgMap`; every `allocFrame` paired with a zeroing; 59 `@rodata` sizes plus `shellStrHelp` 1589 -> 1658; and 25 refusal codes with 25 DISTINCT sentences read out of `kmain.o`), `verify-freestanding.sh` on four objects (**53** declared externs — 52 plus M10's one), then FOUR real QEMU boots: a driven session asserted against an 8173-byte serial golden where a program **this kernel never compiled** loads off a disk, maps at its own `p_vaddr`s, runs at its own `e_entry` at CPL 3, prints the bytes its own `msg` symbol holds and exits with the status its own two segments encode — every one of those expectations read OUT OF THE ELF by `derive.py`'s second ELF64 reader — while four malformed files are refused by name and a `mov %cr3` at `e_entry` faults and is torn down; a **`spin` boot stopped mid-program** where QEMU's own `info registers` says CPL=3 with **RIP exactly equal to `e_entry`** and the LIVE tables, dumped from **two disjoint regions** of guest memory, give every page precisely the W and X its segment's `p_flags` asked for **and hold, byte for byte, what the file says they should**; a **32MiB boot**; and a **drained-allocator boot** where `run` refuses instead of loading | **`M10-elf: PASS`** |
+| `tests/conformance/m11-proc/` | `run.sh` + `derive.py` (which loads m10-elf's ELF64 reader and page-table walker BY PATH rather than re-typing them) + `build-progs.sh` + `progA.c` + `progB.c` + `prog.ld` + `make-image.py` + `expected.txt` + `expected-screen.txt`, reusing the same `qmp-drive.py` unchanged — real build of the KERNEL **and of TWO DIFFERENT freestanding static ELF64 programs at `-O2` WITHOUT `-mgeneral-regs-only`**, whose `blobCopy` — a function containing no inline assembly — is disassembled BY NAME and required to contain an `%xmm` register, which is M10's assertion inverted; **11** structural checks (donated `.bss` 5496 -> **9664** in ONE symbol, with `proc_store` 16-byte aligned **in the linked image** because `fxsave` on a misaligned operand is a #GP and all four 512-byte FXSAVE areas multiplied out from it; the table's geometry against itself and against `derive.py`'s nine copies; **the storage seam exactly THREE `return proc_store_addr()` in one file and zero anywhere else in the kernel**; 42 `@rodata` sizes plus `shellStrHelp` 1658 -> 1871; **9 refusal codes each reachable from a `return`** — the check that found `procErrNoSse` was a sentence the kernel could never say — each with its own distinct message; `boot.S` probing CPUID leaf 1 before writing CR4 with all three of the CR4 write, the CR0 write and `fninit` guarded and the probe textually first; `fxsave`/`fxrstor` present and **ZERO `%xmm` instructions anywhere else in the linked kernel**, which is what makes saving FPU state late safe; and the 22-word interrupt frame derived from `user.dart`'s own byte offsets), `verify-freestanding.sh` on four objects (**58** declared externs — 53 plus M11's five), then FOUR real QEMU boots: a driven session asserted against a 7702-byte serial golden where **two different programs run interleaved on a cooperative `yield`**, each printing the bytes at its own `msg` symbol and exiting with a status derived from its own `.rodata`, its own `.data` and the checksum of the 64 bytes its own compiler-emitted `movups` moved, each one's XMM0 and XMM7 surviving three round trips through the other, then a same-LBA refusal, then `proc cross` where the KERNEL computes an address A has and B has not and B takes a `NOTPRES READ USER` #PF on it and both are torn down with the shell alive; a **hold boot** where progB is written a third time with `jmp .` over its entry point so BOTH address spaces stay live while 256KiB of guest RAM is dumped at an address the KERNEL printed, and both page tables are walked from two different PML4 frames at CPL 3 — A's private pages ABSENT from B's, every shared virtual address on a DIFFERENT physical frame, the kernel the SAME frame and supervisor-only in both, and A's suspended XMM0/XMM7 read out of its own 512-byte FXSAVE area; a **`-cpu qemu64,-sse,-fxsr` boot** where the kernel still reaches a shell, reports CR4 exactly 0x20, and refuses to create a process by name; and a **drained-allocator boot** | **`M11-proc: PASS`** |
+| `docs/` | `decisions/` (ADRs), `known-gaps.md`, `escalations/` | 15 ADRs, 62 gaps |
 
 ## Dependency on DCDart
 
 Builds via a `DCDART_HOME` environment variable (defaults to a sibling `../DCDart` checkout), invoking
-`dcc` directly from there — mirrors DCDart's own conformance harnesses' PATH-then-fallback pattern. No
-git submodule: DCDart is still pre-M3 and changes daily, so `DCDART_PIN.txt` (one line: the commit hash
-and date this was last verified against) is the entire dependency story for now.
+`dcc` directly from there. No git submodule: DCDart is still pre-M3 and changes daily, so
+`DCDART_PIN.txt` (one line: the commit hash and date this was last verified against) is the entire
+dependency story for now.
 
-## Current milestone: M0 — done
+`DCDART_HOME` is now the **only** input that selects a DCDart, and it may point anywhere — a sibling
+checkout, an unrelated path, or a symlink (ADR-0043). `build-kernel.sh` materialises it as
+`core/build/dcdart` and both the compiler invocation and `kmain.dart`'s prelude import go through that
+one prefix, because `dcc` matches annotation libraries by exact URI and any second spelling of the
+prelude path makes every `@bare` in the kernel invisible to it. A `dcc` on PATH is deliberately ignored
+for the same reason. Every build prints which prelude it resolved; if that line is wrong, nothing else
+in the build is trustworthy. The sibling-checkout requirement this section used to carry is gone —
+see known-gaps GAP-0003 for what remains, which is DCDart's.
+
+## Current milestone: M11 — done
 
 `core/tests/conformance/m0-boot/run.sh` reports an unqualified PASS: `dcc build --mode bare
 kernel/kmain.dart` → assemble `boot/boot.S` → link via `link/kernel.ld` → `verify-freestanding.sh`
@@ -28,5 +52,168 @@ clean → a real `qemu-system-x86_64 -kernel` boot → captured COM1 serial outp
 for the full design and two real bugs found and fixed along the way (QEMU rejecting a 64-bit ELF
 container; a missing `SHF_ALLOC` flag silently dropping the Multiboot header from the linked image).
 
-See `ROADMAP.md` (local only, not published — see `.gitignore`) for what comes after M0, and
-`OSCORTEX_SPEC.md` for the concrete boot architecture this milestone implements.
+Two of GAP-0001's four M0 follow-ups are now done as well, verified the same way
+(`docs/decisions/0003-uart-driver-and-multiboot-info.md`): `boot.S` passes the Multiboot info pointer
+to `kmain()`, `core/kernel/multiboot.dart` parses and reports the real memory map, and
+`core/kernel/uart.dart` is a real reusable 16550 driver with Transmit-Holding-Register-Empty polling.
+`tests/conformance/mb-info/run.sh` asserts the entire 433-byte capture byte-for-byte, and every
+reported figure was independently cross-checked against `-m 128M` rather than merely recorded.
+
+**Fixed messages are `@rodata` byte tables** (`docs/decisions/0004-rodata-message-tables.md`), not one
+`Port.outb` call per character — the oldest ergonomic gap in this kernel, closed by DCDart ADR-0040.
+Verified as a pure refactor: all three harnesses pass with unchanged goldens, byte-for-byte.
+
+**M1 (interrupts) — done.** A 256-gate IDT built by DCDart from a stub-address table, the 8259 pair
+remapped to 0x20–0x2F, a 100 Hz PIT with a working end-of-interrupt path, and exception handlers with
+real diagnostics. `tests/conformance/m1-interrupts/run.sh` asserts the whole 544-byte capture
+byte-for-byte, including `M1 FAULT 06` — a deliberate `u64` overflow that DCDart's own overflow-trap
+codegen turns into a `#UD`, caught and diagnosed instead of triple-faulting the VM the way it would
+have at M0. See `docs/decisions/0002-m1-interrupts-architecture.md`, which records two of its own
+original decisions being reversed during implementation.
+
+**M2 (console + keyboard) — done.** The kernel is visible and interactive. `core/kernel/vga.dart`
+drives the 80x25 VGA text buffer at `0xB8000` through `Pointer<u16>` (put-character, newline,
+backspace, real scrolling, hardware cursor via the CRTC ports), `conPutc` mirrors every byte the
+kernel prints to both COM1 and the screen, and `core/kernel/keyboard.dart` handles IRQ1, translates
+scan-code set 1 through a 128-entry `@rodata` table, and echoes to both. `tests/conformance/
+m2-console/run.sh` injects 59 real keystrokes over QMP and asserts the serial capture byte-for-byte,
+the VGA text buffer byte-for-byte (read from guest physical memory, so backspace *editing the screen*
+and five lines of scrolling are both proven), and the existence of a PNG screenshot. Serial output did
+not move by one byte — checked mechanically, by comparing M1's whole golden as a prefix of the same
+boot. See `docs/decisions/0005-vga-console-and-ps2-keyboard.md`; `OSCORTEX_SPEC.md` §3 is amended
+rather than reversed, because a VGA text console still does not exist on a modern UEFI machine
+(known-gaps GAP-0054).
+
+**M2 was also the first optimized build in this project's history.** DCDart enabled `-O2` (its
+ADR-0042) one commit after making `Pointer<T>` access volatile (its ADR-0041), mid-milestone. All four
+harnesses pass at `-O2` with byte-identical goldens, and the VGA stores were confirmed to survive
+optimization by disassembly rather than by changelog — known-gaps GAP-0052, which also names the half
+that is uncovered: port I/O is safe by a property of `asm sideeffect` inline assembly, not by anything
+upstream asserts at `-O`.
+
+**M3 (a command shell) — done.** The kernel is operable: a prompt, a line you can edit, and commands
+that dispatch. `core/kernel/shell.dart` adds a 256-byte line buffer, backspace that shortens a *line*
+(and therefore cannot erase the prompt), Enter that submits, and five commands — `help`, `clear`,
+`mem` (re-walks the Multiboot map **and** totals usable RAM, a result the boot report has never
+produced), `ticks` (observes the PIT counter advance), and `echo <rest>` — plus a named error for
+anything else.
+
+The structural change is that **commands do not run in the interrupt handler.** `kbdHandle` does line
+editing only and sets a flag on Enter; a DCDart main loop runs the command in task context with
+interrupts enabled. That is forced rather than stylistic: every IDT gate is an interrupt gate, so IF
+is clear inside a handler, and `ticks` would deadlock waiting for a timer interrupt that could never
+arrive. `tests/conformance/m3-shell/run.sh` drives a real session over QMP and asserts six things
+including a **negative control** that must fail both goldens, and it also proves `docs/known-gaps.md`
+GAP-0055 item 2 is fixed — arrow keys used to type `8`, `2`, `4`, `6`, and now emit nothing at all.
+See `docs/decisions/0006-command-shell-and-line-editor.md`, whose §0 argues why a shell was worth one
+milestone and why the physical memory manager should be the next.
+
+**M4 (fault recovery + CPUID) — done.** The kernel survives its own mistakes and stays usable.
+`crash ud` and `crash div` fault on purpose, on two different vectors — a `#UD` from DCDart's own
+overflow trap and a genuine hardware `#DE` — and each one is caught, diagnosed with the first two
+bytes of the instruction read *at the faulting address*, and recovered from: the faulting
+computation's stack is thrown away and the shell resumes on the stack pointer it was running on before
+the command started. `help`, `mem`, `ticks` and `cpu` all still work afterwards, which is what
+`tests/conformance/m4-fault/run.sh` actually asserts — the diagnostic alone was already true at M1.
+`cpu` reads the CPUID vendor and brand strings, which cannot be *returned* across the DCDart/assembly
+boundary at all and travel through 64 bytes of donated `.bss` instead (GAP-0061).
+
+Two unplanned findings came out of it: DCDart's `~/` and `%` **cannot** produce a divide error (they
+emit a zero check and a `ud2`, so a DCDart division by zero is a `#UD` — GAP-0063), and GAP-0060
+finally bit for real (a 395-byte `@rodata` table printed with a stale 237-byte length). Both are
+recorded as findings rather than tidied away. See
+`docs/decisions/0007-fault-recovery-and-cpuid.md`, which is explicit that this is fault survival with
+*abandonment* of the faulting computation — not resumption, and not a condition system.
+
+**M5 (PCI enumeration) — done.** The kernel finds hardware instead of being compiled to know where it
+is. `pci` walks configuration space over the legacy `0xCF8`/`0xCFC` port pair, honours the
+multi-function bit, follows PCI-to-PCI bridges, and decodes class codes into short names from a
+`@rodata` table — printing the raw number rather than guessing when a class is not listed. It is the
+first subsystem since M1 that costs **zero** donated `.bss`, which is not a win so much as the same
+GAP-0053 limitation showing up as an absence: nothing is retained, so anything that later wants "the
+NIC I found" has to walk the bus again (GAP-0067).
+
+DCDart's `Port` is byte-wide and PCI configuration space is not, so `boot/portio.S` supplies `outl`
+and `inl` — the instruction only, with the whole protocol in DCDart — and the narrow language ask is
+filed as GAP-0066. A second unplanned finding: `dcc` **cannot compile a nested `while` loop**, hit for
+the first time here and worked around by decomposition (GAP-0068). `tests/conformance/m5-pci/run.sh`
+boots three times and checks the enumeration against **QEMU's own `info pci`**, not only against a
+golden. See `docs/decisions/0008-pci-enumeration.md`.
+
+**M5 part 2 (a linear framebuffer console) — done.** `fb` finds the display controller by PCI class,
+reads BAR0 (`0xFD000000` — discovered, not hardcoded), sets 800x600x32 through the Bochs VBE
+registers, and blits 8x16 glyphs from a 1536-byte `@rodata` font; `conPutc` then routes to it, so the
+shell runs on it. `boot.S` gained a second page directory identity-mapping the 3–4GiB PCI hole,
+because until then the framebuffer's address was not mapped at all. GAP-0054 said this needed
+Multiboot2 first; it did not, because a PCI BAR is a second way to learn a framebuffer's address —
+that entry is narrowed, not closed, since a UEFI machine still hands you one already configured.
+
+The unplanned finding: **`0xB8000` is an aperture into the adapter's video RAM**, and enabling a
+graphics mode repoints it. The first build wired the framebuffer in as a third output path and the
+80x25 text buffer read back out of guest memory as 2000 cells of pixel data. `conPutc` now writes
+COM1 and exactly one screen; the text console is not removed or regressed, it is simply that one
+adapter shows one thing at a time. GAP-0071. The harness proves the drawing by reading **pixels** back
+out of guest memory at the address the kernel printed and comparing them against the banner
+re-rendered from the same font table — not by keeping a screenshot. See
+`docs/decisions/0009-framebuffer-console.md`.
+
+**M6 (ATA PIO — it can read a disk) — done.** M5 ended with the kernel able to *see* an IDE
+controller and unable to read a byte of it. `disk id` runs IDENTIFY and reports the drive's signature,
+model and LBA28 capacity; `disk read <lba>` issues a single-sector LBA28 READ SECTORS and hexdumps the
+sector **as it arrives**, 16 bytes to a line. PIO rather than DMA is structural rather than a
+preference: DMA needs a contiguous landing buffer and a PRDT, which need a page allocator, and PIO is
+the one real storage path that does not.
+
+It cost **zero** donated `.bss`, and that is the bill rather than the win — there is no
+`read(lba) -> bytes`, so there is no filesystem, no partition parse and no block cache, all of them
+the same missing thing (GAP-0074 item 1). Every wait is iteration-bounded and a expiry names which
+one gave up (GAP-0058 is the hazard, GAP-0073 the remaining limitation: it is a count, not a
+duration). BSY is honoured before DRQ on every poll — the half QEMU cannot test, and the way to write
+a driver that passes this harness and corrupts a sector on hardware.
+
+The harness's expectation is **derived, not typed**: it generates the image, re-reads it from the
+filesystem to verify what it wrote, and computes the expected hexdump by calling that same generator.
+Three sectors are read (`0000`, `002A`, `0005`) and the image's per-sector pattern makes an LBA
+off-by-one impossible to pass. Two negative controls: one flipped bit on the disk must change exactly
+one dumped byte, and a boot with **no drive attached** must report `DISK ERR NODEV ST 00` and print no
+hexdump at all — which is the boot that proves the dump comes off the disk rather than out of the
+kernel. See `docs/decisions/0010-ata-pio-disk-read.md`.
+
+**M7 (the physical memory manager — it remembers what memory it has) — done.** The kernel has parsed
+the Multiboot memory map since M0 and thrown it away every time, because nothing could outlive the
+call that produced it. `core/kernel/pmm.dart` is a bitmap over 4KiB physical frames — 4096 bytes of
+bitmap covering 128MiB — built from the type-1 regions at boot, with the first megabyte and **the
+kernel's own image** reserved. The extents come from `link/kernel.ld` (`__kernel_start`/`__kernel_end`,
+the latter placed after `.bss`), so the reservation covers the boot stack, the page tables and the
+allocator's own bitmap: handing out the frame the bitmap lives in is the most self-referential
+corruption available here and it is one subtraction away at all times.
+
+`allocFrame()` returns a physical address or **0** — unambiguous because frame 0 is permanently
+reserved. `freeFrame(addr)` refuses four distinct things without touching the bitmap (unaligned,
+out of range, never-allocatable, **already free**) and counts every refusal, which is why the free
+count can be trusted at all. Six commands: `frames`, `frames test`, `frames drain`, `frames refill`,
+`alloc`, `free <addr>`.
+
+**The bound is 128MiB and it is the same number three times:** one page of bitmap, 32768 frames, and
+the extent `boot/boot.S` identity-maps (`MAP_2MIB_PAGES` raised 8 → 64 for this milestone). The third
+is what makes it correctness rather than budget — a frame the kernel cannot address is not a frame it
+can hand out — and `frames drain` *executes* the invariant by writing and reading back the highest
+frame it allocates. Exceeding the bound is loud: `OVER nnnnnnnn CAPPED`, never a silent truncation.
+
+**Why this took until M7.** DCDart has no mutable static data (GAP-0053), so the bitmap can only be
+assembly-donated `.bss`, and four earlier milestones declined to make that workaround load-bearing for
+the kernel's most important subsystem. The answer was shape, not waiting: **one** symbol, **one**
+accessor, **three** seam functions, and a harness check that counts the call sites. `DCDART_PIN.txt`
+also moved `9e836a3` → `e3cfe18` for nested `while` loops (GAP-0068 named this milestone as the one
+that would need them), with all eight pre-existing harnesses re-verified against the new pin *before*
+any M7 code was written.
+
+The harness's expectation is **derived, not typed**, the same discipline m6-disk applies to a disk:
+`derive.py` recomputes the bitmap, the free count and the folds from the boot's own `MB E` lines and
+the ELF's kernel extents, so regenerating the golden cannot make a wrong allocator pass. The whole
+4096-byte bitmap is read out of guest physical memory and compared bit-for-bit; a second boot dumps it
+drained, where N allocations must leave all 32768 bits set. See
+`docs/decisions/0011-physical-memory-manager.md` and GAP-0076 for what it deliberately does not do.
+
+See `ROADMAP.md` (local only, not published — see `.gitignore`) for M0–M7 and what comes after,
+and `OSCORTEX_SPEC.md` for the concrete boot architecture these milestones implement.

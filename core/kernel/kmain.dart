@@ -1,58 +1,404 @@
 // core/kernel/kmain.dart
 //
-// oscortex_core M0 kernel entry point (OSCORTEX_SPEC.md §2). Called from
+// oscortex_core kernel entry point (OSCORTEX_SPEC.md §2). Called from
 // core/boot/boot.S via a plain C-ABI call, once the CPU is in 64-bit long
 // mode with paging enabled -- the exact same call shape DCDart's own
 // m0-seam/m1-pointer conformance harnesses already prove works.
 //
-// Initializes COM1 (16550 UART) and writes a fixed proof-of-life message,
-// one byte at a time -- @bare has no String/array type yet, so there is
-// no other way to spell this. The UART init sequence mirrors DCDart's own
-// core/examples/m2-port/port_io.dart exactly (already verified there).
+// This file is the LIBRARY ROOT. `uart.dart`, `multiboot.dart` and
+// `interrupts.dart` are `part` files, not imports: `dcc` compiles ONE library
+// per object file, and a `@bare` function in an imported library is not
+// compiled at all. That used to be SILENT (the only symptom was an undefined
+// symbol at link time); it is now a hard error naming the offending functions
+// and pointing at `part`/`part of`. The constraint itself is unchanged -- see
+// docs/known-gaps.md GAP-0004 item 4.
 //
-// KNOWN GAP (see docs/known-gaps.md): no busy-wait on the Line Status
-// Register's Transmit-Holding-Register-Empty bit before each write --
-// DCDart has no bitwise AND operator yet (DCDART_SPEC.md's own "Cut"
-// list), so a real "wait until ready" check isn't expressible. The
-// message below is 15 bytes, safely under the 16550's 16-byte TX FIFO
-// (enabled by the init sequence), so every byte is queued in one shot
-// without overflow -- fragile for a longer message, fine for M0.
+// THE PRELUDE IMPORT GOES THROUGH `core/build/dcdart`, WHICH IS A SYMLINK TO
+// $DCDART_HOME THAT `core/scripts/build-kernel.sh` CREATES ON EVERY BUILD.
+// Do not "simplify" this back to a path that names DCDart directly (ADR-0043).
 //
-// Import path assumes the sibling-checkout convention (../../../DCDart)
-// documented in core/README.md -- same "only works from this exact
-// layout" limitation DCDart's own dcc/README.md already accepts for
-// itself (no real library resolver exists yet on either side).
-import '../../../DCDart/core/runtime/dc-core-bare/prelude.dart';
+// `dcc` decides which annotations are `@bare`/`@extern`/`@rodata` by comparing
+// the annotation class's enclosing-library URI against ONE prelude URI it
+// computes for itself, as `Platform.script.resolve('../../runtime/dc-core-bare/
+// prelude.dart')` (DCDart core/dcc/lib/pipeline.dart:165). That comparison is
+// exact URI equality on a LEXICALLY normalised absolute path -- `..` segments
+// are folded, symlinks are NOT resolved on either side. So this import has to
+// produce, character for character, the same absolute path dcc derives from
+// wherever it was invoked from. If it does not, every annotation in this file
+// silently stops counting and the build fails with
+// `no @bare top-level function found in kmain.dart` -- an error that reads as a
+// broken compiler and has already cost one full misdiagnosis.
+//
+// Routing BOTH through `core/build/dcdart` is what makes them agree by
+// construction rather than by convention: build-kernel.sh invokes
+// `dart core/build/dcdart/core/dcc/bin/dcc.dart`, so dcc's own prelude URI is
+// `core/build/dcdart/core/runtime/dc-core-bare/prelude.dart` -- the exact path
+// this line resolves to, for ANY $DCDART_HOME, at any real path, symlinked or
+// not. The old `../../../DCDart/...` hard-coded a second, independent answer to
+// "which DCDart", which is why it only ever worked in one checkout layout.
+//
+// See known-gaps GAP-0003. The underlying gap -- that DCDart has no library
+// resolution and no way to be TOLD where its prelude is -- is still open, and
+// still DCDart's to fix.
+import '../build/dcdart/core/runtime/dc-core-bare/prelude.dart';
 
+part 'uart.dart';
+part 'multiboot.dart';
+part 'interrupts.dart';
+part 'vga.dart';
+part 'keyboard.dart';
+part 'shell.dart';
+part 'pci.dart';
+part 'fb.dart';
+part 'ata.dart';
+part 'pmm.dart';
+part 'vm.dart';
+part 'user.dart';
+part 'elf.dart';
+part 'proc.dart';
+part 'heap.dart';
+part 'fat.dart';
+part 'file.dart';
+part 'args.dart';
+// M20 (ADR-0027): the IPC channel block. SECOND-TO-LAST in `.bss`, and it was
+// last until S0 landed after it. This file declares a `@bss` block, and every
+// harness from M2 onward measures "the donated bytes from MY block to the end of
+// `.bss`" -- so each older harness subtracts the newer blocks first, exactly as
+// M14, M15, M16 and M19 each were subtracted in turn.
+// (The block's NAME is deliberately not written here: `m20-ipc/run.sh` greps
+// core/kernel/ for it and requires chan.dart to be the only file that says it,
+// which is ADR-0011 s0's seam discipline made mechanical.)
+part 'chan.dart';
+
+// D1 (ADR-0042): the PS/2 mouse. SECOND-TO-LAST in `.bss`, immediately before
+// S0's block, for the reason chan.dart's comment above gives and ADR-0033 s6.4
+// spells out: every harness from M2 onward measures "the donated bytes from MY
+// block to the end of `.bss`", so a new block subtracts after S0's and before
+// M20's, and the previously-second-to-last block's own measurement moves by
+// exactly this block's size.
+part 'mouse.dart';
+
+// S0 (ADR-0033) -- `ioctl`, syscall 12, and the device namespace.
+//
+// **LAST ON PURPOSE.** ADR-0031 s4.3 rule 5 requires the ioctl bounce buffer to
+// be the last thing in `.bss`, so that every existing harness's "bytes from my
+// block to the end" arithmetic (ADR-0021) is unchanged by this file existing.
+// `tests/conformance/drm-abi/run.sh` reads `core/build/kernel.map` and CHECKS
+// that ordering rather than trusting this comment.
+//
+// IT STAYS LAST ACROSS THIS MERGE, and M20's block above yields to it. ADR-0033
+// s6.4 already recorded why last is necessary but not sufficient -- the
+// previously-last block's own to-the-end measurement is exactly what a new block
+// after it changes -- and chan.dart is now that previously-last block: its
+// measured 2624 becomes 3136 once this block's 512 sits behind it, in every
+// harness that subtracts it.
+part 'ioctl.dart';
+
+// M21 (ADR-0041) -- shared memory regions and capability transfer.
+//
+// **LAST, AND S0's BLOCK YIELDS THE POSITION IT HELD.** ADR-0033 s6.4 stated
+// the rule this file is the third instance of: "last is necessary but not
+// sufficient" -- the block that WAS last has a to-the-end measurement of its
+// own, and a new block after it changes exactly that one. So S0's
+// measured 512 becomes 4800 in every harness that subtracts it, exactly as M20's
+// block went from 2624 to 3136 when `ioctl.dart` landed behind it.
+//
+// (M20's block is referred to by MILESTONE and not by NAME on purpose:
+// `m20-ipc/run.sh` greps `core/kernel/` for that symbol and requires `chan.dart`
+// to be the only file that says it, which is ADR-0011 s0's seam discipline made
+// mechanical. The same rule applies to this block's own name, which is why the
+// paragraph above does not spell it either.)
+//
+// ADR-0031 s4.3 rule 5's REASON -- that no EARLIER block's arithmetic should
+// move -- is unchanged by this: the bounce buffer is still after every block
+// that existed when that rule was written, and this block is after it.
+// `m21-shmem/run.sh` and `drm-abi/run.sh` both read `core/build/kernel.map` and
+// check the ordering rather than trusting this comment.
+part 'shm.dart';
+
+/// Kernel entry point.
+///
+/// [mbInfo] is the Multiboot1 information-structure pointer the loader left
+/// in EBX. boot.S stashes it at `_start` and moves it into EDI immediately
+/// before this call, so it arrives as the first System V AMD64 integer
+/// argument (RDI), zero-extended from the 32-bit value -- an ordinary C-ABI
+/// argument, needing nothing new from DCDart.
+///
+/// Serial output contract, asserted byte-for-byte by three harnesses:
+///
+///   line 1        `OSCORTEX M0 OK`      -- tests/conformance/m0-boot/run.sh
+///                                          asserts EXACTLY this first line
+///   `MB ...`      Multiboot report      -- tests/conformance/mb-info/run.sh
+///                                          asserts everything up to `MB END`
+///   `M1 ...`      interrupts report     -- tests/conformance/m1-interrupts/
+///                                          run.sh asserts the WHOLE capture
+///
+/// This function never returns. It ends in a deliberate fault whose handler
+/// halts -- see the end of the body.
 @bare
-void kmain() {
-  // --- COM1 (0x3F8) init -- identical sequence to core/examples/m2-port/
-  // port_io.dart's initCom1() in the DCDart repo, reused rather than
-  // reinvented.
-  Port.outb(u16(0x3F9), u8(0x00)); // disable interrupts
-  Port.outb(u16(0x3FB), u8(0x80)); // enable DLAB (divisor-latch access)
-  Port.outb(u16(0x3F8), u8(0x03)); // divisor low byte (38400 baud)
-  Port.outb(u16(0x3F9), u8(0x00)); // divisor high byte
-  Port.outb(u16(0x3FB), u8(0x03)); // 8 bits, no parity, one stop bit
-  Port.outb(u16(0x3FA), u8(0xC7)); // enable FIFO, clear, 14-byte threshold
-  Port.outb(u16(0x3FC), u8(0x0B)); // IRQs enabled, RTS/DSR set
+void kmain(u64 mbInfo) {
+  // The VGA console FIRST, before anything can print. Two reasons, and the
+  // second one is a correctness requirement rather than an ordering
+  // preference:
+  //
+  //   1. every byte printed from here on is mirrored to the screen, so the
+  //      screen has to exist before the first byte;
+  //   2. the console cursor lives in `core/boot/kdata.S`'s `.bss`, nothing in
+  //      this kernel zeroes `.bss`, and a garbage cursor would scatter stores
+  //      across memory at `0xB8000 + 2 * garbage`. vgaInit() is what gives it
+  //      a known value.
+  //
+  // It prints nothing itself, so M0's banner is still the first byte on COM1.
+  vgaInit();
 
-  // --- Proof of life: "OSCORTEX M0 OK\n" (15 bytes), one Port.outb per
-  // byte -- see core/tests/conformance/m0-boot/run.sh for what asserts
-  // against this exact sequence.
-  Port.outb(u16(0x3F8), u8(0x4F)); // 'O'
-  Port.outb(u16(0x3F8), u8(0x53)); // 'S'
-  Port.outb(u16(0x3F8), u8(0x43)); // 'C'
-  Port.outb(u16(0x3F8), u8(0x4F)); // 'O'
-  Port.outb(u16(0x3F8), u8(0x52)); // 'R'
-  Port.outb(u16(0x3F8), u8(0x54)); // 'T'
-  Port.outb(u16(0x3F8), u8(0x45)); // 'E'
-  Port.outb(u16(0x3F8), u8(0x58)); // 'X'
-  Port.outb(u16(0x3F8), u8(0x20)); // ' '
-  Port.outb(u16(0x3F8), u8(0x4D)); // 'M'
-  Port.outb(u16(0x3F8), u8(0x30)); // '0'
-  Port.outb(u16(0x3F8), u8(0x20)); // ' '
-  Port.outb(u16(0x3F8), u8(0x4F)); // 'O'
-  Port.outb(u16(0x3F8), u8(0x4B)); // 'K'
-  Port.outb(u16(0x3F8), u8(0x0A)); // '\n'
+  // M3: the same argument, for the same reason. `shellInit` gives every word
+  // of the shell's donated `.bss` (core/boot/kdata.S) a known value -- a
+  // garbage line length would make the first keystroke store hundreds of bytes
+  // past the end of a 256-byte buffer, and a garbage 0xE0-prefix flag would
+  // swallow the first real key. It also stashes [mbInfo], which is the only
+  // reason the `mem` command can re-walk the memory map long after this
+  // function's frame is gone. Prints nothing.
+  shellInit(mbInfo);
+
+  // M5: the framebuffer console's donated state, for the third time the same
+  // argument. A garbage base address would make the first glyph blit scatter
+  // 32-bit stores at an address nothing chose; zero is the "no framebuffer"
+  // value every writer checks. Prints nothing and touches no hardware -- the
+  // mode is not set until the `fb` command asks for it.
+  fbInit();
+
+  // M7: the physical memory manager. Builds the frame bitmap out of the
+  // Multiboot memory map -- the map this kernel has read and thrown away on
+  // every boot since M0 now becomes 4KiB of retained state instead of a
+  // printed report.
+  //
+  // ORDER IS LOAD-BEARING TWICE OVER, and neither reason is style:
+  //
+  //   * AFTER shellInit(), because pmmInit() reads the Multiboot pointer out
+  //     of the word shellInit() stashes it in. Called before it, the allocator
+  //     would parse whatever `.bss` happened to contain and mark a bitmap from
+  //     it.
+  //   * BEFORE the first byte of output, because it prints NOTHING and must
+  //     keep printing nothing: `tests/conformance/m1-interrupts/run.sh`
+  //     asserts the ENTIRE 544-byte serial capture, and one diagnostic line
+  //     here would break a green milestone. The allocator is reported by the
+  //     `frames` command, from a prompt, not at boot.
+  //
+  // It is also the fourth time the same `.bss`-is-not-zeroed argument applies:
+  // the bitmap starts as garbage and pmmInit() fills it with 0xFF before it
+  // frees anything, so a frame is only ever free because the loader's memory
+  // map said so.
+  pmmInit();
+
+  // M8: the kernel's real address space. Builds a 4-level page table out of six
+  // frames from the allocator above, with per-section permissions and NX, and
+  // installs it in CR3 -- replacing the flat, writable, executable 2MiB
+  // identity map `boot.S` has been running on since M0 (docs/known-gaps.md
+  // GAP-0050).
+  //
+  // ORDER IS LOAD-BEARING THREE TIMES OVER:
+  //
+  //   * AFTER pmmInit(), because the page tables come from allocFrame(). This
+  //     is the first thing in the kernel that ALLOCATES rather than merely
+  //     addressing memory it was compiled to know about, and it is why M7 was
+  //     a prerequisite rather than a neighbour.
+  //   * AFTER fbInit() and shellInit() for no reason of its own, but BEFORE
+  //     anything can fault: it maps the pages every one of those subsystems
+  //     already wrote to, and a mistake in it is a triple fault rather than a
+  //     diagnostic. vmSelfCheck() walks the new tables for every address the
+  //     kernel is standing on and REFUSES to switch if any of them is wrong,
+  //     leaving the machine on boot.S's bootstrap tables.
+  //   * BEFORE the first byte of output, because it prints NOTHING and must
+  //     keep printing nothing -- `tests/conformance/m1-interrupts/run.sh`
+  //     asserts the ENTIRE 544-byte serial capture. The address space is
+  //     reported by `vm`, from a prompt.
+  //
+  // It also re-takes the allocator's baseline, because six frames are now
+  // permanently spoken for and that is the address space rather than a leak.
+  vmInit();
+
+  // M9: the ring-3 subsystem's donated state. Sixteen words, and the same
+  // `.bss`-is-not-zeroed argument as every init above it -- with one addition
+  // that makes it the earliest of them in spirit if not in order.
+  //
+  // `userOnFault` reads the "a payload is live" word on EVERY FAULT THIS KERNEL
+  // TAKES, including M1's own deliberate #UD a few dozen lines below. A garbage
+  // word would make that fault try to tear down a payload that has never
+  // existed: unmapping and freeing two frame numbers read out of `.bss` litter,
+  // in the middle of diagnosing something else. So this runs before anything can
+  // fault, which means before `uartInit()` and therefore before the first byte
+  // of output -- and it prints nothing, for the reason pmmInit() and vmInit()
+  // print nothing (`tests/conformance/m1-interrupts/run.sh` asserts the entire
+  // 544-byte capture).
+  //
+  // It does NOT load the task register or touch the IDT. Both of those happen
+  // after `idt_load()` below, so that a malformed TSS descriptor is a reported
+  // #GP instead of a triple fault.
+  userInit();
+
+  // M10: the ELF loader's donated state, and the same argument one more time.
+  // `userOnFault` asks [elfLive] on EVERY fault this kernel takes, so a garbage
+  // word here would make the first fault of the boot -- M1's own deliberate #UD
+  // a few dozen lines below -- try to tear down a program that has never
+  // existed: walking a 2MiB window through a page-directory entry read out of
+  // `.bss` litter and freeing whatever frame numbers it found. Prints nothing,
+  // for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  elfInit();
+
+  // M11: the process table's donated state, and the same argument for the sixth
+  // time. `userOnFault` asks [procLive] on EVERY fault this kernel takes --
+  // including M1's own deliberate #UD a few dozen lines below -- so a garbage
+  // header word would make the first fault of the boot try to tear down four
+  // address spaces read out of `.bss` litter, freeing whatever frame numbers it
+  // found while diagnosing something else.
+  //
+  // It also has a reason of its own that no init above it has: it writes a legal
+  // MXCSR image into each of the four FXSAVE areas. `fxrstor` raises #GP if the
+  // MXCSR field has a reserved bit set, so an area left as `.bss` litter is a
+  // general protection fault INSIDE A CONTEXT SWITCH -- and the fault handler
+  // would then be running with the FPU half-restored.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  procInit();
+
+  // M14: the filesystem's donated state, and the same argument for the seventh
+  // time. `elfReadSectors` asks [fatOpenActive] on EVERY sector of EVERY `run`
+  // -- including `run <lba>`, which has nothing to do with a filesystem -- so a
+  // garbage word there would send the loader's reads through a cluster-chain
+  // array full of `.bss` litter and produce a program assembled out of whatever
+  // sectors those numbers happened to name.
+  //
+  // Mounting is NOT done here. It is one disk read, it can fail, and a kernel
+  // that mounted at boot would either print a diagnostic into the middle of
+  // `tests/conformance/m1-interrupts`' 544-byte golden or swallow one. Every
+  // filesystem command mounts for itself; [fatMount] is idempotent and cheap.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  fatInit();
+
+  // M15: the file-descriptor tables, and the same argument for the eighth time.
+  // [fileExitReport] reads the "has anything ever opened a file" word on EVERY
+  // exit from ring 3 -- including the exits of m10's, m11's, m12's, m13's and
+  // m14's programs, none of which has ever called `open` -- so a garbage word
+  // there would print a line into the middle of five byte-exact goldens.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  fileInit();
+
+  // M20: the channel table, and the same argument for the ninth time. The
+  // endpoint-release path is reached from [procCleanup] on EVERY process
+  // teardown this kernel performs -- including those of m11's, m18's and m19's
+  // programs, none of which has ever opened a channel. A garbage owner word
+  // would make the first of those print a release line into the middle of a
+  // byte-exact golden, and a garbage state word would make it wipe a port record
+  // while a live process was using it. [chanExitReport] reads the "has anything
+  // ever opened a channel" word on every exit from ring 3 for the same reason.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  chanInit();
+  shmInit();
+
+  // D1: the mouse driver's state, and the same argument for the tenth time --
+  // with a sharper edge than most of them, because this block is read by an
+  // INTERRUPT HANDLER rather than by a command. A garbage byte index would make
+  // the first mouse byte of the boot land in a slot the decoder then treats as a
+  // finished packet, and a garbage packet size would read a three-byte device's
+  // stream four bytes at a time, which desynchronises permanently on the first
+  // packet and never recovers. It also sets the packet size to its UNDETECTED
+  // default of 3; the 4 is only ever written by a device that answered 0x03.
+  //
+  // It touches no hardware -- the auxiliary port is not enabled until
+  // `mouseEnable()`, from `m2Enter()`, alongside the keyboard's own unmask.
+  //
+  // Prints nothing, for the reason every init above it prints nothing
+  // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
+  // capture).
+  mouseInit();
+
+  uartInit();
+  uartPutBanner(); // includes its own trailing newline (a @rodata table now)
+
+  // ---- M0's follow-up work: what the loader told us about memory ----
+  mbReport(mbInfo);
+
+  // ---- M1: interrupts ----
+  //
+  // Ordering here is the whole protocol, and every step depends on the one
+  // before it:
+  //
+  //   1. fill the IDT           -- gates must be valid BEFORE lidt, or the
+  //                                CPU is armed with 256 gates pointing at
+  //                                whatever .bss happened to contain
+  //   2. lidt                   -- arms them
+  //   3. int3                   -- delivery self-test, with interrupts still
+  //                                masked so nothing else can interleave
+  //   4. remap the PIC          -- BEFORE sti, or IRQ0 arrives on vector 8
+  //                                and is indistinguishable from #DF
+  //   5. program the PIT        -- starts the timer counting down
+  //   6. sti                    -- only now can an IRQ actually be delivered
+  final u64 installed = idtInstallAll();
+  m1ReportIdt(installed);
+
+  // M9: gate 0x80 is rewritten with DPL 3, so that -- and only that -- one
+  // vector can be reached by `int` from ring 3. A second pass rather than a
+  // special case inside the loop above, so `M1 IDT 0100` keeps meaning "the
+  // loop installed 256 gates" exactly as it always has. Prints nothing.
+  idtSetUserGate();
+
+  idt_load();
+  debug_break(); // -> vector 3 -> isrDispatch -> "M1 EXC 03 ..." -> iretq
+
+  picRemap();
+  pitInit();
+  interrupts_enable();
+
+  // ---- Wait for 100 ticks ----
+  //
+  // The COUNT is the trigger, not a duration, so the output is identical
+  // regardless of how fast the host is. tick_count() is an @extern call
+  // rather than a Pointer<u64> load precisely so this loop re-reads memory
+  // every iteration -- see interrupts.dart's declaration for why a plain
+  // load would be hoistable and would spin forever.
+  u64 ticks = tick_count();
+  while (ticks < u64(100)) {
+    ticks = tick_count();
+  }
+  m1ReportTicks(ticks);
+
+  // ---- The deliberate fault: M1's actual point ----
+  //
+  // Mask every IRQ and clear IF first, so a tick cannot arrive mid-diagnostic
+  // and interleave output into the middle of a line.
+  picMaskAll();
+  interrupts_disable();
+
+  // `ticks` is >= 100 and came from an opaque extern call, so adding
+  // 0xFFFFFFFFFFFFFFFF to it overflows a u64 for certain. It is spelled this
+  // way ON PURPOSE rather than as a constant expression: DCDart's arithmetic
+  // traps on overflow (DCDART_SPEC §4.1) by emitting a real conditional
+  // `ud2`, and with two constants LLVM would be free to fold the whole thing
+  // at compile time -- potentially into `unreachable`, which would delete the
+  // surrounding code rather than trap at runtime. An opaque operand forces a
+  // genuine runtime check. Verified by disassembly, not assumed.
+  //
+  // The resulting #UD (vector 6) lands in isrDispatch, which prints
+  // "M1 FAULT 06 ...", then "M1 END", then halts. At M0 this same fault would
+  // have triple-faulted the VM and printed nothing at all -- that difference
+  // IS the milestone.
+  final u64 boom = ticks + u64(0xFFFFFFFFFFFFFFFF);
+
+  // Not reached. Consuming `boom` keeps the overflowing add from being dead
+  // code that a future optimizer could drop.
+  uartPutHex(boom, u64(16));
+  halt_forever();
 }

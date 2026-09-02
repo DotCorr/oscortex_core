@@ -1,0 +1,176 @@
+OSCORTEX M0 OK
+MB FLAGS 0000024F
+MB LOW 0000027F
+MB UPP 0001FB80
+MB MAP 000000A8 00009000
+MB E 0000000000000000 000000000009FC00 00000001
+MB E 000000000009FC00 0000000000000400 00000002
+MB E 00000000000F0000 0000000000010000 00000002
+MB E 0000000000100000 0000000007EE0000 00000001
+MB E 0000000007FE0000 0000000000020000 00000002
+MB E 00000000FFFC0000 0000000000040000 00000002
+MB E 000000FD00000000 0000000300000000 00000002
+MB END
+M1 IDT 0100
+M1 EXC 03 0000000000000000
+M1 PIC 20
+M1 TICKS 0000000000000064
+M1 FAULT 06 0000000000000000
+M1 END
+disk id
+DISK ID SIG 0000 MODEL QEMU HARDDISK SECTORS 00000080 OK
+oscortex> disk read 0
+DISK READ LBA 00000000
+0000 4F 53 43 4F 52 54 45 58 20 53 45 43 54 4F 52 20
+0010 30 30 30 30 AD B4 BB C2 C9 D0 D7 DE E5 EC F3 FA
+0020 01 08 0F 16 1D 24 2B 32 39 40 47 4E 55 5C 63 6A
+0030 71 78 7F 86 8D 94 9B A2 A9 B0 B7 BE C5 CC D3 DA
+0040 E1 E8 EF F6 FD 04 0B 12 19 20 27 2E 35 3C 43 4A
+0050 51 58 5F 66 6D 74 7B 82 89 90 97 9E A5 AC B3 BA
+0060 C1 C8 CF D6 DD E4 EB F2 F9 00 07 0E 15 1C 23 2A
+0070 31 38 3F 46 4D 54 5B 62 69 70 77 7E 85 8C 93 9A
+0080 A1 A8 AF B6 BD C4 CB D2 D9 E0 E7 EE F5 FC 03 0A
+0090 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65 6C 73 7A
+00A0 81 88 8F 96 9D A4 AB B2 B9 C0 C7 CE D5 DC E3 EA
+00B0 F1 F8 FF 06 0D 14 1B 22 29 30 37 3E 45 4C 53 5A
+00C0 61 68 6F 76 7D 84 8B 92 99 A0 A7 AE B5 BC C3 CA
+00D0 D1 D8 DF E6 ED F4 FB 02 09 10 17 1E 25 2C 33 3A
+00E0 41 48 4F 56 5D 64 6B 72 79 80 87 8E 95 9C A3 AA
+00F0 B1 B8 BF C6 CD D4 DB E2 E9 F0 F7 FE 05 0C 13 1A
+0100 4F 53 43 4F 52 54 45 58 2D 41 54 41 2D 50 49 4F
+0110 2D 53 49 47 4E 41 54 55 52 45 D7 DE E5 EC F3 FA
+0120 01 08 0F 16 1D 24 2B 32 39 40 47 4E 55 5C 63 6A
+0130 71 78 7F 86 8D 94 9B A2 A9 B0 B7 BE C5 CC D3 DA
+0140 E1 E8 EF F6 FD 04 0B 12 19 20 27 2E 35 3C 43 4A
+0150 51 58 5F 66 6D 74 7B 82 89 90 97 9E A5 AC B3 BA
+0160 C1 C8 CF D6 DD E4 EB F2 F9 00 07 0E 15 1C 23 2A
+0170 31 38 3F 46 4D 54 5B 62 69 70 77 7E 85 8C 93 9A
+0180 A1 A8 AF B6 BD C4 CB D2 D9 E0 E7 EE F5 FC 03 0A
+0190 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65 6C 73 7A
+01A0 81 88 8F 96 9D A4 AB B2 B9 C0 C7 CE D5 DC E3 EA
+01B0 F1 F8 FF 06 0D 14 1B 22 29 30 37 3E 45 4C 53 5A
+01C0 61 68 6F 76 7D 84 8B 92 99 A0 A7 AE B5 BC C3 CA
+01D0 D1 D8 DF E6 ED F4 FB 02 09 10 17 1E 25 2C 33 3A
+01E0 41 48 4F 56 5D 64 6B 72 79 80 87 8E 95 9C A3 AA
+01F0 B1 B8 BF C6 CD D4 DB E2 E9 F0 F7 FE 05 0C 55 AA
+DISK READ END
+oscortex> disk read 2a
+DISK READ LBA 0000002A
+0000 4F 53 43 4F 52 54 45 58 20 53 45 43 54 4F 52 20
+0010 30 30 32 41 C3 CA D1 D8 DF E6 ED F4 FB 02 09 10
+0020 17 1E 25 2C 33 3A 41 48 4F 56 5D 64 6B 72 79 80
+0030 87 8E 95 9C A3 AA B1 B8 BF C6 CD D4 DB E2 E9 F0
+0040 F7 FE 05 0C 13 1A 21 28 2F 36 3D 44 4B 52 59 60
+0050 67 6E 75 7C 83 8A 91 98 9F A6 AD B4 BB C2 C9 D0
+0060 D7 DE E5 EC F3 FA 01 08 0F 16 1D 24 2B 32 39 40
+0070 47 4E 55 5C 63 6A 71 78 7F 86 8D 94 9B A2 A9 B0
+0080 B7 BE C5 CC D3 DA E1 E8 EF F6 FD 04 0B 12 19 20
+0090 27 2E 35 3C 43 4A 51 58 5F 66 6D 74 7B 82 89 90
+00A0 97 9E A5 AC B3 BA C1 C8 CF D6 DD E4 EB F2 F9 00
+00B0 07 0E 15 1C 23 2A 31 38 3F 46 4D 54 5B 62 69 70
+00C0 77 7E 85 8C 93 9A A1 A8 AF B6 BD C4 CB D2 D9 E0
+00D0 E7 EE F5 FC 03 0A 11 18 1F 26 2D 34 3B 42 49 50
+00E0 57 5E 65 6C 73 7A 81 88 8F 96 9D A4 AB B2 B9 C0
+00F0 C7 CE D5 DC E3 EA F1 F8 FF 06 0D 14 1B 22 29 30
+0100 37 3E 45 4C 53 5A 61 68 6F 76 7D 84 8B 92 99 A0
+0110 A7 AE B5 BC C3 CA D1 D8 DF E6 ED F4 FB 02 09 10
+0120 17 1E 25 2C 33 3A 41 48 4F 56 5D 64 6B 72 79 80
+0130 87 8E 95 9C A3 AA B1 B8 BF C6 CD D4 DB E2 E9 F0
+0140 F7 FE 05 0C 13 1A 21 28 2F 36 3D 44 4B 52 59 60
+0150 67 6E 75 7C 83 8A 91 98 9F A6 AD B4 BB C2 C9 D0
+0160 D7 DE E5 EC F3 FA 01 08 0F 16 1D 24 2B 32 39 40
+0170 47 4E 55 5C 63 6A 71 78 7F 86 8D 94 9B A2 A9 B0
+0180 B7 BE C5 CC D3 DA E1 E8 EF F6 FD 04 0B 12 19 20
+0190 27 2E 35 3C 43 4A 51 58 5F 66 6D 74 7B 82 89 90
+01A0 97 9E A5 AC B3 BA C1 C8 CF D6 DD E4 EB F2 F9 00
+01B0 07 0E 15 1C 23 2A 31 38 3F 46 4D 54 5B 62 69 70
+01C0 77 7E 85 8C 93 9A A1 A8 AF B6 BD C4 CB D2 D9 E0
+01D0 E7 EE F5 FC 03 0A 11 18 1F 26 2D 34 3B 42 49 50
+01E0 57 5E 65 6C 73 7A 81 88 8F 96 9D A4 AB B2 B9 C0
+01F0 C7 CE D5 DC E3 EA F1 F8 FF 06 0D 14 1B 22 29 30
+DISK READ END
+oscortex> crash ud
+CRASH: executing an invalid opcode (#UD)
+FAULT 06 ERR 0000000000000000 OP 0F0B
+FAULT RECOVERED 0001 -- faulting computation abandoned, shell resumed
+oscortex> disk id
+DISK ID SIG 0000 MODEL QEMU HARDDISK SECTORS 00000080 OK
+oscortex> help
+commands:
+  help          this list
+  clear         clear the screen, home the cursor
+  mem           multiboot memory map + total usable RAM
+  ticks         prove the PIT tick counter advances
+  cpu           CPUID vendor, brand and leaf limits
+  pci           enumerate the PCI bus
+  fb            framebuffer console: BAR0, mode 0320x0258x20 hex = 800x600x32
+  disk id       ATA PIO IDENTIFY: model and sector count
+  disk read <n> read one 512-byte sector, hexdumped as it arrives
+  frames        physical frame allocator: totals and its own footprint
+  frames test   allocate 64 frames, prove them distinct, give them back
+  frames drain  allocate every free frame, then prove the next one fails
+  frames leave  <n>: allocate until exactly <n> frames are free
+  frames refill free every frame drain took, back to the baseline count
+  alloc         allocate one 4KiB frame, print its physical address
+  free <addr>   free one frame by physical address
+  vm            the kernel's own page tables: sizes and permissions
+  vmtest <what> prove W^X: ro nx must fault, rw x must not
+  user          run a ring-3 payload: syscall in, syscall out
+  user gp       ring 3 executes mov %cr3 -- must #GP
+  user pf       ring 3 stores into kernel memory -- must #PF USER
+  user badint   ring 3 uses a DPL-0 gate -- must #GP
+  user badptr   ring 3 hands write a kernel pointer -- refused
+  user hold     run a ring-3 payload that never exits (last command)
+  user pages    TSS, gate DPLs, and how many pages ring 3 can reach
+  run <lba>     load an ELF program from that disk sector and run it
+  run <name>    load an ELF program from the filesystem by name and run it
+                the words after <name> become the program's argv (at most 8)
+  fs            FAT16: mount the primary master and report its geometry
+  ls            list the root directory: name, size, first cluster
+  cat <name>    print a file, following its FAT cluster chain
+  proc          the process table, the CR4 SSE bits, and each slot
+  proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
+  proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
+  proc coop     <lbaA> <lbaB>: cooperative -- only `yield` switches
+  proc spin     <lbaA> <lbaB> <quanta>: preemptive, ends after <quanta>
+  proc sched    the scheduler's policy, quantum and per-slot counters
+  crash ud      fault on purpose (#UD) and come back
+  crash div     fault on purpose (#DE) and come back
+  echo <rest>   print the rest of the line
+oscortex> clear
+oscortex> disk read 5
+DISK READ LBA 00000005
+0000 4F 53 43 4F 52 54 45 58 20 53 45 43 54 4F 52 20
+0010 30 30 30 35 48 4F 56 5D 64 6B 72 79 80 87 8E 95
+0020 9C A3 AA B1 B8 BF C6 CD D4 DB E2 E9 F0 F7 FE 05
+0030 0C 13 1A 21 28 2F 36 3D 44 4B 52 59 60 67 6E 75
+0040 7C 83 8A 91 98 9F A6 AD B4 BB C2 C9 D0 D7 DE E5
+0050 EC F3 FA 01 08 0F 16 1D 24 2B 32 39 40 47 4E 55
+0060 5C 63 6A 71 78 7F 86 8D 94 9B A2 A9 B0 B7 BE C5
+0070 CC D3 DA E1 E8 EF F6 FD 04 0B 12 19 20 27 2E 35
+0080 3C 43 4A 51 58 5F 66 6D 74 7B 82 89 90 97 9E A5
+0090 AC B3 BA C1 C8 CF D6 DD E4 EB F2 F9 00 07 0E 15
+00A0 1C 23 2A 31 38 3F 46 4D 54 5B 62 69 70 77 7E 85
+00B0 8C 93 9A A1 A8 AF B6 BD C4 CB D2 D9 E0 E7 EE F5
+00C0 FC 03 0A 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65
+00D0 6C 73 7A 81 88 8F 96 9D A4 AB B2 B9 C0 C7 CE D5
+00E0 DC E3 EA F1 F8 FF 06 0D 14 1B 22 29 30 37 3E 45
+00F0 4C 53 5A 61 68 6F 76 7D 84 8B 92 99 A0 A7 AE B5
+0100 BC C3 CA D1 D8 DF E6 ED F4 FB 02 09 10 17 1E 25
+0110 2C 33 3A 41 48 4F 56 5D 64 6B 72 79 80 87 8E 95
+0120 9C A3 AA B1 B8 BF C6 CD D4 DB E2 E9 F0 F7 FE 05
+0130 0C 13 1A 21 28 2F 36 3D 44 4B 52 59 60 67 6E 75
+0140 7C 83 8A 91 98 9F A6 AD B4 BB C2 C9 D0 D7 DE E5
+0150 EC F3 FA 01 08 0F 16 1D 24 2B 32 39 40 47 4E 55
+0160 5C 63 6A 71 78 7F 86 8D 94 9B A2 A9 B0 B7 BE C5
+0170 CC D3 DA E1 E8 EF F6 FD 04 0B 12 19 20 27 2E 35
+0180 3C 43 4A 51 58 5F 66 6D 74 7B 82 89 90 97 9E A5
+0190 AC B3 BA C1 C8 CF D6 DD E4 EB F2 F9 00 07 0E 15
+01A0 1C 23 2A 31 38 3F 46 4D 54 5B 62 69 70 77 7E 85
+01B0 8C 93 9A A1 A8 AF B6 BD C4 CB D2 D9 E0 E7 EE F5
+01C0 FC 03 0A 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65
+01D0 6C 73 7A 81 88 8F 96 9D A4 AB B2 B9 C0 C7 CE D5
+01E0 DC E3 EA F1 F8 FF 06 0D 14 1B 22 29 30 37 3E 45
+01F0 4C 53 5A 61 68 6F 76 7D 84 8B 92 99 A0 A7 AE B5
+DISK READ END
+oscortex> 

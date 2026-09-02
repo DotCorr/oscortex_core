@@ -1,0 +1,25 @@
+  vm            the kernel's own page tables: sizes and permissions
+  vmtest <what> prove W^X: ro nx must fault, rw x must not
+  user          run a ring-3 payload: syscall in, syscall out
+  user gp       ring 3 executes mov %cr3 -- must #GP
+  user pf       ring 3 stores into kernel memory -- must #PF USER
+  user badint   ring 3 uses a DPL-0 gate -- must #GP
+  user badptr   ring 3 hands write a kernel pointer -- refused
+  user hold     run a ring-3 payload that never exits (last command)
+  user pages    TSS, gate DPLs, and how many pages ring 3 can reach
+  run <lba>     load an ELF program from that disk sector and run it
+  run <name>    load an ELF program from the filesystem by name and run it
+                the words after <name> become the program's argv (at most 8)
+  fs            FAT16: mount the primary master and report its geometry
+  ls            list the root directory: name, size, first cluster
+  cat <name>    print a file, following its FAT cluster chain
+  proc          the process table, the CR4 SSE bits, and each slot
+  proc run      <lbaA> <lbaB>: two processes, two address spaces, yield
+  proc cross    <lbaA> <lbaB>: the same, but B reads A's page -- must #PF
+  proc coop     <lbaA> <lbaB>: cooperative -- only `yield` switches
+  proc spin     <lbaA> <lbaB> <quanta>: preemptive, ends after <quanta>
+  proc sched    the scheduler's policy, quantum and per-slot counters
+  crash ud      fault on purpose (#UD) and come back
+  crash div     fault on purpose (#DE) and come back
+  echo <rest>   print the rest of the line
+oscortex>
