@@ -50,6 +50,22 @@ part 'keyboard.dart';
 part 'shell.dart';
 part 'pci.dart';
 part 'fb.dart';
+// PORT2 (ADR-0060 probe, ADR-0061 map+paint), the scanout fallback
+// (ADR-0064), and session chrome on that aperture (ADR-0141). GOP /
+// Multiboot1 framebuffer tag. NO `@bss` — the four numbers print
+// from locals; the page directory is one `allocFrame` taken only
+// when the tag exists and the map succeeds. Not last: D7 owns that.
+// Sits next to fb.dart because `shellFb` tries this first.
+part 'gop.dart';
+// G0 (ADR-0059) + G1 (ADR-0065) + G2 (ADR-0067) + G3 (ADR-0074)
+// + G4 (ADR-0079) + G5 (ADR-0084) + G6 (ADR-0086) + G7 (ADR-0091)
+// + G8 (ADR-0093). VirtIO-GPU probe, bus-master, DRIVER_OK, one
+// control queue, GET_DISPLAY_INFO, one SET_SCANOUT pixel, console
+// on that backing, damage/scroll, virtio-gpu-pci with no VGA, then
+// two-resource SET_SCANOUT flip.
+// NO `@bss` — frames come from allocFrame(), numbers print from
+// locals. Not last: D7 owns that.
+part 'virtgpu.dart';
 part 'ata.dart';
 part 'pmm.dart';
 part 'vm.dart';
@@ -116,14 +132,116 @@ part 'ioctl.dart';
 // check the ordering rather than trusting this comment.
 part 'shm.dart';
 
-// D4/D5 (ADR-0050, ADR-0051). THE COMPOSITOR, and it is LAST for the reason the
-// block above it was last until now: `wmStore` is `.bss`, ADR-0031 s4.3 rule 5
-// asks for the newest block to be last so no earlier block's arithmetic moves,
-// and ADR-0033 s6.3(a) corrected that wording to "last is necessary but not
-// sufficient". This is the fourth block to arrive under that rule.
-// `d2-compositor/run.sh` reads `core/build/kernel.map` and checks the ordering
+// D4/D5 (ADR-0050, ADR-0051). THE COMPOSITOR. It was last until D2's queue
+// landed behind it. `wmStore` is `.bss`; ADR-0031 s4.3 rule 5 asks for the
+// newest block to be last so no earlier block's arithmetic moves, and
+// ADR-0033 s6.3(a) corrected that wording to "last is necessary but not
+// sufficient". This was the fourth block to arrive under that rule.
+// `d2-compositor/run.sh` reads the object file and checks the ordering
 // rather than trusting this comment, exactly as `m21-shmem/run.sh` does.
 part 'wm.dart';
+
+// ADR-0056. Compositor chrome. No `@bss` -- the on-flag is a spare wmStore
+// word -- so this part does not move anyone's to-the-end arithmetic.
+// Part order from here is wm, wmchrome, wmpop, kbdq, nic, wmevent last.
+part 'wmchrome.dart';
+
+// ADR-0106. DE chrome (close/min/start/panel). No `@bss` -- level and
+// the launch-index cache live in the existing chrome word. Not last.
+part 'wmde.dart';
+
+// ADR-0070. Right-click popover. No `@bss` -- visibility and origin live
+// in spare wmStore words 21 and 22. Not last: D7 owns that.
+part 'wmpop.dart';
+
+// ADR-0104. osgfx software gate. No `@bss` -- flag is spare word 23.
+// Mailbox is .osgfx_cmd at kernel_data_start. Not last: D7 owns that.
+part 'wmgfx.dart';
+
+// ADR-0183..0186. Clipboard / subsurfaces / scale / multi-seat on
+// syscall 23. No `@bss` — clip in spare shm meta; parent/scale/seat
+// pack into existing wm words. Not last: D7 owns that.
+part 'wmext.dart';
+
+// Measurement only: `wm fps` times the compose stages against the PIT.
+// No `@bss`, no `@rodata` a golden reads, nothing on the frame path.
+part 'wmfps.dart';
+
+// ADR-0188 / ADR-0190. Frame clock, desk cache, session restore debt.
+// No `@bss` — state page from allocFrame(). Not last: D7 owns that.
+part 'wmpace.dart';
+part 'virtab.dart';
+
+// D2 (ADR-0054). THE INPUT QUEUE. It was last until D7's click queue
+// landed behind it. `kbdqStore` is `.bss`; nic donates none, so this
+// block still abuts `wmeventStore`. Every harness measures D2 to the
+// next block's START and still reads 288.
+part 'kbdq.dart';
+
+// N0/N1/N2/N3 (ADR-0058, ADR-0063, ADR-0066, ADR-0076). The e1000
+// MAC probe, one TX frame, ARP, and ICMP echo. ZERO donated `.bss`
+// — prints from locals, DMA from `allocFrame()` — so it does not
+// steal last place from D7. `part 'nic.dart'` sits AFTER kbdq and
+// BEFORE wmevent on purpose.
+part 'nic.dart';
+
+// USB0/USB1/USB2 (usb-hid.md, ADR-0068, ADR-0073). xHCI PCI probe,
+// BAR0 cap/op MMIO, and HID→set-1 into kbdq. ZERO donated `.bss` —
+// the feed seam keeps previous-report state in locals. Not last:
+// D7 owns that. A `@bss` here would sit between kbdqStore and
+// wmeventStore.
+part 'usb.dart';
+
+// NVM0–NVM5 (ADR-0071, ADR-0074, ADR-0087, ADR-0088, ADR-0089,
+// ADR-0090). NVMe PCI probe, CAP/VS, Identify, one I/O-queue
+// sector, one write, and FAT through that pair. ZERO donated
+// `.bss` — prints from locals, DMA from `allocFrame()`. Not last:
+// D7 owns that. Helpers stay in nvme.dart (sibling AHCI owns its
+// own find).
+part 'nvme.dart';
+
+// A0 (ADR-0069). AHCI HBA probe: class 01/06/01, BAR5, CAP. ZERO
+// donated `.bss` — prints from locals. Not last: D7 owns that.
+// A second path next to ATA PIO; it does not replace it.
+part 'ahci.dart';
+
+// D7 (ADR-0055). A CLICK REACHES THE CLIENT UNDER THE POINTER, and it
+// is LAST for the reason the block above it was last until now:
+// `wmeventStore` is `.bss`, the newest block goes last so no earlier
+// block's arithmetic moves, and this is the sixth application of
+// ADR-0033 s6.4. `kbdqStore`'s own to-the-end measurement is exactly
+// the one this block changes, which is why every harness now measures
+// D2 to this block's START and still reads 288.
+part 'wmevent.dart';
+
+// USB3 (usb-hid.md, ADR-0085). xHCI transfer ring: port reset, address,
+// GET_DESCRIPTOR / SET_CONFIGURATION / SET_PROTOCOL(0), one interrupt
+// IN, one HID boot report on the wire. ZERO donated `.bss` -- rings
+// come from allocFrame() -- so `wmeventStore` stays last. Appended
+// after D7 on purpose (newest part, no last-bss theft).
+part 'usb3.dart';
+// DE-media (ADR-0116 / ADR-0131 / ADR-0135 / ADR-0143). Hidden
+// `play` fills the decoder mailbox; IRQ0 blits and `wmMediaFill`
+// commits a wmsurface, then a second still. ZERO donated `.bss`.
+// Not last: D7 owns that.
+// Does not name the C module in this file.
+part 'kmedia.dart';
+
+// G10 / VIRGL0 (ADR-0098). VirtIO-GPU 3D: VIRGL feature, CTX_CREATE,
+// SUBMIT_3D, TRANSFER_FROM_HOST_3D. G11 / ADR-0107 appends virtgpuk
+// (osgfx compose → TRANSFER_TO_HOST_3D → SET_SCANOUT). G13 / ADR-0129
+// appends virtgpup: implicit chrome is a virgl GPU CLEAR of desktop
+// + title, not a G11 CPU upload. ZERO donated `.bss`. Last: D7 owns
+// that. Does not rewrite G0–G12.
+part 'virtgpu3d.dart';
+
+// ADR-0140. OTA signed plant on NIC (RX plant + FAT apply).
+// ZERO donated `.bss` — plant buffer from allocFrame(). Not last.
+part 'ota.dart';
+
+// ADR-0145. VirtIO-net second NIC class. ZERO donated `.bss`.
+// Appended after virtgpu3d. Not last-bss theft (none donated).
+part 'virtnet.dart';
 
 /// Kernel entry point.
 ///
@@ -175,6 +293,13 @@ void kmain(u64 mbInfo) {
   // value every writer checks. Prints nothing and touches no hardware -- the
   // mode is not set until the `fb` command asks for it.
   fbInit();
+
+  // G0/G1/G2: VirtIO-GPU probe hook. Prints nothing and programs nothing —
+  // an absent device is a no-op, so d2-compositor / sit-in / every
+  // `-vga std` boot keep the Bochs path. Discovery, bus-master and
+  // DRIVER_OK are the hidden `virtgpu` command, not boot.
+  virtgpuInit();
+  virtgpu3dInit();
 
   // M7: the physical memory manager. Builds the frame bitmap out of the
   // Multiboot memory map -- the map this kernel has read and thrown away on
@@ -326,6 +451,12 @@ void kmain(u64 mbInfo) {
   // asserts the entire 544-byte boot capture.
   wmInit();
 
+  // D7: the per-window click rings, for the same argument [wmInit] makes.
+  // A garbage head/count would turn the first left-press of the boot into
+  // a write off the end of a ring nothing had asked for. Prints nothing --
+  // `m1-interrupts` asserts the entire 544-byte boot capture.
+  wmeventInit();
+
   // D1: the mouse driver's state, and the same argument for the tenth time --
   // with a sharper edge than most of them, because this block is read by an
   // INTERRUPT HANDLER rather than by a command. A garbage byte index would make
@@ -342,6 +473,35 @@ void kmain(u64 mbInfo) {
   // (`tests/conformance/m1-interrupts/run.sh` asserts the entire 544-byte
   // capture).
   mouseInit();
+
+  // N0: no `.bss` to zero. Prints nothing — a boot-time MAC line would
+  // sit in every session golden, because QEMU's default machine already
+  // has an e1000. The print is `nicReport`, from the `nic` command.
+  nicInit();
+
+  // ADR-0145: VirtIO-net class probe. No `.bss`. Prints nothing at
+  // boot — the print is `virtnetReport` from `nic virtio`.
+  virtnetInit();
+
+  // USB0: no `.bss` to zero. Prints nothing — the default machine has
+  // no xHCI, and a boot-time `USB NONE` would sit in every session
+  // golden. The print is `usbReport`, from the hidden `usb` command.
+  usbInit();
+
+  // USB3: no `.bss` to zero. Prints nothing — bring-up is `usb hid`,
+  // not boot. A boot-time transfer would hang every session golden.
+  usb3Init();
+
+  // NVM0: no `.bss` to zero. Prints nothing — the default machine has
+  // no NVMe, and a boot-time `NVME NONE` would sit in every session
+  // golden. The print is `nvmeReport`, from the hidden `nvme` command.
+  nvmeInit();
+
+  // A0/A1: no `.bss` to zero. Prints nothing — the default machine has
+  // no AHCI, and a boot-time `AHCI NONE` would sit in every session
+  // golden. The prints are `ahciReport` / `ahciRead`, from the hidden
+  // `ahci` and `ahci read` commands.
+  ahciInit();
 
   uartInit();
   uartPutBanner(); // includes its own trailing newline (a @rodata table now)

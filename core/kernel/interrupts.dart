@@ -512,6 +512,8 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     // `procTick` prints nothing at all with no process live, which is every
     // tick M1 ever takes.
     picEoiMaster();
+    virtabPoll();
+    wmFrameTick();
     procTick(frame);
     return;
   }
@@ -656,6 +658,14 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   }
   faultCountBump();
   faultReport(vector, errorCode, rip);
+  // ADR-0164: a NOTPRES #PF inside a file-backed shm window fills the
+  // page from the FAT fd and returns — `iretq` retries the load. Must
+  // run before [userOnFault] kills the session.
+  if (vector == u64(vectorPageFault)) {
+    if (shmDemandTry(errorCode) > u64(0)) {
+      return;
+    }
+  }
   // M9. If a ring-3 payload was running, it has just been killed, and the M4
   // recovery path below is about to discard every frame between here and the
   // shell loop -- including `shellUser`'s, which is the only thing that would

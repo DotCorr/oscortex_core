@@ -147,7 +147,7 @@ SECTIONS
      * do about it. Giving it its own read-only segment would cost a page of
      * padding to protect twelve bytes that nothing can reach at runtime. */
     .multiboot : { __kernel_start = .; *(.multiboot) } :text
-    .text      : { *(.text) __text_end = .; } :text
+    .text      : { *(.text) *(.text.*) __text_end = .; } :text
 
     /* --- Read-only, non-executable --------------------------------------- */
     . = ALIGN(4096);
@@ -163,6 +163,20 @@ SECTIONS
 
     /* --- Writable, non-executable ---------------------------------------- */
     . = ALIGN(4096);
-    .data : { __data_start = .; *(.data) } :data
-    .bss  : { *(COMMON) *(.bss) __kernel_end = .; } :data
+    .data : {
+        __data_start = .;
+        KEEP(*(.osgfx_cmd))
+        . = ALIGN(128);
+        KEEP(*(.osmedia_cmd))
+        . = ALIGN(64);
+        KEEP(*(.otatls_cmd))
+        *(.data) *(.data.*)
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        KEEP(*(.init_array.*))
+        __init_array_end = .;
+    } :data
+    .bss  : { *(COMMON) *(.bss) *(.bss.*) __kernel_end = .; } :data
+
+    /DISCARD/ : { *(.eh_frame) *(.eh_frame_hdr) *(.note.*) *(.comment) *(.interp) }
 }

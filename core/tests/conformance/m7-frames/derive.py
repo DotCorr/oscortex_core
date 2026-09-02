@@ -45,7 +45,7 @@ import sys
 # Must match core/kernel/pmm.dart. run.sh asserts these against the source
 # rather than trusting the copy.
 FRAME_BYTES = 4096
-MAX_FRAMES = 32768
+MAX_FRAMES = 65536
 LOW_RESERVED = 256
 
 # M8 (ADR-0012). The kernel's own page tables come out of THIS allocator, at
@@ -60,7 +60,11 @@ LOW_RESERVED = 256
 # SUM/XOR/LOW/HIGH, and the bitmap compared bit-for-bit -- follows automatically
 # instead of each needing its own fudge. m8-paging/run.sh asserts this number
 # against `vmFrameCount` in core/kernel/vm.dart.
-VM_FRAMES = 6
+# ADR-0189 took the identity map to 256MiB and the fine map with it, so
+# vm.dart's vmFrameCount went 12 -> 20. Restated by hand for this file's whole
+# reason to exist: it is the double-entry copy of the kernel's geometry, and
+# m8-paging asserts the two agree rather than importing one into the other.
+VM_FRAMES = 20
 
 
 def parse_mmap(serial_text):

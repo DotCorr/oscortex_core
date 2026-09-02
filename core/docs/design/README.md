@@ -6,24 +6,37 @@ job is to turn a pile of designs into a work queue, name the places where two sp
 and say what is *not* covered.
 
 **Provenance.** The owner chose a native display protocol over Wayland compatibility, relayed by the
-coordinator and not witnessed directly — recorded that way in `display-protocol.md`. Everything else
-in this corpus is a proposal.
+coordinator and not witnessed directly — recorded that way in `display-protocol.md`. The owner
+ratified the language identity — recorded in `dcdart.md`. Everything else in this corpus is a
+proposal.
 
 ---
 
 ## The count
 
-**145 milestones are specified across 18 ladders.** That is the answer to "how many tasks are left",
-for the parts that have been designed. It is not the whole answer:
+**153 milestones are specified across 21 ladders.** That is the answer to "how many tasks are left",
+for the parts that have been designed. It is not the whole answer. The +5 from 148 are OSXUI1,
+OSXUI3–OSXUI5, and STUDIO2. OSXUI2 ≡ FRAME2 and STUDIO1 ≡ that same surface client are identities
+and are not added. `app-system.md` is a contract, not a ladder.
 
 | specified | not yet specified |
 |---|---|
-| blocking · memory · namespace · storage · exec format · libc · text · display · SMP · GPU · NIC · net stack · time & power · ARM64 · **applications** · **security** · **USB & audio** | package format · ffmpeg itself · reflection · a window manager's *policy* (as opposed to the protocol) |
+| blocking · memory · namespace · storage · exec format · libc · text · display · SMP · GPU · NIC · net stack · time & power · ARM64 · **applications** · **app packages** · **OSXUI** · **OSXStudio** · **security** · **USB & audio** · **portable hardware (PORT)** · **C modules / GFX** | reflection · configure-to-client closed (ADR-0142 / `de-cfg/`; close / min / start / panel ADR-0106; title-drag ADR-0111; resize clip ADR-0121). APP4 `unlink`/`rename` closed (ADR-0147 / `files-unl/`). FILES move consumes rename (ADR-0149 / `files-mv2/`). shm grow past attach closed (ADR-0150 / `shm-grow/`, syscall 34). shm shrink past attach closed (ADR-0156 / `shm-shrink/`, syscall 35). multi-mapper grow/shrink closed (ADR-0158 / `shm-multi/`). FILES icons closed (ADR-0154 / `files-ico/`). · vendor GPU · laptop Wi-Fi · Content **OnPaint** stand-in **PASSed** (ADR-0166 / `browse-paint/`); first official load door **PASSed** (ADR-0167 / `cef-wire/` measured `CEF.SO` slice); full official LOADs **PASSed** (ADR-0168 / `cef-load/` host-plant RO+RX); `memset@plt` **PASSed** (ADR-0169 / `cef-plt/`); high-traffic UND batch **PASSed** (ADR-0170 / `cef-und/` 5 of 1,336); UND batch grows to **20 of 1,336** **PASSed** (ADR-0171 / `cef-und2/` — remain 1,316); leftover **rest of UND / libdl.so.2 / OnPaint** (ADR-0123 / GAP-0322: 32 `DT_NEEDED`, 189 MiB `.text`; ADR-0124 opened a 16 MiB **platform** window for `PLAT.ELF` only — TAP/FILES stay 64K/2MiB; ADR-0126 opened `PT_INTERP` for that name (`plat-dyn/`, our `LD.SO`); ADR-0127 opened `PT_DYNAMIC` (`plat-rel/`, `LD.SO` applies RELA); ADR-0128 opened anonymous `mmap` (`plat-map/`, syscall 27); ADR-0130 opened `clone` (`plat-clone/`, syscall 28); leftovers libc / futex / TLS / dlopen / 189 MiB). Host CEF is BROWSER0 / ADR-0083; QEMU `BROWSE.ELF` extract is ADR-0115+0122; DCDart `@extern` is CMOD-CHROME1 / ADR-0095. FFmpeg is in `kernel.elf` (ADR-0116, `de-media/`); sit-in blit ADR-0131 (`de-vblit/`); `wmsurface` video ADR-0135 (`de-vwin/`) |
 
-**Twenty-one documents now.** The count moved from 97 to 136 during a single afternoon of writing, so
-treat it as a floor rather than a total. It is also
-not a *schedule*: several ladders share milestones (`blocking` B1 **is** `display` D3), and several
+**Twenty-nine documents now** (added `c-modules.md`, `dcdart-c-ffi.md`). The count moved from 97 to 136 during a single afternoon of writing, so
+treat it as a floor rather than a total. The PORT ladder adds three rungs (PORT1–PORT3) and does not
+open Apple Silicon or amdgpu. OSXUI and STUDIO are multi-letter prefixes because APP and FRAME
+are taken. GFX0 is the platform osgfx C module (ADR-0080). GFX1 is Skia Graphite
+behind the same header (ADR-0082). COMPOSE0 is session chrome through
+that header (ADR-0094, `gfx2-compose/`). It is also
+not a *schedule*: several ladders share milestones (`blocking` B1 **is** `display` D3; OSXUI2 **is**
+FRAME2), and several
 are blocked on the same four small fixes below.
+
+**Apps are DCDart or freestanding C against `osframe`, never Flutter.** That is `dcdart.md`. A
+`pubspec.yaml` does not load. The widget kit (`osx-ui.md`) is compositor policy plus client pixels,
+not a Flutter embedder. **The UI language is `osgfx.h`, not `preview.html`.** Chromium is a
+platform WebView (Android shape), not an app ELF (`c-modules.md`).
 
 **Rate, measured rather than guessed:** M16, M17, M18 and M19 landed within about a day of each
 other, with roughly three agents working. That is ~3–4 milestones/day *when integration keeps up*.
@@ -41,9 +54,17 @@ that, and it should be read before anyone plans a fleet.
 | `blocking-and-threads.md` | a blocked process state, `fdwait` | the blocked state is **one constant**; threads are not wanted and the motivating software does not need them |
 | `memory.md` | the ring-3 window, shared frames, kmalloc, PAT/MTRR | do **not** widen `vmProgEnd` — split it into a load bound and a user bound, and 47 goldens stay put |
 | `namespace.md` | device names, VFS shape | the device branch goes in `fileSysOpen`, **never** `fatLookup`. The sigil was `:`; for DRM it has to be `/`, because `libdrm` hardcodes `/dev/dri/card0` — GAP-0174 |
-| `storage.md` | AHCI/DMA, filesystem beyond FAT16 | a 512-byte file costs **five** sector writes and five flushes; the cost is scheduling, not throughput |
+| `storage.md` | AHCI/DMA, filesystem beyond FAT16 | A0 (ADR-0069) finds the HBA and prints CAP; NVM0–NVM6 (ADR-0071/0074/0087/0088/0089/0090/0092) find NVMe, Identify, read one planted sector, write it back, serve FAT through that I/O pair, and `run` a named ELF through the same pick. **A2 (ADR-0137, `nvm-root/`)** made AHCI class `01/06/01` an equal `fatDiskRead` root. Neither class still uses ATA PIO. A 512-byte file costs **five** sector writes and five flushes |
 | `exec-format.md` | `.osx`, dynamic linking | ffmpeg is gated on **size**, not linking — `libavutil.__text` alone is 5.4× the loader's max |
 | `libc-roadmap.md` | what real applications need | 41 symbols exist, **only nine are C89**; 130 of C89's 139 are absent |
+| `applications.md` | Unix-tooling ladder (`cp`, `ls`, shell) | two doors into ring 3 still split `argv` from heap; `ls` needs `opendir`; prefix **APP** |
+| `app-framework.md` | first in-built app / host-side SDK | the SDK is a **header and a syscall table**, not a Dart runtime on the guest; live-edit of compiled `@bare` is blocked on DCDart reflection; ladder prefix **FRAME** (APP is taken) |
+| `app-system.md` | how an app is a package | **Closed (ADR-0112): an app is an ELF + osframe; chrome is wm; paint is osgfx.** FAT 8.3 root, `go` / spawn 26. Never Flutter. A random C package will not link |
+| `osx-ui.md` | native desktop widget kit | **not Flutter, not HTML.** Surfaces + compositor chrome. Platform language is `osgfx.h` (ADR-0080). OSXUI1 is the compositor context popover. **OSXUI-kit** (`osxui.h`, ADR-0113) paints buttons through that header |
+| `c-modules.md` | platform C/C++ after libc | **osgfx is the paint module; Skia Graphite, Vulkan, Chromium WebView, and FFmpeg (`osmedia.h`, MEDIA0) are platform, not apps.** 64 KiB is the app sandbox |
+| `dcdart-c-ffi.md` | DCDart ↔ C, JNI / Rust-`extern "C"` | `@extern` is a name (GAP-0166). C ABI + shm display list. No new syscall |
+| `osxstudio.md` | the in-built builder surface | **a FRAME app, not an IDE.** TODAY not a project editor (no rename, no `opendir`, 65K image, no reflection). STUDIO1 listing **done** (`studio1/`). STUDIO2 launch **done** (`studio2/`, ADR-0078). STUDIO2b persist **done** (`studio2b/`, ADR-0119, `SEL.DAT`). Hidden `go NAME` is the idle-line Spotlight (ADR-0099, `de-studio/`). Launcher/exhibit, not a builder. BLOCKED: live-edit of `@bare`, a Dart SDK on the box, true reflect/emit (GAP-0166 / GAP-0321) |
+| `dcdart.md` | language identity | **DCDart is its own language that uses Dart’s spelling. It is not Dart. A Dart app will not run on it.** Apps are DCDart or C against osframe, never Flutter |
 | `text.md` | fonts, glyph runs, Unicode | **this machine cannot type a capital `A`** |
 | `net-e1000.md` | the NIC driver | the option ROM sends DHCP **before any guest OS runs** — the vacuity trap that would have cost a day |
 | `net-stack.md` | ARP/IP/ICMP/UDP/TCP | a userland stack over a raw-packet device; TCP without timers is the hard part |
@@ -52,6 +73,8 @@ that, and it should be read before anyone plans a fleet.
 | `time-and-power.md` | RTC, monotonic time, shutdown | shutdown is **one `outb`**; and GAP-0058 has been misread for milestones — a real clock costs two golden lines |
 | `demo-harness.md` | showing the machine to a human | `core/scripts/demo.sh` — builds any commit in an isolated worktree, boots it in a window, kills the previous |
 | `gpu.md` | what is actually reachable | VirtIO-GPU 2D only. Measured against this kernel's 22,088 lines: nouveau is 11×, i915+xe 25×, **amdgpu 288×** — and Intel modesetting is rejected not for size but because **no binary exit criterion can be written for it** |
+| `portable-hardware.md` | how this OS leaves QEMU without writing i915/amdgpu/nouveau | **three scanout backends, one compositor, one fallback** — Bochs VBE, VirtIO-GPU 2D (G0–G8, ADR-0091 on `virtio-gpu-pci` with no VGA, ADR-0093 two-resource `SET_SCANOUT` flip), **UEFI GOP** (PORT1+PORT2, ADR-0060/0061). `fb` tries GOP then Bochs then `FB NONE` (ADR-0064, `p3-fallback`). **PORT4** is SeaBIOS + the same Limine hybrid ISO (ADR-0072, `p4-bios`) — QEMU, not metal. Ladder prefix **PORT**. Foreign `.ko`/kexts rejected. A Ryzen laptop after PORT2 is **not** a boot |
+| `usb-hid.md` | laptop keyboard over xHCI, not UHCI | **USB0–USB3 landed** (find qemu-xhci; print BAR0 cap/op registers, ADR-0068; HID boot report → set-1 on `kbdq` via `usb feed` on COM1, ADR-0073; transfer ring port-reset/address/SET_PROTOCOL/interrupt IN, ADR-0085, `u3-xhci`). Coexists with PS/2; maximum reach is PS/2 OR USB HID OR serial. Do not attach `usb-kbd` on 8042 harnesses |
 | `drm-abi.md` | the Linux DRM/KMS ABI, so Mesa runs unmodified (ADR-0029) | virtio-gpu is a **universal shim** — one kernel driver reaches the host's Vulkan through venus. But the substrate is the project: `ioctl`, `mmap`, threads, TLS, dynamic linking, a hosted libc |
 | `libdrm-port.md` | the first C library this OS was pointed at (ADR-0031) | unmodified libdrm **compiles**, 43 symbols short — and four of the ten that resolve are the **wrong function**. Serving BSD's `_IOC` instead of Linux's would have moved 29 of 121 request numbers silently |
 | `hot-files.md` | what blocks parallel work | `kmain.dart`'s `part` list is **append-only and load-bearing**; two agents both appending last silently break a third file |
@@ -226,8 +249,9 @@ one `core/build/dcdart` prefix works. See GAP-0003 and the correction under GAP-
   `display-protocol.md` D3 are **the same milestone**, reached from opposite ends: parking inside a
   syscall is unsound because the frame sits below RSP0, so the sound way to park is to leave through
   the door a resident process needs anyway. Build once.
-* **`pciWrite32`.** Configuration space is read-only today. **Both** the NIC and the storage DMA path
-  are blocked on it. Smallest item with the widest unblock.
+* **`pciWrite32`.** Landed at G1 (ADR-0065). Configuration space is writable; the VirtIO GPU
+  sets bus-master from the `virtgpu` command. **Both** the NIC and the storage DMA path can
+  now call it. Smallest item with the widest unblock, and it is done.
 * **A second ring-3 region** (`memory.md` MEM-1, `exec-format.md` X2). Splitting `vmProgEnd` rather
   than widening it.
 
@@ -275,7 +299,10 @@ Recorded rather than silently resolved.
 **Naming collisions, now three and counting:** `N1` names a milestone in `namespace.md`,
 `net-e1000.md` **and** `net-stack.md`; `T1` names one in both `text.md` and `time-and-power.md`; and
 `arm64-port.md` claimed `A…` while `applications.md` was drafting the same prefix — that one was
-caught mid-session and renamed to `APP`. **Adopt multi-letter prefixes for every ladder** before
+caught mid-session and renamed to `APP`. `portable-hardware.md` takes **`PORT`** (not `A`, `G`, or
+`N`) for the same reason. `osx-ui.md` takes **`OSXUI`**, `osxstudio.md` takes **`STUDIO`**,
+and `app-system.md` takes **no prefix** (it is a contract over APP / FRAME / OSXUI). **Adopt
+multi-letter prefixes for every ladder** before
 anyone builds a work queue from these. It is the same class of collision as the syscall numbers, and
 independent agents keep walking into it because nobody owns the namespace.
 
@@ -320,8 +347,12 @@ independent agents keep walking into it because nobody owns the namespace.
 
 ## What this corpus does not cover
 
-USB · audio · a security model beyond W^X and ring separation · package format · applications ·
-reflection. **ARM64 is no longer on this list** — see the correction to `CLAUDE.md` rule 4 above; it
+USB · audio · a security model beyond W^X and ring separation · ffmpeg itself ·
+reflection. **Package format and applications are no longer on this list** —
+`applications.md` is the Unix-tooling ladder, `app-system.md` is the 8.3 package
+contract, `osx-ui.md` / `osxstudio.md` are the native kit and the builder surface.
+**ARM64 is no longer on this list** — see the correction to `CLAUDE.md` rule 4 above; it
 was excluded on a premise that has been false since DCDart's ADR-0033. **And nothing here
-is implemented.** Thirteen designs and a boot that lists a filesystem is not an operating system with
+is implemented** except the compositor facts those newer files cite (surfaces, chrome,
+`wmevent`, FRAME1). Thirteen designs and a boot that lists a filesystem is not an operating system with
 a window on it; it is the map that says which order to build one in.

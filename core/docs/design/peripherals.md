@@ -1,6 +1,10 @@
 # Peripherals — USB and audio
 
-**Status: PROPOSAL. Nothing here is built, and most of it should not be built for a long time.**
+**Status: PROPOSAL for audio and the UHCI stack. The laptop HID path is `usb-hid.md`.**
+USB0 (find xHCI on PCI) is implemented there. This document's ranking — UHCI cheap under QEMU,
+xHCI "not for years" *for sitting at QEMU* — still holds for that product. Sitting at a laptop
+inverts it (`portable-hardware.md` §6.3). Do not implement both USB stacks.
+
 `README.md`'s closing paragraph lists what the corpus does not cover; **USB** and **audio** are two of
 those names. This document covers both, to a brief that says *ranking honestly matters more than
 completeness*. So the ranking is §0, before any design.

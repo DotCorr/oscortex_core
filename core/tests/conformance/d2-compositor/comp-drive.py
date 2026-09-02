@@ -132,6 +132,24 @@ def inject(qmp, keys):
     for el in keys.split(","):
         if not el:
             continue
+        if el.startswith("abs:"):
+            # Tablet SET in screen pixels. QEMU abs axes are 0..32767.
+            # abs:x:y or abs:x:y:gw:gh (default 800x600).
+            parts = el.split(":")
+            if len(parts) not in (3, 5):
+                die(f"malformed pointer element {el!r} -- want abs:<x>:<y>")
+            x, y = int(parts[1]), int(parts[2])
+            gw = int(parts[3]) if len(parts) == 5 else 800
+            gh = int(parts[4]) if len(parts) == 5 else 600
+            ax = x * 32767 // max(1, gw - 1)
+            ay = y * 32767 // max(1, gh - 1)
+            qmp.cmd("input-send-event", events=[
+                {"type": "abs", "data": {"axis": "x", "value": ax}},
+                {"type": "abs", "data": {"axis": "y", "value": ay}},
+            ])
+            pointed += 1
+            time.sleep(0.05)
+            continue
         if el.startswith("rel:"):
             parts = el.split(":")
             if len(parts) != 3:
@@ -218,6 +236,8 @@ def main():
                     help="file to write the framebuffer bytes to")
     ap.add_argument("--fb-height", type=int, default=600)
     ap.add_argument("--png", required=True)
+    ap.add_argument("--no-quit", action="store_true",
+                    help="leave QEMU running so a later QMP stage can drive it")
     args = ap.parse_args()
 
     qmp = Qmp(args.host, args.port, connect_timeout=20)
@@ -300,6 +320,9 @@ def main():
                 f"the transcript is missing what the clients exited with")
         print(f"comp-drive: kernel reached {args.finish_for!r}")
 
+    if args.no_quit:
+        print("comp-drive: leaving QEMU running (--no-quit)")
+        return 0
     qmp.cmd("quit")
     return 0
 

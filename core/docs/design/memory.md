@@ -463,8 +463,9 @@ Properties, each with the reason:
 * **Failure is atomic and every refusal is a distinct value above a floor.** `heapRetNoSpace` /
   `heapRetNoMem` / `heapRetBadArg` is the pattern; a partial `vmap` rolls back exactly like
   `heapRollback` and does not move the region's bump pointer.
-* **There is no `MAP_SHARED` on a file, no `MAP_FIXED`, no `mprotect`, and no demand paging.** Say so
-  in a gap entry rather than leaving it to be discovered.
+* **File-backed demand map is ADR-0164 (`shmfile` / `mmap-file/`).**
+  Anonymous eager shm stays ADR-0041. Say further MAP_SHARED write-through
+  in a gap if needed rather than leaving it to be discovered.
 * **Synchronisation is a shared word and `yield`, and nothing else.** Nothing on this machine can
   block (GAP-0141). There is no futex, there cannot be one, and a design that needs a client to *wait*
   for a shared buffer is a design for a different OS. `display-protocol.md` §2.2's "events ride the

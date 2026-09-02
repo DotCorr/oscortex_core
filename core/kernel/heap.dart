@@ -141,6 +141,13 @@ part of 'kmain.dart';
 /// own the address space it grows, and it is refused when there is not one.
 const int heapSysSbrkNo = 4;
 
+/// Syscall 27 — `mmap(len)` for a named platform process (ADR-0128).
+///
+/// 11 stays `fdwait`. 21 and 22 are taken on other lines. 26 is `spawn`.
+/// Anonymous pages only: no fd, no `munmap`, not TAP/FILES. ASK.ELF of
+/// the same bytes is [heapRetBadArg].
+const int heapSysMmapNo = 27;
+
 /// One past the highest byte any heap may ever reach: `vmProgStackPage - 4096`.
 ///
 /// The page `[heapTop, vmProgStackPage)` is the GUARD PAGE and nothing in this
@@ -163,7 +170,19 @@ const int heapGuardIndex = 510;
 /// Anything larger is [heapRetBadArg] and is refused BEFORE the round-up, which
 /// is the arithmetic that would overflow. A `u64` increment of
 /// 0xFFFFFFFFFFFFFFFF -- what a C program passing `-1` produces -- lands here.
+///
+/// A named platform process (ADR-0124) uses [heapPlatMaxInc] instead.
+/// TAP/FILES ELFs still hit this 2 MiB cap. That is the anti-vacuity.
 const int heapMaxInc = 2097152;
+
+/// Platform-process heap ceiling: one past [vmPlatEnd]. No stack lives
+/// in that window, so there is no guard page here.
+const int heapPlatTop = 0x1E0FC000;
+
+/// Largest increment a platform process may ask for: the RO+RX LOAD
+/// span (ADR-0168). TAP/FILES stay at [heapMaxInc] 2 MiB. The 189 MiB
+/// CEF `.text` plant (ADR-0155) still fits inside this window.
+const int heapPlatMaxInc = 231718912;
 
 /// Page-alignment mask as a positive literal: `~4095` in 64 bits.
 const int heapPageAlignMask = 0xFFFFFFFFFFFFF000;
@@ -232,6 +251,25 @@ final List<u8> heapStrTop = const [
   u8(0x20), u8(0x54), u8(0x4F), u8(0x50), u8(0x20),
 ];
 
+/// `'PROC MAP '` -- 9 bytes. ADR-0128.
+@rodata
+final List<u8> heapStrMap = const [
+  u8(0x50), u8(0x52), u8(0x4F), u8(0x43), u8(0x20), u8(0x4D),
+  u8(0x41), u8(0x50), u8(0x20),
+];
+
+/// `' LEN '` -- 5 bytes.
+@rodata
+final List<u8> heapStrLen = const [
+  u8(0x20), u8(0x4C), u8(0x45), u8(0x4E), u8(0x20),
+];
+
+/// `' VA '` -- 4 bytes.
+@rodata
+final List<u8> heapStrVa = const [
+  u8(0x20), u8(0x56), u8(0x41), u8(0x20),
+];
+
 // ---------------------------------------------------------------------------
 // The heap itself.
 // ---------------------------------------------------------------------------
@@ -249,8 +287,42 @@ final List<u8> heapStrTop = const [
 /// [heapTop] -- and every `sbrk` it makes is refused with [heapRetNoSpace].
 /// That is a correct empty heap; the alternative is an underflow in
 /// [heapRoom] inside a syscall, which DCDart turns into a `ud2`.
+/// 1 if slot [s] is a named platform process (16 MiB window).
+@bare
+u64 heapIsPlat(u64 s) {
+  if (procGet(s, u64(procSlotPlat)) > u64(0)) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// Heap ceiling for slot [s]: [heapPlatTop] or [heapTop].
+@bare
+u64 heapCeil(u64 s) {
+  if (heapIsPlat(s) > u64(0)) {
+    return u64(heapPlatTop);
+  }
+  return u64(heapTop);
+}
+
+/// Increment cap for slot [s]: [heapPlatMaxInc] or [heapMaxInc].
+@bare
+u64 heapCap(u64 s) {
+  if (heapIsPlat(s) > u64(0)) {
+    return u64(heapPlatMaxInc);
+  }
+  return u64(heapMaxInc);
+}
+
 @bare
 void heapInit(u64 s, u64 hi) {
+  if (heapIsPlat(s) > u64(0)) {
+    procSet(s, u64(heapSlotBase), u64(vmPlatBase));
+    procSet(s, u64(heapSlotBrk), u64(vmPlatBase));
+    procSet(s, u64(heapSlotPages), u64(0));
+    procSet(s, u64(heapSlotCalls), u64(0));
+    return;
+  }
   u64 base = hi;
   if (base < u64(vmProgBase)) {
     base = u64(vmProgBase);
@@ -284,10 +356,11 @@ void heapReset(u64 s) {
 @bare
 u64 heapRoom(u64 s) {
   final u64 brk = procGet(s, u64(heapSlotBrk));
-  if (brk > u64(heapTop)) {
+  final u64 top = heapCeil(s);
+  if (brk > top) {
     return u64(0);
   }
-  return u64(heapTop) - brk;
+  return top - brk;
 }
 
 /// Undoes [n] pages of a half-finished [heapSbrk], starting at [from].
@@ -308,17 +381,31 @@ void heapRollback(u64 from, u64 n) {
   u64 i = u64(0);
   while (i < n) {
     final u64 va = from + (i << u64(vmPageShift));
-    final u64 le = vmProgLeaf(va);
+    u64 le = u64(0);
+    u64 um = u64(0);
+    if (va >= u64(vmPlatBase)) {
+      le = vmPlatLeaf(va);
+    } else {
+      le = vmProgLeaf(va);
+    }
     if ((le & u64(vmPresent)) > u64(0)) {
       // Bound rather than discarded: `dcc` refuses a dropped return value, and
       // `vmProgUnmap` only ever fails for an address outside the window, which
       // [heapSbrk] has already excluded. It is added to ERRORS anyway, so the
       // impossible case is a number rather than a silence.
-      final u64 um = vmProgUnmap(va);
+      if (va >= u64(vmPlatBase)) {
+        um = vmPlatUnmap(va);
+      } else {
+        um = vmProgUnmap(va);
+      }
       procSetHead(u64(procHeadErrors),
           procHead(u64(procHeadErrors)) + um);
-      procSetHead(u64(procHeadErrors),
-          procHead(u64(procHeadErrors)) + freeFrame(vmEntryAddr(le)));
+      // ADR-0168: host-plant CEF LOAD pages are alias-mapped; do not
+      // freeFrame them (they stay reserved for the plant).
+      if (elfCefPlantOwns(vmEntryAddr(le)) < u64(1)) {
+        procSetHead(u64(procHeadErrors),
+            procHead(u64(procHeadErrors)) + freeFrame(vmEntryAddr(le)));
+      }
     }
     i = i + u64(1);
   }
@@ -350,7 +437,7 @@ u64 heapSbrk(u64 s, u64 inc) {
   if (inc < u64(1)) {
     return brk;
   }
-  if (inc > u64(heapMaxInc)) {
+  if (inc > heapCap(s)) {
     return u64(heapRetBadArg);
   }
   final u64 pages = (inc + u64(vmPageMask)) >> u64(vmPageShift);
@@ -369,7 +456,13 @@ u64 heapSbrk(u64 s, u64 inc) {
     // mapping and the zeroing there would be a window in which the previous
     // owner's bytes are reachable from ring 3.
     vmZeroFrame(f);
-    final u64 m = vmProgMap(brk + (done << u64(vmPageShift)), f, u64(1), u64(0));
+    final u64 at = brk + (done << u64(vmPageShift));
+    u64 m = u64(0);
+    if (heapIsPlat(s) > u64(0)) {
+      m = vmPlatMap(at, f, u64(1), u64(0));
+    } else {
+      m = vmProgMap(at, f, u64(1), u64(0));
+    }
     if (m > u64(0)) {
       // Unreachable by construction -- the range was bounded above and every
       // page in it was unmapped -- so it is treated as an address-space failure
@@ -407,7 +500,7 @@ void heapLine(u64 s, u64 inc, u64 r) {
     uartWrite(Rodata.addressOf(heapStrBase), u64(6));
     uartPutHex(procGet(s, u64(heapSlotBrk)), u64(16));
     uartWrite(Rodata.addressOf(heapStrTop), u64(5));
-    uartPutHex(u64(heapTop), u64(16));
+    uartPutHex(heapCeil(s), u64(16));
     uartNewline();
     return;
   }
@@ -433,4 +526,54 @@ void heapSysSbrk(u64 frame) {
   final u64 r = heapSbrk(s, inc);
   userSetFrame(frame, u64(userFrameRax), r);
   heapLine(s, inc, r);
+}
+
+/// Anonymous `mmap(len)` for slot [s]. Real frames through [heapSbrk].
+///
+/// The flag is the name: only [heapIsPlat] may succeed. A zero length
+/// is [heapRetBadArg] so `mmap(0)` cannot be a silent heap-base query.
+/// TAP/FILES, LBA spawn, and `ASK.ELF` planted as the same bytes all
+/// land here as [heapRetBadArg] — that is the anti-vacuity for the
+/// name, and teardown's extra freed leaves are the anti-vacuity for
+/// the frames (a no-op return of [vmPlatBase] maps nothing).
+@bare
+u64 heapMmap(u64 s, u64 len) {
+  if (heapIsPlat(s) < u64(1)) {
+    return u64(heapRetBadArg);
+  }
+  if (len < u64(1)) {
+    return u64(heapRetBadArg);
+  }
+  return heapSbrk(s, len);
+}
+
+/// `PROC MAP <s> LEN <len> VA <va> PAGES <n>`, or
+/// `PROC MAP <s> LEN <len> ERR <ret>` on a refusal.
+@bare
+void heapMapLine(u64 s, u64 len, u64 r) {
+  uartWrite(Rodata.addressOf(heapStrMap), u64(9));
+  uartPutHex(s, u64(2));
+  uartWrite(Rodata.addressOf(heapStrLen), u64(5));
+  uartPutHex(len, u64(16));
+  if (r > u64(heapRetFloor)) {
+    uartWrite(Rodata.addressOf(vmStrErr), u64(5));
+    uartPutHex(r, u64(16));
+    uartNewline();
+    return;
+  }
+  uartWrite(Rodata.addressOf(heapStrVa), u64(4));
+  uartPutHex(r, u64(16));
+  uartWrite(Rodata.addressOf(procStrPages), u64(7));
+  uartPutHex(procGet(s, u64(heapSlotPages)), u64(8));
+  uartNewline();
+}
+
+/// Syscall 27. Called from `userSyscall` with a PROCESS guaranteed live.
+@bare
+void heapSysMmap(u64 frame) {
+  final u64 s = procCurrent();
+  final u64 len = userFrame(frame, u64(userFrameRdi));
+  final u64 r = heapMmap(s, len);
+  userSetFrame(frame, u64(userFrameRax), r);
+  heapMapLine(s, len, r);
 }

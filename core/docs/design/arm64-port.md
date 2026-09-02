@@ -1,9 +1,13 @@
 # ARM64 — and the compiler question, which has already been answered
 
-**Status: DESIGN. Nothing here is a decision.** Written by the ARM64 specialist against the tree as of
+**Status: DESIGN, A1 landed.** Written by the ARM64 specialist against the tree as of
 2026-08-23. This is the fourteenth document in `core/docs/design/`. The index's own "what this corpus
 does not cover" line names ARM64 first and defers it: *"the compiler question comes first and belongs
 to the DCDart repo."* This document went and asked. The answer is not the one the deferral assumed.
+
+**A1 is implemented** (`docs/decisions/0057-a1-aarch64-virt-proof-of-life.md`,
+`tests/conformance/a1-boot/run.sh`: PASS, QEMU exit 0, serial `OSCORTEX A64 OK\n`). A0 remains
+DCDart-repo work. A2–A9 are unstarted. The rest of this document is still design, not a decision.
 
 ---
 
@@ -525,14 +529,14 @@ adding a target means adding a conformance target for it, and `bare-aarch64` doe
 > shape `ffi-extern/run.sh` step 3 already uses for x86), runs it under `qemu-system-aarch64 -M virt`,
 > and asserts the expected output and exit status. Green.
 
-**Blocked today, and not on anything to do with ARM64.** `dcc` does not run on this host at all: the
-vendored frontend's `kernel` package declares Dart language version 3.12 and the installed SDK is
-3.11.0, so `dart .../dcc.dart build` fails with 49 "language version too high" errors — **identically
-for `--target bare-x86_64` and `--target bare-aarch64`.** That is a pre-existing, arch-neutral
-toolchain break and it gates A0, the x86 suite, and this document's ability to have proved STEP 1
-end to end. **It should be fixed first and it is not ARM64 work.**
+**The Dart-version block is gone; the DCDart conformance target is not.** `env.sh` now ships Dart
+3.12.2, and `dcc build --mode bare --target bare-aarch64` produces an object that `file(1)` reports
+as `ELF 64-bit LSB relocatable, ARM aarch64` (measured in this tree, A1, not assumed from
+ADR-0033). The *oscortex* half of "does the backend emit aarch64 ELF" is therefore closed. What
+A0 still owes — a `core/tests/conformance/bare-aarch64/run.sh` **in the DCDart repo** — has not
+been written. That is still DCDart's rule, still not this repo's file to add.
 
-### A1 — proof of life
+### A1 — proof of life — **DONE** (ADR-0057)
 
 > **Exit:** `core/tests/conformance/a1-boot/run.sh` builds a `@bare` DCDart `kmain` for
 > `bare-aarch64`, links with an aarch64 `boot.S`, boots under
@@ -540,9 +544,13 @@ end to end. **It should be fixed first and it is not ARM64 work.**
 > the first bytes are exactly `OSCORTEX A64 OK\n` **and that QEMU exited 0** (PSCI `SYSTEM_OFF`), and
 > `verify-freestanding.sh` reports a clean pass on the linked ELF.
 
-**The assembly half of A1 is already demonstrated above** — 17 lines of `k.S` produced exactly that
-output and exit status on this machine. What A1 adds is that the message comes from DCDart rather than
-from `.asciz`, which is precisely what A0 unblocks.
+**Landed.** Parallel path: `core/arch/aarch64/kmain_virt.dart` (not the x86 `kmain.dart`),
+`core/boot-arm/boot.S`, `core/link/kernel-arm.ld`, `core/scripts/build-kernel-arm.sh`, output
+`build/kernel-arm.elf`. The message is `@rodata` in the DCDart object; the harness fails if
+`boot-arm.o` contains the banner string. One polarity trap, measured: PL011 `UARTFR.TXFF` is the
+opposite of the 16550's `LSR.THRE`, and copying the x86 wait hung the guest with an empty serial
+file (GAP-0310). A0's DCDart conformance target was not required for this rung — `dcc --target
+bare-aarch64` already emits, and A1 is the consumer.
 
 ### A2 — the device tree
 
@@ -630,11 +638,10 @@ sequencing constraint is more likely to sink this port than any technical item i
 
 ## What this document does not cover, and what it got wrong to begin with
 
-* **It could not run `dcc`.** The central STEP 1 claim — that `--target bare-aarch64` produces a
-  working object — is supported by ADR-0033's recorded verification, by the registry, and by the fact
-  that `clang --target=aarch64-unknown-none-elf` assembles and `ld.lld` links on this machine, but
-  **not by an end-to-end build here**, because `dcc` is broken on this host for both arches. Stated
-  plainly rather than glossed.
+* **It could not run `dcc` when written.** That sentence is stale. Dart 3.12.2 via `env.sh` runs
+  `dcc`, and A1 is an end-to-end `--target bare-aarch64` build in this repo (ADR-0057). The
+  remaining A0 item is still the DCDart-side conformance target, not a compiler that will not
+  start.
 * **`mrs`/`msr` is a real DCDart gap and this document did not cost it.** aarch64 needs system-register
   access for `VBAR_EL1`, `TTBR0/1_EL1`, `TCR_EL1`, `MAIR_EL1`, `SCTLR_EL1`, `CNTFRQ_EL0`, `CNTPCT_EL0`,
   `ESR_EL1`, `CurrentEL`. Some of it can live in `boot.S` (rule 4 covers the boot-time subset), but
@@ -646,6 +653,8 @@ sequencing constraint is more likely to sink this port than any technical item i
   in the Apple case.
 * **`gpu.md`'s conclusion is arch-neutral and this document defers to it.** VirtIO-GPU 2D is the same
   answer on both arches, which is one more argument for virtio over the legacy devices everywhere.
-* **Nothing here is implemented.** Two hand-written assembly files that print to a serial port and
-  shut a machine down are not an ARM64 port; they are the evidence that the first milestone is
-  reachable.
+* **A1 is implemented; that is not an ARM64 port.** A tiny `@bare` kmain that writes sixteen
+  bytes to a hardcoded PL011 and an `hvc` in `boot.S` is the first rung, and it is green. The
+  rest of the ladder — FDT, GIC, timer, MMU, PMM, EL0, virtio, ECAM — is unstarted. Two
+  hand-written assembly files that print and shut down were the evidence the first milestone
+  was reachable; A1 is that milestone with the message coming from DCDart.

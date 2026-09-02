@@ -214,10 +214,10 @@ KDATA_BSS=$DART_BSS
 # the one a new block after it changes. M19's number went 256 -> 768 and twelve
 # harnesses said so. ADR-0033 §6.4.
 # M21 (ADR-0041) added a block AFTER S0's, and it is now the LAST one in .bss:
-# `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
-# records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
+# `shmStore`, 8576 bytes -- 16 global counter words, four 64-byte shared-region
+# records, and an 8192-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
-# at the top of `freeFrame` O(1) instead of a linear scan on all 32768 calls of
+# at the top of `freeFrame` O(1) instead of a linear scan on all 65536 calls of
 # `frames refill` (`docs/design/memory.md` §2.4).
 #
 # Subtracted FIRST, before S0's, exactly as M14, M15, M16, M19 and S0 each were
@@ -225,7 +225,7 @@ KDATA_BSS=$DART_BSS
 # meant when it was written. This is the THIRD application of ADR-0033 §6.4's
 # correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a
-# new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
+# new block after it changes. S0's number goes 512 -> 8960 nowhere, because it
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 # D4 (ADR-0050) added a block AFTER M21's, and it is now the LAST one in .bss:
@@ -239,17 +239,37 @@ KDATA_BSS=$DART_BSS
 # it meant when it was written. This is the FOURTH application of ADR-0033 §6.4's
 # correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a new
-# block after it changes. M21's number below still reads 4352 for that reason --
+# block after it changes. M21's number below still reads 8576 for that reason --
 # it is measured to wmStore's start rather than to the end of .bss.
+# D2 (ADR-0054) added a block AFTER D4's, and it is now the LAST one in .bss:
+# `kbdqStore`, 288 bytes -- four header words (head, tail, dropped, count)
+# and 32 event slots. Subtracted FIRST, before D4's, so D4's number still
+# reads 320 -- it is now measured to kbdqStore's START rather than to the
+# end of .bss.
+# D7 (ADR-0055) added a block AFTER D2's, and it is now the LAST one in .bss:
+# `wmeventStore`, 192 bytes -- two per-window rings (four header words and
+# 8 event slots each). Subtracted FIRST, before D2's, so D2's number still
+# reads 288 -- it is now measured to wmeventStore's START rather than to
+# the end of .bss.
+D7_OFF_HEX=$(bssoff wmeventStore)
+ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
+D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
+ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
+D2_OFF_HEX=$(bssoff kbdqStore)
+ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
+D2_BSS=$(( KDATA_BSS - 16#$D2_OFF_HEX ))
+ck; [[ "$D2_BSS" -eq 288 ]] || fail "the bytes from D2's kbdqStore to D7's wmeventStore are $D2_BSS, expected 288. If that block changed size, change it in ADR-0054, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 320 ]] || fail "the bytes from D4's wmStore to the end of .bss are $D4_BSS, expected 320. If that block changed size, change it in ADR-0050, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to the end of .bss are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -312,7 +332,7 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-ck; [[ "$KDATA_BSS" -eq 9728 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9728 — M11's 9664 plus the 64 bytes M18 added to procStore's header (ADR-0022), and nothing of M12's. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053."
+ck; [[ "$KDATA_BSS" -eq 13952 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 13952 — M11's 9664 plus the 64 bytes M18 added to procStore's header (ADR-0022), and nothing of M12's. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 echo "STRUCTURAL: pass  kdata.o donates 9664 bytes of .bss outside M14's fat_store — M12 added no mutable state of its own"
 
 # 2b. THE STORAGE SEAM IS STILL EXACTLY THREE CALL SITES, ALL IN proc.dart.
@@ -566,6 +586,44 @@ for gone in \
             file_store_addr; do
   ck; grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED from M11 after ADR-0021. A heap needs no new assembly."
 ck; grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — unchanged from M11, and kdata.o still passes standalone"
@@ -688,18 +746,36 @@ PROC_STORE="0x$PROC_STORE"
 # and suspended. `proc coop` is the one command that keeps M11's semantics; it
 # prints exactly the same lines, so every regex below is unchanged.
 HOLD_KEYS="$(typekeys "proc coop $LBA_HLATE $LBA_P"),ret,wait:40000"
+# TWO WINDOWS. procStore holds the slot words; the PAGE TABLES the walk below
+# needs are frames the allocator handed out, and they are no longer anywhere
+# near procStore: the kernel image grew (ADR-0104's platform C modules) and
+# allocFrame now starts several megabytes higher, so a single window anchored
+# at procStore stopped containing the tables it was being walked over. The
+# second window is anchored at the CR3 the kernel PRINTS, so it is still an
+# address this harness read out of the machine rather than one it chose.
 drive_session "$WORKDIR/late" "$HOLD_KEYS" "$WORKDIR/late/shot.png" "hold-late" 120 128M qemu64 \
+  --addr-from-serial 'KPML4 ([0-9A-F]{16})' \
   --monitor-command 'info registers' \
   --monitor-command "xp/131072gx $PROC_STORE" \
+  --monitor-command 'xp/131072gx {addr}' \
   --monitor-capture "$WORKDIR/late/monitor.txt"
 
 # BOOT C — THE BEFORE PICTURE. The SAME BINARY with two different bytes changed,
 # stopped after `sbrk(0)` and before the first allocation.
 # Cooperative for the same reason as the hold-late boot immediately above.
 EARLY_KEYS="$(typekeys "proc coop $LBA_HEARLY $LBA_P"),ret,wait:6000"
+# TWO WINDOWS. procStore holds the slot words; the PAGE TABLES the walk below
+# needs are frames the allocator handed out, and they are no longer anywhere
+# near procStore: the kernel image grew (ADR-0104's platform C modules) and
+# allocFrame now starts several megabytes higher, so a single window anchored
+# at procStore stopped containing the tables it was being walked over. The
+# second window is anchored at the CR3 the kernel PRINTS, so it is still an
+# address this harness read out of the machine rather than one it chose.
 drive_session "$WORKDIR/early" "$EARLY_KEYS" "$WORKDIR/early/shot.png" "hold-early" 130 128M qemu64 \
+  --addr-from-serial 'KPML4 ([0-9A-F]{16})' \
   --monitor-command 'info registers' \
   --monitor-command "xp/32768gx $PROC_STORE" \
+  --monitor-command 'xp/32768gx {addr}' \
   --monitor-capture "$WORKDIR/early/monitor.txt"
 
 # BOOT D — a drained allocator. `proc run` refuses before any heap exists, which
@@ -968,8 +1044,13 @@ if fx0 != store + D.PROC_FX_OFFSET:
     fails.append("the kernel printed slot 0's FXSAVE area at 0x%X; proc_store is at 0x%X in "
                  "the linked image and proc.dart says the FX region starts %d bytes in, "
                  "which is 0x%X" % (fx0, store, D.PROC_FX_OFFSET, store + D.PROC_FX_OFFSET))
-mem = D.Memory()
-mem.add(store, D.parse_xp(mon, "xp/131072gx"))
+kpml4_m = re.search(r"KPML4 ([0-9A-F]{16})", ser)
+if not kpml4_m:
+    raise SystemExit("the hold-late boot never printed KPML4")
+kpml4 = int(kpml4_m.group(1), 16)
+mem = (D.Memory()
+       .add(store, D.parse_xp(mon, "xp/131072gx 0x%x" % store))
+       .add(kpml4, D.parse_xp(mon, "xp/131072gx 0x%016X" % kpml4)))
 pml4 = {}
 for slot in (0, 1):
     state = D.slot_word(mem, store, slot, D.PROC_SLOT_STATE)
@@ -1070,8 +1151,10 @@ regs = D.parse_registers(mon)
 if regs.get("CPL") != 3:
     fails.append("CPL is %s, not 3" % regs.get("CPL"))
 store = int(sys.argv[5], 16)
-mem = D.Memory()
-mem.add(store, D.parse_xp(mon, "xp/32768gx"))
+kpml4 = int(re.search(r"KPML4 ([0-9A-F]{16})", ser).group(1), 16)
+mem = (D.Memory()
+       .add(store, D.parse_xp(mon, "xp/32768gx 0x%x" % store))
+       .add(kpml4, D.parse_xp(mon, "xp/32768gx 0x%016X" % kpml4)))
 
 base = D.heap_base_of(h)
 pml4 = D.slot_word(mem, store, 0, D.PROC_SLOT_PML4)
@@ -1120,7 +1203,10 @@ spec = importlib.util.spec_from_file_location("m12_derive", sys.argv[3])
 D = importlib.util.module_from_spec(spec); spec.loader.exec_module(D)
 h = D.Elf(open(sys.argv[4], "rb").read())
 store = int(sys.argv[5], 16)
-mem = D.Memory(); mem.add(store, D.parse_xp(mon, "xp/32768gx"))
+kpml4 = int(re.search(r"KPML4 ([0-9A-F]{16})", ser).group(1), 16)
+mem = (D.Memory()
+       .add(store, D.parse_xp(mon, "xp/32768gx 0x%x" % store))
+       .add(kpml4, D.parse_xp(mon, "xp/32768gx 0x%016X" % kpml4)))
 base = D.heap_base_of(h)
 tables = D.PageTables(D.slot_word(mem, store, 0, D.PROC_SLOT_PML4), mem)
 # The AFTER expectation, applied to the BEFORE dump: ~500 pages of heap.

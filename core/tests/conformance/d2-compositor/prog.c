@@ -119,6 +119,18 @@ typedef unsigned char u8;
  * this one. */
 #define INK_INSET 40UL
 
+/* D6: a second commit from side 1, a 16x16 rectangle of a colour that is
+ * nowhere else on the surface. derive.py refuses to emit expectations if this
+ * patch is empty, if its colour matches what it overwrites, or if it sits on
+ * top of another probe -- otherwise "the small count" would be a number with
+ * no pixel behind it. Bottom-right of B, outside the overlap and outside the
+ * inner block, so the existing fill/ink/border probes stay what they were. */
+#define DMG_X 224UL
+#define DMG_Y 144UL
+#define DMG_W 16UL
+#define DMG_H 16UL
+#define DMG_INK 0x00E040C0UL
+
 /* ceil(240 * 160 * 4 / 4096) = ceil(37.5). Stated as a literal and checked by
  * derive.py against the geometry above, because a page count that silently
  * disagreed with the geometry would be refused by the kernel as WM_SMALL and
@@ -185,6 +197,31 @@ static u32 pixel_of(u64 side, u64 px, u64 py) {
   return (u32)(ink ? B_INK : B_FILL);
 }
 
+/* Overwrites the D6 damage rectangle and returns the net change to the
+ * surface sum: new words minus the words that were there. Adding this to
+ * `paint`'s sum is what the host recomputes, so a client that skipped the
+ * patch, painted the wrong colour, or painted it in the wrong place exits
+ * with a different number. */
+static u64 paint_damage(u64 va) {
+  volatile u32 *p = (volatile u32 *)va;
+  u64 delta = 0;
+  u64 py = 0;
+  while (py < DMG_H) {
+    u64 px = 0;
+    while (px < DMG_W) {
+      u64 i = (DMG_Y + py) * WIN_W + (DMG_X + px);
+      u32 old = p[i];
+      u32 c = (u32)DMG_INK;
+      p[i] = c;
+      delta += (u64)c;
+      delta -= (u64)old;
+      px++;
+    }
+    py++;
+  }
+  return delta;
+}
+
 /* Paints the whole surface and returns the sum of every word it wrote. The sum
  * is what this program exits with, so "the client painted what it says it
  * painted" is a number derive.py reproduces on the host. */
@@ -241,9 +278,11 @@ void _start(void) {
   u64 sum = paint(side, va);
   wr(msg_paint, sizeof(msg_paint) - 1);
 
-  /* 5. COMMIT -- "this frame is ready". The damage rectangle is the whole
-   *    surface, because the whole surface is what changed. The compositor
-   *    carries it and does not yet use it; GAP-0301. */
+  /* 5. COMMIT -- "this frame is ready". The first present is the whole
+   *    surface, because the whole surface is what changed. D6 then uses that
+   *    rectangle: the compositor paints the decorated window and nothing
+   *    else. Side 1 follows it with a 16x16 present of a new colour -- that
+   *    is the commit whose pixel count must come out SMALL. */
   desc[D_OP] = WM_COMMIT;
   desc[D_HANDLE] = h;
   desc[D_X] = 0;
@@ -258,6 +297,24 @@ void _start(void) {
   }
   wr(msg_commit, sizeof(msg_commit) - 1);
   scratch[0] = frames;
+
+  if (side == 1) {
+    sum += paint_damage(va);
+    desc[D_OP] = WM_COMMIT;
+    desc[D_HANDLE] = h;
+    desc[D_X] = DMG_X;
+    desc[D_Y] = DMG_Y;
+    desc[D_W] = DMG_W;
+    desc[D_H] = DMG_H;
+    desc[D_SEQ] = 2;
+    desc[7] = 0;
+    frames = sys1(SYS_WMSURFACE, (u64)&desc[0]);
+    if (frames >= WM_FLOOR) {
+      die(0xD2000007UL | (frames << 32));
+    }
+    wr(msg_commit, sizeof(msg_commit) - 1);
+    scratch[0] = frames;
+  }
 
   /* 6. THE FORGED HANDLE. A capability this process was never given, asked for
    *    on a surface operation. It must come back WM_BADCAP -- the refusal that

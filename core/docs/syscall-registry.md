@@ -37,8 +37,22 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 19 | `shmdrop` | `shmSysDropNo` | `core/kernel/shm.dart` | *(none)* | 0041 |
 | 20 | `mouse` | `mouseSysNo` | `core/kernel/mouse.dart` | *(none)* | 0042 |
 | 23 | `wmsurface` | `wmSysSurfaceNo` | `core/kernel/wm.dart` | *(none)* | 0051 |
+| 24 | `kbdevent` | `kbdqSysNo` | `core/kernel/kbdq.dart` | *(none)* | 0054 |
+| 25 | `wmevent` | `wmeventSysNo` | `core/kernel/wmevent.dart` | *(none)* | 0055 |
+| 26 | `spawn` | `procSysSpawnNo` | `core/kernel/proc.dart` | *(none)* | 0078 |
+| 27 | `mmap` | `heapSysMmapNo` | `core/kernel/heap.dart` | *(none)* | 0128 |
+| 28 | `clone` | `procSysCloneNo` | `core/kernel/proc.dart` | *(none)* | 0130 |
+| 29 | `dlopen` | `elfSysDlopenNo` | `core/kernel/elf.dart` | *(none)* | 0144 |
+| 30 | `futex` | `procSysFutexNo` | `core/kernel/proc.dart` | *(none)* | 0146 |
+| 31 | `unlink` | `fileSysUnlinkNo` | `core/kernel/file.dart` | `SYS_UNLINK` | 0147 |
+| 32 | `rename` | `fileSysRenameNo` | `core/kernel/file.dart` | `SYS_RENAME` | 0147 |
+| 33 | `setfs` | `procSysSetfsNo` | `core/kernel/proc.dart` | *(none)* | 0148 |
+| 34 | `shmgrow` | `shmSysGrowNo` | `core/kernel/shm.dart` | *(none)* | 0150 |
+| 35 | `shmshrink` | `shmSysShrinkNo` | `core/kernel/shm.dart` | *(none)* | 0156 |
+| 36 | `mprotect` | `shmSysMprotectNo` | `core/kernel/shm.dart` | *(none)* | 0163 |
+| 37 | `shmfile` | `shmSysFileNo` | `core/kernel/shm.dart` | *(none)* | 0164 |
 
-**Seventeen syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
+**Thirty-three syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
 so the allocated set is 0-10 and 12-16. **That gap is the registry working, not a bug in it**:
 `ioctl` was implemented after `fdwait` was named and took the next free number rather than the next
 number, and M20's three channel calls did the same thing again on the next merge -- they had claimed
@@ -89,12 +103,278 @@ again**, because `wmSysSurfaceNo` lives in a file neither of those branches has;
 would have conflicted. Taking 23 up front is the same move the registry has now recorded four times,
 for the same reason: *the cheaper move is the correct one, and the number is not the interface.*
 
+**Ops 9 and 10 on 23, and why they are not syscalls 35 and 36.** ADR-0192. `op = wmOpScreen` (9)
+answers the LIVE scanout as `(w << 32) | h`, or the window table as four packed bytes, in `rax`; `op =
+wmOpPaint` (10) applies ONE `osgfx.h` primitive — AA rrect, vertical gradient, blur elevation, a
+Roboto outline run, or a measure — to a surface the caller already owns. Both are things a client asks
+about *its own compositor session*, which is what 23 already is: `wmOpAttach` returns an address and
+`wmOpCommit` returns a frame count through the same eight-word descriptor. A separate number would
+have meant a second capability check against the same window table for no new authority. **The
+descriptor words are reinterpreted per op** and `core/user/frame/osxui_app.h` names them
+(`OSXUI_APP_KIND`, `OSXUI_APP_XY`, `OSXUI_APP_SHAPE`, …) so a reader is not mapping "H" onto "run
+length" unaided. 11 stays `fdwait`; no row was added to the table above, because no number was taken.
+
 **23 has no `oslibc.h` name**, for the channel's reason and one of its own. The libc has no binding
 for a pointer-to-descriptor call, and a `wmsurface()` in `oslibc.h` would be a public interface to
-an eight-word struct whose damage-rectangle words are not yet used by the compositor at all
-(GAP-0301). `d2-compositor/prog.c` declares `SYS_WMSURFACE` itself, the way `m20-ipc`'s program
+an eight-word struct whose damage-rectangle words D6 now honours (ADR-0052).
+`d2-compositor/prog.c` declares `SYS_WMSURFACE` itself, the way `m20-ipc`'s program
 declares its three and `d1-mouse`'s declares `SYS_MOUSE`, so the number lives in exactly two places
 — `core/kernel/wm.dart` and that harness — and both are listed here.
+
+**Why `kbdevent` is 24.** D2 (ADR-0054). `kbdevent(op)` pops one raw keyboard event
+(`op = 0`), or returns the overflow counter (`op = 1`), or the queued count (`op = 2`).
+20 is `mouse`, 23 is `wmsurface`, 21 and 22 are taken on other lines, 11 is still
+`fdwait`. Same collision rule, applied a fifth time.
+
+**24 has no `oslibc.h` name**, for the channel's reason and `mouse`'s: a `kbdevent()`
+in the libc would be a public interface to a packed `u64` whose bit layout is the
+queue's, and D2 deliberately did not invent one. `d2-input` and `d9-focus` declare
+`SYS_KBDEVENT` themselves. D9 (ADR-0062) gates the pop: when `wmMetaFocus` is
+live, only the focused window's owner reads the queue; everyone else pops 0.
+No new number. 11, 21 and 22 stay reserved.
+
+**Why `wmevent` is 25.** D7 (ADR-0055). `wmevent(op)` pops one pointer event
+for the calling process's window (`op = 0`), or returns that window's
+overflow counter (`op = 1`), or its queued count (`op = 2`). 20 is `mouse`,
+23 is `wmsurface`, 24 is `kbdevent`, 21 and 22 are taken on other lines, 11
+is still `fdwait`. Same collision rule, applied a sixth time.
+
+**25 has no `oslibc.h` name**, for the channel's reason and `kbdevent`'s: a
+`wmevent()` in the libc would be a public interface to a packed `u64` whose
+bit layout is the click queue's, and D7 deliberately did not invent one.
+`d7-click`'s program declares `SYS_WMEVENT` itself, so the number lives in
+exactly two places — `core/kernel/wmevent.dart` and that harness — and both
+are listed here. ADR-0142 adds types 2/3/4 (configure / enter / leave)
+on the same syscall. 11 stays `fdwait`. No new number.
+
+**Why `spawn` is 26.** STUDIO2 (ADR-0078). A live process starts another
+process by 8.3 name: `spawn(namePtr, nameLen) -> slot`. 20 is `mouse`,
+23 is `wmsurface`, 24 is `kbdevent`, 25 is `wmevent`, 11 is still
+`fdwait`, 21 and 22 are taken on other lines. Same collision rule,
+applied a seventh time.
+
+**26 has no `oslibc.h` name**, for the channel's reason and because a
+`spawn()` in the libc would be APP7's full `spawn(name, argv)` and this
+call is the name-only minimum a FRAME launcher needs. `osframe.h` names
+`SYS_SPAWN`; `studio.c` includes that header. The number lives in the
+kernel, the registry, and the FRAME header.
+
+**Why `mmap` is 27.** ADR-0128. A named platform process maps anonymous
+pages of a requested length: `mmap(len) -> va`. 11 stays `fdwait`. 21
+and 22 stay reserved on other lines. 26 is `spawn`. Same collision
+rule, applied an eighth time. This is not POSIX `mmap` (no fd, no
+`munmap`, no `MAP_SHARED`) and it is not TAP/FILES — `ASK.ELF` of the
+same bytes is `heapRetBadArg`.
+
+**27 has no `oslibc.h` name**, for the channel's reason and because a
+`mmap()` in the libc would be the POSIX six-argument call. The number
+lives in the kernel, the registry, and `plat-map/`'s program.
+
+**Why `clone` is 28.** ADR-0130. A named platform process starts a
+sibling on its own page tables: `clone(fn, stack) -> slot`. 11 stays
+`fdwait`. 21 and 22 stay reserved on other lines. 26 is `spawn`, 27
+is `mmap`. Same collision rule, applied a ninth time. This is not
+Linux `clone` (no flags, no TLS, no `CLONE_CHILD_CLEARTID`) and it
+is not TAP/FILES — `ASK.ELF` of the same bytes is `cloneRetBadArg`.
+ADR-0129 is Graphite MakeVulkan on another line.
+
+**28 has no `oslibc.h` name**, for the channel's reason and because a
+`clone()` in the libc would be the Linux flags call. The number lives
+in the kernel, the registry, and `plat-clone/`'s program.
+
+**Why `dlopen` is 29.** ADR-0144. `dlopen(namePtr, nameLen) -> va`
+maps our FAT-resident tiny ET_DYN for a named platform process and
+returns the VA of `so_mark`. 11 stays `fdwait`. 21 and 22 stay
+reserved on other lines. 26 is `spawn`, 27 is `mmap`, 28 is `clone`.
+Same collision rule, applied a tenth time. This is not glibc
+`dlopen` (no `RTLD_*`, no constructor, one symbol) and it is not
+TAP/FILES — `ASK.ELF` of the same bytes is `elfDlopenRetBadArg`.
+
+**29 has no `oslibc.h` name**, for the channel's reason and because a
+`dlopen()` in the libc would be glibc's. The number lives in the
+kernel, the registry, and `plat-dl/`'s program.
+
+**Why `futex` is 30.** ADR-0146. `futex(op, addr, val)` waits
+while `*addr == val` (op 0) or wakes up to `val` waiters on
+`addr` (op 1). 11 stays `fdwait`. 21 and 22 stay reserved on
+other lines. 26 is `spawn`, 27 is `mmap`, 28 is `clone`, 29 is
+`dlopen`. Same collision rule, applied an eleventh time. This
+is not Linux `futex` (no `FUTEX_*` flags, no timeout, VA token
+for CLONE_VM siblings) and it is not TAP/FILES — `ASK.ELF` of
+the same bytes is `futexRetBadArg`. ADR-0145 is VirtIO-net on
+another line.
+
+**30 has no `oslibc.h` name**, for the channel's reason and because a
+`futex()` in the libc would be Linux's. The number lives in the
+kernel, the registry, and `plat-futex/`'s program.
+
+**Why `unlink` is 31 and `rename` is 32.** ADR-0147 (APP4).
+`unlink(namePtr, nameLen)` marks a root entry 0xE5 and frees its
+chain. `rename(oldPtr, oldLen, newPtr, newLen)` rewrites the
+source entry's 11 name bytes; an existing dest is freed first.
+11 stays `fdwait`. 30 is `futex`. Same collision rule, applied a
+twelfth time. Both have `oslibc.h` names because ring-3 file
+programs already include that header for `open`/`fdwrite`.
+
+**Why `setfs` is 33.** ADR-0148. `setfs(base)` plants
+`IA32_FS_BASE` for a named platform process so a `%fs:` load
+or store reaches [base]. 11 stays `fdwait`. 21 and 22 stay
+reserved on other lines. 30 is `futex`, 31/32 are
+`unlink`/`rename`. Same collision rule, applied a thirteenth
+time. This is not Linux `arch_prctl` (no `ARCH_SET_GS`, no
+get) and it is not TAP/FILES — `ASK.ELF` of the same bytes is
+`setfsRetBadArg`. Without the MSR write a `%fs:0` store faults
+at VA 0, so the derived TLS line cannot print.
+
+**33 has no `oslibc.h` name**, for the channel's reason and because a
+`arch_prctl()` in the libc would be Linux's. The number lives in the
+kernel, the registry, and `plat-tls/`'s program.
+
+**Why `shmgrow` is 34.** ADR-0150. `shmgrow(handle, newPages)`
+extends a live region in place up to `shmMaxPages` and maps the new
+pages into every address space that currently maps the region
+(ADR-0158). Refuses when the caller is not mapped or not RW. 11
+stays `fdwait`. 33 is `setfs`. Same collision rule, applied a
+fourteenth time. This is the ADR-0142 leftover after configure: a
+client that attached a small shm can grow it without a new region.
+
+**34 has no `oslibc.h` name**, for the channel's reason. The number
+lives in the kernel, the registry, and `shm-grow/` / `shm-multi/`'s
+programs.
+
+**Why `shmshrink` is 35.** ADR-0156. `shmshrink(handle, newPages)`
+truncates a live region in place, unmaps the trailing pages from
+every mapper (ADR-0158), and returns their frames. 11 stays
+`fdwait`. 34 is `shmgrow`. Same collision rule, applied a fifteenth
+time. This is the GAP-0234 shrink remainder after grow.
+
+**35 has no `oslibc.h` name**, for the channel's reason. The number
+lives in the kernel, the registry, and `shm-shrink/` /
+`shm-multi/`'s programs.
+
+**Why `mprotect` is 36.** ADR-0163. `mprotect(handle, perms)` changes
+W on an already-mapped shm window (downgrade RW→RO after publish).
+`shmmap` also gains `MAP_FIXED` (perms bit `0x100`, `rcx` = VA):
+wrong address is `shmRetBadFixed`, overlap stays `shmRetMapped`.
+11 stays `fdwait`. 35 is `shmshrink`. Same collision rule, applied
+a sixteenth time. Closes the mprotect + MAP_FIXED doors of GAP-0235;
+file backing and demand paging closed by ADR-0164.
+
+**36 has no `oslibc.h` name**, for the channel's reason. The number
+lives in the kernel, the registry, and `mmap-prot/`'s program.
+
+**Why `shmfile` is 37.** ADR-0164. `shmfile(fd) -> handle` creates a
+RO shm region sized to an open FAT file; pages stay not-present until
+first touch (`shmDemandTry` on `#PF` NOTPRES fills from the fd and
+retries). 11 stays `fdwait`. 36 is `mprotect`. Same collision rule,
+applied a seventeenth time. Closes the file-backing and demand-paging
+doors of GAP-0235.
+
+**37 has no `oslibc.h` name**, for the channel's reason. The number
+lives in the kernel, the registry, and `mmap-file/`'s program.
+
+**ADR-0158 adds no number.** Multi-mapper grow/shrink reuses 34 and
+35. 11 stays `fdwait`. Partial / offset map stay GAP-0234.
+
+**ADR-0160 adds no number.** Partial / offset map reuses `shmmap`
+(18) with `rdx = (offset << 16) | count` (`count == 0` = whole).
+Capability words carry the window. 11 stays `fdwait`. 34/35 stay
+`shmgrow`/`shmshrink`. Closes the GAP-0234 map remainder.
+
+**ADR-0152 adds no number.** The first honest libc door reuses
+`dlopen` (29): OUR tiny FAT `LIBC.SO` exports `write`, X LOADs are
+remapped R+X, and the call returns MARK for the derived LINE.
+11 stays `fdwait`. Not glibc. Not the 32 `DT_NEEDED`. Not 189 MiB.
+
+**ADR-0154 adds no number.** The platform window is raised to
+112 MiB (`plat-huge/`); `mmap` (27) plants that fraction of CEF
+`.text` under the 128 MiB PMM floor. 11 stays `fdwait`. Not the
+remaining 77 MiB. Not glibc. Not `OnPaint`.
+
+**ADR-0155 adds no number.** `MAP_2MIB_PAGES` / `pmmMaxFrames` rise
+together to 256 MiB and the platform window to the full **189 MiB**
+CEF `.text` plant (`plat-huge/`). 11 stays `fdwait`. Not glibc.
+Not the 32 `DT_NEEDED`. Not `OnPaint`.
+
+**ADR-0157 adds no number.** A named `PLAT.ELF` walks two FAT
+`DT_NEEDED` (`LIBC.SO` + `LIBM.SO`) through `dlopen` (29); `need_fn`
+joins `write` / `so_mark` on the resolve list (`plat-need/`). 11
+stays `fdwait`. Satisfies **2 of 32** CEF `DT_NEEDED` stand-ins;
+**30 remain**. Not glibc. Not `OnPaint`.
+
+**ADR-0160 adds no number.** A named `PLAT.ELF` walks four FAT
+`DT_NEEDED` (`LIBC.SO` + `LIBM.SO` + `LIBDL.SO` + `LIBPT.SO`)
+through `dlopen` (29); `dl_fn` / `pt_fn` join the resolve list
+(`plat-need2/`). 11 stays `fdwait`. Satisfies **4 of 32** CEF
+`DT_NEEDED` stand-ins; **28 remain**. Not glibc. Not `OnPaint`.
+
+**ADR-0162 adds no number.** A named `PLAT.ELF` walks eight FAT
+`DT_NEEDED` (`LIBC.SO` + `LIBM.SO` + `LIBDL.SO` + `LIBPT.SO` +
+`LIBGB.SO` + `LIBGO.SO` + `LIBNP.SO` + `LIBNS.SO`) through
+`dlopen` (29); `gb_fn` / `go_fn` / `np_fn` / `ns_fn` join the
+resolve list (`plat-need3/`). 11 stays `fdwait`. Satisfies
+**8 of 32** CEF `DT_NEEDED` stand-ins; **24 remain**. Not glibc.
+Not `OnPaint`.
+
+**ADR-0163 adds no number.** A named `PLAT.ELF` walks sixteen FAT
+`DT_NEEDED` (ADR-0162's eight plus `LIBNU.SO` + `LIBSM.SO` +
+`LIBDB.SO` + `LIBGI.SO` + `LIBAT.SO` + `LIBAB.SO` + `LIBCU.SO` +
+`LIBX1.SO`) through `dlopen` (29); `nu_fn` / `sm_fn` / `db_fn` /
+`gi_fn` / `at_fn` / `ab_fn` / `cu_fn` / `x1_fn` join the resolve
+list (`plat-need4/`). 11 stays `fdwait`. Satisfies **16 of 32**
+CEF `DT_NEEDED` stand-ins; **16 remain**. Not glibc. Not `OnPaint`.
+
+**ADR-0165 adds no number.** A named `PLAT.ELF` walks thirty-two
+FAT `DT_NEEDED` through `dlopen` (29); `xc_fn`..`ld_fn` join the
+resolve list (`plat-need5/`). 11 stays `fdwait`. Satisfies
+**32 of 32** CEF `DT_NEEDED` stand-ins. Not glibc. Not `OnPaint`.
+
+**ADR-0166 adds no number.** OnPaint-shaped stand-in
+(`oschrome_on_paint`, `browse-paint/`) reuses the existing FRAME
+path. 11 stays `fdwait`. Not official libcef.
+
+**ADR-0167 adds no number.** A named `PLAT.ELF` `dlopen`s a
+measured official `CEF.SO` slice (`cef-wire/`); `cef_initialize`
+joins the resolve list. 11 stays `fdwait`. Not full libcef. Not
+`OnPaint`.
+
+**ADR-0168 adds no number.** A named `PLAT.ELF` `dlopen`s maps
+full official libcef LOADs (RO+RX) from a host-backed plant
+(`cef-load/`). 11 stays `fdwait`. Not glibc UND. Not `OnPaint`.
+
+**ADR-0133 adds no number.** Live Start / close / min call
+`osxui_button` through the existing compositor path. 11 stays
+`fdwait`.
+
+**ADR-0134 adds no number.** Graphite MakeVulkan opens a kernel
+ICD when Venus capset 4 is offered. 11 stays `fdwait`.
+
+**ADR-0172 adds no number.** Venus CONTEXT_INIT + blob encodes
+retained SPIR-V (`de-graphite6/`). 11 stays `fdwait`.
+
+**ADR-0174 adds no number.** Real-named `libdl.so.2` resolves
+through planted `SOMAP.TXT` → FAT `LIBDL.SO` (`cef-dl/`). 11
+stays `fdwait`. Not the other 31 sonames. Not OnPaint.
+
+**ADR-0175 adds no number.** Display door (`sit-in-view.sh` /
+`view-door/`): cocoa zoom-to-fit + Venus sdl,gl + x11vnc. 11
+stays `fdwait`. Not a second hypervisor.
+
+**ADR-0135 adds no number.** A decoded frame commits through
+`wmsurface` (23). The hidden media command and Start PLAY.ELF
+stay commands. 11 stays `fdwait`.
+
+**ADR-0136 adds no number.** Live hex pids on the reflection
+panel call `osxui_hex` / `osxui_label` through the existing
+compositor path. 11 stays `fdwait`.
+
+**ADR-0141 adds no number.** Session chrome on the live GOP
+aperture is `fb` + `wm on` / `wm chrome` through the existing
+scanout fallback. 11 stays `fdwait`.
+
+**ADR-0151 adds no number.** OTA host TCP fetch (`ota get`) is a
+shell command over the existing e1000 path. 11 stays `fdwait`.
+Not plat-tls. Not HTTPS.
 
 **Why the channel syscalls are 13, 14, 15 and not 11, 12, 13.** They were 11, 12 and 13 in ADR-0027,
 chosen on a branch that forked from `d4e768c` — before this file existed. This registry landed in

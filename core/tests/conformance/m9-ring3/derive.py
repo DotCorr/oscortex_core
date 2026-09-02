@@ -43,15 +43,19 @@ import re
 import sys
 
 # Must match core/kernel/vm.dart. run.sh asserts these against the source rather
-# than trusting the copy.
+# than trusting the copy. HAND-EDITED, deliberately: this is the second entry in
+# a double-entry pair, so deriving it from vm.dart would delete the check. Moved
+# for ADR-0189 (the driver picks the mode), which took vmFineBytes 4MiB -> 32MiB,
+# vmMapBytes 128MiB -> 256MiB and vmFrameCount 6 -> 20 so a driver-reported mode
+# larger than 128MiB of aperture can be mapped.
 PAGE_BYTES = 4096
 BIG_BYTES = 2097152
-FINE_BYTES = 4194304
+FINE_BYTES = 33554432
 LOW_BYTES = 1048576
-MAP_BYTES = 134217728
+MAP_BYTES = 268435456
 PCI_BASE = 0xC0000000
 PCI_END = 0x100000000
-FRAME_COUNT = 6
+FRAME_COUNT = 20
 
 PRESENT = 1 << 0
 WRITABLE = 1 << 1

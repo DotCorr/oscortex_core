@@ -1,9 +1,24 @@
 # GPU support in oscortex — the honest assessment
 
-**Status: DESIGN, and mostly a NO.** Nothing here is implemented and most of what the title asks for
-is not going to be. This document exists because "GPU support across the major GPUs" is on the owner's
-list, it is the least tractable item on it, and the useful thing an engineer can do with an intractable
-request is say exactly where it stops being tractable and what is on the near side of that line.
+**Status: DESIGN, G0–G12 implemented.** Real vendor GPUs remain a NO. VirtIO-GPU 2D is G0–G8. G9 is `GET_CAPSET_INFO`. G10 is the device executing virgl work with alpha (`virtio-gpu-gl-pci` in Docker QEMU). G11 binds the osgfx compose buffer to that 3D scanout (upload, not Graphite). G12 is the explicit app GPU (`osgpu.h`): games call it; UI never does. Skia-on-this-GPU, swapchain, and shaders remain leftover.
+G0 — recognise the device and print its capability table — landed in `core/kernel/virtgpu.dart`
+(ADR-0059, `tests/conformance/g0-virtgpu/run.sh`). G1 — `pciWrite32` and bus-master — landed
+in `pci.dart` + the same file (ADR-0065, `tests/conformance/g1-virtgpu/run.sh`). G2 —
+`device_status` → `FEATURES_OK` → `DRIVER_OK` — landed in the same file (ADR-0067,
+`tests/conformance/g2-virtgpu/run.sh`). G3 — one control virtqueue and `GET_DISPLAY_INFO` —
+landed in the same file (ADR-0074, `tests/conformance/g3-virtgpu/run.sh`). G4 — one resource,
+`SET_SCANOUT`, and a derived pixel — landed in the same file (ADR-0079,
+`tests/conformance/g4-virtgpu/run.sh`). G5 — the framebuffer console on that
+backing — landed in the same file (ADR-0084, `tests/conformance/g5-virtgpu/run.sh`).
+G6 — damage as a pixel count, and a scroll that flushes the moved
+rectangle — landed in the same file (ADR-0086,
+`tests/conformance/g6-virtgpu/run.sh`). G7 — the same G5 walk on
+`-device virtio-gpu-pci` with no VGA-class device, `fb` printing
+`FB NONE` — landed in the same file (ADR-0091,
+`tests/conformance/g7-virtgpu/run.sh`). This document exists because
+"GPU support across the major GPUs" is on the owner's list, it is the least tractable item on it,
+and the useful thing an engineer can do with an intractable request is say exactly where it stops
+being tractable and what is on the near side of that line.
 
 **The one-paragraph answer.** A driver for Intel, AMD or NVIDIA graphics is not a driver in the sense
 this kernel has used the word eleven times. Measured against this kernel's 22,088 lines it is **11× to
@@ -26,8 +41,21 @@ kernel actually is.
 | **What it needs** | Three things this kernel does not have: **PCI capability-list walking**, **PCI config-space writes**, and **a virtqueue**. All three are small. `pmm.dart`'s one-frame-at-a-time limit is **not** a blocker, and the identity map is a gift. | §3 |
 | **The display protocol** | The drawing-verb protocol is **not** a dead end. It is the layer that survives — but only if one decision is taken now, and §4.3 names it. | §4 |
 
-**What to build first, if anything is built:** **G0 — recognise the device** (§5). It is thirty lines,
-it costs nothing, and it turns every claim in §3 from an argument into a measurement.
+**What to build first, if anything is built:** **G3 — one virtqueue command** (§5). G0 landed (ADR-0059):
+the device is found, the five vendor capabilities print, and they resolve against QEMU's own
+`info pci`. G1 landed (ADR-0065): `pciWrite32` exists and the command sets bus-master, with
+the before value taken from the q35 ECAM window rather than from the kernel. G2 landed (ADR-0067):
+the status sequence reaches `DRIVER_OK` (`0x0F`) and accepts only `VIRTIO_F_VERSION_1`.
+G3 landed (ADR-0074): queue 0 exists, `GET_DISPLAY_INFO` returns `0x1101`, and scanout 0
+matches the `xres`/`yres` the harness launched with. G4 landed (ADR-0079): resource 1
+is created, backed, scanned out, and one derived colour is in both the guest
+backing store and QEMU's screendump. G5 landed (ADR-0084): the framebuffer
+console writes that backing store and issues one `RESOURCE_FLUSH` per
+glyph cell of the banner. G6 landed (ADR-0086): a scroll copies the
+backing and flushes `fbWidth × (fbHeight - glyphHeight)` pixels, and
+the kernel prints that number. G7 landed (ADR-0091): `virtio-gpu-pci`
+with no VGA-class device still paints and flushes; `fb` prints
+`FB NONE`.
 
 **A note on citations, because this document quotes two other numbered documents.** A bare `§n.n`
 means **this document**. A citation to the VIRTIO specification is always written as *"VIRTIO §5.7.6.5"*
@@ -874,10 +902,12 @@ That is a complete and consistent explanation, and it is why (1) and (2) above a
 
 | requirement | status | size of the gap |
 |---|---|---|
-| find the device on PCI | **have it** — `pciScanBus` walks bus 0 and prints class/subclass | none, except that nothing is *retained* (GAP-0067 item 1) |
-| walk the PCI capability list at `0x34` | **missing** | ~40 lines. A `while` over `cap_next`, matching vendor cap `0x09` and reading `cfg_type` |
-| read a 64-bit BAR | **missing** (`fbFindVgaBar` reads one dword) | ~10 lines |
-| **write PCI configuration space (bus master)** | **missing, and mandatory** — measured `cmd=0x0103`, bit 2 clear | **~5 lines.** §3.2 |
+| find the device on PCI | **have it** — `pciScanBus` walks bus 0 and prints class/subclass; G0 additionally matches `1AF4:1050` | none, except that nothing is *retained* (GAP-0067 item 1) |
+| walk the PCI capability list at `0x34` | **have it for this device** — `virtgpu.dart` / G0. `pci.dart` still does not | none for VirtIO-GPU. A general walker is still missing |
+| read a 64-bit BAR | **have it for this device** — `virtgpuBarBase`. `fbFindVgaBar` still reads one dword | none for VirtIO-GPU |
+| **write PCI configuration space (bus master)** | **have it** — `pciWrite32` in `pci.dart`; G1 sets bit 2 and reads it back (ADR-0065) | none for the write |
+| **VirtIO `device_status` to `DRIVER_OK`** | **have it** — G2 (ADR-0067) writes the §3.1.1 sequence on COMMON_CFG and prints the offered features | none for the status walk |
+| **one virtqueue + `GET_DISPLAY_INFO`** | **have it** — G3 (ADR-0074) enables queue 0, submits a 24-byte header, and prints scanout 0 | none for the first command. G4 still needs a resource |
 | MMIO reads/writes to a BAR at the specification's declared field widths | **have it** — `Pointer<u16>`/`Pointer<u32>`, and the region is identity-mapped | none, but §3.8 rule (3) must be obeyed deliberately |
 | physically-contiguous ≤4 KiB DMA memory, 16-byte aligned | **have it** — `allocFrame()` returns 4 KiB-aligned frames, which satisfies VIRTIO §2.7.1's 16/2/4-byte requirements trivially | none. §3.3 |
 | physically-contiguous >4 KiB DMA memory | **missing** (GAP-0076 item 1) | **not needed.** §3.3 |
@@ -1052,6 +1082,13 @@ G7, not the beginning.
 
 ### G0 — The device is found and its capabilities are read
 
+**Status: implemented (ADR-0059).** `core/kernel/virtgpu.dart` walks vendor `0x1AF4` device
+`0x1050`, prints each vendor capability, and resolves `BAR_base + offset`. It programs
+nothing: `virtgpuInit` is a no-op, the command is hidden, an absent device prints
+`VIRTIO NONE`. Verified by `tests/conformance/g0-virtgpu/run.sh`. G1–G7
+landed on the same command. Leftover is two-resource `SET_SCANOUT`
+(GAP-0070 item 6).
+
 **Blocked on: nothing.** This is the whole of the §3.1 work and none of the §3.2 or §3.3 work.
 
 Add `pciFindByClassAndVendor`-style discovery for vendor `0x1AF4`, follow the capability list from
@@ -1071,6 +1108,15 @@ to a base address inside `[BAR_base, BAR_base + BAR_len)` for all five capabilit
 
 ### G1 — Bus mastering is on, and the kernel can prove it
 
+**Status: implemented (ADR-0065).** `pciWrite32` lives in `core/kernel/pci.dart`.
+`virtgpuEnableMaster` ORs bit 2 of the command register (status half zeroed),
+prints `VIRTIO CMD BEFORE` / `VIRTIO CMD AFTER`, and prints `VIRTIO CMD STUCK`
+if the bit did not stick. Called from the `virtgpu` command, not from
+`virtgpuInit`. An absent device still prints `VIRTIO NONE` and writes nothing.
+Verified by `tests/conformance/g1-virtgpu/run.sh`. Leftover is G4 (a pixel)
+through G7; G2 (ADR-0067) writes `device_status` and G3 (ADR-0074) writes the
+control queue. This rung does not issue a 2D command.
+
 **Blocked on: G0.** This is GAP-0067 item 2, closed.
 
 Add `pciWrite32` (§3.2). Set bit 2 of the command register, read it back, and refuse loudly if it did
@@ -1087,6 +1133,17 @@ to the wrong offset must fail the read-back refusal, which must print and must b
 ---
 
 ### G2 — The device negotiates, and reaches `DRIVER_OK`
+
+**Status: implemented (ADR-0067).** `virtgpuNegotiate` walks COMMON_CFG, writes
+`device_status = 0` and polls, then `ACKNOWLEDGE` / `DRIVER`, reads both
+feature words, accepts only `VIRTIO_F_VERSION_1`, writes `FEATURES_OK`,
+re-reads, and writes `DRIVER_OK`. Prints `VIRTIO FEAT`, `VIRTIO QUEUES` and
+`VIRTIO STATUS`. `FEATURES_OK` failing to stick prints `VIRTIO FEATOK CLEAR`
+and skips `DRIVER_OK`. Called from the `virtgpu` command after G1, not from
+`virtgpuInit`. An absent device still prints `VIRTIO NONE` and writes nothing.
+Verified by `tests/conformance/g2-virtgpu/run.sh`. Leftover is G4 (a pixel)
+through G7; G3 (ADR-0074) writes the control-queue enable field and issues
+`GET_DISPLAY_INFO`. This rung does not.
 
 **Blocked on: G1.**
 
@@ -1122,6 +1179,21 @@ leaving `FEATURES_OK` clear, and the harness must see the refusal printed.
 
 ### G3 — A virtqueue exists and the device answers one command
 
+**Status: implemented (ADR-0074).** `virtgpuOneCmd` selects queue 0, reads
+`queue_size`, allocates three zeroed frames, writes the three queue
+address registers as 32-bit halves (low first), enables the queue last,
+submits a 24-byte `GET_DISPLAY_INFO` (`0x0100`), and polls `used.idx`.
+Prints `QSIZE`, `NSCAN`, `USED`, `RESP` and scanout 0. A poll that never
+moves prints `VIRTIO QTIMEOUT`. `virtgpun` is the same walk without the
+notify store (QEMU/TCG still DMAs with BME clear; the doorbell is the
+write that actually moves `used.idx`). Called from the `virtgpu`
+command after G2, not from `virtgpuInit`. Verified by
+`tests/conformance/g3-virtgpu/run.sh`.
+G5 (ADR-0084) moved the console onto that backing, G6 (ADR-0086)
+made damage a number and scrolled it, and G7 (ADR-0091) ran that
+walk on `virtio-gpu-pci` with no VGA. Leftover is two-resource
+`SET_SCANOUT` (GAP-0070 item 6).
+
 **Blocked on: G2.** This is the milestone that proves DMA works, and it is the one that matters.
 
 Per VIRTIO §4.1.5.1.3: write `queue_select = 0`; read `queue_size` (**0 means the queue does not exist** —
@@ -1153,16 +1225,28 @@ that.** The kernel must also print `num_scanouts` from the device configuration 
 require it to equal QEMU's `max_outputs`, defaulted to 1.
 *Anti-vacuity:* the harness fails if the reported width or height is zero, and fails if `used.idx`
 never advanced (the kernel must print it).
-*Negative control (this is the important one):* **the same boot with the G1 bus-master write removed
-must fail** — the device cannot read the descriptor table without it, `used.idx` never advances, and
-the kernel must print a poll-timeout rather than hanging. That control is what makes §3.2 a measured
-claim instead of an argument.
+*Negative control (this is the important one):* **the same walk with the notify store omitted
+must fail** — `used.idx` never advances, and the kernel must print a poll-timeout rather than
+hanging. That is `virtgpun`. QEMU/TCG still performs virtqueue DMA with bus-master clear, so
+omitting G1's write is not a usable control on this machine (G1 already proved the bit sticks
+via the q35 ECAM window). The doorbell is the write that actually moves the used ring.
 
 ---
 
 ### G4 — A resource is created, backed, scanned out, and one pixel is provably on screen
 
-**Blocked on: G3.**
+**Status: implemented (ADR-0079).** `virtgpu <hex>` (after G3 on the same
+command) creates resource 1 at the reported width×height, attaches a
+scatter-gather of `allocFrame()` pages, `SET_SCANOUT`, writes the typed
+colour into the first backing word, transfers a 1×1 rect, and flushes.
+Each reply prints `VIRTIO PIX` so G3's `RESP` count stays one on the
+bare command. `virtgpua` omits attach and requires an error PIX from
+`SET_SCANOUT`. `virtgpuInit` stays a no-op. Verified by
+`tests/conformance/g4-virtgpu/run.sh`. G5 (ADR-0084) moved the
+console, G6 (ADR-0086) scrolled it, and G7 (ADR-0091) dropped VGA.
+Leftover is two-resource `SET_SCANOUT` (GAP-0070 item 6).
+
+**Blocked on: G3.** (closed.)
 
 `RESOURCE_CREATE_2D` (`resource_id = 1` — guest-chosen and **non-zero**, since 0 is reserved;
 `format = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2`, which is the `0x00RRGGBB` little-endian layout
@@ -1208,7 +1292,20 @@ store, plus the response codes, plus a second boot with a different derived colo
 
 ### G5 — The framebuffer console runs on VirtIO instead of dispi
 
-**Blocked on: G4.** This is the milestone that makes the driver *load-bearing* rather than a demo.
+**Status: implemented (ADR-0084).** `virtgpuc` (after G3 on the same
+command) creates resource 1, attaches a contiguous scatter-gather of
+`allocFrame()` pages, `SET_SCANOUT`, points `fbStateBase` at the first
+backing frame, and paints the existing banner. `fbDrawGlyph` is
+unchanged; `fbPutc` calls `virtgpuCell`, which issues
+`TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH` for the damaged 8×16 cell when
+the live base is ordinary RAM. `virtgpue` omits that flush. `virtgpuInit`
+stays a no-op. Bare `virtgpu` / `virtgpu <hex>` stay the G3 / G4 walks.
+`fb` still takes GOP then Bochs (ADR-0064). Verified by
+`tests/conformance/g5-virtgpu/run.sh`. G6 (ADR-0086) closed damage /
+scroll. G7 (ADR-0091) closed `virtio-gpu-pci` with no VGA. Leftover
+is two-resource `SET_SCANOUT` (GAP-0070 item 6).
+
+**Blocked on: G4.** (closed.) This is the milestone that makes the driver *load-bearing* rather than a demo.
 
 `fbPutc`/`fbDrawGlyph` keep writing pixels into a linear buffer; what changes is that the buffer is the
 VirtIO resource's backing store in ordinary RAM rather than the BAR, and that a `flush` step issues
@@ -1231,42 +1328,293 @@ the device round trip rather than the drawing.
 
 ### G6 — Damage is a number, and scrolling exists
 
-**Blocked on: G5.** This closes **GAP-0070 item 1** (no scrolling) and **item 6** (no double buffering)
-together, because on this device they are the same milestone.
+**Status: implemented (ADR-0086).** `virtgpus` (after the G5 walk on the
+same command) paints the banner a second time and calls `fbScroll`.
+The guest copies `fbWidth × (fbHeight - glyphHeight)` pixels up a
+glyph row, fills the last row, and issues `TRANSFER_TO_HOST_2D` +
+`RESOURCE_FLUSH` of that rectangle. The leftover word is the last
+rect's pixel count, printed as `VIRTIO DAMAGE`. One cell is 128;
+a scroll is `800 × 584 = 467200` (`00072000`), not 480,000.
+`virtgpux` is the same walk with every flush omitted. `fbScroll`
+no-ops on a BAR / GOP aperture so the Bochs path still stops
+(GAP-0070 item 1). `virtgpuInit` stays a no-op. Verified by
+`tests/conformance/g6-virtgpu/run.sh`. G7 (ADR-0091) closed
+`virtio-gpu-pci` with no VGA. Leftover is two-resource double
+buffering (GAP-0070 item 6).
 
-Two resources, `SET_SCANOUT` alternating between them: that is real double buffering with no VRAM
-arithmetic and no Y-offset convention (§4.2 item 2). Scrolling is a `TRANSFER_TO_HOST_2D` of the moved
-region — the 1.9 MiB `memcpy` GAP-0070 item 1 says DCDart cannot do is now a rectangle in a command,
-though note honestly that the *guest-side* move of the backing store is still a byte-at-a-time copy
-until DCDart has `memcpy`, so what this actually buys is a smaller transfer, not a free scroll.
+**Blocked on: G5.** (closed.) This closes **GAP-0070 item 1** on the
+VirtIO console path. Item 6 (double buffering / two resources) is
+not this slice.
+
+Two resources, `SET_SCANOUT` alternating between them, would be real
+double buffering with no VRAM arithmetic and no Y-offset convention
+(§4.2 item 2). That is leftover after G7. What landed is the damage
+number and a scroll that is a `TRANSFER_TO_HOST_2D` of the moved
+region — the 1.9 MiB `memcpy` GAP-0070 item 1 says DCDart cannot do
+is now a rectangle in a command, though the *guest-side* move of the
+backing store is still a byte-at-a-time copy until DCDart has
+`memcpy`, so what this actually buys is a smaller transfer, not a
+free scroll.
 
 *Binary:* the kernel prints pixels-transferred-per-flush, exactly as `fatMetaReads`/`fatMetaHits` made
 caching a number at M14. Writing one character must produce the derived 8×16 = 128-pixel count, **not**
 480,000. Scrolling by one line must produce the derived count for `fbWidth × (fbHeight - glyphHeight)`.
 *Anti-vacuity:* the harness fails if the printed count is zero.
 *Negative control:* a build that always transfers the full rectangle must produce the big number, so
-the assertion is sensitive to damage tracking actually happening.
+the assertion is sensitive to damage tracking actually happening. `virtgpux` (paint + scroll, no
+flush) must leave `FLUSH` and `DAMAGE` at 0.
 
 ---
 
 ### G7 — `virtio-gpu-pci` with no VGA compatibility at all
 
-**Blocked on: G5.** This is the milestone that proves the driver is a driver and not a decoration on
+**Status: implemented (ADR-0091).** The G5 `virtgpuc` walk on
+`-vga none -device virtio-gpu-pci` (class `03/80`). Discovery is
+already vendor `0x1AF4` / device `0x1050` (G0); the mode still
+comes from `GET_DISPLAY_INFO`. `fb` prints `FB NONE` (ADR-0064
+`fbStrNoDev`) — this machine has no VGA-class BAR, so `FB NOVBE`
+would be a lie. `virtgpuInit` stays a no-op. Verified by
+`tests/conformance/g7-virtgpu/run.sh`. G8 (ADR-0093) closed
+two-resource `SET_SCANOUT` (GAP-0070 item 6) on this path.
+
+**Blocked on: G5.** (closed.) This is the milestone that proves the driver is a driver and not a decoration on
 the dispi path.
 
 `-device virtio-gpu-pci` is class `03/80`, has no linear framebuffer BAR, no dispi interface and no VGA
-BIOS. `fbFindVgaBar` cannot find it (§0.1) and must not be asked to. The device discovery must move to
-"vendor `0x1AF4`, VirtIO device ID `0x1050`", and the mode must come from `GET_DISPLAY_INFO` because
+BIOS. `fbFindVgaBar` cannot find it (§0.1) and must not be asked to. The device discovery is
+"vendor `0x1AF4`, VirtIO device ID `0x1050`", and the mode comes from `GET_DISPLAY_INFO` because
 there is no other source for it.
 
-*Binary:* the same G5 glyph read-back, on a boot whose QEMU command line contains **no `-vga` argument
-and no VGA-class device at all** — the harness asserts this by requiring QEMU's `info pci` output to
-contain **zero** devices of class "VGA controller". The kernel must additionally print `FB NOVBE` if
-asked to run the old `fb` command, proving the dispi path is genuinely absent rather than quietly
-substituting.
-*Anti-vacuity:* the harness fails if `info pci` shows any VGA-class device.
-*Negative control:* the same boot with the class check reverted to subclass `0x00` must print
-`VIRTIO NONE` and produce no pixels.
+*Binary:* the same G5 glyph read-back, on a boot whose QEMU machine has **no VGA-class device at all**
+(`-vga none` suppresses the default stdvga; the harness asserts this by requiring QEMU's `info pci`
+output to contain **zero** devices of class "VGA controller"). The kernel must additionally print
+`FB NONE` if asked to run the old `fb` command, proving the dispi path is genuinely absent rather
+than quietly substituting. `FB NOVBE` is the other existing spelling and means a VGA BAR answered
+without dispi — not this machine.
+*Anti-vacuity:* the harness fails if `info pci` shows any VGA-class device, and fails if `fb`
+prints `FB BAR` or `FB NOVBE`.
+*Negative control:* `-vga std` (no virtio-gpu) must print `VIRTIO NONE` and produce no pixels.
+A discovery walk filtered to subclass `0x00` would also print `VIRTIO NONE` on this device.
+
+---
+
+### G8 — Two resources, and SET_SCANOUT flips between them
+
+**Status: implemented (ADR-0093).** `virtgpuf` creates resource 1
+and resource 2, attaches a contiguous backing run to each,
+`SET_SCANOUT` of resource 1, paints the banner into resource 1,
+paints the same banner into resource 2 at the next glyph row, then
+`SET_SCANOUT` of resource 2. Prints `VIRTIO RES`, two `VIRTIO BACK`
+addresses, `VIRTIO FRAMES`, `VIRTIO FLUSH`, and
+`VIRTIO FLIP 00000001 00000002`. `virtgpuy` is the same walk
+without the second `SET_SCANOUT`: both backings are painted and
+the flip line is absent. `virtgpuInit` stays a no-op. G5–G7
+commands are unchanged. Verified by
+`tests/conformance/g8-virtgpu/run.sh`. Leftover on this path is
+the cursor queue / interrupt-driven completion (not on the
+ladder). Bochs still has no double buffering.
+
+**Blocked on: G5.** (closed.) This closes **GAP-0070 item 6** on
+the VirtIO console path. Item 6 on the Bochs BAR is unchanged:
+glyphs still land in the scanned-out aperture, and this rung
+does not scroll Bochs.
+
+Two resources and an alternating `SET_SCANOUT` is the page-flip
+`gpu.md` §4.2 item 2 named — no VRAM arithmetic, no Y-offset
+convention. The second paint is at glyph row 1 so a guest memcpy
+of resource 1 cannot satisfy the read-back.
+
+*Binary:* the kernel prints two resource ids and two backing
+bases. After two paints the scanout target must change
+(`VIRTIO FLIP 00000001 00000002`). The harness dumps the
+newly scanned-out resource at the second paint's row and
+requires the banner derived from `fbFont8x16` in the built ELF
+(m5 form, not a PNG).
+*Anti-vacuity:* the harness fails if the two BACK addresses are
+equal, if FLIP names the same id twice, or if the dump is of
+row 0 of resource 2 (the memcpy of resource 1).
+*Negative control:* `virtgpuy` paints both resources and must
+not print the flip line. Pixel read-back of resource 2 still
+passes — the line measures the second `SET_SCANOUT`, not the blit.
+
+---
+
+### G9 — GET_CAPSET_INFO, the first 3D-path command
+
+**Status: implemented (ADR-0097).** `virtgpui` reuses the G3
+control queue, reads `num_capsets` from DEVICE_CFG +12, and
+submits `GET_CAPSET_INFO` (type `0x0108`) for capset index 0.
+Prints `VIRTIO CAPSETS` and `VIRTIO CAPINFO`. `virtgpuj` prints
+the config word and omits the submit: `CAPINFO` must not print.
+Feature negotiation stays `VIRTIO_F_VERSION_1` only (G2).
+`virtgpuInit` stays a no-op. G0–G8 commands are unchanged.
+Verified by `tests/conformance/g9-virtgpu/run.sh`.
+
+This Homebrew QEMU offers `num_capsets=0` and has no
+`virtio-gpu-gl-pci`. The device answers with an error type
+(`0x12xx`). That is the honest result: the OS sent a 3D-path
+command through the GPU virtqueue. It is not Skia, not Graphite,
+not Vulkan, not a shader, and not sit-in chrome.
+
+**Blocked on: G3.** (closed.) Leftover is virgl / Venus / a
+Graphite Vulkan backend that paints session chrome onto the
+same scanout. That needs a QEMU built against virglrenderer
+(or Venus) and is not this machine.
+
+*Binary:* after `GET_DISPLAY_INFO`, the kernel prints
+`VIRTIO CAPSETS` from the MMIO word and `VIRTIO CAPINFO` from
+the virtqueue reply. The reply type is neither 0 nor
+`GET_DISPLAY_INFO`.
+*Anti-vacuity:* `virtgpuj` still prints `CAPSETS` and must not
+print `CAPINFO`. A hardcoded `num_capsets = 0` without the
+DEVICE_CFG load fails the structural check.
+*Negative control:* `-vga std` prints `VIRTIO NONE` and no
+capset lines.
+
+---
+
+### Two uses. Do not mix them.
+
+**Owner, 2026-08-30.** The GPU is used two ways.
+
+1. **Implicit** — UI / osgfx / wm decide GPU vs CPU Skia. Apps do
+   not pick. That is the compositor path (G10–G11 paint fallback).
+   A FRAME client never calls `osgpu.h`.
+2. **Explicit** — `osgpu.h` (`osgpu_create` / `osgpu_submit` /
+   `osgpu_readback`) is a C header, like osframe, for apps that
+   need a GPU (games). Hidden `osgpug` hits G10 virgl today. A
+   later syscall may wrap the C stub; 11 stays `fdwait`. DCDart
+   does not become C++. C++ only behind the fence if the impl is
+   Vulkan/virgl. UI never requires the app to call osgpu. Games call osgpu.
+
+Leftover: swapchain, shaders.
+
+### Paint fallback — 3D GPU → CPU raster → 2D mailbox
+
+**Owner, 2026-08-30.** Same idea as GOP → Bochs → NONE
+(ADR-0064). One probe, never a blank desktop because there
+is no GPU.
+
+| order | probe | winner line | what it is |
+|---|---|---|---|
+| 1 | VirtIO-GPU 3D: `VIRTIO_GPU_F_VIRGL` (or later Venus) offered, context created, the device executes a command stream | `VIRTIO PAINT 3D` / `VIRTIO 3D OK` | transparency, opacity, animation. G10 |
+| 2 | else a CPU raster of the **same** osgfx/Skia scene | (sibling; not this slice — do not print `PAINT CPU` until that raster is real) | same chrome, worse cost. Not per-pixel `fbPutPixel` |
+| 3 | else the existing G4–G8 2D mailbox | `VIRTIO PAINT 2D` | CPU writes backing, `TRANSFER_TO_HOST_2D` + flush |
+| none | no VirtIO GPU at all | `VIRTIO PAINT NONE` | Bochs / GOP / `FB NONE` already exist |
+
+Homebrew QEMU 11.0.0 on this Mac has no `virtio-gpu-gl-pci`.
+G10's positive boot uses a QEMU built against virglrenderer
+(`virtio-gpu-gl-pci` + Xvfb `-display gtk,gl=on`). The 2D
+machines and G0–G9 contracts are unchanged.
+
+---
+
+### G10 — The device executes GPU work, including alpha
+
+**Status: implemented (ADR-0098).** New file
+`core/kernel/virtgpu3d.dart`. Hidden `virtgpug` negotiates
+`VIRTIO_GPU_F_VIRGL` (G2 still accepts `VERSION_1` only),
+`CTX_CREATE`, two `RESOURCE_CREATE_3D`, `SUBMIT_3D` (virgl
+`CLEAR` navy, `CLEAR` 50% red, `BLIT` with `alpha_blend`),
+`TRANSFER_FROM_HOST_3D` of one pixel inside the blit, then
+`SET_SCANOUT`. Prints `VIRTIO 3D OK`, `VIRTIO PAINT 3D`, and
+`VIRTIO 3D PIX` from the backing the **device** wrote.
+`virtgpuz` stops after the probe: no submit, no `3D OK`.
+`virtgpuInit` / `virtgpu3dInit` stay no-ops. G0–G9 commands
+are unchanged. Verified by `tests/conformance/g10-virgl/run.sh`
+(`virgl0/run.sh` is a pointer).
+
+This is not Mesa. It is a hand-built virgl stream: one
+navy clear, one translucent (50% red) clear, one blit.
+Host `glBlitFramebuffer` often copies, so the transferred
+pixel may be the GPU clear `A=0x80` rather than src-over.
+Either dword is device-written alpha, not a CPU store into
+BACK + flush labelled 3D.
+
+**Blocked on: G9.** (closed as the capset probe.) Leftover
+was session chrome on this scanout — that is G11 (upload
+of the osgfx compose buffer). Graphite / Vulkan **paint**
+of that same chrome is still the leftover.
+
+*3D QEMU on this arm64 Mac:* Homebrew 11.0.0 has no
+`virtio-gpu-gl-pci` (cocoa bottle, no virglrenderer).
+`scripts/build-qemu-gl.sh` builds `oscortex-qemu-gl:local`
+from `debian:sid-slim` + `qemu-system-modules-opengl` +
+`libvirglrenderer1` + Xvfb. Proven: QEMU 11.1.0
+(Debian `1:11.1.0+ds-2`), `LIBGL_ALWAYS_SOFTWARE=1`,
+`GALLIUM_DRIVER=llvmpipe`, `-display gtk,gl=on`.
+
+*Binary:* on that `virtio-gpu-gl-pci`, `virtgpug` prints
+`VIRTIO 3D OK`. The printed BACK dword is a GPU-written
+translucent: 50% red `A=0x80`, or src-over of that red
+over navy `0x184060` if the host blends — not navy, not
+full opaque red, not the G5 desktop constant `0x00101018`.
+*Anti-vacuity:* `virtgpuc` (G5 2D flush) must not print
+`VIRTIO 3D OK`. `virtgpuz` on the same 3D device must not
+print it either. Those result dwords must not appear as a
+CPU store in `virtgpu3d.dart`.
+*Negative control:* `-vga std` and Homebrew
+`virtio-gpu-pci` (no VIRGL bit) print `VIRTIO 3D NONE`
+and no `3D OK`.
+
+---
+
+### G11 — osgfx session chrome reaches VIRGL scanout
+
+**Status: implemented (ADR-0107).** Hidden `virtgpuk` appends
+to `virtgpu3d.dart`. After `wm gfx` has painted rounded
+chrome into the compose buffer, it negotiates VIRGL,
+`RESOURCE_CREATE_3D` of the GET_DISPLAY_INFO rectangle,
+`TRANSFER_TO_HOST_3D` of that buffer, `TRANSFER_FROM_HOST_3D`
+of the AABB corner and title interior, then `SET_SCANOUT`.
+Prints `VIRTIO 3D OK`, `VIRTIO PAINT 3D`, `VIRTIO OSGFX 3D`.
+G10 `virtgpug` / `virtgpuz` / CLEAR stay. `virtgpu3dInit`
+stays a no-op. Verified by `tests/conformance/g11-osgfx-gl/run.sh`.
+
+This is not Graphite and not a Mac `libskia.a`. The paint
+is Skia CPU raster (ADR-0110). The GPU path is upload +
+bind. Homebrew QEMU still has no `virtio-gpu-gl-pci`; the
+positive boot is the same Docker image as G10.
+
+*Binary:* on `virtio-gpu-gl-pci`, `virtgpuk` establishes the
+3D scanout, `wm gfx` plus two session windows paint, then
+`virtgpuk` again prints `VIRTIO OSGFX 3D`.
+AABB (window-0 origin) is desktop `0x184060`; title interior
+is title. Those dwords are `TRANSFER_FROM_HOST_3D` after a
+zero of the sample slot.
+*Anti-vacuity:* `virtgpuc` (G5) must not print `OSGFX 3D`.
+*Negative control:* `-vga std` and Homebrew `virtio-gpu-pci`
+print `VIRTIO 3D NONE` and no `3D OK`. `wm gfx` on Bochs
+still prints `WM GFX ON`.
+
+**Blocked on: G10.** (closed.) Leftover is Graphite / Vulkan
+paint behind `osgfx.h` onto this same scanout.
+
+---
+
+### G12 — Explicit app GPU (`osgpu.h`)
+
+**Status: implemented (ADR-0114).** `core/user/gpu/osgpu.h` is
+the games ABI: `osgpu_create`, `osgpu_submit` (CLEAR or
+triangle), `osgpu_readback`. Hidden `osgpug` calls the existing
+G10 virgl walk (`virtgpu3dGoApp`) and prints `OSGPU OK` /
+`OSGPU PIX` (device alpha, not a CPU blit constant) or
+`OSGPU NONE`. The C stub returns `OSGPU_NONE` until a later
+syscall wraps it. No number is taken. 11 stays `fdwait`.
+Verified by `tests/conformance/gpu-app0/run.sh`.
+
+UI / osgfx / wm do not include this header. `wm gfx` on a
+machine with no 3D device still prints `WM GFX ON`.
+
+*Binary:* on `virtio-gpu-gl-pci`, `osgpug` prints `OSGPU OK`
+and `OSGPU PIX` whose dword is the G10 GPU clear (A=0x80) or
+src-over — not navy, not the G5 desktop constant.
+*Negative:* `-vga std` and `virtio-gpu-pci` print `OSGPU NONE`
+and no `OSGPU OK`. `wm gfx` still works.
+*Anti-vacuity:* `virtgpuc` (G5) must not print `OSGPU OK`.
+wm / osgfx_sw / osxui never `#include "osgpu.h"`.
+
+Leftover: swapchain, shaders. Not a Mesa port.
 
 ---
 
@@ -1279,7 +1627,7 @@ substituting.
 | **`VIRTIO_GPU_F_EDID`** | a nicety. `GET_DISPLAY_INFO` already gives the mode |
 | **`VIRTIO_GPU_F_RESOURCE_BLOB`** | the zero-copy path (host-mappable resources). It is the natural successor to `display-protocol.md`'s D8 and it should be built there, on a working D4, not here |
 | **the cursor queue** | needs a mouse first — `display-protocol.md` D1. It is then genuinely small: two commands (`UPDATE_CURSOR` `0x0300`, `MOVE_CURSOR` `0x0301`) on virtqueue 1, which QEMU sizes at 16. Two constraints to carry forward: the cursor resource **must be exactly 64×64**, and the transfer that fills it **must be fenced** (§5.7.6.6) |
-| **virgl / 3D** | §2.2. Not reachable, and the local QEMU build does not even have it compiled in |
+| **Mesa / vendor GPU** | §1, §2.2. G10 is a hand-built virgl CLEAR+BLIT, not a Mesa port and not amdgpu |
 | **virtio-mmio transport** | `-device virtio-gpu-device` needs a `virtio-mmio-bus`, which the x86 `pc`/`q35` machines do not instantiate. It is an ARM `virt` convenience and does not apply here |
 
 ---
@@ -1324,7 +1672,8 @@ answer is not a different GPU plan, it is a different project.
 
 ## 7. Notes for the coordinator to fold in elsewhere
 
-I have not touched `known-gaps.md` or `ROADMAP.md`. These are the entries that belong in them.
+G0 folded the GAP-0067 item 2 correction, the item 3/4 narrowing, and the GAP-0070 item 2
+`virtio-vga` line into `known-gaps.md`. `ROADMAP.md` was not touched. The remaining entries:
 
 **A correction to an existing gap, which I verified rather than inferred.** GAP-0067 item 2 says of
 configuration-space writes: *"On QEMU the firmware has already done all of this, which is precisely why

@@ -1,0 +1,34 @@
+#ifndef OSGFX_STUB_MUTEX
+#define OSGFX_STUB_MUTEX
+namespace std {
+class mutex {
+ public:
+  void lock() {}
+  void unlock() {}
+  bool try_lock() { return true; }
+};
+class recursive_mutex : public mutex {};
+struct defer_lock_t { explicit defer_lock_t() = default; };
+struct adopt_lock_t { explicit adopt_lock_t() = default; };
+inline constexpr defer_lock_t defer_lock{};
+inline constexpr adopt_lock_t adopt_lock{};
+template <class M>
+class lock_guard {
+  M *m_;
+ public:
+  explicit lock_guard(M &m) : m_(&m) { m.lock(); }
+  ~lock_guard() { m_->unlock(); }
+};
+template <class M>
+class unique_lock {
+  M *m_;
+ public:
+  unique_lock() : m_(nullptr) {}
+  explicit unique_lock(M &m) : m_(&m) { m.lock(); }
+  unique_lock(M &m, defer_lock_t) : m_(&m) {}
+  ~unique_lock() { if (m_) m_->unlock(); }
+  void lock() { if (m_) m_->lock(); }
+  void unlock() { if (m_) m_->unlock(); }
+};
+}
+#endif

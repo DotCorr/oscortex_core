@@ -111,22 +111,31 @@ part of 'kmain.dart';
 // ---------------------------------------------------------------------------
 // 4. WHAT THIS DOES NOT DO
 // ---------------------------------------------------------------------------
-//   * NO DAMAGE-DRIVEN PARTIAL REDRAW. The damage rectangle is carried,
-//     validated, clamped and PRINTED, and then a full frame is composed
-//     anyway. GAP-0301. Composing only the damage is D6 and it has its own
-//     exit criterion (a pixel count that must be small); building it here
-//     would have meant shipping the count without the harness that makes the
-//     count mean something.
-//   * NO INPUT ROUTING. The pointer is DRAWN by the compositor, on top, every
-//     frame; no click is delivered to anybody. That is D7 and it needs D2's
-//     event queue, which does not exist (`display-protocol.md` §4.1: "there is
-//     no keystroke queue at all. Depth zero.").
-//   * NO WINDOW MOVE. GAP-0302 records what it would take and why it is not
-//     here.
-//   * NO TITLE BAR AND NO FONT WORK. Windows are told apart by a BORDER whose
-//     colour is a function of stacking position -- the top window's border is
-//     bright, everything under it is dim -- which is the cheapest thing that
-//     makes stacking order visible to a person AND assertable as a pixel.
+//   * DAMAGE DRIVES THE COMMIT PASS. A commit paints the damage rectangle the
+//     client named, mapped into screen space, and nothing else -- unless the
+//     damage is the whole surface, in which case the decorated window (border
+//     included) is what is painted, because the border is compositor-owned
+//     and a first present has to put it on the screen. `wm on` and `wm draw`
+//     still compose a full frame: they have no damage to honour. ADR-0052,
+//     which is D6. The count that makes this falsifiable is [wmMetaPixels].
+//   * A LEFT PRESS IS DELIVERED TO THE WINDOW UNDER THE POINTER. [wmGrab]
+//     already hit-tests; D7 (ADR-0055) enqueues a packed surface-relative
+//     event on that window's ring and ring 3 pops it through syscall 25.
+//     A click on the desktop enqueues nothing. The same press also writes
+//     keyboard focus (D9 / ADR-0062): [wmMetaFocus] is the hit window
+//     PLUS ONE, or 0 after a desktop click or a reap. A RIGHT press is
+//     compositor policy (ADR-0070): it paints a popover and does not
+//     enqueue. Under `wm de`, attach / move / resize enqueue configure
+//     and a focus change enqueues enter/leave (ADR-0142). Without
+//     `wm de` the press queue is still press-only (d7-click).
+//   * TITLE BARS ARE CHROME, OFF BY DEFAULT. When `wm chrome` is on, each
+//     decorated window gets an 18-pixel compositor-drawn caption on the top
+//     of its content (ADR-0075). Off, the picture is the border-only one
+//     d2-compositor photographs. Under `wm de` a title press (not close
+//     or min) starts a drag and a body press does not (ADR-0111). An SE
+//     edge press resizes: geom w/h change, same shm, clip (ADR-0121).
+//     Without `wm de` a press on the window still starts a drag, so
+//     d2-compositor is unmoved. No font. Configure is ADR-0142.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -391,15 +400,16 @@ const int wmSysSurfaceNo = 23;
 
 /// Windows the compositor can hold at once.
 ///
-/// **Two, and the number is DERIVED rather than picked**, exactly as
-/// [chanPorts] is. A window's pixels live in a shared region and [shmMax] is 2,
-/// so two windows is the most that can simultaneously exist on this machine. A
-/// larger table would be storage nothing on this kernel can reach.
-const int wmMaxWindows = 2;
+/// **Four, and the number is DERIVED rather than picked.** A window's
+/// pixels live in a shared region and [shmMax] is 4 (ADR-0109), so four
+/// windows is the most that can simultaneously exist on this machine.
+/// d2-compositor asserts the two numbers stay equal.
+const int wmMaxWindows = 4;
 
 /// Operations a descriptor's word 0 may carry.
 const int wmOpAttach = 1;
 const int wmOpCommit = 2;
+// 3..8 live in wmext.dart (offer/take/sub/seat/move/seatget).
 
 /// Words in a descriptor. 8 x u64 = 64 = [chanMsgBytes], and see this file's
 /// header §2 for why that equality is the point rather than a coincidence.
@@ -494,9 +504,10 @@ const int wmRetNoWin = 0xFFFFFFFFFFFFFFF6;
 /// whatever the next region happens to hold.
 const int wmRetSmall = 0xFFFFFFFFFFFFFFF5;
 
-/// This process already holds a window and asks for a second one. One surface
-/// per client, which is all [wmMaxWindows] can honestly promise with two
-/// clients.
+/// This process already has this region attached as a window. A second
+/// ATTACH of the same handle is refused. A second *region* is allowed:
+/// one client may own every [wmMaxWindows] slot (main + menu + more).
+/// A fifth attach is [wmRetNoSpace].
 const int wmRetTwice = 0xFFFFFFFFFFFFFFF4;
 
 // ---------------------------------------------------------------------------
@@ -505,18 +516,17 @@ const int wmRetTwice = 0xFFFFFFFFFFFFFFF4;
 
 /// Meta words, then [wmMaxWindows] window records of [wmWinWords].
 ///
-/// **This block is LAST in `kmain.o`'s `.bss`, and that is the rule rather than
-/// an accident.** ADR-0031 §4.3 rule 5 asked for the newest block to be last so
-/// that no earlier block moves, and ADR-0033 §6.3(a) corrected the wording
-/// after M20 and S0 each hit it. `shmStore` was last until now; `part 'wm.dart'`
-/// comes after `part 'shm.dart'` in `kmain.dart` for exactly this reason, and
-/// `d2-compositor/run.sh` asserts the total rather than trusting it.
+/// **This block sat immediately before `kbdqStore` until D7 (ADR-0055)
+/// put `wmeventStore` last.** ADR-0031 §4.3 rule 5 asked for the newest
+/// block to be last so that no earlier block moves. `part 'wm.dart'`
+/// still comes after `part 'shm.dart'` in `kmain.dart`, and
+/// `d2-compositor/run.sh` still measures this block to `kbdqStore`'s start.
 const int wmMetaWords = 24;
 const int wmMetaBytes = 192;
 const int wmWinWords = 8;
 const int wmWinBytes = 64;
 const int wmWinOffset = 192;
-const int wmStoreBytes = 320; // 192 + 2 * 64
+const int wmStoreBytes = 448; // 192 + 4 * 64
 
 @bss
 final Bss wmStore = const Bss(bytes: wmStoreBytes);
@@ -530,8 +540,8 @@ const int wmMetaActive = 0;
 /// Composition passes completed.
 const int wmMetaFrames = 1;
 
-/// Pixels written by the LAST pass. A number, so that D6's damage milestone has
-/// something to make smaller (GAP-0301).
+/// Pixels written by the LAST pass. D6's number: a 16x16 commit must print
+/// 256 here, not 480,000. ADR-0052.
 const int wmMetaPixels = 2;
 
 /// Accepted attaches, accepted commits, refusals.
@@ -553,9 +563,15 @@ const int wmMetaDrag = 8;
 
 /// Where inside the dragged window the pointer grabbed it. The window origin is
 /// `pointer - grab` for the whole drag, which is what stops the window jumping
-/// under the cursor on the first motion.
+/// under the cursor on the first motion. Under `wm de` a resize (ADR-0121)
+/// sets bit 32 of grab-X ([wmResizeMark]); the low 32 bits stay the
+/// in-window offset. Not a new word.
 const int wmMetaGrabX = 9;
 const int wmMetaGrabY = 10;
+
+/// Bit 32 of [wmMetaGrabX]. Set when the armed drag is a resize, not
+/// a move. Window offsets fit in 16 bits; this bit cannot collide.
+const int wmResizeMark = 0x100000000;
 
 /// Where the pointer was when this compositor last painted it. **Not the same
 /// as `mouseWordX/Y`**, which is where the pointer IS: the difference between
@@ -581,15 +597,21 @@ const int wmMetaButtons = 15;
 /// mutual exclusion on this kernel and what it becomes on two cores.
 const int wmMetaBusy = 16;
 
-/// Pixels written by the last PARTIAL repaint, as [wmMetaPixels] is for a full
-/// frame. The number D6 exists to make small, measured on the path that already
-/// makes it small.
+/// Pixels written by the last pointer-driven partial repaint. Commits report
+/// through [wmMetaPixels] instead: a commit is a frame, a drag step is not.
 const int wmMetaRectPixels = 17;
 
 /// Pointer ticks dropped because a composition was in progress. **A dropped
 /// tick is a dropped FRAME, not a lost event** -- `mouseApplyX/Y` have already
 /// moved the pointer, so the next tick sees the accumulated position.
 const int wmMetaDropped = 18;
+
+/// Keyboard focus. PLUS ONE, the same idiom as [wmMetaDrag]: 0 means the
+/// shell (and any ring-3 reader) may drain syscall 24; window 0 is
+/// expressible as 1. Chrome used word 19. D9 (ADR-0062). The popover
+/// uses 21 (visible) and 22 (packed origin). Word 23 is guest osgfx
+/// (ADR-0096). No new `@bss`.
+const int wmMetaFocus = 20;
 
 // Window record word indices.
 const int wmWinState = 0;
@@ -603,6 +625,7 @@ const int wmWinSeq = 7;
 
 const int wmWinFree = 0;
 const int wmWinLive = 1;
+const int wmWinMin = 2;
 
 // ---------------------------------------------------------------------------
 // Accessors. The shape `shm.dart`, `chan.dart` and `user.dart` all use.
@@ -666,6 +689,26 @@ void wmInit() {
 @bare
 u64 wmActive() {
   return wmMeta(u64(wmMetaActive));
+}
+
+/// The live seat-0 focus word, or 0 if nothing owns the keyboard.
+///
+/// **Stale focus is cleared here**, not only in [wmReapOne]: the drain
+/// and syscall 24 both ask this, and a window that died between paints
+/// must not keep the shell from the keys. PLUS ONE on the way in, 0
+/// on the way out -- [kbdqDrainToShell] skips when the answer is not 0.
+/// Seat 1 lives in the high byte (ADR-0186); this returns seat 0 only.
+@bare
+u64 wmFocusLive() {
+  return wmSeatFocusLive(u64(0));
+}
+
+/// Sets seat-0 keyboard focus to window [wI], or none when [wI] is
+/// [wmMaxWindows]. Preserves seat 1. Under `wm de` a change is also a
+/// wmevent enter/leave (ADR-0142). A dead slot is none.
+@bare
+void wmFocusTo(u64 wI) {
+  wmSeatFocusSet(u64(0), wI);
 }
 
 // ---------------------------------------------------------------------------
@@ -750,39 +793,74 @@ u64 wmRegionPixel(u64 vec, u64 off) {
 }
 
 /// Blits row [py] of window [wI] from its region onto the framebuffer.
+/// [py] is a surface row; buffer sampling multiplies by the window's
+/// integer scale (ADR-0185).
 @bare
 void wmBlitRow(u64 wI, u64 py) {
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  final u64 x = wmGeomX(g);
-  final u64 y = wmGeomY(g);
+  final u64 x = wmAbsX(wI);
+  final u64 y = wmAbsY(wI);
   final u64 w = wmGeomW(g);
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
-  final u64 rowOff =
-      wmWin(wI, u64(wmWinOffsetW)) + (py * wmWin(wI, u64(wmWinStride)));
-  u64 px = u64(0);
-  while (px < w) {
-    fbPutPixel(x + px, y + py, wmRegionPixel(vec, rowOff + (px << u64(2))));
+  final u64 scale = wmWinScaleOf(wI);
+  final u64 stride = wmWinStrideOf(wI);
+  final u64 rowOff = wmWin(wI, u64(wmWinOffsetW)) +
+      ((py * scale) * stride);
+  u64 x0 = u64(0);
+  u64 x1 = w;
+  u64 h = wmGeomH(g);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    /* Desk strip (taskbar FRAME) is shorter than a titled window —
+     * blit every row. Titled clients still skip the caption band. */
+    if (h > u64(wmChromeH)) {
+      if (py < u64(wmTitleH)) {
+        x1 = u64(0);
+      }
+    }
+    /* Corner inset must not reopen a title-band skip (x1==0). That
+     * stamped client fill over Graphite pearl/glyphs for py < radius. */
+    if (x1 > x0) {
+      if (py < u64(wmGfxRadius)) {
+        x0 = u64(wmGfxRadius);
+        if (w > u64(wmGfxRadius)) {
+          x1 = w - u64(wmGfxRadius);
+        }
+      }
+      if (py >= (h - u64(wmGfxRadius))) {
+        x0 = u64(wmGfxRadius);
+        if (w > u64(wmGfxRadius)) {
+          x1 = w - u64(wmGfxRadius);
+        }
+      }
+    }
+  }
+  u64 px = x0;
+  while (px < x1) {
+    final u64 boff = rowOff + ((px * scale) << u64(2));
+    fbPutPixel(x + px, y + py, wmRegionPixel(vec, boff));
     px = px + u64(1);
   }
 }
 
-/// Draws window [wI] -- border first, then its client's pixels -- and returns
-/// how many pixels it wrote.
+/// Draws window [wI] -- border first, then its client's pixels, then the
+/// title strip if chrome is on -- and returns how many pixels it wrote.
 ///
-/// [focus] selects the border colour, and the border is the whole of this
-/// compositor's window decoration. **It is not ornament.** Two windows drawn
-/// from two client regions could in principle both be the same colour by a
-/// client bug; a border the COMPOSITOR draws, in a colour that is a function of
-/// stacking position, is the compositor's own statement about which window is
-/// on top, in pixels, at a coordinate a harness can name.
+/// [focus] selects the border colour. The border is the stacking statement;
+/// the title (ADR-0075) is chrome and is off unless [wmMetaChrome] is set,
+/// so a default-off compose's count and pixels do not move. Two windows
+/// drawn from two client regions could in principle both be the same
+/// colour by a client bug; a border the COMPOSITOR draws, in a colour that
+/// is a function of stacking position, is the compositor's own statement
+/// about which window is on top, in pixels, at a coordinate a harness
+/// can name.
 @bare
 u64 wmDrawWindow(u64 wI, u64 focus) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  final u64 x = wmGeomX(g);
-  final u64 y = wmGeomY(g);
+  final u64 x = wmAbsX(wI);
+  final u64 y = wmAbsY(wI);
   final u64 w = wmGeomW(g);
   final u64 h = wmGeomH(g);
   final u64 b = u64(wmBorder);
@@ -791,28 +869,67 @@ u64 wmDrawWindow(u64 wI, u64 focus) {
   // between a composed frame and a repainted rectangle is exactly what two
   // copies of this would produce.
   final u64 c = wmBorderColor(focus);
-  wmFillRect(x - b, y - b, w + b + b, b, c); // top edge
-  wmFillRect(x - b, y + h, w + b + b, b, c); // bottom edge
-  wmFillRect(x - b, y, b, h, c); // left edge
-  wmFillRect(x + w, y, b, h, c); // right edge
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    wmFillRect(x - b, y - b, w + b + b, b, c); // top edge
+    wmFillRect(x - b, y + h, w + b + b, b, c); // bottom edge
+    wmFillRect(x - b, y, b, h, c); // left edge
+    wmFillRect(x + w, y, b, h, c); // right edge
+  }
   u64 py = u64(0);
   while (py < h) {
     wmBlitRow(wI, py);
     py = py + u64(1);
   }
+  // Title overwrites the top content rows. Not added to the return: those
+  // pixels were already counted in the blit, and a chrome-on compose of
+  // a windowed desktop must not invent a second full-window bill.
+  final u64 titlePx = wmTitleDraw(wI);
   return (w + b + b) * (h + b + b);
 }
 
-/// One composition pass: desktop, then every window bottom-up, then the
+/// Records [px], releases the re-entrancy guard, and prints `WM FRAME`.
+///
+/// The pointer has already been drawn (or left alone) by the caller. This is
+/// the one place a composition pass -- full or damage-limited -- becomes a
+/// numbered frame, so a future path cannot print the line without also
+/// publishing the count the harness derives.
+@bare
+void wmPublishFrameQ(u64 px, u64 quiet) {
+  final u64 cx = mouseState(u64(mouseWordX));
+  final u64 cy = mouseState(u64(mouseWordY));
+  wmSetMeta(u64(wmMetaCurX), cx);
+  wmSetMeta(u64(wmMetaCurY), cy);
+  wmSetMeta(u64(wmMetaBusy), u64(0));
+  wmSetMeta(u64(wmMetaPixels), px);
+  wmBumpMeta(u64(wmMetaFrames));
+  if (quiet > u64(0)) {
+    return;
+  }
+  uartWrite(Rodata.addressOf(wmStrFrame), u64(11));
+  uartPutHex(wmMeta(u64(wmMetaFrames)), u64(8));
+  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
+  uartPutHex(px, u64(8));
+  uartWrite(Rodata.addressOf(wmStrTop), u64(5));
+  uartPutHex(wmMeta(u64(wmMetaTop)), u64(1));
+  uartWrite(Rodata.addressOf(wmStrCur), u64(4));
+  uartWrite(Rodata.addressOf(wmStrX), u64(3));
+  uartPutHex(cx, u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(cy, u64(4));
+  uartNewline();
+}
+
+@bare
+void wmPublishFrame(u64 px) {
+  wmPublishFrameQ(px, u64(0));
+}
+
+/// One FULL composition pass: desktop, then every window bottom-up, then the
 /// pointer.
 ///
-/// **A FULL FRAME, EVERY TIME, and GAP-0301 records that as a cost rather than
-/// a design.** The damage rectangle a client commits is carried, validated and
-/// printed and then not used to make this smaller. Composing only the damage is
-/// D6 in `docs/design/display-protocol.md`, and its exit criterion is a
-/// pixels-per-frame count that must come out SMALL -- [wmMetaPixels] is that
-/// count, printed on every frame, so the milestone that makes it small has
-/// something to make smaller and a harness that can see it happen.
+/// Used by `wm on` and `wm draw`, which have no damage rectangle to honour.
+/// A commit does NOT come through here -- it comes through [wmComposeRect],
+/// which paints only what the client said changed. ADR-0052.
 ///
 /// **The pointer is drawn LAST and is not part of any window.** It is composed
 /// on top of everything and it is never read back into a client's region, so
@@ -830,42 +947,234 @@ void wmCompose() {
   // and [wmPointerTick] returns without painting while it is set.
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
-  fbFill(u64(wmColorDesktop));
-  u64 px = u64(fbWidth) * u64(fbHeight);
+  u64 px = u64(0);
+  /* ADR-0183: under `wm gfx`, session paints wallpaper (+ title/taskbar
+   * overlays without body fill), then Dart blits every FRAME surface so
+   * FILES/SET/DESK shm survives the tick. Without gfx, solid desk + blit. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxKick();
+    osgfx_guest_tick();
+  } else {
+    fbFill(u64(wmColorDesktop));
+  }
+  px = fbGeomWidth() * fbGeomHeight();
   final u64 top = wmMeta(u64(wmMetaTop));
-  // Bottom-up. Everything that is NOT the top window, in slot order, and then
-  // the top window over all of it -- which is what makes the overlap show the
-  // top window's pixels and is the whole of D5.
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
     if (i != top) {
-      px = px + wmDrawWindow(i, u64(0));
+      if (wmWinOverlay(i) < u64(1)) {
+        px = px + wmDrawWindow(i, u64(0));
+      }
     }
     i = i + u64(1);
   }
   if (top < u64(wmMaxWindows)) {
-    px = px + wmDrawWindow(top, u64(1));
+    if (wmWinOverlay(top) < u64(1)) {
+      px = px + wmDrawWindow(top, u64(1));
+    }
+  }
+  i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWinOverlay(i) > u64(0)) {
+      if (wmOverlayParked(i) < u64(1)) {
+        px = px + wmDrawWindow(i, u64(0));
+      }
+    }
+    i = i + u64(1);
+  }
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmSessionOwedClear();
+    wmGfxChromeStamp();
+  }
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    px = px + wmChromeDraw();
+    px = px + wmPopDraw();
+    px = px + wmDePopDraw();
   }
   final u64 cx = mouseState(u64(mouseWordX));
   final u64 cy = mouseState(u64(mouseWordY));
-  mouseDrawCursor(cx, cy);
-  wmSetMeta(u64(wmMetaCurX), cx);
-  wmSetMeta(u64(wmMetaCurY), cy);
-  wmSetMeta(u64(wmMetaBusy), u64(0));
-  wmSetMeta(u64(wmMetaPixels), px);
-  wmBumpMeta(u64(wmMetaFrames));
-  uartWrite(Rodata.addressOf(wmStrFrame), u64(11));
-  uartPutHex(wmMeta(u64(wmMetaFrames)), u64(8));
-  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
-  uartPutHex(px, u64(8));
-  uartWrite(Rodata.addressOf(wmStrTop), u64(5));
-  uartPutHex(top, u64(1));
-  uartWrite(Rodata.addressOf(wmStrCur), u64(4));
-  uartWrite(Rodata.addressOf(wmStrX), u64(3));
-  uartPutHex(cx, u64(4));
-  uartWrite(Rodata.addressOf(wmStrY), u64(3));
-  uartPutHex(cy, u64(4));
-  uartNewline();
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerEnsure();
+    wmPointerPlace(cx, cy);
+  } else {
+    mouseDrawCursor(cx, cy);
+  }
+  wmPublishFrame(px);
+}
+
+/// A DAMAGE-LIMITED pass: one screen rectangle, resolved through [wmPixelAt],
+/// and the pointer only if it intersects that rectangle.
+///
+/// This is D6. [wmRepaintRect] is the painter D5b already had for a drag;
+/// a commit is the same picture over a rectangle the CLIENT named rather than
+/// one the pointer vacated. The pointer is redrawn only on intersection
+/// because a full-frame compose is the thing that erases it -- a damage rect
+/// that misses it leaves the pixels IRQ12 already put there.
+///
+/// **No flip, so the per-buffer trap in `display-protocol.md` §3.5 does not
+/// apply.** This compositor writes the visible scanout in place. Damage is
+/// therefore "what changed in the one buffer", not "what the back buffer is
+/// missing from two frames ago."
+@bare
+void wmComposeRect(u64 x, u64 y, u64 w, u64 h) {
+  if (wmActive() < u64(1)) {
+    return;
+  }
+  if (fbState(u64(fbStateBase)) < u64(1)) {
+    return;
+  }
+  wmSetMeta(u64(wmMetaBusy), u64(1));
+  wmReap();
+  final u64 px = wmRepaintRect(x, y, w, h);
+  wmMaybeDrawPointer(x, y, w, h);
+  wmPublishFrame(px);
+}
+
+/// Redraws the pointer if its bounding box intersects ([x], [y], [w], [h]).
+///
+/// A damage pass that misses the cursor leaves the pixels IRQ12 already put
+/// there; one that hits it has just overwritten part of the arrow.
+@bare
+void wmMaybeDrawPointer(u64 x, u64 y, u64 w, u64 h) {
+  final u64 cx = mouseState(u64(mouseWordX));
+  final u64 cy = mouseState(u64(mouseWordY));
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    final u64 cw = u64(wmPtrW);
+    final u64 ch = u64(wmPtrH);
+    if ((cx + cw) > x) {
+      if ((cy + ch) > y) {
+        if (cx < (x + w)) {
+          if (cy < (y + h)) {
+            wmPointerPlace(cx, cy);
+          }
+        }
+      }
+    }
+  } else {
+    final u64 cw = u64(mouseCursorCols);
+    final u64 ch = u64(mouseCursorRows);
+    if ((cx + cw) > x) {
+      if ((cy + ch) > y) {
+        if (cx < (x + w)) {
+          if (cy < (y + h)) {
+            mouseDrawCursor(cx, cy);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Damage-limited gfx commit (ADR-0188 §3).
+@bare
+void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
+  wmSetMeta(u64(wmMetaBusy), u64(1));
+  wmReap();
+  wmDePrefApply();
+  u64 px = u64(0);
+  u64 rx = u64(0);
+  u64 ry = u64(0);
+  u64 rw = u64(0);
+  u64 rh = u64(0);
+  if (full > u64(0)) {
+    px = wmRepaintWindow(slot);
+    rx = wmAbsX(slot) - u64(wmBorder);
+    ry = wmAbsY(slot) - u64(wmBorder);
+    final u64 g = wmWin(slot, u64(wmWinGeom));
+    rw = wmGeomW(g) + u64(wmBorder) + u64(wmBorder);
+    rh = wmGeomH(g) + u64(wmBorder) + u64(wmBorder);
+    if (wmMeta(u64(wmMetaTop)) == slot) {
+      u64 i = u64(0);
+      while (i < u64(wmMaxWindows)) {
+        if (i != slot) {
+          if (wmWindowUsable(i) > u64(0)) {
+            if (wmWinOverlay(i) < u64(1)) {
+              px = px + wmRepaintWindow(i);
+            }
+          }
+        }
+        i = i + u64(1);
+      }
+    }
+  } else {
+    if (wmWindowUsable(slot) > u64(0)) {
+      rx = wmAbsX(slot) + dx;
+      ry = wmAbsY(slot) + dy;
+      rw = dw;
+      rh = dh;
+      px = wmRepaintRect(rx, ry, rw, rh);
+    }
+  }
+  if (wmPaced() > u64(0)) {
+    wmDamageRect(rx, ry, rw, rh);
+    wmSetMeta(u64(wmMetaBusy), u64(0));
+    return;
+  }
+  wmPointerRestore();
+  wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  wmPublishFrame(px);
+}
+
+/// A commit's composition pass. [full] is 1 when the damage is the whole
+/// surface: paint this window's decorated rectangle, and -- if this window is
+/// on top -- every other live window too, so the window that just lost the
+/// top has its border go from bright to dim. That restack is what a full
+/// compose used to do for free and what a damage pass of only the new window
+/// would leave stale. A partial damage paints one screen rectangle and does
+/// not touch anyone else's border.
+@bare
+void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
+  if (wmActive() < u64(1)) {
+    return;
+  }
+  if (fbState(u64(fbStateBase)) < u64(1)) {
+    return;
+  }
+  /* Under `wm gfx`, honour damage when chrome is fresh; else full compose. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmGfxChromeFresh() > u64(0)) {
+      wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
+      return;
+    }
+    wmCompose();
+    return;
+  }
+  wmSetMeta(u64(wmMetaBusy), u64(1));
+  wmReap();
+  wmDePrefApply();
+  u64 px = u64(0);
+  if (full > u64(0)) {
+    px = wmRepaintWindow(slot);
+    if (wmWindowUsable(slot) > u64(0)) {
+      final u64 g = wmWin(slot, u64(wmWinGeom));
+      final u64 b = u64(wmBorder);
+      wmMaybeDrawPointer(wmAbsX(slot) - b, wmAbsY(slot) - b,
+          wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+    }
+    if (wmMeta(u64(wmMetaTop)) == slot) {
+      u64 i = u64(0);
+      while (i < u64(wmMaxWindows)) {
+        if (i != slot) {
+          if (wmWindowUsable(i) > u64(0)) {
+            px = px + wmRepaintWindow(i);
+            final u64 g = wmWin(i, u64(wmWinGeom));
+            final u64 b = u64(wmBorder);
+            wmMaybeDrawPointer(wmAbsX(i) - b, wmAbsY(i) - b,
+                wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+          }
+        }
+        i = i + u64(1);
+      }
+    }
+  } else {
+    if (wmWindowUsable(slot) > u64(0)) {
+      final u64 x = wmAbsX(slot) + dx;
+      final u64 y = wmAbsY(slot) + dy;
+      px = wmRepaintRect(x, y, dw, dh);
+      wmMaybeDrawPointer(x, y, dw, dh);
+    }
+  }
+  wmPublishFrame(px);
 }
 
 // ---------------------------------------------------------------------------
@@ -962,29 +1271,60 @@ u64 wmFits(u64 x, u64 y, u64 w, u64 h) {
   if (h < u64(1)) {
     return u64(0);
   }
+  /* Panel strip (ADR-0192): full width, flush bottom, chrome-tall — no border. */
+  if (x == u64(0)) {
+    if (w == fbGeomWidth()) {
+      if (h <= u64(wmChromeH)) {
+        if ((y + h) == fbGeomHeight()) {
+          return u64(1);
+        }
+      }
+    }
+  }
   if (x < u64(wmBorder)) {
     return u64(0);
   }
   if (y < u64(wmBorder)) {
     return u64(0);
   }
-  if ((x + w + u64(wmBorder)) > u64(fbWidth)) {
+  if ((x + w + u64(wmBorder)) > fbGeomWidth()) {
     return u64(0);
   }
-  if ((y + h + u64(wmBorder)) > u64(fbHeight)) {
+  if ((y + h + u64(wmBorder)) > fbGeomHeight()) {
     return u64(0);
   }
   return u64(1);
 }
 
-/// The window slot owned by process [id], or [wmMaxWindows] if it has none.
+/// The first window slot owned by process [id], or [wmMaxWindows] if it
+/// has none. A process may own two slots; this returns the lowest
+/// index. Prefer [wmWindowOfRegion] when the handle is known.
 @bare
 u64 wmWindowOf(u64 id) {
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
-    if (wmWin(i, u64(wmWinState)) == u64(wmWinLive)) {
+    if (wmWindowHeld(i) > u64(0)) {
       if (wmWin(i, u64(wmWinOwner)) == id) {
         return i;
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// The live window owned by [id] that is attached to region [r], or
+/// [wmMaxWindows]. One process can hold two windows; commit and the
+/// second attach name the region, not "the" window.
+@bare
+u64 wmWindowOfRegion(u64 id, u64 r) {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowHeld(i) > u64(0)) {
+      if (wmWin(i, u64(wmWinOwner)) == id) {
+        if (wmWin(i, u64(wmWinReg)) == r) {
+          return i;
+        }
       }
     }
     i = i + u64(1);
@@ -997,7 +1337,7 @@ u64 wmWindowOf(u64 id) {
 u64 wmFreeWindow() {
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
-    if (wmWin(i, u64(wmWinState)) != u64(wmWinLive)) {
+    if (wmWindowHeld(i) < u64(1)) {
       return i;
     }
     i = i + u64(1);
@@ -1033,12 +1373,18 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
     return;
   }
   // A stride of 0 means "no padding", which is what a client that has nothing
-  // to say about layout sends. Anything else must be at least a row wide.
-  u64 stride = wmDesc(ptr, u64(wmDescStride));
-  if (stride < u64(1)) {
-    stride = w << u64(2);
+  // to say about layout sends. High 32 bits are the integer buffer scale
+  // (0 means 1). ADR-0185.
+  u64 rawStride = wmDesc(ptr, u64(wmDescStride));
+  u64 scale = rawStride >> u64(32);
+  if (scale < u64(1)) {
+    scale = u64(1);
   }
-  if (stride < (w << u64(2))) {
+  u64 stride = rawStride & u64(0xFFFFFFFF);
+  if (stride < u64(1)) {
+    stride = (w * scale) << u64(2);
+  }
+  if (stride < ((w * scale) << u64(2))) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetBadGeom));
     return;
   }
@@ -1053,14 +1399,16 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
     return;
   }
   // THE LAST BYTE THIS COMPOSITOR WOULD READ MUST BE INSIDE THE REGION.
-  // Refused rather than clamped: a clamp would turn a client's arithmetic
-  // error into a kernel that reads whatever the next region happens to hold.
-  final u64 need = off + ((hh - u64(1)) * stride) + (w << u64(2));
+  // Buffer is (w*scale) by (h*scale) when scale > 1.
+  final u64 need =
+      off + (((hh * scale) - u64(1)) * stride) + ((w * scale) << u64(2));
   if (need > (shmReg(r, u64(shmRegPages)) << u64(vmPageShift))) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetSmall));
     return;
   }
-  if (wmWindowOf(id) < u64(wmMaxWindows)) {
+  // Same region already a live window for this process. A second
+  // *region* is a second window. The same handle twice is not.
+  if (wmWindowOfRegion(id, r) < u64(wmMaxWindows)) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetTwice));
     return;
   }
@@ -1073,7 +1421,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinReg), r);
   wmSetWin(slot, u64(wmWinGen), shmReg(r, u64(shmRegGen)));
   wmSetWin(slot, u64(wmWinGeom), wmPackGeom(x, y, w, hh));
-  wmSetWin(slot, u64(wmWinStride), stride);
+  wmSetWin(slot, u64(wmWinStride), (scale << u64(32)) | stride);
   wmSetWin(slot, u64(wmWinOffsetW), off);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
@@ -1098,9 +1446,14 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   uartPutHex(w, u64(4));
   uartWrite(Rodata.addressOf(wmStrH), u64(3));
   uartPutHex(hh, u64(4));
+  uartWrite(Rodata.addressOf(wmStrScl), u64(5));
+  uartPutHex(scale, u64(1));
   uartWrite(Rodata.addressOf(wmStrVa), u64(4));
   uartPutHex(va, u64(16));
   uartNewline();
+  // ADR-0142: under `wm de` the granted geom travels the press
+  // queue. Without `wm de` the client is not told (d7-click).
+  wmeventEnqueueConfigure(slot);
   userSetFrame(frame, u64(userFrameRax), va);
 }
 
@@ -1115,11 +1468,6 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
 @bare
 void wmCommit(u64 frame, u64 ptr, u64 id) {
   final u64 h = wmDesc(ptr, u64(wmDescHandle));
-  final u64 slot = wmWindowOf(id);
-  if (slot >= u64(wmMaxWindows)) {
-    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetNoWin));
-    return;
-  }
   final u64 r = wmResolve(h);
   if (r == u64(shmMax)) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadCap));
@@ -1129,11 +1477,10 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetStale));
     return;
   }
-  // The handle must name the region this window was attached from. A client
-  // that created a second region and committed it against the first window's
-  // slot would otherwise have the compositor read the wrong pixels and report
-  // the right ones.
-  if (wmWin(slot, u64(wmWinReg)) != r) {
+  // Find the window this handle is attached as. One process may own two
+  // windows; [wmWindowOf] would always name the first and refuse the menu.
+  final u64 slot = wmWindowOfRegion(id, r);
+  if (slot >= u64(wmMaxWindows)) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetNoWin));
     return;
   }
@@ -1142,6 +1489,41 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     return;
   }
   final u64 seq = wmDesc(ptr, u64(wmDescSeq));
+  final u64 g = wmWin(slot, u64(wmWinGeom));
+  final u64 ww = wmGeomW(g);
+  final u64 hh = wmGeomH(g);
+  final u64 dx = wmDesc(ptr, u64(wmDescX));
+  final u64 dy = wmDesc(ptr, u64(wmDescY));
+  final u64 dw = wmDesc(ptr, u64(wmDescW));
+  final u64 dh = wmDesc(ptr, u64(wmDescH));
+  // REFUSED RATHER THAN CLAMPED, same as a geometry on attach. A clamp would
+  // turn a client's off-by-one into a compositor that paints the wrong
+  // rectangle and reports it as the right one. The overflow-safe order is
+  // "origin inside, then extent no larger than what remains".
+  if (dx >= ww) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
+  if (dy >= hh) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
+  if (dw < u64(1)) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
+  if (dh < u64(1)) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
+  if (dw > (ww - dx)) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
+  if (dh > (hh - dy)) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
   wmSetWin(slot, u64(wmWinSeq), seq);
   wmBumpMeta(u64(wmMetaCommits));
   uartWrite(Rodata.addressOf(wmStrCommit), u64(12));
@@ -1149,15 +1531,30 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   uartWrite(Rodata.addressOf(wmStrSeq), u64(5));
   uartPutHex(seq, u64(8));
   uartWrite(Rodata.addressOf(wmStrDmg), u64(7));
-  uartPutHex(wmDesc(ptr, u64(wmDescX)), u64(4));
+  uartPutHex(dx, u64(4));
   uartWrite(Rodata.addressOf(wmStrY), u64(3));
-  uartPutHex(wmDesc(ptr, u64(wmDescY)), u64(4));
+  uartPutHex(dy, u64(4));
   uartWrite(Rodata.addressOf(wmStrW), u64(3));
-  uartPutHex(wmDesc(ptr, u64(wmDescW)), u64(4));
+  uartPutHex(dw, u64(4));
   uartWrite(Rodata.addressOf(wmStrH), u64(3));
-  uartPutHex(wmDesc(ptr, u64(wmDescH)), u64(4));
+  uartPutHex(dh, u64(4));
   uartNewline();
-  wmCompose();
+  // THE WHOLE SURFACE means the window is new or fully dirty: paint the
+  // decorated rectangle so the compositor-owned border appears with it.
+  // Anything smaller is the damage the client named, in screen space, and
+  // is the count D6 exists to make small.
+  if (dx == u64(0)) {
+    if (dy == u64(0)) {
+      if (dw == ww) {
+        if (dh == hh) {
+          wmComposeCommit(slot, u64(1), u64(0), u64(0), u64(0), u64(0));
+          userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
+          return;
+        }
+      }
+    }
+  }
+  wmComposeCommit(slot, u64(0), dx, dy, dw, dh);
   userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
 }
 
@@ -1198,6 +1595,9 @@ void wmSysSurface(u64 frame) {
     wmCommit(frame, ptr, id);
     return;
   }
+  if (wmExtDispatch(frame, ptr, id, op) > u64(0)) {
+    return;
+  }
   wmRefuse(frame, op, wmDesc(ptr, u64(wmDescHandle)), u64(wmRetBadOp));
 }
 
@@ -1232,6 +1632,7 @@ void wmOn() {
   uartPutHex(u64(wmColorDesktop), u64(8));
   uartNewline();
   wmCompose();
+  gopSessAnnounce();
 }
 
 /// Gives the framebuffer back to the text console. The console's cursor is
@@ -1241,6 +1642,7 @@ void wmOn() {
 @bare
 void wmOff() {
   wmSetMeta(u64(wmMetaActive), u64(0));
+  wmSetMeta(u64(wmMetaFocus), u64(0));
   fbSetState(u64(fbStateCol), u64(0));
   fbSetState(u64(fbStateRow), u64(0));
   uartWrite(Rodata.addressOf(wmStrOff), u64(14));
@@ -1282,7 +1684,7 @@ void wmReport() {
 /// while they happened.
 @bare
 void wmReportWindow(u64 i) {
-  if (wmWin(i, u64(wmWinState)) != u64(wmWinLive)) {
+  if ((wmWin(i, u64(wmWinState)) & u64(0xFF)) != u64(wmWinLive)) {
     return;
   }
   final u64 g = wmWin(i, u64(wmWinGeom));
@@ -1345,6 +1747,14 @@ void wmUsage() {
 final List<u8> wmStrMove = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x4D), u8(0x4F), u8(0x56), u8(0x45), u8(0x20), u8(0x57),
   u8(0x20),
+];
+
+///
+/// `'WM RESIZE W '` -- 12 bytes.
+@rodata
+final List<u8> wmStrResize = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x52), u8(0x45), u8(0x53), u8(0x49), u8(0x5A),
+  u8(0x45), u8(0x20), u8(0x57), u8(0x20),
 ];
 
 ///
@@ -1467,25 +1877,15 @@ u64 wmWindowUsable(u64 wI) {
   // THE BOUND, and it is here rather than at the call sites because this is the
   // one function every painter goes through. `wmMetaTop` is `wmMaxWindows` when
   // nothing is on top, `wmGrab` reads that into `was`, and one path then passes
-  // it here; `wmStore` is the LAST block in .bss, so an unbounded index reads
+  // it here; `wmStore` sits immediately before `kbdqStore`, so an unbounded index reads
   // off the end of the kernel's mutable statics. Found by reading the code.
   if (wI >= u64(wmMaxWindows)) {
     return u64(0);
   }
-  if (wmWin(wI, u64(wmWinState)) != u64(wmWinLive)) {
+  if ((wmWin(wI, u64(wmWinState)) & u64(0xFF)) != u64(wmWinLive)) {
     return u64(0);
   }
-  final u64 r = wmWin(wI, u64(wmWinReg));
-  if (r >= u64(shmMax)) {
-    return u64(0);
-  }
-  if (shmReg(r, u64(shmRegState)) != u64(shmRegLive)) {
-    return u64(0);
-  }
-  if (shmReg(r, u64(shmRegGen)) != wmWin(wI, u64(wmWinGen))) {
-    return u64(0);
-  }
-  return u64(1);
+  return wmWindowRegionLive(wI);
 }
 
 /// Closes every window whose region has died, and is called at the top of every
@@ -1510,10 +1910,10 @@ void wmReap() {
 /// One window's half of [wmReap].
 @bare
 void wmReapOne(u64 i) {
-  if (wmWin(i, u64(wmWinState)) != u64(wmWinLive)) {
+  if (wmWindowHeld(i) < u64(1)) {
     return;
   }
-  if (wmWindowUsable(i) > u64(0)) {
+  if (wmWindowRegionLive(i) > u64(0)) {
     return;
   }
   wmSetWin(i, u64(wmWinState), u64(wmWinFree));
@@ -1524,6 +1924,14 @@ void wmReapOne(u64 i) {
   if (wmMeta(u64(wmMetaDrag)) == (i + u64(1))) {
     wmSetMeta(u64(wmMetaDrag), u64(0));
   }
+  final u64 f0 = wmSeatFocusRaw(u64(0));
+  final u64 f1 = wmSeatFocusRaw(u64(1));
+  if (f0 == (i + u64(1))) {
+    wmSeatFocusSet(u64(0), u64(wmMaxWindows));
+  }
+  if (f1 == (i + u64(1))) {
+    wmSeatFocusSet(u64(1), u64(wmMaxWindows));
+  }
   uartWrite(Rodata.addressOf(wmStrReap), u64(10));
   uartPutHex(i, u64(1));
   uartWrite(Rodata.addressOf(wmStrR), u64(3));
@@ -1531,6 +1939,336 @@ void wmReapOne(u64 i) {
   uartWrite(Rodata.addressOf(wmStrGen), u64(5));
   uartPutHex(wmWin(i, u64(wmWinGen)), u64(8));
   uartNewline();
+}
+
+@extern
+external u64 osgfx_pointer_raster(u64 out, u64 w, u64 h);
+
+/// `'WM PTR SKIA'` -- 11 bytes.
+@rodata
+final List<u8> wmStrPtrSkia = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x54), u8(0x52), u8(0x20),
+  u8(0x53), u8(0x4B), u8(0x49), u8(0x41),
+];
+
+/// Decorated origin X — 0 for panels (ADR-0192).
+@bare
+u64 wmDecoX(u64 wI) {
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 x = wmGeomX(g);
+  if (wmIsPanel(wI) > u64(0)) {
+    return u64(0);
+  }
+  if (x < u64(wmBorder)) {
+    return u64(0);
+  }
+  return x - u64(wmBorder);
+}
+
+/// Decorated origin Y — 0 for panels.
+@bare
+u64 wmDecoY(u64 wI) {
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 y = wmGeomY(g);
+  if (wmIsPanel(wI) > u64(0)) {
+    return u64(0);
+  }
+  if (y < u64(wmBorder)) {
+    return u64(0);
+  }
+  return y - u64(wmBorder);
+}
+
+/// DESK menu card size — lockstep with desk.c MENU_W / MENU_H (ADR-0195).
+const int wmOverlayW = 160;
+const int wmOverlayH = 88;
+
+/// `'WM OVERLAY CLEAR'` -- 16 bytes.
+@rodata
+final List<u8> wmStrOverlayClear = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4F), u8(0x56), u8(0x45), u8(0x52),
+  u8(0x4C), u8(0x41), u8(0x59), u8(0x20), u8(0x43), u8(0x4C), u8(0x45),
+  u8(0x41), u8(0x52),
+];
+
+/// 1 when overlay [wI] is parked off-screen at (8,8) by DESK hide.
+@bare
+u64 wmOverlayParked(u64 wI) {
+  if (wmAbsX(wI) == u64(8)) {
+    if (wmAbsY(wI) == u64(8)) {
+      return u64(1);
+    }
+  }
+  return u64(0);
+}
+
+/// Repaint every visible overlay slot from [wmPixelAt] (ADR-0196).
+@bare
+void wmOverlayRestore() {
+  u64 i = u64(0);
+  u64 any = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmIsOverlay(i) > u64(0)) {
+      if (wmOverlayParked(i) < u64(1)) {
+        final u64 ax = wmAbsX(i);
+        final u64 ay = wmAbsY(i);
+        final u64 g = wmWin(i, u64(wmWinGeom));
+        final u64 ww = wmGeomW(g);
+        final u64 hh = wmGeomH(g);
+        final u64 b = u64(wmBorder);
+        final u64 unused =
+            wmRepaintRect(ax - b, ay - b, ww + b + b, hh + b + b);
+        any = u64(1);
+      }
+    }
+    i = i + u64(1);
+  }
+  if (any > u64(0)) {
+    uartWrite(Rodata.addressOf(wmStrOverlayClear), u64(16));
+    uartNewline();
+  }
+}
+
+/// 1 for DESK's 160×88 menu overlay (ADR-0195 / ADR-0196).
+@bare
+u64 wmIsOverlay(u64 wI) {
+  if (wmWinParentOf(wI) >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  if (wmIsPanel(wI) > u64(0)) {
+    return u64(0);
+  }
+  if (wmWindowUsable(wI) < u64(1)) {
+    return u64(0);
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  if (wmGeomW(g) != u64(wmOverlayW)) {
+    return u64(0);
+  }
+  if (wmGeomH(g) != u64(wmOverlayH)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+@bare
+u64 wmWinOverlay(u64 wI) {
+  return wmIsOverlay(wI);
+}
+
+/// 1 if ([x],[y]) is in a gfx corner margin wmBlitRow leaves to chrome.
+@bare
+u64 wmGfxCornerHole(u64 wI, u64 x, u64 y) {
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    return u64(0);
+  }
+  if (wmWindowUsable(wI) < u64(1)) {
+    return u64(0);
+  }
+  if (wmIsPanel(wI) > u64(0)) {
+    return u64(0);
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 wx = wmAbsX(wI);
+  final u64 wy = wmAbsY(wI);
+  final u64 ww = wmGeomW(g);
+  final u64 wh = wmGeomH(g);
+  if (wh <= u64(wmChromeH)) {
+    return u64(0);
+  }
+  if (x < wx) {
+    return u64(0);
+  }
+  if (y < wy) {
+    return u64(0);
+  }
+  if (x >= wx + ww) {
+    return u64(0);
+  }
+  if (y >= wy + wh) {
+    return u64(0);
+  }
+  final u64 py = y - wy;
+  final u64 px = x - wx;
+  final u64 r = u64(wmGfxRadius);
+  if (py < r) {
+    if (px < r) {
+      return u64(1);
+    }
+    if (px >= ww - r) {
+      return u64(1);
+    }
+  }
+  if (py >= wh - r) {
+    if (px < r) {
+      return u64(1);
+    }
+    if (px >= ww - r) {
+      return u64(1);
+    }
+  }
+  return u64(0);
+}
+
+/// Alpha-blend the Skia pointer sprite at ([x], [y]).
+@bare
+void wmPointerBlit(u64 x, u64 y) {
+  if (wmPage(u64(wmPageWPtrSprOn)) < u64(1)) {
+    return;
+  }
+  final u64 spr = wmPage(u64(wmPageWPtrSpr));
+  if (spr < u64(1)) {
+    return;
+  }
+  u64 row = u64(0);
+  while (row < u64(wmPtrH)) {
+    u64 col = u64(0);
+    while (col < u64(wmPtrW)) {
+      final u64 sx = x + col;
+      final u64 sy = y + row;
+      if (sx < fbGeomWidth()) {
+        if (sy < fbGeomHeight()) {
+          final u64 pix = Pointer<u32>.fromAddress(
+                  spr + (((row * u64(wmPtrW)) + col) << u64(2)))
+              .value
+              .toU64();
+          final u64 a = (pix >> u64(24)) & u64(0xFF);
+          if (a > u64(0)) {
+            final u64 dst = Volatile<u32>.fromAddress(fbPixelAddr(sx, sy))
+                .value
+                .toU64();
+            final u64 rb = dst & u64(0x00FF0000);
+            final u64 gb = dst & u64(0x0000FF00);
+            final u64 bb = dst & u64(0x000000FF);
+            final u64 rs = (pix >> u64(16)) & u64(0xFF);
+            final u64 gs = (pix >> u64(8)) & u64(0xFF);
+            final u64 bs = pix & u64(0xFF);
+            final u64 inv = u64(255) - a;
+            final u64 r = ((rs * a) + ((rb >> u64(16)) * inv)) ~/ u64(255);
+            final u64 g = ((gs * a) + ((gb >> u64(8)) * inv)) ~/ u64(255);
+            final u64 b = ((bs * a) + (bb * inv)) ~/ u64(255);
+            fbPutPixel(sx, sy,
+                (r << u64(16)) | (g << u64(8)) | b);
+          }
+        }
+      }
+      col = col + u64(1);
+    }
+    row = row + u64(1);
+  }
+}
+
+/// Rasterise the sprite once (shell / compose context).
+@bare
+void wmPointerEnsure() {
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWPtrSprOn)) > u64(0)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWPtrSpr)) < u64(1)) {
+    final u64 buf = wmRunAlloc(u64(1));
+    if (buf < u64(1)) {
+      return;
+    }
+    wmPageSet(u64(wmPageWPtrSpr), buf);
+  }
+  if (wmPage(u64(wmPageWPtrPix)) < u64(1)) {
+    final u64 buf = wmRunAlloc(u64(1));
+    if (buf < u64(1)) {
+      return;
+    }
+    wmPageSet(u64(wmPageWPtrPix), buf);
+  }
+  final u64 spr = wmPage(u64(wmPageWPtrSpr));
+  if (osgfx_pointer_raster(spr, u64(wmPtrW), u64(wmPtrH)) == u64(0)) {
+    wmPageSet(u64(wmPageWPtrSprOn), u64(1));
+    uartWrite(Rodata.addressOf(wmStrPtrSkia), u64(11));
+    uartNewline();
+  }
+}
+
+/// Put save-under pixels back at the last pointer origin.
+@bare
+void wmPointerRestore() {
+  if (wmPage(u64(wmPageWPtrHave)) < u64(1)) {
+    return;
+  }
+  final u64 buf = wmPage(u64(wmPageWPtrPix));
+  if (buf < u64(1)) {
+    return;
+  }
+  final u64 ox = wmPage(u64(wmPageWPtrX));
+  final u64 oy = wmPage(u64(wmPageWPtrY));
+  u64 row = u64(0);
+  while (row < u64(wmPtrH)) {
+    u64 col = u64(0);
+    while (col < u64(wmPtrW)) {
+      final u64 x = ox + col;
+      final u64 y = oy + row;
+      if (x < fbGeomWidth()) {
+        if (y < fbGeomHeight()) {
+          final u64 c = Pointer<u32>.fromAddress(
+                  buf + (((row * u64(wmPtrW)) + col) << u64(2)))
+              .value
+              .toU64() &
+              u64(0x00FFFFFF);
+          fbPutPixel(x, y, c);
+        }
+      }
+      col = col + u64(1);
+    }
+    row = row + u64(1);
+  }
+  wmPageSet(u64(wmPageWPtrHave), u64(0));
+}
+
+/// Capture save-under and draw the sprite at ([x], [y]).
+@bare
+void wmPointerPlace(u64 x, u64 y) {
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    mouseDrawCursor(x, y);
+    return;
+  }
+  wmPointerEnsure();
+  final u64 buf = wmPage(u64(wmPageWPtrPix));
+  if (buf < u64(1)) {
+    return;
+  }
+  u64 row = u64(0);
+  while (row < u64(wmPtrH)) {
+    u64 col = u64(0);
+    while (col < u64(wmPtrW)) {
+      final u64 px = x + col;
+      final u64 py = y + row;
+      u64 c = u64(wmColorDesktop);
+      if (px < fbGeomWidth()) {
+        if (py < fbGeomHeight()) {
+          final u64 at = wmPixelAt(px, py);
+          if (at != u64(wmNoPixel)) {
+            c = at;
+          } else {
+            final u64 cache = wmChromeCachePixel(px, py);
+            if (cache != u64(wmNoPixel)) {
+              c = cache;
+            }
+          }
+        }
+      }
+      Pointer<u32>.fromAddress(buf + (((row * u64(wmPtrW)) + col) << u64(2)))
+          .value = c.toU32();
+      col = col + u64(1);
+    }
+    row = row + u64(1);
+  }
+  wmPageSet(u64(wmPageWPtrX), x);
+  wmPageSet(u64(wmPageWPtrY), y);
+  wmPageSet(u64(wmPageWPtrHave), u64(1));
+  wmPointerBlit(x, y);
 }
 
 /// The colour window [wI] puts at ([x], [y]), or [wmNoPixel] if it does not
@@ -1548,8 +2286,8 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
     return u64(wmNoPixel);
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  final u64 wx = wmGeomX(g);
-  final u64 wy = wmGeomY(g);
+  final u64 wx = wmAbsX(wI);
+  final u64 wy = wmAbsY(wI);
   final u64 ww = wmGeomW(g);
   final u64 wh = wmGeomH(g);
   final u64 b = u64(wmBorder);
@@ -1566,21 +2304,52 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
     return u64(wmNoPixel);
   }
   // Inside the decorated rectangle. Border or content?
-  if (x < wx) {
-    return wmBorderColor(focus);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmGfxCornerHole(wI, x, y) > u64(0)) {
+      return u64(wmNoPixel);
+    }
+    if (x < wx) {
+      return u64(wmNoPixel);
+    }
+    if (y < wy) {
+      return u64(wmNoPixel);
+    }
+    if (x >= wx + ww) {
+      return u64(wmNoPixel);
+    }
+    if (y >= wy + wh) {
+      return u64(wmNoPixel);
+    }
+  } else {
+    if (x < wx) {
+      return wmBorderColor(focus);
+    }
+    if (y < wy) {
+      return wmBorderColor(focus);
+    }
+    if (x >= wx + ww) {
+      return wmBorderColor(focus);
+    }
+    if (y >= wy + wh) {
+      return wmBorderColor(focus);
+    }
   }
-  if (y < wy) {
-    return wmBorderColor(focus);
+  // Chrome-on title, then DE close/min if those are on.
+  final u64 title = wmTitlePixel(wI, x, y);
+  if (title != u64(wmNoPixel)) {
+    return title;
   }
-  if (x >= wx + ww) {
-    return wmBorderColor(focus);
+  /* Button holes under gfx are wmNoPixel — do not fall through to shm. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmTitleHit(wI, x, y) > u64(0)) {
+      return u64(wmNoPixel);
+    }
   }
-  if (y >= wy + wh) {
-    return wmBorderColor(focus);
-  }
+  final u64 scale = wmWinScaleOf(wI);
+  final u64 stride = wmWinStrideOf(wI);
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
   final u64 off = wmWin(wI, u64(wmWinOffsetW)) +
-      ((y - wy) * wmWin(wI, u64(wmWinStride))) + ((x - wx) << u64(2));
+      (((y - wy) * scale) * stride) + (((x - wx) * scale) << u64(2));
   return wmRegionPixel(vec, off);
 }
 
@@ -1604,6 +2373,16 @@ u64 wmBorderColor(u64 focus) {
 /// rectangle against the same host model it probes a composed frame with.
 @bare
 u64 wmPixelAt(u64 x, u64 y) {
+  final u64 dePop = wmDePopPixel(x, y);
+  if (dePop != u64(wmNoPixel)) {
+    return dePop;
+  }
+  if (wmPopHit(x, y) > u64(0)) {
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      return u64(wmNoPixel);
+    }
+    return wmPopPixel(x, y);
+  }
   final u64 top = wmMeta(u64(wmMetaTop));
   u64 c = u64(wmNoPixel);
   if (top < u64(wmMaxWindows)) {
@@ -1622,15 +2401,80 @@ u64 wmPixelAt(u64 x, u64 y) {
     }
     i = i + u64(1);
   }
+  final u64 chrome = wmChromePixel(x, y);
+  if (chrome != u64(wmNoPixel)) {
+    return chrome;
+  }
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    return wmDeskPixel(x, y);
+  }
   return u64(wmColorDesktop);
 }
 
+/// Repaints one scanline segment from [wmPixelAt] into scratch at [sbase].
+@bare
+void wmRepaintScratchRow(u64 sbase, u64 x, u64 y, u64 w, u64 sw) {
+  u64 i = u64(0);
+  while (i < w) {
+    final u64 c = wmPixelAt(x + i, y);
+    if (c != u64(wmNoPixel)) {
+      Pointer<u32>.fromAddress(sbase + (((y * sw) + i) << u64(2))).value =
+          c.toU32();
+    }
+    i = i + u64(1);
+  }
+}
+
+/// Blits one scratch row to scanout.
+@bare
+void wmRepaintBlitRow(u64 sbase, u64 x, u64 y, u64 w, u64 sw) {
+  u64 i = u64(0);
+  while (i < w) {
+    final u64 c = Pointer<u32>.fromAddress(sbase + (((y * sw) + i) << u64(2)))
+        .value
+        .toU64();
+    fbPutPixel(x + i, y, c);
+    i = i + u64(1);
+  }
+}
+
+/// Union of two rectangles, one scratch compose + blit (ADR-0052 / GAP-0302).
+@bare
+u64 wmRepaintUnion2(u64 x0, u64 y0, u64 w0, u64 h0, u64 x1, u64 y1, u64 w1,
+    u64 h1) {
+  u64 ux = x0;
+  if (x1 < ux) {
+    ux = x1;
+  }
+  u64 uy = y0;
+  if (y1 < uy) {
+    uy = y1;
+  }
+  u64 x0e = x0 + w0;
+  u64 x1e = x1 + w1;
+  u64 ux1 = x0e;
+  if (x1e > ux1) {
+    ux1 = x1e;
+  }
+  u64 y0e = y0 + h0;
+  u64 y1e = y1 + h1;
+  u64 uy1 = y0e;
+  if (y1e > uy1) {
+    uy1 = y1e;
+  }
+  return wmRepaintRect(ux, uy, ux1 - ux, uy1 - uy);
+}
+
 /// Repaints one scanline segment from [wmPixelAt].
+/// `wmNoPixel` means leave the framebuffer alone (session soft chrome).
 @bare
 void wmRepaintRow(u64 x, u64 y, u64 w) {
   u64 i = u64(0);
   while (i < w) {
-    fbPutPixel(x + i, y, wmPixelAt(x + i, y));
+    final u64 c = wmPixelAt(x + i, y);
+    if (c != u64(wmNoPixel)) {
+      fbPutPixel(x + i, y, c);
+    }
     i = i + u64(1);
   }
 }
@@ -1644,19 +2488,30 @@ void wmRepaintRow(u64 x, u64 y, u64 w) {
 /// of it that is off-screen is not to draw it.
 @bare
 u64 wmRepaintRect(u64 x, u64 y, u64 w, u64 h) {
-  if (x >= u64(fbWidth)) {
+  if (x >= fbGeomWidth()) {
     return u64(0);
   }
-  if (y >= u64(fbHeight)) {
+  if (y >= fbGeomHeight()) {
     return u64(0);
   }
   u64 ww = w;
-  if (x + ww > u64(fbWidth)) {
-    ww = u64(fbWidth) - x;
+  if (x + ww > fbGeomWidth()) {
+    ww = fbGeomWidth() - x;
   }
   u64 hh = h;
-  if (y + hh > u64(fbHeight)) {
-    hh = u64(fbHeight) - y;
+  if (y + hh > fbGeomHeight()) {
+    hh = fbGeomHeight() - y;
+  }
+  final u64 area = ww * hh;
+  final u64 scratch = wmScratchEnsure(area);
+  if (scratch > u64(0)) {
+    u64 j = u64(0);
+    while (j < hh) {
+      wmRepaintScratchRow(scratch, x, y + j, ww, ww);
+      wmRepaintBlitRow(scratch, x, y + j, ww, ww);
+      j = j + u64(1);
+    }
+    return area;
   }
   u64 j = u64(0);
   while (j < hh) {
@@ -1674,17 +2529,18 @@ u64 wmRepaintWindow(u64 wI) {
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
   final u64 b = u64(wmBorder);
-  return wmRepaintRect(wmGeomX(g) - b, wmGeomY(g) - b,
+  return wmRepaintRect(wmAbsX(wI) - b, wmAbsY(wI) - b,
       wmGeomW(g) + b + b, wmGeomH(g) + b + b);
 }
 
 /// The topmost live window covering ([x], [y]), or [wmMaxWindows].
 ///
-/// **"Topmost window under the cursor" is the whole of this compositor's input
-/// policy**, and `display-protocol.md` §0.1 is explicit that window management
-/// is compositor policy rather than protocol. There is no focus that survives
-/// the pointer leaving, no click-to-focus versus focus-follows-mouse, and no
-/// keyboard focus at all -- the keyboard still belongs to the shell.
+/// **"Topmost window under the cursor" is the whole of this compositor's
+/// pointer-hit policy**, and `display-protocol.md` §0.1 is explicit that
+/// window management is compositor policy rather than protocol. Keyboard
+/// focus is the last [wmHit] that succeeded: [wmGrab] writes it, a
+/// desktop click or a reap clears it, and it does not follow the pointer.
+/// Escape is not special. ADR-0062.
 @bare
 u64 wmHit(u64 x, u64 y) {
   final u64 top = wmMeta(u64(wmMetaTop));
@@ -1721,31 +2577,121 @@ u64 wmClampOrigin(u64 x, u64 y, u64 w, u64 h) {
   if (cy < b) {
     cy = b;
   }
-  if (cx + w + b > u64(fbWidth)) {
-    cx = u64(fbWidth) - b - w;
+  if (cx + w + b > fbGeomWidth()) {
+    cx = fbGeomWidth() - b - w;
   }
-  if (cy + h + b > u64(fbHeight)) {
-    cy = u64(fbHeight) - b - h;
+  if (cy + h + b > fbGeomHeight()) {
+    cy = fbGeomHeight() - b - h;
   }
   return (cx << u64(32)) | cy;
 }
 
-/// A left-button PRESS: raise the window under the pointer and start a drag.
+/// A left-button PRESS: raise the window under the pointer and, unless
+/// `wm de` is on and the press is in the client body, start a drag.
 ///
 /// The grab offset is `cursor - origin`, so the window does not jump: the point
 /// under the pointer stays under the pointer for the whole drag, which is the
 /// one behaviour a person notices immediately when it is wrong.
+///
+/// ADR-0111: under `wm de` only the title strip starts a move. ADR-0121:
+/// the SE handle starts a resize. A body press still focuses, still
+/// raises, and still reaches the client (ADR-0055). d2-compositor never
+/// types `wm de`, so its body-drag picture is unmoved.
 @bare
 void wmGrab(u64 x, u64 y) {
-  final u64 hit = wmHit(x, y);
-  if (hit >= u64(wmMaxWindows)) {
+  if (wmDeGrab(x, y) > u64(0)) {
     return;
   }
+  if (wmPopOn() > u64(0)) {
+    final u64 onPop = wmPopHit(x, y);
+    if (onPop > u64(0)) {
+      if (wmPopWallClick(x, y) > u64(0)) {
+        return;
+      }
+      wmPopHide();
+      return;
+    }
+    wmPopHide();
+  }
+  if (wmChromeHit(x, y) > u64(0)) {
+    return;
+  }
+  final u64 hit = wmHit(x, y);
+  if (hit >= u64(wmMaxWindows)) {
+    // D9: a desktop click returns the keyboard to the shell. Focus
+    // is the last [wmHit] window until it dies or this path runs.
+    // ADR-0142: under `wm de` that is also a leave.
+    wmFocusTo(u64(wmMaxWindows));
+    return;
+  }
+  final u64 de = wmDeOn();
+  u64 title = u64(0);
+  u64 resize = u64(0);
+  if (de > u64(0)) {
+    title = wmTitleHit(hit, x, y);
+    resize = wmResizeHit(hit, x, y);
+  }
+  // D7: the press reaches the client that owns this window, with
+  // coordinates relative to the surface origin. A desktop click never
+  // gets here. Hold and release do not -- [wmPointerTick] calls this
+  // only on the down edge. A chrome hit returned above, so the taskbar
+  // does not steal a client's click by also enqueueing it. Under
+  // `wm de` a title press is chrome (ADR-0111) and is not enqueued.
+  // An SE resize press is chrome (ADR-0121) and is not enqueued.
+  if (de < u64(1)) {
+    wmeventEnqueue(hit, x, y);
+  } else {
+    if (title < u64(1)) {
+      if (resize < u64(1)) {
+        wmeventEnqueue(hit, x, y);
+      }
+    }
+  }
+  // D9: click-to-focus. PLUS ONE so window 0 is expressible.
+  // ADR-0142: under `wm de` a change is enter/leave on the ring.
+  wmFocusTo(hit);
   final u64 was = wmMeta(u64(wmMetaTop));
   final u64 g = wmWin(hit, u64(wmWinGeom));
-  wmSetMeta(u64(wmMetaGrabX), x - wmGeomX(g));
-  wmSetMeta(u64(wmMetaGrabY), y - wmGeomY(g));
-  wmSetMeta(u64(wmMetaDrag), hit + u64(1));
+  u64 drag = u64(1);
+  if (de > u64(0)) {
+    drag = u64(0);
+    if (title > u64(0)) {
+      drag = u64(1);
+    }
+    if (resize > u64(0)) {
+      drag = u64(1);
+    }
+  }
+  if (drag > u64(0)) {
+    // Subsurfaces move with their parent; do not start a body drag
+    // on a child (relative geom would be corrupted).
+    if (wmWinParentOf(hit) < u64(wmMaxWindows)) {
+      drag = u64(0);
+    }
+  }
+  if (drag > u64(0)) {
+    final u64 ax = wmAbsX(hit);
+    final u64 ay = wmAbsY(hit);
+    u64 gx = x - ax;
+    u64 gy = y - ay;
+    if (resize > u64(0)) {
+      // Distance from the pointer to the SE, so later steps do not
+      // depend on the shrinking geom. UNSIGNED: a press on the
+      // border past the content is a zero offset.
+      gx = u64(0);
+      gy = u64(0);
+      if ((ax + wmGeomW(g)) > x) {
+        gx = (ax + wmGeomW(g)) - x;
+      }
+      if ((ay + wmGeomH(g)) > y) {
+        gy = (ay + wmGeomH(g)) - y;
+      }
+      gx = gx | u64(wmResizeMark);
+    }
+    wmSetMeta(u64(wmMetaGrabX), gx);
+    wmSetMeta(u64(wmMetaGrabY), gy);
+    wmSetMeta(u64(wmMetaDrag), hit + u64(1));
+  }
   if (was == hit) {
     return; // already on top: nothing changed on screen
   }
@@ -1767,8 +2713,128 @@ void wmGrab(u64 x, u64 y) {
   uartNewline();
 }
 
+/// Clamps a proposed size so the window stays on screen WITH its
+/// border, at least [wmResizeMinW] x [wmResizeMinH], and at most the
+/// attached shm (stride/4 by region/stride). Clip, not a new region.
+@bare
+u64 wmClampSize(u64 wI, u64 ox, u64 oy, u64 nw, u64 nh) {
+  u64 w = nw;
+  u64 h = nh;
+  if (w < u64(wmResizeMinW)) {
+    w = u64(wmResizeMinW);
+  }
+  if (h < u64(wmResizeMinH)) {
+    h = u64(wmResizeMinH);
+  }
+  final u64 stride = wmWinStrideOf(wI);
+  u64 maxW = u64(wmResizeMinW);
+  if (stride >= u64(4)) {
+    maxW = stride >> u64(2);
+  }
+  final u64 pages = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages));
+  final u64 bytes = pages << u64(vmPageShift);
+  final u64 off = wmWin(wI, u64(wmWinOffsetW));
+  final u64 scale = wmWinScaleOf(wI);
+  u64 maxH = u64(wmResizeMinH);
+  if (bytes > off) {
+    if (stride > u64(0)) {
+      maxH = (bytes - off) ~/ stride;
+    }
+  }
+  if (scale > u64(1)) {
+    maxW = maxW ~/ scale;
+    maxH = maxH ~/ scale;
+  }
+  if (w > maxW) {
+    w = maxW;
+  }
+  if (h > maxH) {
+    h = maxH;
+  }
+  final u64 b = u64(wmBorder);
+  if ((ox + w + b) > fbGeomWidth()) {
+    w = fbGeomWidth() - b - ox;
+  }
+  if ((oy + h + b) > fbGeomHeight()) {
+    h = fbGeomHeight() - b - oy;
+  }
+  if (w < u64(1)) {
+    w = u64(1);
+  }
+  if (h < u64(1)) {
+    h = u64(1);
+  }
+  return (w << u64(32)) | h;
+}
+
+/// One resize step: SE follows the pointer, origin stays, geom w/h
+/// change. Same shm. The compositor clips the paint to the new rect.
+/// Under `wm de` the client is told (ADR-0142). ADR-0121.
+@bare
+void wmResizeStep(u64 x, u64 y) {
+  final u64 drag = wmMeta(u64(wmMetaDrag));
+  if (drag < u64(1)) {
+    return;
+  }
+  final u64 wI = drag - u64(1);
+  if (wmWindowUsable(wI) < u64(1)) {
+    wmSetMeta(u64(wmMetaDrag), u64(0));
+    return;
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 ox = wmGeomX(g);
+  final u64 oy = wmGeomY(g);
+  final u64 ow = wmGeomW(g);
+  final u64 oh = wmGeomH(g);
+  final u64 gx = wmMeta(u64(wmMetaGrabX)) & u64(0xFFFFFFFF);
+  final u64 gy = wmMeta(u64(wmMetaGrabY));
+  // Grab is the distance from the pointer to the SE. New right edge
+  // is pointer + that offset; origin stays. UNSIGNED: a pointer left
+  // of the origin wants a zero width, then the min clamp.
+  u64 wantW = u64(0);
+  if ((x + gx) > ox) {
+    wantW = (x + gx) - ox;
+  }
+  u64 wantH = u64(0);
+  if ((y + gy) > oy) {
+    wantH = (y + gy) - oy;
+  }
+  final u64 packed = wmClampSize(wI, ox, oy, wantW, wantH);
+  final u64 nw = packed >> u64(32);
+  final u64 nh = packed & u64(0xFFFFFFFF);
+  if (nw == ow) {
+    if (nh == oh) {
+      return;
+    }
+  }
+  final u64 b = u64(wmBorder);
+  final u64 rx = ox - b;
+  final u64 ry = oy - b;
+  final u64 rw = ow + b + b;
+  final u64 rh = oh + b + b;
+  wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
+  wmeventEnqueueConfigure(wI);
+  u64 px = wmRepaintRect(rx, ry, rw, rh);
+  px = px + wmRepaintWindow(wI);
+  wmSetMeta(u64(wmMetaRectPixels), px);
+  uartWrite(Rodata.addressOf(wmStrResize), u64(12));
+  uartPutHex(wI, u64(1));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(nw, u64(4));
+  uartWrite(Rodata.addressOf(wmStrH), u64(3));
+  uartPutHex(nh, u64(4));
+  uartWrite(Rodata.addressOf(wmStrFrom), u64(6));
+  uartPutHex(ow, u64(4));
+  uartWrite(Rodata.addressOf(wmStrH), u64(3));
+  uartPutHex(oh, u64(4));
+  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
+  uartPutHex(px, u64(8));
+  uartNewline();
+}
+
 /// One drag step: move the dragged window so the grabbed point follows the
-/// pointer, and repaint where it WAS and where it now IS.
+/// pointer, and repaint where it WAS and where it now IS. A marked grab
+/// is a resize (ADR-0121), not a move.
 @bare
 void wmDragStep(u64 x, u64 y) {
   final u64 drag = wmMeta(u64(wmMetaDrag));
@@ -1778,6 +2844,10 @@ void wmDragStep(u64 x, u64 y) {
   final u64 wI = drag - u64(1);
   if (wmWindowUsable(wI) < u64(1)) {
     wmSetMeta(u64(wmMetaDrag), u64(0));
+    return;
+  }
+  if ((wmMeta(u64(wmMetaGrabX)) & u64(wmResizeMark)) > u64(0)) {
+    wmResizeStep(x, y);
     return;
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
@@ -1810,9 +2880,11 @@ void wmDragStep(u64 x, u64 y) {
   final u64 b = u64(wmBorder);
   final u64 ox = wmGeomX(g) - b;
   final u64 oy = wmGeomY(g) - b;
+  final u64 ow = w + b + b;
+  final u64 oh = h + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
-  u64 px = wmRepaintRect(ox, oy, w + b + b, h + b + b);
-  px = px + wmRepaintWindow(wI);
+  wmeventEnqueueConfigure(wI);
+  u64 px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
   wmSetMeta(u64(wmMetaRectPixels), px);
   wmBumpMeta(u64(wmMetaMoves));
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
@@ -1856,40 +2928,60 @@ void wmPointerTick() {
   wmReap();
   final u64 x = mouseState(u64(mouseWordX));
   final u64 y = mouseState(u64(mouseWordY));
-  final u64 btn = mouseState(u64(mouseWordButtons)) & u64(1);
+  final u64 bits = mouseState(u64(mouseWordButtons));
+  final u64 left = bits & u64(1);
+  final u64 right = (bits >> u64(1)) & u64(1);
   final u64 was = wmMeta(u64(wmMetaButtons));
-  if (btn > u64(0)) {
-    if (was < u64(1)) {
+  final u64 wasLeft = was & u64(1);
+  final u64 wasRight = (was >> u64(1)) & u64(1);
+  // Right PRESS: compositor consumes it. No drag, no client click.
+  // ADR-0070. Middle (bit 2) is still ignored.
+  if (right > u64(0)) {
+    if (wasRight < u64(1)) {
+      wmContextShow(x, y);
+    }
+  }
+  if (left > u64(0)) {
+    if (wasLeft < u64(1)) {
       wmGrab(x, y);
     }
   } else {
     wmSetMeta(u64(wmMetaDrag), u64(0));
   }
-  wmSetMeta(u64(wmMetaButtons), btn);
+  wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);
   wmDragStep(x, y);
-  // THE POINTER ITSELF. The rectangle it vacated is repainted from
-  // [wmPixelAt] -- there is no save-under, so what was under the arrow is
-  // recomputed rather than remembered, and an arrow that moved over a window
-  // leaves the window rather than a hole.
   final u64 ox = wmMeta(u64(wmMetaCurX));
   final u64 oy = wmMeta(u64(wmMetaCurY));
-  //
-  // The count is BOUND rather than discarded, because `dcc` refuses a
-  // non-void call as a statement -- and the rule is right here: the erase is
-  // the one repaint whose pixel count nobody would otherwise look at, and it is
-  // the one that runs on every packet.
   u64 erased = u64(0);
-  if (ox != x) {
-    erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));
-  } else {
-    if (oy != y) {
-      erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (ox != x) {
+      wmPointerRestore();
+      erased = u64(wmPtrW) * u64(wmPtrH);
+    } else {
+      if (oy != y) {
+        wmPointerRestore();
+        erased = u64(wmPtrW) * u64(wmPtrH);
+      }
     }
+    wmPointerPlace(x, y);
+    wmSetMeta(u64(wmMetaCurX), x);
+    wmSetMeta(u64(wmMetaCurY), y);
+    if (wmGfxChromeFresh() < u64(1)) {
+      wmGfxKick();
+    }
+  } else {
+    if (ox != x) {
+      erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));
+    } else {
+      if (oy != y) {
+        erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));
+      }
+    }
+    mouseDrawCursor(x, y);
+    wmSetMeta(u64(wmMetaCurX), x);
+    wmSetMeta(u64(wmMetaCurY), y);
   }
   wmSetMeta(u64(wmMetaRectPixels),
       wmMeta(u64(wmMetaRectPixels)) + erased);
-  mouseDrawCursor(x, y);
-  wmSetMeta(u64(wmMetaCurX), x);
-  wmSetMeta(u64(wmMetaCurY), y);
   wmSetMeta(u64(wmMetaBusy), u64(0));
 }

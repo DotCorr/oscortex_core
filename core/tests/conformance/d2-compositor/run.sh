@@ -66,7 +66,7 @@ setup_error() { echo "D2-compositor: FAIL — $1" >&2; exit 2; }
 # Sourced AFTER fail(), which every helper in it reports through.
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=98
+ASSERTIONS_REQUIRED=114
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-objdump \
             x86_64-elf-readelf; do
@@ -109,7 +109,9 @@ d() { grep -m1 "^$1=" "$MODEL" | cut -d= -f2-; }
 
 WIN_W=$(d win_w); WIN_H=$(d win_h); BORDER=$(d border)
 EXIT_A=$(d exit_a); EXIT_B=$(d exit_b)
-PX1=$(d px1); PX2=$(d px2); PX3=$(d px3)
+PX1=$(d px1); PX2=$(d px2); PX3=$(d px3); PX4=$(d px4)
+DMG_W=$(d dmg_w); DMG_H=$(d dmg_h)
+DMG_X=$(d dmg_x); DMG_Y=$(d dmg_y)
 CUR_X=$(d cursor_x); CUR_Y=$(d cursor_y)
 PROBE_COUNT=$(d probe_count)
 OVERLAP_AREA=$(d overlap_area)
@@ -128,7 +130,11 @@ ck; [[ "$PROBE_COUNT" -gt 0 ]] \
 ck; [[ "$EXIT_A" != "$EXIT_B" ]] \
   || fail "the two clients' derived exit codes are equal — one number would satisfy both checks"
 echo "DERIVED: two ${WIN_W}x${WIN_H} surfaces overlapping in $OVERLAP_AREA pixels, a ${BORDER}px border"
-echo "DERIVED: three composition passes of $PX1, $PX2 and $PX3 pixels"
+ck; [[ $((16#$PX4)) -lt $((16#$PX2)) ]] \
+  || fail "D6's 16x16 count $PX4 is not smaller than a decorated window $PX2 — the small-count assertion would be vacuous"
+ck; [[ $((16#$PX2)) -lt $((16#$PX1)) ]] \
+  || fail "a decorated-window commit $PX2 is not smaller than a full desktop $PX1 — a full-frame fallback would be indistinguishable"
+echo "DERIVED: four composition passes of $PX1, $PX2, $PX3 and $PX4 pixels (D6: the last is ${DMG_W}x${DMG_H})"
 echo "DERIVED: the pointer ends at X $CUR_X Y $CUR_Y; side 0 exits $EXIT_A and side 1 exits $EXIT_B"
 echo "DERIVED: $PROBE_COUNT pixel probes and one control that must fail"
 ck; [[ "$DRAG_MOVES" -gt 0 ]] \
@@ -280,18 +286,28 @@ DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"
 ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section"
 DART_BSS=$((16#$DART_BSS_HEX))
 WM_OFF=$(bssoff wmStore)
-ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq "$DART_BSS" ]] \
-  || fail "wmStore ends at $(( 16#$WM_OFF + WM_SIZE )) and kmain.o's .bss is $DART_BSS — D4's block is not last, so ADR-0031 §4.3 rule 5 is broken and every earlier harness's 'bytes from my block to the end' arithmetic has silently moved"
+KBDQ_SIZE=$(bsssize kbdqStore)
+KBDQ_OFF=$(bssoff kbdqStore)
+EV_SIZE=$(bsssize wmeventStore)
+EV_OFF=$(bssoff wmeventStore)
+ck; [[ "$KBDQ_SIZE" -eq 288 ]] || fail "kbdqStore is ${KBDQ_SIZE:-missing} bytes, expected 288 (ADR-0054)"
+ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 384 (ADR-0055)"
+ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
+  || fail "wmeventStore ends at $(( 16#$EV_OFF + EV_SIZE )) and kmain.o's .bss is $DART_BSS — D7's block is not last"
+ck; [[ $(( 16#$KBDQ_OFF + KBDQ_SIZE )) -eq $(( 16#$EV_OFF )) ]] \
+  || fail "kbdqStore ends at $(( 16#$KBDQ_OFF + KBDQ_SIZE )) and wmeventStore begins at $(( 16#$EV_OFF )) — D2's block is not immediately before D7's"
+ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq $(( 16#$KBDQ_OFF )) ]] \
+  || fail "wmStore ends at $(( 16#$WM_OFF + WM_SIZE )) and kbdqStore begins at $(( 16#$KBDQ_OFF )) — D4's block is not immediately before D2's"
 SHM_OFF=$(bssoff shmStore)
 SHM_SIZE=$(bsssize shmStore)
 ck; [[ $(( 16#$SHM_OFF + SHM_SIZE )) -eq $(( 16#$WM_OFF )) ]] \
-  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_SIZE )) and wmStore begins at $(( 16#$WM_OFF )) — the two newest blocks are not adjacent"
+  || fail "shmStore ends at $(( 16#$SHM_OFF + SHM_SIZE )) and wmStore begins at $(( 16#$WM_OFF )) — M21's block is not immediately before D4's"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 22336 ]] \
-  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 22336 — 22016 through the D1/M21 merge, plus D4's wmStore 320 (ADR-0050). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
-echo "STRUCTURAL: pass  wmStore is $WM_SIZE bytes at .bss+0x$WM_OFF, immediately after shmStore and LAST; total .bss $TOTAL_BSS"
+ck; [[ "$TOTAL_BSS" -eq 31584 ]] \
+  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 31584 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
+echo "STRUCTURAL: pass  wmStore is $WM_SIZE bytes at .bss+0x$WM_OFF, immediately after shmStore and before kbdqStore; wmeventStore last; total .bss $TOTAL_BSS"
 
 # 3i. NO HELP LINE. `shellStrHelp` is inside five byte-exact serial goldens plus
 # m3-shell's screen golden, so one line here moves six goldens by substitution.
@@ -301,9 +317,13 @@ ck; ! grep -q '  wm  ' "$CORE_DIR/kernel/shell.dart" \
 
 # 3j. EVERY @rodata TABLE'S REAL SIZE AGAINST WHAT ITS CALL SITE PASSES.
 # GAP-0060: a table carries no length, so every byte count is repeated by hand.
-capture_sh ROD_OUT ROD_STATUS -- "python3 - '$CORE_DIR/kernel/wm.dart' '$CORE_DIR/build/kmain.o' <<'PY'
-import re, subprocess, sys
-src = open(sys.argv[1]).read()
+# BOTH FILES. `wm.dart`'s compositor now spans `wm.dart` + `wmext.dart` (the
+# subsurface/scale/seat helpers and, since ADR-0192, the screen-rect and client
+# paint ops). A table declared in one and written from the other is not a size
+# mismatch, and reading only the first file reported exactly that.
+capture_sh ROD_OUT ROD_STATUS -- "python3 - '$CORE_DIR/kernel/wm.dart' '$CORE_DIR/kernel/wmext.dart' <<'PY'
+import re, sys
+src = ''.join(open(p).read() for p in sys.argv[1:])
 sizes = {}
 for m in re.finditer(r'final List<u8> (wmStr\w+) = const \[(.*?)\];', src, re.S):
     sizes[m.group(1)] = len(re.findall(r'u8\(0x[0-9A-Fa-f]{2}\)', m.group(2)))
@@ -343,6 +363,44 @@ ck; [[ $FS_STATUS -eq 0 ]] || fail "verify-freestanding.sh exited $FS_STATUS und
 ck; [[ "$(grep -c '^FREESTANDING: pass' <<<"$FS_OUT")" -eq 4 ]] \
   || fail "verify-freestanding reported $(grep -c '^FREESTANDING: pass' <<<"$FS_OUT") passes, expected 4"
 EXTERN_COUNT=$(sed -n 's/.*(\([0-9]*\) declared extern.*/\1/p' <<<"$FS_OUT")
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 44 ]] \
   || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED, because a compositor that needed a new @extern would be doing in assembly something ADR-0050 says is DCDart's job"
 
@@ -495,14 +553,18 @@ ck; [[ "$(countof '^WM ATTACH W [01] R [01] GEN ')" -eq 2 ]] \
   || fail "$(countof '^WM ATTACH W [01] R [01] GEN ') surfaces attached, expected 2"
 ck; havere "^WM ATTACH W 0 R 0 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define A_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
 ck; havere "^WM ATTACH W 1 R 1 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define B_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
-# TWO COMMITS, each carrying the whole surface as its damage rectangle.
-ck; [[ "$(countof '^WM COMMIT W [01] SEQ ')" -eq 2 ]] \
-  || fail "$(countof '^WM COMMIT W [01] SEQ ') commits, expected 2"
+# THREE COMMITS: two full-surface presents, then D6's 16x16.
+ck; [[ "$(countof '^WM COMMIT W [01] SEQ ')" -eq 3 ]] \
+  || fail "$(countof '^WM COMMIT W [01] SEQ ') commits, expected 3"
 ck; havere "^WM COMMIT W 0 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WIN_W") H $(printf '%04X' "$WIN_H")\$"
-# THREE FRAMES, with the pixel counts derived on the host.
-ck; havere "^WM FRAME N 00000001 PX $PX1 TOP 2 CUR X 0000 Y 0000\$"
+ck; havere "^WM COMMIT W 1 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WIN_W") H $(printf '%04X' "$WIN_H")\$"
+ck; havere "^WM COMMIT W 1 SEQ 00000002 DMG X $DMG_X Y $DMG_Y W $(printf '%04X' "$DMG_W") H $(printf '%04X' "$DMG_H")\$"
+# FOUR FRAMES, with the pixel counts derived on the host. Frame 1 is `wm on`
+# (the desktop). 2 and 3 are decorated windows. 4 is D6's 16x16.
+ck; havere "^WM FRAME N 00000001 PX $PX1 TOP $W_MAX CUR X 0000 Y 0000\$"
 ck; havere "^WM FRAME N 00000002 PX $PX2 TOP 0 CUR X $CUR_X Y $CUR_Y\$"
 ck; havere "^WM FRAME N 00000003 PX $PX3 TOP 1 CUR X $CUR_X Y $CUR_Y\$"
+ck; havere "^WM FRAME N 00000004 PX $PX4 TOP 1 CUR X $CUR_X Y $CUR_Y\$"
 # THE FORGED HANDLE. Exactly one, refused by name.
 ck; [[ "$(countof '^WM REFUSE C .* R FFFFFFFFFFFFFFFA$')" -eq 1 ]] \
   || fail "$(countof '^WM REFUSE C .* R FFFFFFFFFFFFFFFA$') forged-handle refusals, expected exactly 1 (wmRetBadCap)"
@@ -538,10 +600,12 @@ print('    every drag step painted at most %d pixels; a full frame is %d or more
 PY"
 ck; [[ $MVPX_STATUS -eq 0 ]] || { echo "$MVPX_OUT" >&2; fail "a pointer-driven repaint was not a PARTIAL repaint"; }
 echo "$MVPX_OUT"
-# NOTHING WAS COMPOSED IN FULL DURING PHASE 2. Three frames, and no more.
-ck; [[ "$(countof '^WM FRAME N ')" -eq 3 ]] \
-  || fail "$(countof '^WM FRAME N ') full composition passes, expected exactly 3 — a drag that fell back to a full frame would still look right and would not be D6"
-echo "TRANSCRIPT: pass  one WM ON, two attaches, two commits, three frames at $PX1/$PX2/$PX3 pixels, one forged handle refused, two derived exit codes, one raise, $DRAG_MOVES partial-repaint drag steps ending at X $MOVED_X Y $MOVED_Y, and no faults"
+# NOTHING WAS COMPOSED IN FULL DURING PHASE 2. Four frames, and no more --
+# a drag that fell back to wmCompose would still look right and would add
+# a fifth WM FRAME line.
+ck; [[ "$(countof '^WM FRAME N ')" -eq 4 ]] \
+  || fail "$(countof '^WM FRAME N ') composition passes, expected exactly 4 — a drag that fell back to a full frame would still look right and would not be D5b"
+echo "TRANSCRIPT: pass  one WM ON, two attaches, three commits (the third a ${DMG_W}x${DMG_H} damage present), four frames at $PX1/$PX2/$PX3/$PX4 pixels, one forged handle refused, two derived exit codes, one raise, $DRAG_MOVES partial-repaint drag steps ending at X $MOVED_X Y $MOVED_Y, and no faults"
 
 # ===========================================================================
 # Step 8 — THE PIXELS. The exit criterion.
@@ -747,7 +811,7 @@ fi
 ck; [[ "$(grep -c 'print the rest of the line' "$OWN_SER")" -eq 2 ]] \
   || fail "'help' appears $(grep -c 'print the rest of the line' "$OWN_SER") time(s) on COM1, expected 2 — the compositor is suppressing SERIAL output and not just glyphs"
 ck; grep -q '^WM OFF FRAMES ' "$OWN_SER" || fail "'wm off' printed nothing"
-ck; grep -qE '^WM STATE A 1 WINS 0 PX [0-9A-F]{8} TOP 2 MOVES 00000000 RAISES 00000000 DROPS 00000000$' "$OWN_SER" \
+ck; grep -qE "^WM STATE A 1 WINS 0 PX [0-9A-F]{8} TOP $W_MAX MOVES 00000000 RAISES 00000000 DROPS 00000000\$" "$OWN_SER" \
   || fail "'wm' did not report a live compositor with no windows: $(grep -m1 '^WM STATE' "$OWN_SER")"
 # `wm draw` WITH THE COMPOSITOR OFF is refused by name, and it is the only
 # refusal in this file a person can reach from the shell.
@@ -797,4 +861,4 @@ echo "SCREENSHOT: $SHOT_PNG2"
 echo "SCREENSHOT: $SHOT_PNG"
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "D2-compositor: PASS — dcc build -> verify-freestanding on kmain.o, kdata.o, portio.o and kernel.elf under /bin/bash $BASH_VER with 44 externs UNCHANGED -> structural checks (wmStore tiles exactly at $W_STORE bytes and is LAST in .bss with the total at $TOTAL_BSS; the descriptor is $W_DESCB bytes, which IS chanMsgBytes; wmMaxWindows equals shmMax; $W_SYS is in the syscall registry; the refusal codes are distinct, above one floor and agree with prog.c's private copy; the framebuffer gate is exactly ONE branch in fbPutc and vga.dart does not know it exists; every @rodata length agrees with its call site) -> clang builds ONE freestanding ELF64 that CONTAINS NO SHARED-WINDOW ADDRESS in its source or its emitted code -> make-image.py writes it to two byte-identical disk slots -> A REAL QEMU BOOT. Two processes in two different address spaces each create a shared region, are TOLD by the kernel where it is, paint a ${WIN_W}x${WIN_H} surface into it and commit it. The compositor composes three frames of $PX1, $PX2 and $PX3 pixels and the framebuffer is then READ BACK OUT OF GUEST PHYSICAL MEMORY at the address the kernel found in a PCI BAR: $PROBES_RUN probes, each a colour computed on the host at a coordinate computed on the host, covering the desktop, both fills, both inner blocks, both borders in their two stacking colours, the TOP window's fill and border inside the $OVERLAP_AREA-pixel overlap, and the pointer's own edge, fill and clear pixels from this kernel's own 16x12 bitmaps. THEN, IN THE SAME BOOT AND WHILE BOTH SURFACES ARE STILL LIVE, a left click on the BOTTOM window inside the clients' hold — where the shell is not running and IRQ12 is the only thing that can act — RAISES it and $DRAG_MOVES pointer motions DRAG it to X $MOVED_X Y $MOVED_Y, the origin the host derived from the grab offset and the clamp; every one of those repaints is asserted to have painted FEWER pixels than a bare desktop fill, and the number of full composition passes is asserted to still be 3. The framebuffer is read back a SECOND time and $PROBES2_RUN more probes cover the raised window's fill, ink and now-BRIGHT border, the other window's now-DIM border, the rectangle the window VACATED being desktop again, and the pointer's own three pixels over a window rather than over the desktop — which is what proves the erase-repaint recomputed what was underneath rather than remembering it. AND TWO CONTROLS THAT MUST FAIL: the bottom window's fill asserted inside the overlap before the raise, and — after the raise — the colour that probe 'before_raise' positively asserted at that same coordinate in the first dump. Each client exits with a 64-bit number derived from the pixels it actually wrote ($EXIT_A and $EXIT_B), computed on the host before the machine booted, and a forged capability handle is refused by name."
+echo "D2-compositor: PASS — dcc build -> verify-freestanding on kmain.o, kdata.o, portio.o and kernel.elf under /bin/bash $BASH_VER with 44 externs UNCHANGED -> structural checks (wmStore tiles exactly at $W_STORE bytes and is LAST in .bss with the total at $TOTAL_BSS; the descriptor is $W_DESCB bytes, which IS chanMsgBytes; wmMaxWindows equals shmMax; $W_SYS is in the syscall registry; the refusal codes are distinct, above one floor and agree with prog.c's private copy; the framebuffer gate is exactly ONE branch in fbPutc and vga.dart does not know it exists; every @rodata length agrees with its call site) -> clang builds ONE freestanding ELF64 that CONTAINS NO SHARED-WINDOW ADDRESS in its source or its emitted code -> make-image.py writes it to two byte-identical disk slots -> A REAL QEMU BOOT. Two processes in two different address spaces each create a shared region, are TOLD by the kernel where it is, paint a ${WIN_W}x${WIN_H} surface into it and commit it. The compositor composes four frames of $PX1, $PX2, $PX3 and $PX4 pixels — the last of them D6's ${DMG_W}x${DMG_H} damage present — and the framebuffer is then READ BACK OUT OF GUEST PHYSICAL MEMORY at the address the kernel found in a PCI BAR: $PROBES_RUN probes, each a colour computed on the host at a coordinate computed on the host, covering the desktop, both fills, both inner blocks, both borders in their two stacking colours, the TOP window's fill and border inside the $OVERLAP_AREA-pixel overlap, and the pointer's own edge, fill and clear pixels from this kernel's own 16x12 bitmaps. THEN, IN THE SAME BOOT AND WHILE BOTH SURFACES ARE STILL LIVE, a left click on the BOTTOM window inside the clients' hold — where the shell is not running and IRQ12 is the only thing that can act — RAISES it and $DRAG_MOVES pointer motions DRAG it to X $MOVED_X Y $MOVED_Y, the origin the host derived from the grab offset and the clamp; every one of those repaints is asserted to have painted FEWER pixels than a bare desktop fill, and the number of WM FRAME lines is asserted to still be 4. The framebuffer is read back a SECOND time and $PROBES2_RUN more probes cover the raised window's fill, ink and now-BRIGHT border, the other window's now-DIM border, the rectangle the window VACATED being desktop again, and the pointer's own three pixels over a window rather than over the desktop — which is what proves the erase-repaint recomputed what was underneath rather than remembering it. AND TWO CONTROLS THAT MUST FAIL: the bottom window's fill asserted inside the overlap before the raise, and — after the raise — the colour that probe 'before_raise' positively asserted at that same coordinate in the first dump. Each client exits with a 64-bit number derived from the pixels it actually wrote ($EXIT_A and $EXIT_B), computed on the host before the machine booted, and a forged capability handle is refused by name."

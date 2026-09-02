@@ -86,7 +86,8 @@ def main():
     W = dart_ints(wmdart)
     M = dart_ints(mousedart)
     for k in ("WIN_W", "WIN_H", "A_X", "A_Y", "B_X", "B_Y", "A_FILL", "A_INK",
-              "B_FILL", "B_INK", "INK_INSET", "WIN_PAGES", "HOLDSPIN"):
+              "B_FILL", "B_INK", "INK_INSET", "WIN_PAGES", "HOLDSPIN",
+              "DMG_X", "DMG_Y", "DMG_W", "DMG_H", "DMG_INK"):
         if k not in P:
             die("prog.c does not define %s" % k)
     for k in ("wmColorDesktop", "wmBorder", "wmColorFocus", "wmColorUnfocus",
@@ -116,11 +117,39 @@ def main():
         die("the two surfaces do not overlap -- the stacking-order assertion "
             "would be vacuous")
 
-    def surface_pixel(side, px, py):
+    def surface_base(side, px, py):
         ink = (inset <= px < w - inset) and (inset <= py < h - inset)
         if side == 0:
             return P["A_INK"] if ink else P["A_FILL"]
         return P["B_INK"] if ink else P["B_FILL"]
+
+    dmg_x, dmg_y = P["DMG_X"], P["DMG_Y"]
+    dmg_w, dmg_h = P["DMG_W"], P["DMG_H"]
+    dmg_ink = P["DMG_INK"]
+    if dmg_w < 1 or dmg_h < 1:
+        die("the D6 damage rectangle is empty -- the small-count assertion "
+            "would be a number with no pixels behind it")
+    if dmg_x + dmg_w > w or dmg_y + dmg_h > h:
+        die("the D6 damage rectangle does not fit the surface; the kernel "
+            "would refuse the commit with wmRetBadGeom")
+    # Every overwritten pixel must actually change colour, otherwise a
+    # compositor that ignored the second commit would still match the probe.
+    overwritten = 0
+    for py in range(dmg_h):
+        for px in range(dmg_w):
+            if surface_base(1, dmg_x + px, dmg_y + py) == dmg_ink:
+                die("D6 patch pixel (%d,%d) is already the damage colour; the "
+                    "probe cannot tell a present from a skip" % (px, py))
+            overwritten += 1
+    if overwritten != dmg_w * dmg_h:
+        die("internal: damage area is %d, counted %d" % (dmg_w * dmg_h, overwritten))
+
+    def surface_pixel(side, px, py):
+        """The surface AFTER side 1's D6 present. Phase-1 and phase-2 probes
+        both read this: the first dump is taken after that commit."""
+        if side == 1 and dmg_x <= px < dmg_x + dmg_w and dmg_y <= py < dmg_y + dmg_h:
+            return dmg_ink
+        return surface_base(side, px, py)
 
     # --- what each client exits with ---------------------------------------
     sums = []
@@ -128,19 +157,40 @@ def main():
         s = 0
         for py in range(h):
             for px in range(w):
-                s += surface_pixel(side, px, py)
+                s += surface_base(side, px, py)
         sums.append(s)
-    # exit = (side << 56) | (frames_at_commit << 48) | (sum & 2**48-1)
-    # `wm on` composes frame 1, A's commit frame 2, B's commit frame 3.
+    # Side 1 overwrites the patch after the first paint. The exit sum is the
+    # first paint plus the net delta, which is what paint_damage returns.
+    delta = 0
+    for py in range(dmg_h):
+        for px in range(dmg_w):
+            delta += dmg_ink - surface_base(1, dmg_x + px, dmg_y + py)
+    sums[1] += delta
+    # exit = (side << 56) | (frames_at_last_commit << 48) | (sum & 2**48-1)
+    # `wm on` is frame 1, A's full-surface commit is 2, B's full-surface is 3,
+    # B's 16x16 is 4.
     exit_a = (0 << 56) | (2 << 48) | (sums[0] & 0xFFFFFFFFFFFF)
-    exit_b = (1 << 56) | (3 << 48) | (sums[1] & 0xFFFFFFFFFFFF)
+    exit_b = (1 << 56) | (4 << 48) | (sums[1] & 0xFFFFFFFFFFFF)
 
     # --- pixels composed per frame -----------------------------------------
+    # D6: a commit paints the damage, not the desktop. Full-surface damage is
+    # the decorated window (border included). A 16x16 is 256.
     decorated = (w + 2 * b) * (h + 2 * b)
     px1 = fbw * fbh
-    px2 = px1 + decorated
-    px3 = px2 + 2 * decorated - decorated  # two windows, one of them twice over
-    px3 = px1 + 2 * decorated
+    px2 = decorated
+    # B's first present is a full-surface commit of the NEW top window, so
+    # the compositor also repaints A -- otherwise A's border stays bright
+    # and D5's stacking probe has no dim colour to find.
+    px3 = 2 * decorated
+    px4 = dmg_w * dmg_h
+    if px4 >= px2:
+        die("the D6 damage rectangle is %d pixels and a decorated window is "
+            "%d -- the small-count assertion cannot tell damage from a "
+            "window-sized fallback" % (px4, px2))
+    if px2 >= px1:
+        die("a decorated window is %d pixels and the desktop is %d -- a "
+            "commit that fell back to a full frame would not be distinguishable"
+            % (px2, px1))
 
     # --- the pointer -------------------------------------------------------
     #
@@ -281,6 +331,10 @@ def main():
     add("b_border", bx - 1, oy0 + 5, W["wmColorFocus"])
     # 8. window A's top border
     add("a_border_top", ax + inset, ay - 1, W["wmColorUnfocus"])
+    # 8b. D6: the 16x16 patch on B, after the second commit. Centre of the
+    #     rectangle, so a compositor that painted a single pixel or the
+    #     wrong origin cannot satisfy it.
+    add("b_damage", bx + dmg_x + dmg_w // 2, by + dmg_y + dmg_h // 2, dmg_ink)
 
     # 9. the pointer, drawn on top of the desktop
     add("cursor_edge", cx + cur_edge[0], cy + cur_edge[1], edge_c, True)
@@ -473,10 +527,15 @@ def main():
     print("sum_b=%d" % sums[1])
     print("exit_a=%016X" % exit_a)
     print("exit_b=%016X" % exit_b)
-    print("frames=3")
+    print("frames=4")
     print("px1=%08X" % px1)
     print("px2=%08X" % px2)
     print("px3=%08X" % px3)
+    print("px4=%08X" % px4)
+    print("dmg_w=%d" % dmg_w)
+    print("dmg_h=%d" % dmg_h)
+    print("dmg_x=%04X" % dmg_x)
+    print("dmg_y=%04X" % dmg_y)
     print("cursor_x=%04X" % p1cx)
     print("cursor_y=%04X" % p1cy)
     print("syscall=%d" % W["wmSysSurfaceNo"])

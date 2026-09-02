@@ -796,6 +796,9 @@ const int userMetaErr = 15;
 const int userFrameRdi = 72;
 const int userFrameRsi = 80;
 const int userFrameRdx = 88;
+/// RCX — fourth syscall argument. Push order in `isr_common` puts it
+/// between RDX and RBX. APP4 `rename` uses it for `newLen`.
+const int userFrameRcx = 96;
 const int userFrameRax = 112;
 const int userFrameRip = 136;
 const int userFrameCs = 144;
@@ -866,6 +869,12 @@ external void enter_user(u64 rip, u64 rsp, u64 arg, u64 cs, u64 ss);
 /// its call to [enter_user]. **Never returns to its caller.**
 @extern
 external void user_return();
+
+/// D3: `iretq` into ring 3 from a saved 22-word interrupt frame. Records the
+/// caller's RSP as the `user_return` resume point, then loads [frame] the way
+/// `isr_common` returns. **Returns only through `user_return`.**
+@extern
+external void resume_user(u64 frame, u64 ss);
 
 // ---------------------------------------------------------------------------
 // Metadata primitives. Everything below goes through the seam.
@@ -1648,6 +1657,16 @@ void userSyscall(u64 frame) {
     fileSysWrite(frame);
     return;
   }
+  // APP4 / ADR-0147: `unlink` (31) and `rename` (32). 11 stays
+  // `fdwait`. 30 is `futex`. Same owner-row rule as `open`.
+  if (no == u64(fileSysUnlinkNo)) {
+    fileSysUnlink(frame);
+    return;
+  }
+  if (no == u64(fileSysRenameNo)) {
+    fileSysRename(frame);
+    return;
+  }
   // M20: `chanopen`, `chansend` and `chanrecv` (syscalls 13..15 -- 11 is
   // reserved for `fdwait` and 12 is `ioctl`, see docs/syscall-registry.md and
   // GAP-0213). Refused
@@ -1691,6 +1710,26 @@ void userSyscall(u64 frame) {
   }
   if (no == u64(shmSysDropNo)) {
     shmSysDrop(frame);
+    return;
+  }
+  // ADR-0150: `shmgrow` (34). 11 stays `fdwait`. 33 is `setfs`.
+  if (no == u64(shmSysGrowNo)) {
+    shmSysGrow(frame);
+    return;
+  }
+  // ADR-0156: `shmshrink` (35). 11 stays `fdwait`. 34 is `shmgrow`.
+  if (no == u64(shmSysShrinkNo)) {
+    shmSysShrink(frame);
+    return;
+  }
+  // ADR-0163: `mprotect` (36). 11 stays `fdwait`. 35 is `shmshrink`.
+  if (no == u64(shmSysMprotectNo)) {
+    shmSysMprotect(frame);
+    return;
+  }
+  // ADR-0164: `shmfile` (37). File-backed + demand. 11 stays `fdwait`.
+  if (no == u64(shmSysFileNo)) {
+    shmSysFile(frame);
     return;
   }
 
@@ -1737,6 +1776,81 @@ void userSyscall(u64 frame) {
   // the correct one, and the number is not the interface.
   if (no == u64(wmSysSurfaceNo)) {
     wmSysSurface(frame);
+    return;
+  }
+  // D2 (ADR-0054): `kbdevent` (syscall 24). It sits with `mouse` rather than
+  // with `yield` or `sbrk`, for `mouse`'s reason exactly: it reads GLOBAL
+  // device state (or pops one event from a global ring) and invents no
+  // per-caller resource. All three things that can be in ring 3 can call it.
+  //
+  // **24 and not 21.** 20 is `mouse`, 23 is `wmsurface`, and 21/22 are taken
+  // on other lines. 11 stays reserved for `fdwait`.
+  if (no == u64(kbdqSysNo)) {
+    kbdqSys(frame);
+    return;
+  }
+  // D7 (ADR-0055): `wmevent` (syscall 25). It sits with `wmsurface` rather
+  // than with `mouse` or `kbdevent`: those two read GLOBAL device state,
+  // this one pops a per-window ring and so needs a process that owns a
+  // surface. A caller with no window pops 0, the same as an empty ring.
+  //
+  // **25 and not 21.** 20 is `mouse`, 23 is `wmsurface`, 24 is `kbdevent`,
+  // and 21/22 are taken on other lines. 11 stays reserved for `fdwait`.
+  if (no == u64(wmeventSysNo)) {
+    wmeventSys(frame);
+    return;
+  }
+  // ADR-0078: `spawn` (syscall 26). A process starts another process
+  // by 8.3 name. 20 is `mouse`, 23 is `wmsurface`, 24 is `kbdevent`,
+  // 25 is `wmevent`, 11/21/22 stay reserved. No guard here:
+  // [procSysSpawn] asks [procLive] itself and refuses with
+  // [spawnRetNoProc], a named value rather than M9's opaque all-ones.
+  if (no == u64(procSysSpawnNo)) {
+    procSysSpawn(frame);
+    return;
+  }
+  // ADR-0128: `mmap` (syscall 27). Anonymous pages for a named
+  // platform process. 11 stays `fdwait`. 21 and 22 stay reserved
+  // on other lines. 26 is `spawn`. Refused unless a PROCESS is
+  // live, for `sbrk`'s reason: the frames live in the caller's
+  // slot and there is no slot without one.
+  if (no == u64(heapSysMmapNo)) {
+    if (procLive() < u64(1)) {
+      userRefuse(frame, no, cs, u64(0));
+      return;
+    }
+    heapSysMmap(frame);
+    return;
+  }
+  // ADR-0130: `clone` (syscall 28). A named platform process
+  // starts a sibling on the same page tables. 11 stays `fdwait`.
+  // 21 and 22 stay reserved. 26 is `spawn`, 27 is `mmap`.
+  // [procSysClone] asks [procLive] itself.
+  if (no == u64(procSysCloneNo)) {
+    procSysClone(frame);
+    return;
+  }
+  // ADR-0144: `dlopen` (syscall 29). A named platform process
+  // maps our FAT-resident tiny ET_DYN and returns `so_mark`.
+  // 11 stays `fdwait`. 26 is `spawn`, 27 is `mmap`, 28 is
+  // `clone`. [elfSysDlopen] asks [procLive] itself.
+  if (no == u64(elfSysDlopenNo)) {
+    elfSysDlopen(frame);
+    return;
+  }
+  // ADR-0146: `futex` (syscall 30). A named platform process
+  // waits on or wakes a word. 11 stays `fdwait`. 28 is `clone`,
+  // 29 is `dlopen`. [procSysFutex] asks [procLive] itself.
+  if (no == u64(procSysFutexNo)) {
+    procSysFutex(frame);
+    return;
+  }
+  // ADR-0148: `setfs` (syscall 33). A named platform process
+  // plants IA32_FS_BASE so `%fs:` reaches its TLS block.
+  // 11 stays `fdwait`. 30 is `futex`, 31/32 are unlink/rename.
+  // [procSysSetfs] asks [procLive] itself.
+  if (no == u64(procSysSetfsNo)) {
+    procSysSetfs(frame);
     return;
   }
   if (no == u64(userSysWhoNo)) {

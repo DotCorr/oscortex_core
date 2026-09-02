@@ -108,12 +108,11 @@ recorded four times: *the cheaper move is the correct one, and the number is not
 
 ## 5. What the compositor does with a commit, and what it does not
 
-**It composes a full frame.** Desktop, then every window bottom-up, then the pointer. The damage
-rectangle is carried, validated and **printed**, and then not used to make the pass smaller.
-GAP-0301 records that as a cost. Composing only the damage is D6, whose exit criterion is a
-pixels-per-frame count that has to come out *small*; `wmMetaPixels` is that count and it is printed on
-every frame, so the milestone that makes it small has something to make smaller and a harness that can
-watch it happen.
+**A commit composes the damage rectangle.** Desktop-then-windows is what `wm on` and `wm draw` still
+do; a `wmOpCommit` paints the rectangle the client named, in screen space, and a whole-surface
+damage paints the decorated window so the compositor-owned border appears with it. That is D6
+(ADR-0052). `wmMetaPixels` is the count, and `d2-compositor` requires the 16×16 present to print
+256, not 480,000.
 
 **Stacking is "the newest surface is on top", and the border says which one that is.** The compositor
 draws a 3-pixel border around every window in a colour that is a function of stacking position —

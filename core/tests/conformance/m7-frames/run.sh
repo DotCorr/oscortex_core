@@ -46,7 +46,7 @@
 #   B  -m 128M   drain only, so the bitmap can be dumped in the DRAINED state
 #                and asserted ALL ONES. Session A can only show the restored
 #                one; the monitor runs after every keystroke.
-#   C  -m 256M   THE BOUND IS LOUD. A machine with more usable RAM than the
+#   C  -m 2x bound  THE BOUND IS LOUD. A machine with more usable RAM than the
 #                allocator manages must print `OVER <count> CAPPED` with the
 #                exact count, not silently pretend the machine is smaller.
 #   D  -m 32M    NEGATIVE CONTROL. Same kernel, same keys, less RAM: the
@@ -146,7 +146,7 @@ hexnum() { python3 -c "import sys; print(int(sys.argv[1], 16))" "$1"; }
 # time, ownership passes to the harness for the milestone that grew it, so one
 # harness owns it and it is the one with a reason.
 #
-# M7's 4672 bytes are the page allocator's entire state: a 4096-byte frame
+# M7's 8768 bytes are the page allocator's entire state: an 8192-byte frame
 # bitmap, 64 bytes of metadata and a 512-byte self-test ledger, in ONE symbol
 # behind ONE accessor. docs/known-gaps.md GAP-0053 carries the reasoning; if
 # you meant to grow this, say so there, in core/boot/kdata.S's header, and in
@@ -208,8 +208,8 @@ KDATA_BSS=$DART_BSS
 # M8 (ADR-0012) added a block AFTER M7's: `vm_store`, 128 bytes for the
 # virtual-memory subsystem. It is SUBTRACTED here rather than folded into the
 # total, for the same reason m5-pci and m6-disk subtract `pmm_store`: M7's claim
-# was never "the total is 5096", it was "the page allocator cost 4672 bytes and
-# everything before it cost 424", and a later milestone must not be able to
+# was never "the total is 9208", it was "the page allocator cost 8768 bytes and
+# everything before it cost 440", and a later milestone must not be able to
 # dilute that by growing the total. m8-paging/run.sh owns the 5224 now.
 VM_STORE_SIZE=$(bsssize vmStore)
 ck; [[ -n "$VM_STORE_SIZE" ]] || fail "vm_store is not in kdata.o — M8's virtual-memory state block is missing"
@@ -258,10 +258,10 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # harnesses said so. ADR-0033 §6.4.
 # M21 (ADR-0041) added a block AFTER S0's, and it was the LAST one in .bss until
 # D4 (ADR-0050) put `wmStore` behind it:
-# `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
-# records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
+# `shmStore`, 8576 bytes -- 16 global counter words, four 64-byte shared-region
+# records, and an 8192-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
-# at the top of `freeFrame` O(1) instead of a linear scan on all 32768 calls of
+# at the top of `freeFrame` O(1) instead of a linear scan on all 65536 calls of
 # `frames refill` (`docs/design/memory.md` §2.4).
 #
 # Subtracted FIRST, before S0's, exactly as M14, M15, M16, M19 and S0 each were
@@ -269,7 +269,7 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # meant when it was written. This is the THIRD application of ADR-0033 §6.4's
 # correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a
-# new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
+# new block after it changes. S0's number goes 512 -> 8960 nowhere, because it
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 # D4 (ADR-0050) added a block AFTER M21's, and it is now the LAST one in .bss:
@@ -283,17 +283,37 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # it meant when it was written. This is the FOURTH application of ADR-0033 s6.4's
 # correction to ADR-0031 s4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a new
-# block after it changes. M21's number below still reads 4352 for that reason --
+# block after it changes. M21's number below still reads 8576 for that reason --
 # it is now measured to wmStore's START rather than to the end of .bss.
+# D2 (ADR-0054) added a block AFTER D4's, and it is now the LAST one in .bss:
+# `kbdqStore`, 288 bytes -- four header words (head, tail, dropped, count)
+# and 32 event slots. Subtracted FIRST, before D4's, so D4's number still
+# reads 320 -- it is now measured to kbdqStore's START rather than to the
+# end of .bss.
+# D7 (ADR-0055) added a block AFTER D2's, and it is now the LAST one in .bss:
+# `wmeventStore`, 192 bytes -- two per-window rings (four header words and
+# 8 event slots each). Subtracted FIRST, before D2's, so D2's number still
+# reads 288 -- it is now measured to wmeventStore's START rather than to
+# the end of .bss.
+D7_OFF_HEX=$(bssoff wmeventStore)
+ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
+D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
+ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
+D2_OFF_HEX=$(bssoff kbdqStore)
+ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
+D2_BSS=$(( KDATA_BSS - 16#$D2_OFF_HEX ))
+ck; [[ "$D2_BSS" -eq 288 ]] || fail "the bytes from D2's kbdqStore to D7's wmeventStore are $D2_BSS, expected 288. If that block changed size, change it in ADR-0054, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 320 ]] || fail "the bytes from D4's wmStore to the end of .bss are $D4_BSS, expected 320. If that block changed size, change it in ADR-0050, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -360,16 +380,16 @@ ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
 ck; [[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 NON_VM_BSS=$(( KDATA_BSS + ASM_BSS - VM_STORE_SIZE - M9_BSS - M10_STORE - M11_BSS - M14_BSS ))
-ck; if [[ "$NON_VM_BSS" -ne 5096 ]]; then
-  fail "the kernel holds $(( KDATA_BSS + ASM_BSS )) bytes of mutable static storage, of which $VM_STORE_SIZE are M8's vmStore, leaving $NON_VM_BSS — expected 5096 (424 before M7, plus 4672 for the allocator)."
+ck; if [[ "$NON_VM_BSS" -ne 9208 ]]; then
+  fail "the kernel holds $(( KDATA_BSS + ASM_BSS )) bytes of mutable static storage, of which $VM_STORE_SIZE are M8's vmStore, leaving $NON_VM_BSS — expected 9208 (440 before M7 — M5's 424 plus ADR-0064's two fbState geometry words — plus 8768 for the allocator, whose bitmap doubled to 8192 when ADR-0155 took pmmMaxFrames to 65536)."
 fi
-echo "STRUCTURAL: pass  exactly 5096 bytes of mutable static storage outside M8's page-table block — 424 inherited, 4672 for the page allocator"
+echo "STRUCTURAL: pass  exactly 9208 bytes of mutable static storage outside M8's page-table block — 440 inherited, 8768 for the page allocator"
 
 # 2b. THE ALLOCATOR'S STATE IS ONE SYMBOL.
 PMM_SIZE=$(bsssize pmmStore)
 ck; [[ -n "$PMM_SIZE" ]] || fail "pmm_store is not in kdata.o — the allocator's storage block is missing"
-ck; [[ "$PMM_SIZE" -eq 4672 ]] || fail "pmm_store is $PMM_SIZE bytes, expected 4672 (4096 bitmap + 64 metadata + 512 ledger)"
-echo "STRUCTURAL: pass  pmm_store is one 4672-byte symbol: 4096 bitmap + 64 metadata + 512 ledger"
+ck; [[ "$PMM_SIZE" -eq 8768 ]] || fail "pmm_store is $PMM_SIZE bytes, expected 8768 (8192 bitmap + 64 metadata + 512 ledger) — the bitmap doubled when ADR-0155 raised pmmMaxFrames to 65536 / pmmBoundMib to 256"
+echo "STRUCTURAL: pass  pmm_store is one 8768-byte symbol: 8192 bitmap + 64 metadata + 512 ledger"
 
 # 2c. THE STORAGE SEAM IS EXACTLY THREE CALL SITES, AND THIS IS THE CHECK THAT
 #     PROTECTS THE MIGRATION.
@@ -438,15 +458,23 @@ echo "STRUCTURAL: pass  the image is [0x$KSTART, 0x$KEND) from kernel.ld, and pm
 #
 # Same check m6-disk makes on `ataWait`'s poll bound and for the same reason: a
 # constant that exists only in the source proves nothing about what runs. LLVM
-# may count up to 0x8000 or down from it, so either immediate is accepted; what
-# is not accepted is neither.
+# may count up to the bound or down from it, so either immediate is accepted;
+# what is not accepted is neither.
+#
+# The immediate is DERIVED from pmm.dart's pmmMaxFrames (read into MAX_FRAMES
+# above) rather than typed. It used to be the literal 0x8000, which went stale
+# the moment ADR-0155 took the bound to 65536 for the 256MiB CEF mapping — and
+# a typed literal cannot tell "the bound moved" from "the bound left the
+# instruction stream", which is the only thing this check exists to catch.
+BOUND_HEX=$(printf '0x%x' "$MAX_FRAMES")
+BOUND_NEG_HEX=$(printf '0x%x' $(( (1 << 32) - MAX_FRAMES )))
 PMMINIT_DIS=$(x86_64-elf-objdump -d --disassemble=pmmInit "$CORE_DIR/build/kmain.o")
 ck; [[ -n "$PMMINIT_DIS" ]] || fail "pmmInit is not in kmain.o — the allocator is not being compiled"
-ck; if ! grep -qE '0x8000|0xffff8000|32768' <<<"$PMMINIT_DIS"; then
+ck; if ! grep -qE "$BOUND_HEX|$BOUND_NEG_HEX|\\b$MAX_FRAMES\\b" <<<"$PMMINIT_DIS"; then
   echo "$PMMINIT_DIS" >&2
-  fail "pmmInit's compiled code carries neither 0x8000 nor its negation, so the frame bound (pmmMaxFrames) is not in the instruction stream"
+  fail "pmmInit's compiled code carries neither $BOUND_HEX ($MAX_FRAMES, pmm.dart's pmmMaxFrames) nor its negation $BOUND_NEG_HEX, so the frame bound is not in the instruction stream"
 fi
-echo "STRUCTURAL: pass  pmmInit's compiled code carries the 0x8000-frame bound"
+echo "STRUCTURAL: pass  pmmInit's compiled code carries the $BOUND_HEX-frame bound derived from pmm.dart"
 
 # 2g. THE NESTED `while` LOOPS REALLY COMPILED.
 #
@@ -598,7 +626,7 @@ echo "STRUCTURAL: pass  all 52 M7 @rodata tables plus shellStrHelp (621 -> 1028)
 #
 # What it DOES buy, and the reason it is worth having anyway: m10-elf has
 # asserted this for elf.dart alone since M10, and elf.dart is now three of the
-# TWENTY allocFrame() call sites in this kernel. proc.dart's five, user.dart's
+# ONE HUNDRED AND THIRTY-ONE allocFrame() call sites in this kernel. proc.dart's five, user.dart's
 # two ring-3 pages and heap.dart's page are all outside it. This is the check
 # that fails when the twenty-first call site is added without a zeroing beside
 # it — which is exactly how a frame reaches ring 3 dirty.
@@ -628,9 +656,10 @@ echo "STRUCTURAL: pass  all 52 M7 @rodata tables plus shellStrHelp (621 -> 1028)
 # enforced against all seventeen; only the census moved. Neither branch could
 # see this alone: the nineteen-site check arrived on the milestone line in
 # e1381f8, which the launch branch never had.
-ck; python3 - "$CORE_DIR/kernel" <<'PYEOF' || fail "a frame from allocFrame() is not zeroed before it is used, or a new call site has appeared with no accounting (GAP-0154)"
+ck; python3 - "$CORE_DIR/kernel" "$FRAME_BYTES" <<'PYEOF' || fail "a frame from allocFrame() is not zeroed before it is used, or a new call site has appeared with no accounting (GAP-0154)"
 import glob, os, re, sys
 kdir = sys.argv[1]
+FRAME_BYTES = int(sys.argv[2])
 
 # name -> (file, why). Each of these takes a frame and does NOT name it to
 # vmZeroFrame in its own function. Every one is here with a reason, and a
@@ -664,14 +693,26 @@ for path in sorted(glob.glob(os.path.join(kdir, "*.dart"))):
         name = m.group(1)
         if (base, name) in EXEMPT:
             continue
-        if not re.search(r"vmZeroFrame\(%s\);" % re.escape(name), src):
+        # TWO spellings of "this frame was zeroed", both of which zero the WHOLE
+        # frame and neither of which is an exemption: vmZeroFrame(), and a
+        # virtgpuZero(<name>, 4096) of exactly pmmFrameBytes. The second is how
+        # the virtio drivers clear a DMA page they are about to hand the device,
+        # and it has to count, or the census forces a driver author to either
+        # zero the page twice or write themselves an exemption for a page they
+        # DID zero -- and exemptions are the thing this check exists to avoid.
+        zeroed = (re.search(r"vmZeroFrame\(%s\);" % re.escape(name), src)
+                  or re.search(r"virtgpuZero\(%s,\s*u64\(%d\)\);"
+                               % (re.escape(name), FRAME_BYTES), src))
+        if not zeroed:
             line = src[:m.start()].count("\n") + 1
             bad.append("%s:%d takes a frame into `%s` and no vmZeroFrame(%s) "
                        "appears anywhere in the file. allocFrame() returns "
-                       "whatever the frame last held (GAP-0154); if this frame "
+                       "whatever the frame last held (GAP-0154), and neither "
+                       "vmZeroFrame(%s) nor virtgpuZero(%s, 4096) appears; if "
+                       "this frame "
                        "genuinely does not need zeroing, say so in this check's "
                        "exemption table rather than leaving it silent."
-                       % (base, line, name, name))
+                       % (base, line, name, name, name))
 
 # The exemptions must still be REAL. An entry naming a site that no longer
 # exists would silently excuse a future site that happened to reuse the name.
@@ -682,6 +723,15 @@ for (base, name) in EXEMPT:
         bad.append("the exemption for %s's `%s` names a call site that is no "
                    "longer there" % (base, name))
 
+# virtgpuZero() is accepted above as a whole-frame zero, so it must still BE
+# one: a loop that writes 0 over every 4-byte word from 0 to n.
+gpusrc = open(os.path.join(kdir, "virtgpu.dart")).read()
+if not re.search(r"void virtgpuZero\(u64 addr, u64 n\) \{\s*u64 i = u64\(0\);\s*"
+                 r"while \(i < n\) \{\s*virtgpuRamPut32\(addr \+ i, u64\(0\)\);\s*"
+                 r"i = i \+ u64\(4\);", gpusrc):
+    bad.append("virtgpuZero() is no longer a word-by-word zero fill of [addr, "
+               "addr+n), and the census above accepts it as one")
+
 # The two exemptions that delegate must still delegate.
 vmsrc = open(os.path.join(kdir, "vm.dart")).read()
 if "  vmZeroFrame(ptFrame);" not in vmsrc:
@@ -691,9 +741,16 @@ if "vmZeroFrame(vmFrame(i));" not in vmsrc:
     bad.append("vmBuild no longer zeroes vmInit's six frames, and vm.dart's `f` "
                "is exempted here on the grounds that it does")
 
-if sites != 21:
+# The census, re-pinned. 26 was the count when M7 was the newest milestone in
+# the tree; every driver, loader and OTA path added since takes frames of its
+# own. Moving the number is the documented response to that -- what the number
+# buys is that a site cannot appear WITHOUT someone reading this check, which
+# is how nic.dart's and ota.dart's four DMA receive buffers were found taking
+# frames and reading them back without a vmZeroFrame in front (fixed in the
+# kernel, not exempted here).
+if sites != 132:
     bad.append("there are %d allocFrame() call sites and this check was written "
-               "against 20. A new one is not a failure -- an unaccounted one is. "
+               "against 132. A new one is not a failure -- an unaccounted one is. "
                "Add it, or its exemption, and move this number." % sites)
 
 for b in bad:
@@ -702,7 +759,7 @@ print("    (%d allocFrame() call sites; %d exempted with a reason)"
       % (sites, len(EXEMPT)))
 sys.exit(1 if bad else 0)
 PYEOF
-echo "STRUCTURAL: pass  all 21 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
+echo "STRUCTURAL: pass  all 132 allocFrame() call sites in core/kernel/ are accounted for: each names its frame to vmZeroFrame, or is exempted with a reason that is itself re-checked. SOURCE SHAPE ONLY — QEMU hands out zeroed RAM, so no boot on this machine can tell an unzeroed first allocation from a zeroed one (GAP-0094, GAP-0109, GAP-0154)"
 
 # ---------------------------------------------------------------------------
 # Step 3 — verify-freestanding.sh (CLAUDE.md rule 1).
@@ -710,7 +767,7 @@ echo "STRUCTURAL: pass  all 21 allocFrame() call sites in core/kernel/ are accou
 # THREE new externs, 29 -> 32, and each one is named because the count is a
 # claim about the design:
 #
-#   pmmStore      the whole storage seam. One accessor for 4672 bytes.
+#   pmmStore      the whole storage seam. One accessor for 8768 bytes.
 #   kernel_image_start  } the image extents, from the linker script rather than
 #   kernel_image_end    } hardcoded. In boot.S, not kdata.S, so that kdata.o
 #                         keeps passing this check standalone (GAP-0056).
@@ -804,6 +861,44 @@ for gone in \
             pmm_store_addr; do
   ck; grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 22 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's eleven, expected 22 (20 from M6 after ADR-0021, plus kernel_image_start and kernel_image_end)"
 # M7's three externs became two: `pmm_store_addr` is gone (asserted absent
 # above) and the storage it addressed is `pmmStore`, a @bss block in pmm.dart --
@@ -812,7 +907,7 @@ ck; [[ "$EXTERN_COUNT" -eq 22 ]] || fail "kmain.o declares $EXTERN_COUNT externs
 for sym in kernel_image_start kernel_image_end; do
   ck; grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
 done
-ck; [[ "$(bsssize pmmStore)" == "4672" ]] || fail "pmmStore is not a 4672-byte object in kmain.o's .bss — the allocator's storage did not survive the ADR-0021 migration"
+ck; [[ "$(bsssize pmmStore)" == "8768" ]] || fail "pmmStore is not an 8768-byte object in kmain.o's .bss — the allocator's storage did not survive the ADR-0021 migration"
 # kdata.o must STILL have no undefined symbols at all — GAP-0056 records that
 # as a real property, and it is why the kernel-extent accessors went in boot.S.
 ck; grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs — something in it now references an outside symbol (GAP-0056)"
@@ -867,7 +962,7 @@ drive_session() {
 #   alloc         one frame. Its address must be the lowest allocatable frame.
 #   free 0        the first megabyte is reserved      -> ERR RESERVED
 #   free 1001     not frame-aligned                   -> ERR ALIGN
-#   free 8000000  frame 32768, past the bound         -> ERR RANGE
+#   free <derived>  pmmMaxFrames * pmmFrameBytes, past the bound -> ERR RANGE
 #   free 100000   the kernel image's first frame      -> ERR RESERVED
 #   free 7fdf000  allocatable, but not allocated      -> ERR DOUBLE
 #   free zz       not a hex address                   -> usage, and NO error
@@ -885,7 +980,17 @@ SESSION_KEYS="f,r,a,m,e,s,ret,wait:600"
 SESSION_KEYS="$SESSION_KEYS,a,l,l,o,c,ret,wait:400"
 SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,0,ret,wait:400"
 SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,1,0,0,1,ret,wait:400"
-SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,8,0,0,0,0,0,0,ret,wait:400"
+# PAST THE BOUND, DERIVED. This used to be typed as `8000000` -- frame 32768,
+# which was one past pmmMaxFrames while the bound was 32768 frames and is well
+# INSIDE it since ADR-0155 took the bound to 65536. A negative control that
+# drifts inside the range it exists to be outside does not go quiet: it still
+# prints an error, just a different one (RESERVED, because 128MiB is above this
+# machine's RAM), and regenerating the golden would have accepted that. The
+# address is pmmMaxFrames * pmmFrameBytes, read out of pmm.dart above.
+OOR_HEX=$(printf '%x' $(( MAX_FRAMES * FRAME_BYTES )))
+OOR_KEYS=$(python3 -c "import sys; print(','.join(sys.argv[1]))" "$OOR_HEX")
+ck; [[ -n "$OOR_HEX" && "$OOR_HEX" != "0" ]] || fail "could not derive an address past the allocator's bound from pmmMaxFrames x pmmFrameBytes"
+SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,$OOR_KEYS,ret,wait:400"
 SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,1,0,0,0,0,0,ret,wait:400"
 SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,7,f,d,f,0,0,0,ret,wait:400"
 SESSION_KEYS="$SESSION_KEYS,f,r,e,e,spc,z,z,ret,wait:400"
@@ -905,8 +1010,15 @@ rm -f "$SHOT_PNG"
 
 # The bitmap is dumped from the address the LINKER put pmm_store at, not from
 # the address the kernel printed — an independent source for the same fact, and
-# the two are compared below. 512 quadwords is the whole 4096-byte bitmap.
-BITMAP_CMD="xp/512gx 0x$PMM_ADDR"
+# the two are compared below. The dump is the WHOLE bitmap, and its width is
+# derived from pmmMaxFrames (one bit per frame, 64 frames per quadword) rather
+# than typed: it was 512 quadwords while the bound was 32768 frames and ADR-0155
+# took the bound to 65536, and a dump that is half the bitmap would compare half
+# the bits and call it a match.
+BITMAP_QWORDS=$(( MAX_FRAMES / 64 ))
+ck; [[ $(( BITMAP_QWORDS * 64 )) -eq "$MAX_FRAMES" ]] \
+  || fail "pmmMaxFrames ($MAX_FRAMES) is not a whole number of 64-frame quadwords, so the monitor cannot dump the bitmap exactly"
+BITMAP_CMD="xp/${BITMAP_QWORDS}gx 0x$PMM_ADDR"
 
 drive_session "$WORKDIR/session" "$SESSION_KEYS" "$SHOT_PNG" "session" 20 128M \
   --addr-from-serial 'PMM RW ([0-9A-F]{16}) ' \
@@ -950,7 +1062,7 @@ SERIAL_BYTES=$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')
 echo "ASSERT: pass  ${SERIAL_BYTES}-byte serial capture matches expected.txt byte-for-byte"
 
 # 5c. EVERY NUMBER, DERIVED. This is the assertion the milestone exists for.
-ck; if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$KSTART" "$KEND" "$WORKDIR/session/monitor.txt" "$PMM_ADDR" <<'PY'
+ck; if ! python3 - "$SERIAL_CAPTURE" "$DERIVE" "$KSTART" "$KEND" "$WORKDIR/session/monitor.txt" "$PMM_ADDR" "$OOR_HEX" <<'PY'
 import importlib.util, re, sys
 
 cap = open(sys.argv[1], "rb").read().decode("latin-1")
@@ -990,12 +1102,24 @@ for n, r in enumerate(reports):
         fails.append("report %d prints PMM BASE %016X but the linker put "
                      "pmm_store at %016X -- the kernel is not reporting the "
                      "storage it is using" % (n, base, pmm_addr))
-    if (store, bm, meta, led) != (4672, 4096, 64, 512):
-        fails.append("report %d's footprint is %r, expected (4672, 4096, 64, 512)"
-                     % (n, (store, bm, meta, led)))
-    if (bound, frame, limit) != (d.MAX_FRAMES, d.FRAME_BYTES, 128):
-        fails.append("report %d's bound is %r, expected (%d, %d, 128)"
-                     % (n, (bound, frame, limit), d.MAX_FRAMES, d.FRAME_BYTES))
+    # DERIVED, not typed. The bitmap is one bit per managed frame and the MiB
+    # limit is those frames' worth of bytes: ADR-0155 doubled pmmMaxFrames to
+    # 65536 and pmmBoundMib to 256, and a typed 4096/128 would have had to be
+    # edited in two places to say the one thing (bound x frame == limit) that
+    # this now states directly.
+    want_bm = d.MAX_FRAMES // 8
+    want_store = want_bm + 64 + 512
+    if (store, bm, meta, led) != (want_store, want_bm, 64, 512):
+        fails.append("report %d's footprint is %r, expected %r -- the bitmap is "
+                     "one bit per managed frame, plus a 64-byte meta block and a "
+                     "512-byte ledger"
+                     % (n, (store, bm, meta, led), (want_store, want_bm, 64, 512)))
+    want_limit = (d.MAX_FRAMES * d.FRAME_BYTES) >> 20
+    if (bound, frame, limit) != (d.MAX_FRAMES, d.FRAME_BYTES, want_limit):
+        fails.append("report %d's bound is %r, expected (%d, %d, %d) -- pmmBoundMib "
+                     "must be exactly pmmMaxFrames x pmmFrameBytes"
+                     % (n, (bound, frame, limit), d.MAX_FRAMES, d.FRAME_BYTES,
+                        want_limit))
     if managed != d.MAX_FRAMES:
         fails.append("report %d manages %d frames, expected %d" % (n, managed, d.MAX_FRAMES))
     if usedc != managed - freec:
@@ -1044,9 +1168,15 @@ if cap.count("PMM ALLOC FAIL\n") != 1:
                  "attempted after the drain")
 
 # --- the five rejections, each with its own reason ----------------------
+oor = int(sys.argv[7], 16)
+if oor // d.FRAME_BYTES < d.MAX_FRAMES:
+    fails.append("the address typed at `free` for the past-the-bound control is "
+                 "0x%X, which is frame %d and INSIDE the allocator's %d-frame "
+                 "bound -- the control is not testing what it says"
+                 % (oor, oor // d.FRAME_BYTES, d.MAX_FRAMES))
 for addr, code in (("0000000000000000", "ERR RESERVED"),
                    ("0000000000001001", "ERR ALIGN"),
-                   ("0000000008000000", "ERR RANGE"),
+                   ("%016X" % oor, "ERR RANGE"),
                    ("0000000000100000", "ERR RESERVED"),
                    ("0000000007FDF000", "ERR DOUBLE")):
     line = "PMM FREE %s %s\n" % (addr, code)
@@ -1177,17 +1307,21 @@ else:
 
 # --- THE BITMAP ITSELF, READ OUT OF GUEST MEMORY ------------------------
 # The strongest assertion available: not a count, not a checksum, the actual
-# 32768 bits, compared against 32768 bits this harness computed. The session
+# pmmMaxFrames bits, compared against that many bits this harness computed. The
+# width comes from derive.py's MAX_FRAMES, so a bound change moves the dump and
+# the comparison together or fails loudly. The session
 # ends after the refill, so the guest's bitmap must equal the one pmmInit
 # should have built.
+BITMAP_QWORDS = d.MAX_FRAMES // 64
 qwords = []
 for b in monitor.split("=== "):
-    if b.startswith("xp/512gx"):
+    if b.startswith("xp/%dgx" % BITMAP_QWORDS):
         for tok in re.findall(r"0x[0-9a-f]{16}", b):
             qwords.append(int(tok, 16))
-if len(qwords) != 512:
+if len(qwords) != BITMAP_QWORDS:
     fails.append("parsed %d quadwords from the monitor's bitmap dump, expected "
-                 "512 (4096 bytes)" % len(qwords))
+                 "%d (%d bytes, one bit per managed frame)"
+                 % (len(qwords), BITMAP_QWORDS, BITMAP_QWORDS * 8))
 else:
     got = d.from_qwords(qwords)
     want = d.to_bytes(used)
@@ -1195,14 +1329,14 @@ else:
         diffs = [i for i in range(len(want)) if got[i] != want[i]]
         first = diffs[0]
         fails.append("the frame bitmap in guest memory differs from the derived "
-                     "one in %d of 4096 bytes; first at byte %d (frames %d..%d): "
+                     "one in %d of %d bytes; first at byte %d (frames %d..%d): "
                      "guest 0x%02X, derived 0x%02X"
-                     % (len(diffs), first, first * 8, first * 8 + 7,
+                     % (len(diffs), len(want), first, first * 8, first * 8 + 7,
                         got[first], want[first]))
     else:
-        print("    (4096 bytes of bitmap read out of guest memory at 0x%X, "
+        print("    (%d bytes of bitmap read out of guest memory at 0x%X, "
               "equal bit-for-bit to the derivation: %d free frames)"
-              % (pmm_addr, baseline))
+              % (len(got), pmm_addr, baseline))
 
 if fails:
     print("m7-frames: derived check FAILED", file=sys.stderr)
@@ -1243,7 +1377,7 @@ echo "ASSERT: pass  screenshot written to $SHOT_PNG ($(wc -c <"$SHOT_PNG" | tr -
 #
 # THIS IS THE PROOF THAT NO FRAME WAS HANDED OUT TWICE, and it is a proof
 # rather than a loose assertion: the drain reports it performed N allocations,
-# and every one of the 32768 bits is set afterwards. If any frame had been
+# and every one of the pmmMaxFrames bits is set afterwards. If any frame had been
 # handed out twice, some other frame would still be free and its bit would be
 # clear -- there is no way to perform N allocations, leave every bit set, and
 # have handed the same frame out twice.
@@ -1275,14 +1409,15 @@ if int(m.group(1), 16) != len(free):
                  "memory map says exactly %d were free"
                  % (m.group(1), len(free)))
 
+BITMAP_QWORDS = d.MAX_FRAMES // 64
 qwords = []
 for b in monitor.split("=== "):
-    if b.startswith("xp/512gx"):
+    if b.startswith("xp/%dgx" % BITMAP_QWORDS):
         for tok in re.findall(r"0x[0-9a-f]{16}", b):
             qwords.append(int(tok, 16))
-if len(qwords) != 512:
-    sys.exit("parsed %d quadwords from the drained bitmap dump, expected 512"
-             % len(qwords))
+if len(qwords) != BITMAP_QWORDS:
+    sys.exit("parsed %d quadwords from the drained bitmap dump, expected %d"
+             % (len(qwords), BITMAP_QWORDS))
 blob = d.from_qwords(qwords)
 clear = [i for i, b in enumerate(blob) if b != 0xFF]
 if clear:
@@ -1317,24 +1452,33 @@ if fails:
     for f in fails:
         print("    - " + f, file=sys.stderr)
     sys.exit(1)
-print("    (%d frames allocated, all 32768 bits set, and the top frame at 0x%X "
+print("    (%d frames allocated, all %d bits set, and the top frame at 0x%X "
       "holds the value the kernel wrote there)"
-      % (len(free), free[-1] * d.FRAME_BYTES))
+      % (len(free), d.MAX_FRAMES, free[-1] * d.FRAME_BYTES))
 PY
 then
   fail "the drained bitmap read out of guest memory is not fully allocated, or the top-frame write did not land"
 fi
-echo "ASSERT: pass  after draining, all 32768 bits of the bitmap are set in guest memory — N allocations and N distinct frames, so no frame was handed out twice — and the highest managed frame holds the value the kernel wrote into it"
+echo "ASSERT: pass  after draining, all $MAX_FRAMES bits of the bitmap are set in guest memory — N allocations and N distinct frames, so no frame was handed out twice — and the highest managed frame holds the value the kernel wrote into it"
 
 # ---------------------------------------------------------------------------
 # Step 7 — BOOT C: THE BOUND IS LOUD.
 #
-# 256MiB of RAM, twice what this allocator manages. It must report the exact
-# number of usable frames it is refusing to manage and say CAPPED, rather than
-# silently truncating the memory map.
+# TWICE what this allocator manages, DERIVED from pmmMaxFrames rather than
+# typed. It must report the exact number of usable frames it is refusing to
+# manage and say CAPPED, rather than silently truncating the memory map.
+#
+# The machine used to be typed as 256M, which was twice the bound while the
+# bound was 128MiB and is EXACTLY the bound since ADR-0155 took pmmMaxFrames to
+# 65536. A control that stops exceeding the thing it exists to exceed proves
+# nothing; the derivation below keeps it at twice the bound forever, and the
+# `over <= 0` guard inside the check states that requirement out loud.
 # ---------------------------------------------------------------------------
+OVER_MIB=$(( MAX_FRAMES * FRAME_BYTES / 1048576 * 2 ))
+ck; [[ "$OVER_MIB" -gt $(( MAX_FRAMES * FRAME_BYTES / 1048576 )) ]] \
+  || fail "the over-bound machine ($OVER_MIB MiB) is not larger than the allocator's bound — the control would not control anything"
 drive_session "$WORKDIR/over" "f,r,a,m,e,s,ret,wait:800" \
-  "$WORKDIR/over/shot.png" "over-bound" 22 256M
+  "$WORKDIR/over/shot.png" "over-bound" 22 "${OVER_MIB}M"
 
 ck; if ! python3 - "$WORKDIR/over/serial.txt" "$DERIVE" "$KSTART" "$KEND" <<'PY'
 import importlib.util, re, sys
@@ -1353,7 +1497,7 @@ m = re.search(r"^PMM ALLOCS [0-9A-F]{16} ERRORS [0-9A-F]{8} OVER ([0-9A-F]{8})"
 if not m:
     sys.exit("no `frames` report in the over-bound boot")
 if int(m.group(1), 16) != over:
-    sys.exit("the kernel reports OVER %s on a 256MiB machine; derived %d (0x%X)"
+    sys.exit("the kernel reports OVER %s on the over-bound machine; derived %d (0x%X)"
              % (m.group(1), over, over))
 if not m.group(2):
     sys.exit("OVER is non-zero but the line does not say CAPPED -- exceeding the "
@@ -1363,13 +1507,14 @@ if int(m2.group(1), 16) != d.MAX_FRAMES:
     sys.exit("MANAGED moved on a bigger machine; the bound is supposed to be fixed")
 if int(m2.group(2), 16) != len(free):
     sys.exit("FREE is %s, derived %d" % (m2.group(2), len(free)))
-print("    (256MiB machine: %d frames managed, %d (0x%X) usable frames above "
-      "the bound, counted and refused)" % (len(free), over, over))
+print("    (%dMiB machine: %d frames managed, %d (0x%X) usable frames above "
+      "the bound, counted and refused)"
+      % (d.MAX_FRAMES * d.FRAME_BYTES // (1 << 20) * 2, len(free), over, over))
 PY
 then
   fail "on a machine with more usable RAM than the allocator manages, the excess was not counted and reported exactly"
 fi
-echo "ASSERT: pass  on a 256MiB machine the allocator reports the exact number of usable frames above its bound and says CAPPED — the limit is loud, never a silent truncation"
+echo "ASSERT: pass  on a ${OVER_MIB}MiB machine (twice the bound, derived) the allocator reports the exact number of usable frames above its bound and says CAPPED — the limit is loud, never a silent truncation"
 
 # ---------------------------------------------------------------------------
 # Step 8 — BOOT D: NEGATIVE CONTROL. Same kernel, same keys, less RAM.

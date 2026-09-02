@@ -264,10 +264,10 @@ KDATA_BSS=$DART_BSS
 # harnesses said so. ADR-0033 §6.4.
 # M21 (ADR-0041) added a block AFTER S0's, and it was the LAST one in .bss until
 # D4 (ADR-0050) put `wmStore` behind it:
-# `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
-# records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
+# `shmStore`, 8576 bytes -- 16 global counter words, four 64-byte shared-region
+# records, and an 8192-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
-# at the top of `freeFrame` O(1) instead of a linear scan on all 32768 calls of
+# at the top of `freeFrame` O(1) instead of a linear scan on all 65536 calls of
 # `frames refill` (`docs/design/memory.md` §2.4).
 #
 # Subtracted FIRST, before S0's, exactly as M14, M15, M16, M19 and S0 each were
@@ -275,7 +275,7 @@ KDATA_BSS=$DART_BSS
 # meant when it was written. This is the THIRD application of ADR-0033 §6.4's
 # correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a
-# new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
+# new block after it changes. S0's number goes 512 -> 8960 nowhere, because it
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 # D4 (ADR-0050) added a block AFTER M21's, and it is now the LAST one in .bss:
@@ -289,17 +289,37 @@ KDATA_BSS=$DART_BSS
 # it meant when it was written. This is the FOURTH application of ADR-0033 s6.4's
 # correction to ADR-0031 s4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a new
-# block after it changes. M21's number below still reads 4352 for that reason --
+# block after it changes. M21's number below still reads 8576 for that reason --
 # it is now measured to wmStore's START rather than to the end of .bss.
+# D2 (ADR-0054) added a block AFTER D4's, and it is now the LAST one in .bss:
+# `kbdqStore`, 288 bytes -- four header words (head, tail, dropped, count)
+# and 32 event slots. Subtracted FIRST, before D4's, so D4's number still
+# reads 320 -- it is now measured to kbdqStore's START rather than to the
+# end of .bss.
+# D7 (ADR-0055) added a block AFTER D2's, and it is now the LAST one in .bss:
+# `wmeventStore`, 192 bytes -- two per-window rings (four header words and
+# 8 event slots each). Subtracted FIRST, before D2's, so D2's number still
+# reads 288 -- it is now measured to wmeventStore's START rather than to
+# the end of .bss.
+D7_OFF_HEX=$(bssoff wmeventStore)
+ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
+D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
+ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
+D2_OFF_HEX=$(bssoff kbdqStore)
+ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
+D2_BSS=$(( KDATA_BSS - 16#$D2_OFF_HEX ))
+ck; [[ "$D2_BSS" -eq 288 ]] || fail "the bytes from D2's kbdqStore to D7's wmeventStore are $D2_BSS, expected 288. If that block changed size, change it in ADR-0054, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 320 ]] || fail "the bytes from D4's wmStore to the end of .bss are $D4_BSS, expected 320. If that block changed size, change it in ADR-0050, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -363,7 +383,7 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 9728 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 9728 (5496 through M10, plus 4224 for the process table -- 4160 at M11 and 64 more for M18's scheduler header, ADR-0022 -- and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053."
+ck; [[ "$KDATA_BSS" -eq 13952 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 13952 (5496 through M10, plus 4224 for the process table -- 4160 at M11 and 64 more for M18's scheduler header, ADR-0022 -- and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 PROC_STORE=$(bsssize procStore)
 ck; [[ "$PROC_STORE" == "4224" ]] || fail "procStore is ${PROC_STORE:-missing} bytes, expected 4224 (4160 at M11, plus M18's eight extra header words)"
 ELF_STORE_OFF_HEX=$(bssoff elfStore)
@@ -670,9 +690,49 @@ echo "STRUCTURAL: pass  boot.S probes CPUID leaf 1 for FXSR and SSE before it wr
 # this is what makes it CHECKED rather than believed.
 ck; grep -qE '^\s*fxsave \(%rdi\)' "$CORE_DIR/boot/isr.S" || fail "isr.S has no `fxsave (%rdi)` — fx_save is what makes a process's FPU state its own"
 ck; grep -qE '^\s*fxrstor \(%rdi\)' "$CORE_DIR/boot/isr.S" || fail "isr.S has no `fxrstor (%rdi)`"
-XMM_IN_KERNEL=$(x86_64-elf-objdump -d "$KERNEL_ELF" | grep -cE '%(x|y|z)mm[0-9]')
-ck; [[ "$XMM_IN_KERNEL" -eq 0 ]] || fail "the linked kernel contains $XMM_IN_KERNEL instruction(s) naming an %xmm register. proc.dart saves a process's FPU state AFTER several hundred instructions of kernel code have already run (procYield); that is only correct while the kernel itself never touches one. See ADR-0015 §2."
-echo "STRUCTURAL: pass  isr.S has fxsave and fxrstor, and the whole linked kernel names an %xmm register in exactly 0 instructions — which is what makes saving late safe"
+# THE OS'S OWN CODE still names none. Scoped to the objects the OS itself is
+# compiled and assembled into rather than to the whole linked image, because
+# ADR-0104 put platform C modules (Skia, FFmpeg, the tiny libc) INSIDE that
+# image, and those are SSE by construction — counting their instructions
+# measures the compiler Skia was built with, not this invariant.
+for obj in kmain.o boot.o isr.o kdata.o portio.o; do
+  XMM_IN_OS=$(x86_64-elf-objdump -d "$CORE_DIR/build/$obj" | grep -cE '%(x|y|z)mm[0-9]')
+  ck; [[ "$XMM_IN_OS" -eq 0 ]] || fail "$obj contains $XMM_IN_OS instruction(s) naming an %xmm register. proc.dart saves a process's FPU state AFTER several hundred instructions of kernel code have already run (procYield); that is only correct while the OS itself never touches one. See ADR-0015 §2."
+done
+# ...AND THE MODULES THAT DO ARE FENCED. This is the half the old whole-image
+# count could not express and, once Skia was linked in, could only fail at.
+# `isrDispatch` runs the context switch, so by the time the module trampolines
+# are called the INCOMING process's XMM registers are already live in the CPU.
+# Every module call in isr_common must therefore sit between an fxsave and an
+# fxrstor, or ADR-0015 §2's "save late" is unsound for any machine that has
+# ever typed `wm gfx` or `play`.
+capture_sh FENCE_OUT FENCE_STATUS -- "python3 - '$CORE_DIR/boot/isr.S' <<'PY'
+import re, sys
+raw = open(sys.argv[1]).read()
+# Comments first: isr_common's own prose names both fxsave and iretq, and a
+# check that reads a comment as if it were an instruction proves nothing.
+src = re.sub(r'/[*].*?[*]/', lambda m: '\n' * m.group(0).count('\n'), raw,
+             flags=re.S)
+m = re.search(r'^isr_common:', src, re.M)
+if not m:
+    raise SystemExit('isr.S has no isr_common label')
+body = src[m.end():].split('iretq', 1)[0]
+lines = body.split('\n')
+def idx(pat):
+    return [i for i, l in enumerate(lines) if re.search(pat, l)]
+save, rest = idx(r'\\bfxsave\\b'), idx(r'\\bfxrstor\\b')
+mods = idx(r'^\\s*call\\s+(osgfx_|osmedia_)')
+if not mods:
+    raise SystemExit('isr_common calls no platform module at all — this check has nothing to fence and the trampoline it was written for is gone')
+if not save or not rest:
+    raise SystemExit('isr_common calls %d platform module(s) but has %d fxsave and %d fxrstor — the modules are SSE and the incoming process is already restored, so this window corrupts its FPU state (ADR-0015 SS2)' % (len(mods), len(save), len(rest)))
+if not (save[0] < min(mods) and max(mods) < rest[-1]):
+    raise SystemExit('isr_common has fxsave at line %d and fxrstor at line %d but its module calls are at %s — at least one runs outside the bracket' % (save[0], rest[-1], mods))
+print('    (isr_common: fxsave, %d platform module call(s), fxrstor — the whole window is fenced)' % len(mods))
+PY"
+echo "$FENCE_OUT"
+ck; [[ $FENCE_STATUS -eq 0 ]] || fail "isr_common's platform-module window is not fenced by fxsave/fxrstor: $FENCE_OUT"
+echo "STRUCTURAL: pass  isr.S has fxsave and fxrstor, the OS's own five objects name an %xmm register in exactly 0 instructions, and every platform-module call in isr_common runs inside an fxsave/fxrstor bracket — which is what makes saving late safe"
 
 # 3j. THE SAVED FRAME IS THE ONE isr_common BUILDS.
 #
@@ -741,6 +801,44 @@ for gone in \
             elf_store_addr proc_store_addr; do
   ck; grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 (40 from M10 after ADR-0021 plus M11's four: sse_enabled, cr4_read, fx_save, fx_restore)"
 for sym in sse_enabled cr4_read fx_save fx_restore; do
   ck; grep -qE "\b$sym\b" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest"
@@ -854,8 +952,10 @@ ck; [[ -f "$EXPECTED_SCREEN" ]] || setup_error "golden not found at $EXPECTED_SC
 HOLD_KEYS="$(typekeys "proc coop $LBA_A $LBA_BHOLD"),ret,wait:3000"
 drive_session "$WORKDIR/hold" "$HOLD_KEYS" "$WORKDIR/hold/shot.png" "hold" 80 128M qemu64 \
   --addr-from-serial ' FX ([0-9A-F]{16})' \
+  --addr2-from-serial 'KPML4 ([0-9A-F]{16})' \
   --monitor-command 'info registers' \
   --monitor-command 'xp/32768gx {addr}' \
+  --monitor-command 'xp/32768gx {addr2}' \
   --monitor-capture "$WORKDIR/hold/monitor.txt"
 
 # BOOT C — a CPU with no SSE and no FXSAVE.
@@ -1139,8 +1239,21 @@ if regs.get("CR0", 0) & 0x4:
 if not regs.get("CR0", 0) & 0x2:
     fails.append("CR0.MP (bit 1) is clear")
 
-qwords = D.parse_xp(mon, "xp/32768gx 0x%016X" % fx0)
-mem = D.Memory().add(fx0, qwords)
+# TWO windows, both anchored on addresses the KERNEL printed.
+#
+# One used to be enough: the allocator handed out the page-table frames within
+# 256KiB of `proc_store`, so a single dump at the FXSAVE address covered both.
+# It does not any more -- the OS links its own platform C modules now (ADR-0104
+# onwards) and its image and its early allocations are megabytes bigger, which
+# puts the page tables megabytes above `proc_store`. Widening the one window to
+# span the gap would dump the gap too; a SECOND window at the kernel's own PML4
+# covers the tables exactly. It is the lowest of them because the kernel's
+# address space is built first and the allocator hands frames out upward, and
+# derive.py's `Memory` still RAISES rather than reading zero for any byte
+# outside both windows, so a table that escaped them fails loudly.
+mem = (D.Memory()
+       .add(fx0, D.parse_xp(mon, "xp/32768gx 0x%016X" % fx0))
+       .add(kpml4, D.parse_xp(mon, "xp/32768gx 0x%016X" % kpml4)))
 ta = D.PageTables(pml4_a, mem)
 tb = D.PageTables(pml4_b, mem)
 tk = D.PageTables(kpml4, mem)
@@ -1219,7 +1332,8 @@ print("    (A: PML4 0x%X PT 0x%X, %d pages; B: PML4 0x%X PT 0x%X, %d pages; "
       "%d page(s) private to A and absent from B (%s); %d virtual address(es) "
       "mapped by both and backed by different frames; %d qwords of guest RAM read)"
       % (pml4_a, pt_a, len(a_elf.pages()) + 1, pml4_b, pt_b, len(b_elf.pages()) + 1,
-         len(private), ", ".join(hex(x) for x in private), len(shared), len(qwords)))
+         len(private), ", ".join(hex(x) for x in private), len(shared),
+         mem.span // 8))
 PY
 then
   fail "the two address spaces read out of guest physical memory are not two"
@@ -1239,11 +1353,30 @@ import re, sys
 cap = open(sys.argv[1], "rb").read()
 m1 = open(sys.argv[2], "rb").read()
 fails = []
-if not cap.startswith(m1):
+# M1's golden MINUS the OSGFX probe lines is what this machine must print, and
+# it must print all of it. ADR-0187's three-line verdict is a Skia self-test,
+# and Skia is compiled with SSE, so isr_common skips the platform-module
+# trampoline outright when `sse_enabled()` is 0 -- calling it here would be a
+# guaranteed #UD on every interrupt for the rest of the boot. Deriving the
+# expectation by subtraction rather than storing a second golden keeps one
+# source of truth and makes the claim sharper than a prefix test: the ONLY
+# thing this CPU may omit is the self-test that needs the instructions it does
+# not have.
+m1_nosse = b"".join(l for l in m1.splitlines(keepends=True)
+                    if not l.startswith(b"OSGFX "))
+if m1_nosse == m1:
+    fails.append("m1-interrupts/expected.txt has no OSGFX probe line to subtract — "
+                 "either ADR-0187's verdict stopped printing or this subtraction is "
+                 "matching the wrong thing")
+if not cap.startswith(m1_nosse):
     fails.append("the kernel did not reach the end of M1's output on a CPU without "
                  "SSE. If it produced nothing at all, the CR4 write is not guarded "
                  "and a reserved-bit #GP triple-faulted the machine before any IDT "
                  "existed.")
+if b"OSGFX " in cap:
+    fails.append("a CPU with no SSE printed an OSGFX line. The probe is Skia, Skia "
+                 "is SSE, and running it here is a #UD the fault handler then "
+                 "recovers from on every single interrupt.")
 text = cap.decode("latin-1")
 m = re.search(r"^PROC SSE (\d) CR4 ([0-9A-F]{16}) CR0 ([0-9A-F]{16})\n", text, re.M)
 if not m:

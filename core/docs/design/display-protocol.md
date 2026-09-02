@@ -24,10 +24,17 @@ options rather than picking silently.
 | **Presentation** | **The kernel owns the framebuffer and page-flips.** Ring 3 cannot execute `out`, so this was never a choice. There is 16 MiB of VRAM and the flip register is already driven. | §3.1, §3.2 |
 | **Input** | **The compositor owns focus; the kernel knows nothing about surfaces.** But first there must be an input queue at all — today there is none. | §4 |
 
-**What to build first: D3 — a process that outlives the command that started it (§6).** It has almost
-nothing to do with display, it is the one thing every other milestone waits on, and its exit criterion
-is written in terms of counters that already exist. Until it lands there is nowhere for a compositor
-to live.
+**D3 is built (ADR-0053). D2 is built (ADR-0054). D7 is built (ADR-0055). D9 is built
+(ADR-0062). OSXUI1 is built (ADR-0070).** A process spawned with `proc spawn` outlives
+the command; keystrokes wait in a 32-event ring; a left press on a window is enqueued
+for that window's owner; a click focuses that window and syscall 24 pops only for its
+process; a right press paints a compositor-owned popover and does not enqueue.
+**Configure and enter/leave are ADR-0142 (`de-cfg/`).** Under `wm de`
+attach / move / resize enqueue type 2 on the press queue; a focus
+change enqueues enter/leave. Without `wm de` the ring is still
+press-only. Growing the shm past the attach region is leftover.
+Close and minimise are compositor policy behind `wm de` (ADR-0106).
+Title-drag under `wm de` is ADR-0111. Resize under `wm de` is ADR-0121.
 
 **And the two findings that surprised me most**, neither of which is about graphics:
 
@@ -433,26 +440,18 @@ single most likely bug in the first implementation** and it belongs in the ADR t
 **This section is the consumer of item 1 in the ladder, so it specifies what item 1 must deliver.**
 Two findings from reading the machine changed what I was going to write, and both are load-bearing.
 
-### 4.1 There is no keystroke queue at all. Depth zero.
+### 4.1 There is a keystroke queue. Depth 32. (D2 / ADR-0054)
 
-`kbdHandle` (`keyboard.dart:222`) reads port 0x60, runs the `0xE0` prefix state machine, indexes a
-128-entry scan-code-set-1 `@rodata` table, and calls `shellKey` — **which appends to the shell's line
-buffer and echoes to the screen, all in interrupt context, before the EOI.** Nothing is queued for
-later. The only storage between the interrupt and the consumer is the 256-byte *line* buffer, and that
-is not a queue: there is no head, no tail, no ring.
+`kbdHandle` reads port 0x60, consumes the `0xE0` prefix, and **enqueues** a packed scancode+edge
+into `kbdqStore`. It does not call `shellKey`. The shell drains the ring in task context through
+`kbd_drain_gate`; ring 3 pops through syscall 24. Overflow drops the newest event and counts it.
+`shellRecover` resets the ring.
 
-And there is a guard at `keyboard.dart:263`:
-
-```
-if (shellState() > 0) return;
-```
-
-**While a command is running, every keystroke is discarded silently** — no queue, no echo, no
-diagnostic. Type-ahead capacity while a process is on the CPU is **zero bytes**. GAP-0055 item 4
-already records this.
-
-So item 1 is not "route input to a surface". Item 1 is **"there is an input queue at all"**, and
-routing is what the milestone after it does.
+What this section originally recorded — depth zero, `shellKey` inside the IRQ, silent discard
+while a command ran — is the thing D2 closed. Routing a click to a surface is D7
+(ADR-0055). Keyboard focus is D9 (ADR-0062): the compositor names a window, the
+shell drain skips, and syscall 24 pops only for that owner. Configure and
+enter/leave are ADR-0142.
 
 ### 4.2 What item 1 must deliver, specified
 
@@ -478,12 +477,13 @@ routing is what the milestone after it does.
 
 **Proposal: the compositor owns focus and the kernel knows nothing about surfaces.**
 
-The kernel delivers input events to **one process — the compositor** — and the compositor decides
-which surface they belong to and hands them on in that client's next reply (§2.2). The kernel's model
-stays "there is a process that receives input", which is one concept, not a window system in ring 0.
+The kernel compositor is still in ring 0 (ADR-0050), so D9 put the focus word next to
+the hit-test rather than waiting for a ring-3 compositor. The kernel's model is still
+"there is one consumer of the keyboard queue".
 
-* **Keyboard → the focused surface.** Focus is compositor policy. The proposal is click-to-focus with
-  an explicit "focus follows the topmost surface at the pointer" fallback when there is no pointer yet.
+* **Keyboard → the focused surface (D9 / ADR-0062).** Click-to-focus: the last `wmHit`
+  window until it dies or a desktop click. The shell drain skips; syscall 24 pops only
+  for that owner. No pointer-follow fallback. Escape is not special.
 * **Pointer → the topmost surface whose rectangle contains the point**, with coordinates delivered
   **surface-relative**, because a client that has to know its own screen position to interpret a click
   is a client that breaks when the compositor moves it.
@@ -533,10 +533,14 @@ this document.
 
 ### 5.1 Not in the protocol, and not by accident
 
-No window decorations, no title bars, no minimise/maximise, no stacking commands from clients, no
-subsurfaces, no transforms or scaling, no transparency or alpha blending, no clipboard, no drag and
-drop, no multiple outputs, no hotplug, no colour management, no scaling for high-DPI, no GPU, no
-hardware cursor, no screen capture, no remote display.
+No window decorations in the *protocol*, no minimise/maximise, no stacking commands from clients, no
+deep subsurface trees, no transforms, no fractional scaling, no transparency or alpha blending, no
+drag-and-drop beyond the kernel selection, no multiple outputs, no hotplug, no colour management, no
+GPU protocol verbs, no hardware cursor, no screen capture, no remote display.
+
+**Landed on the surface protocol (not Wayland ports):** clipboard offer/take (ADR-0183 /
+`wm-clip/`), one-level subsurfaces (ADR-0184 / `wm-sub/`), integer buffer scale (ADR-0185 /
+`wm-scale/`), two packed input seats (ADR-0186 / `wm-seat/`).
 
 **Window management is compositor policy and is not part of the protocol at all.** A client asks for a
 size and is told where it is (§1.1). Everything in the list above is a thing that can be added to a
@@ -691,16 +695,10 @@ desynchronised byte stream is resynchronised and the harness asserts the resync 
 
 ### D2 — Input is a queue, and ring 3 can read it
 
-**Blocked on: work only, but it collides with the argv unit** — it touches `keyboard.dart`,
-`shell.dart` and `interrupts.dart`. Sequence it after argv lands.
-
-§4.2 is the specification. A ring buffer in `@bss`, raw scancode + edge (not translated ASCII), a
-counted overflow rule, a reset in `shellRecover`, the shell becoming a consumer rather than a thing
-the IRQ handler pokes, and a syscall that hands ring 3 the next event.
-
-**This is the milestone that removes GAP-0055 item 4** — today, type-ahead while a command runs is
-**zero bytes** and every keystroke is silently discarded by the `shellState() > 0` guard at
-`keyboard.dart:263`.
+**Status: done, ADR-0054, harness `d2-input`.** A 32-event ring in `@bss`; IRQ1 enqueues a packed
+scancode+edge; `kbdqDrainToShell` is the shell consumer; syscall 24 is the ring-3 consumer;
+`shellRecover` resets the ring; overflow drops and counts. GAP-0055 item 4 is closed. Serial
+type-ahead is still dropped (GAP-0309).
 
 *Binary:* with a ring-3 program running, the harness injects N keystrokes at 50 ms intervals; the
 program reads back **exactly** the derived sequence, in order, with none lost. Then it injects
@@ -712,9 +710,9 @@ assertion — proving the test is sensitive to the queue actually existing.
 
 ### D3 — A process can outlive the command that started it
 
-**Blocked on: work — and it is the structural blocker nobody has costed. It is also, in my view, the
-milestone that should be built first of all of these**, because it is the one everything else waits
-on and the one with the least to do with display.
+**Status: done, ADR-0053, harness `d3-resident`.** The shell is the idle context: `proc spawn`
+returns, `shellMain` resumes READY resident processes, a lone quantum `user_return`s to the prompt,
+and `ticks` during that session leaves IRQ0 unmasked. `proc run` is unchanged.
 
 **THIS IS THE SAME MILESTONE AS THE SCHEDULER'S B1 (a blocked process state), and that is a finding
 rather than a coincidence.** `blocking-and-threads.md` reaches it from the other end: parking a
@@ -805,9 +803,10 @@ fail — a compositor that ignores order passes one of the two and cannot pass b
 
 ---
 
-### D6 — Damage is real, and it is a number
+### D6 — Damage is real, and it is a number — **done (ADR-0052)**
 
-**Blocked on: D5.**
+**Blocked on: D5.** Implemented: a commit paints the damage rectangle; `d2-compositor`
+requires a 16×16 present to print 256 pixels. The dirty region is a bounding box.
 
 *Binary:* the kernel (or compositor) prints pixels-composed-per-frame, exactly as `fatMetaReads`/
 `fatMetaHits` made caching a number at M14. A client that damages a 16×16 rectangle of a full-screen
@@ -818,12 +817,48 @@ damage to the full surface must produce the big number, so the assertion is sens
 
 ### D7 — A click reaches the surface under the pointer
 
-**Blocked on: D1, D2, D5.**
+**Status: done, ADR-0055, harness `d7-click`.** A left press hit-tests through
+`wmGrab`; the owning window's ring holds a packed surface-relative event;
+syscall 25 pops it. A desktop click enqueues nothing. Keyboard focus is D9
+(ADR-0062). Title-drag under `wm de` is ADR-0111. Resize under
+`wm de` is ADR-0121 (clip). Configure and
+enter/leave are ADR-0142.
 
 *Binary:* with two overlapping surfaces at derived positions, a click injected at a point inside the
 overlap is reported **by the client that owns the top surface** and by no other, with
 **surface-relative** coordinates matching the derived value. *Negative control:* a click outside both
 surfaces must be reported by neither.
+
+---
+
+### D9 — Keystrokes reach the focused surface
+
+**Status: done, ADR-0062, harness `d9-focus`.** Click-to-focus: `wmGrab` writes
+`wmMetaFocus` (word 20, plus-one) on a window hit and clears it on a desktop
+hit or a reap. `kbdqDrainToShell` skips when that word is live. Syscall 24
+`kbdevent` pops only for the focused window's owner. Escape is not special;
+focus is the last `wmHit` window until it dies. No new syscall.
+
+*Binary:* two surfaces; a click at a host-derived point exclusive to the top
+(blue) window; then `xyz` via QMP `send-key`. The focused client prints the
+derived make+break sequence; the unfocused client prints NONE; the shell does
+not consume those keys. *Negative control:* a host model that delivered the
+sequence to the unfocused client produces a different line.
+
+---
+
+### OSXUI1 — A right-click paints a compositor popover
+
+**Status: done, ADR-0070, harness `osxui1-pop`.** A right PRESS, while `wm` is
+on, paints a 96×64 rectangle near the pointer (`wmPopColor` `0x00C04088`).
+The compositor consumes it: no drag, no `wmevent`. A left press dismisses
+it; a hit on the popover itself is consumed. Spare `wmStore` words 21 and
+22. No `@bss`, no help line, no syscall. Pixels and a hit region — not
+live-edit.
+
+*Binary:* QMP `btn:right:down` at a host-derived desktop point; the derived
+colour at the derived popover centre. A subsequent desktop left-click
+removes it. *Negative control:* left-click only never produces that colour.
 
 ---
 
@@ -1130,3 +1165,256 @@ QMP's `input-send-event` does it, batches events atomically in one call — whic
 which is what makes "click at exactly this point" deterministic — and uses **normalised 0..32767 axes,
 not pixels**. D1 needs a `--pointer` sibling to `--keys`. That file is shared by thirteen harnesses, so
 the change must be purely additive.
+
+---
+
+## 12. The compositor has a refresh rate (ADR-0188)
+
+Everything above this section describes **what a frame contains**. This one
+describes **when a frame happens**, which until ADR-0188 had no answer: a live
+sit-in door that had been up for two hours had four `WM FRAME` lines in its
+log, all four from startup. Frames were event-only and nothing asked.
+
+**The policy, in four sentences.**
+
+1. A frame is presented because something changed. Damage, not a clock, is
+   what makes a frame exist, and an idle desktop with a still wallpaper
+   presents nothing.
+2. The clock is what stops damage from becoming a frame rate. `wm pace` arms
+   `wmFrameTick` on IRQ0; damage is coalesced into one screen rectangle and
+   presented at most once every `wmPacePeriod` PIT ticks. The PIT is 100 Hz
+   and the default period is 2, so the cap is **50 fps** and it is a whole
+   number of ticks rather than a target the machine misses by a fraction.
+3. With the pacer disarmed — which is every boot that does not type
+   `wm pace`, including every harness in this suite — a commit presents inside
+   its own syscall, exactly where a commit's frame has always happened.
+4. The pointer is never coalesced. IRQ12 repaints the cursor rectangles the
+   moment a packet decodes; folding it into the pacer would add latency to the
+   one thing a person can feel, to save 384 pixels.
+
+**The paced present is Dart only.** `wmFrameTick` goes through
+`wmRepaintRect` / `wmPixelAt` and never calls `osgfx_guest_tick`, because the
+guest Skia heap is not reentrant (ADR-0172). Chrome changes therefore still go
+through a full compose in process or shell context; what decides which is
+`wmGfxChromeSig`, a fold of every input `osgfx_session_paint` reads. While it
+holds still a damage rectangle is honoured; the moment it moves the next
+present is a full compose.
+
+**That signature is what retires ADR-0183's refusal to honour damage under
+`wm gfx`.** The refusal was right at the time: Dart stamped solid pearl over
+the session's antialiased title band, and Dart had no way at all to put the
+generative desktop back. Both conditions are gone — `wmDeskPixel` reads the
+cached field, and every pixel the session owns answers `wmNoPixel` under gfx,
+including the corner margins `wmBlitRow` insets (`wmGfxCornerHole`).
+
+**The wallpaper is a still.** `osgfx_desk.c`'s field is generated once into a
+contiguous run from the frame allocator and blitted per frame. The seed is the
+owner's choice (`cmd->desk`) and the phase is pinned to zero; it used to be
+`cmd->gen`, which the compositor bumps once per tick, so the whole desktop was
+a different field every frame. Measured at 800x600 on `-cpu qemu64`: 8.3–10.9
+ms of field maths per frame became 0.41–0.55 ms of blit, and a client's small
+update went from a 48–56 ms full compose to a 2.7–3.0 ms damage present.
+
+**Where the pacer's state lives.** One page from the frame allocator, whose
+address is `OsGfxGuestCmd.wmpage` at mailbox offset 120 — the sixteenth and
+last word of that struct, which keeps it at exactly the 128 bytes the linker
+aligns `.osmedia_cmd` to. No new `@bss`: eleven harnesses assert the kernel's
+mutable static total to the byte. `core/kernel/wmpace.dart` owns the page's
+word layout and `osgfx_guest.h` names only the five words the C generator
+touches; both sides check a `'WMPAGE1'` magic first, because a zeroed frame is
+the one thing neither may mistake for a valid header.
+
+**What it is not.** The clock is the PIT, not the display: there is no vblank
+on this path, "present" means "finished writing the scanout the host reads
+whenever it likes", and the only expressible caps are 100/N — 60 is not one of
+them (GAP-0331). Coalescing is a bounding box, not a region list (GAP-0332).
+And the cost that was left in a full compose was almost entirely the Skia
+session tick, 40–47 ms of a 40–45 ms frame — which is §13.
+
+**Harness:** `core/tests/conformance/de-pace/run.sh`, 63 checks — the field
+regenerated exactly once for a whole boot, 14,246 of 14,250 presents being the
+client's 16x16 damage, the Skia title gradient / Start pill / close-button
+fringe / outline caption all still on the screen after all of them, and
+`PRES`/`COAL` bracketed by two `WM PACE` reports over a measured wall-clock
+window (49.8 fps against a 50 fps cap, 220,729 marks folded into 416 frames),
+and the same window again at `wm pace 4` (25.0 fps — the rate follows the
+period, so the cap is what bounds it and not the cost of a present).
+
+---
+
+## 13. Chrome is rasterised when it changes (ADR-0191)
+
+§12 left the frame paced and the frame still expensive: a compose was ~33 ms
+and ~32.7 ms of it was `osgfx_session_paint` re-scan-converting a picture whose
+inputs had not moved. **The session now paints into a cached full-screen buffer
+and a tick that finds its inputs unchanged is one blit.** At the median of six
+runs on a contended host, the session tick went from 43.4 ms to 0.74 ms (63x)
+and a full compose from 8.8 ms to 0.91 ms (9.2x). A compose is now well under
+one PIT tick, so §12's 50 fps cap is a cap rather than a description of what a
+frame cost.
+
+**The key is the mailbox, and it is C's.** ADR-0188 built `wmGfxChromeSig` and
+GAP-0330 proposed reusing it; that would have been wrong. The signature answers
+a Dart question ("may a damage repaint be honoured?") and does not fold
+`tone0`/`tone1`, the client's bottom-corner colours that the compositor
+re-samples out of client shm on every kick and that the session paint reads. So
+`osgfx_chrome.c`'s `chrome_key` folds the eleven mailbox words the paint
+actually reads plus the generative field's own cache key, `gen` is deliberately
+excluded (it changes every tick by construction), and the signature stays
+Dart's. The two are checked against each other rather than merged:
+`de-chrome-cache/keycover.py` reads every `cmd->FIELD` out of
+`osgfx_session.c` and every `m->FIELD` out of `chrome_key` and FAILS if the
+first is not a subset of the second, so adding a field to the paint without
+adding it to the key is a FAIL.
+
+**The key is cleared before the paint and stamped after it**, so a fault inside
+a scan conversion leaves a torn frame marked untrustworthy rather than current
+— which matters more here than for the wallpaper, because this buffer is
+blitted to the visible scanout.
+
+**The taskbar gradient has its own cache, and finding out why is the
+measurement worth remembering.** GAP-0330 and GAP-0327 both predicted the glyph
+outlines were most of the cost. Stubbing every `osgfx_text` call out made the
+tick *slower* (41.0 ms against 35.9 — noise around zero). One
+`SkShaders::LinearGradient` fill over the 800x48 strip was **87.6%** of a
+rasterisation at ~820 ns/px, and `setAntiAlias(false)` on it changed nothing,
+so the cost was the gradient shader and not the coverage pass. Caching that
+band — keyed on width, height and the two colours, and **only for radius 0**,
+because a cached antialiased corner would have blended against stale buffer
+contents — is what makes a frame that genuinely *changed* 6.9x cheaper too.
+Text is 0.25 ms of the 4.46 ms that remains, so no glyph cache landed and
+GAP-0327 now carries the numbers instead of the expectation.
+
+**Where the memory lives.** One contiguous run from the frame allocator —
+519,168 pixels in 507 frames at 800x600, one screen for the frame plus one
+taskbar band after it, published as two addresses so nothing in C does
+arithmetic on Dart's idea of the layout. Allocated only under `wm de`, on the
+wallpaper cache's terms and for its reason. With no page and no buffer,
+`osgfx_chrome_target` returns 0 and the tick paints straight into the scanout
+exactly as it did before the cache existed. No new `@bss`, no new mailbox word.
+Dart never calls into `osgfx_chrome.c` — it sets and clears state-page words,
+and the fill happens on the session tick in process context, because Skia must
+not run in an interrupt (ADR-0172).
+
+**The report.** `wm pace off` prints
+`WM CHROME PX <n> FRM <n> REGEN <n> BLIT <n> GLYPH <n> HIT <n>` and
+`WM BAND PX <n> FILL <n> HIT <n>`. `REGEN` over `BLIT` is the whole claim as a
+number out of the running OS; `GLYPH` over `HIT` is GAP-0327's status as a
+number (all misses, because there is no glyph cache).
+
+**Harness:** `core/tests/conformance/de-chrome-cache/run.sh`, 57 checks, and it
+is built around the observation that **a chrome cache which never invalidates
+is fast, passes every pixel probe in this suite, and is wrong.** So the serve
+and the invalidation are bracketed separately: twelve `wm draw` full composes
+must move `BLIT` by twelve and `REGEN` by **zero** (that window is also the
+control), and then opening a popover, closing it, and mapping a window must
+each move `REGEN`. Closing the popover is the assertion worth keeping —
+`wmDePopHide` clears the state through a damage repaint rather than a compose,
+so that leg only passes if the KEY noticed rather than the paint path.
+
+---
+
+## 14. A present owes the client a re-blit (ADR-0190)
+
+§12 and §13 answer *when* a frame happens and *what it costs*. This answers
+**who owns the pixels a frame overwrote**, which had no rule at all and cost
+the live desk every idle window it had (GAP-0333).
+
+`isr_common` calls `osgfx_guest_tick` after **every** interrupt. The tick
+returns at `m->gen == last_gen`, so what decides whether the session paints is
+who last moved `gen`, and the only thing that moves it is `wmGfxKick`. When it
+does paint it writes the whole scanout. **Nothing in that path reads client
+shm** — the one client blit on this machine is `wmDrawWindow`, reached from
+`wmCompose` and nowhere else. So a kick that was not part of a compose left
+every mapped client's body painted over with wallpaper, permanently: the
+compositor does not poll clients, and a client that has committed once has
+nothing more to say.
+
+**The rule: a present that paints over a mapped client owes that client a
+re-blit, inside the same present.** `wmGfxKick` records the debt
+(`wmSessionOwe`), `wmSessionRestore` pays it on the instruction after `call
+osgfx_guest_tick`, and `wmCompose` settles it because its own blits already
+did the work. The restore is Dart only (ADR-0172 again), busy-guarded — a
+deferred restore stays owed rather than tearing a frame in progress — reaps
+before it reads any frame vector, and blits bottom-up with the top slot last,
+which has to be `wmCompose`'s order or two overlapping windows would resolve
+differently in a restore than in a compose. It does not stamp
+`wmGfxChromeSig`: §12 makes `wmCompose` the one place entitled to claim the
+chrome on screen is current.
+
+**And the pointer no longer kicks for nothing.** `wmGfxChromeSig` deliberately
+excludes the pointer, because Dart draws the arrow; `wmPointerTick` now kicks
+only when the signature would move, so a drag or a raise or a popover kicks on
+the packet that causes it and a plain move over the desktop kicks nothing at
+all. That is §12's own policy applied to the one path that was ignoring it: the
+net is *fewer* Skia presents than before this section, not more.
+
+**Cost.** One load of `.data` and a compare per interrupt on a machine that
+never typed `wm gfx`; one state-page load when there is no debt; one client
+blit (~0.89 ms at 1280x720) when there is. Four words in §12's state page, no
+new `@bss`, no new mailbox word, and neither damage honouring nor the paced
+present was touched.
+
+**Harness:** `core/tests/conformance/de-retain/run.sh`, 34 checks. Every other
+compositor harness here probes the first frame, and the two that run for any
+length of time drive a client that commits in a loop — so its body is
+re-blitted hundreds of times a second and cannot be observed to rot, which is
+why this shipped green. `de-retain` runs two clients that commit **once** and
+then only yield, and compares their interiors **byte for byte** out of guest
+physical memory at T0 and after 2.8 s, 15.1 s, 45.1 s and 135.1 s, across 60
+pointer packets and 10 popover cycles with the frame clock armed: all intact,
+40 restores, 3,266,880 pixels put back, no debt outstanding at the end. With
+`DE_RETAIN_NOFIX=1` and the fix reverted, both bodies die on the first pointer
+stage and never come back.
+
+## 15. The desk shell paints the only taskbar (ADR-0192)
+
+**A shell is a client.** `DESK.ELF` asks the compositor how big the screen is
+(`wmsurface` op 9, `wmOpScreen` — `(w << 32) | h` for the LIVE scanout, plus a
+`WM_SCREEN_TASKS` view of the window table as four packed bytes), attaches a
+surface that is exactly the full scanout width and flush against the bottom
+edge, and paints it with the OS's own rasteriser through `wmsurface` op 10
+(`wmOpPaint`: AA rrect, vertical `SkShaders::LinearGradient`,
+`SkMaskFilter::MakeBlur` elevation, a Roboto outline run, or a measure). No new
+syscall; 23 stays `wmsurface`, 11 stays `fdwait`.
+
+**A panel is a granted geometry, not a hint.** `wmIsPanel` accepts exactly one
+shape — full width, `y + h == fbGeomHeight()`, `h <= wmChromeH` — and for that
+shape the compositor draws no border, no title band, and takes no
+rounded-corner blit inset (`wmBlitRow`, and `wmGfxCornerHole` on the damage
+path, which has to agree with it pixel for pixel). `wmDecoX` / `wmDecoY`
+saturate at 0 so the decorated-rectangle arithmetic a panel at x = 0 would
+otherwise underflow stays safe.
+
+**The compositor's own strip is a fallback that withdraws.** `wmPanelStrip`
+looks for a usable window that has committed at least one frame and whose
+geometry is a panel; `wmGfxKick` then sets `OSGFX_GUEST_PANEL` (mailbox flags
+bit 3) and `paint_de_strip` is skipped, with the desk wallpaper extended to the
+bottom edge. `Start` therefore exists between `wm de` and DESK's first commit,
+and on a volume with no `DESK.ELF` at all, but never at the same time as DESK's
+bar. The test is committed pixels, not a process name.
+
+**An app's text is the same outlines as chrome's.** `osxui_app_label_box`
+(`core/user/frame/osxui_app.h`) measures and fills through `osgfx_text`, so
+`FILES.ELF`'s rows and `SET.ELF`'s labels are proportional Roboto rather than
+the 8x16 cell `osxui_label_fb` stamped. The proof is the advance: `FACTS.DAT`
+is 62 pixels at 14px where nine cells would be exactly 72.
+
+**Harnesses:** `de-desk` / `de-deskboot` (ADR-0197) — empty desk on boot,
+glass islands, dock hit launches FILES/SET; `de-session` — the fallback
+still there when no client panel is up; `files-fm` (156 checks). Picture:
+`core/build/tigervnc-live-now.png`.
+
+## 16. osxui glass language and boot-to-desk (ADR-0197)
+
+**The five mockups are the language.** Frosted panels (elevation + light
+fill + hairline), a floating split dock (clock/status/menu island + app
+icons), glass CSD with sidebar+pane in Settings, light file rows. `wm`
+composites; DESK / SET / FILES paint through `osxui_app_*`.
+
+**Cold boot is wallpaper + dock.** sit-in and the cocoa door spawn
+`DESK.ELF` only. A dock icon `spawn`s the planted ELF. Panel pixels that
+are 0 are not blitted, so wallpaper shows between the islands.
+
+**Window card radius stays 8** (ADR-0196). Island radius is 20. True
+backdrop blur of the wallpaper into the frost is leftover.

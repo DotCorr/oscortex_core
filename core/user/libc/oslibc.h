@@ -148,6 +148,11 @@ typedef unsigned long uintptr_t;
  * since M9 and it prints on the console. See fdwrite() below. */
 #define SYS_FDWRITE 9
 
+/* APP4 / ADR-0147. `fileSysUnlinkNo` / `fileSysRenameNo`.
+ * THIRTY-ONE and THIRTY-TWO. 11 stays fdwait. 30 is futex. */
+#define SYS_UNLINK 31
+#define SYS_RENAME 32
+
 /* S0 (ADR-0033). `core/kernel/ioctl.dart`'s `ioctlSysNo`.
  *
  * TWELVE, AND ELEVEN IS SKIPPED ON PURPOSE. `fdwait` was named as syscall 11
@@ -311,6 +316,11 @@ unsigned long sys_call(unsigned long n, unsigned long a, unsigned long b);
 unsigned long sys_call3(unsigned long n, unsigned long a, unsigned long b,
                         unsigned long c);
 
+/* Four-argument form. RCX carries the fourth; `isr_common` saves it at
+ * userFrameRcx. Still one `int $0x80` — this is the stub, sys_call3 wraps it. */
+unsigned long sys_call4(unsigned long n, unsigned long a, unsigned long b,
+                        unsigned long c, unsigned long d);
+
 /* ---------------------------------------------------------------------------
  * 3. The checked wrappers.
  * ------------------------------------------------------------------------- */
@@ -414,6 +424,15 @@ unsigned long create(const char *name);
  * [len] above WRITE_FILE_MAX is FILE_EBADLEN and is NOT split into several
  * writes: the library does not loop where the kernel refused. */
 unsigned long fdwrite(unsigned long fd, const void *buf, size_t len);
+
+/* APP4 / ADR-0147. Removes [name] from the root directory and frees its
+ * cluster chain. Returns 0, or a FILE_E* refusal. A missing name is
+ * FILE_ENOTFOUND. A subdirectory is FILE_EISDIR. */
+unsigned long unlink(const char *name);
+
+/* APP4 / ADR-0147. Renames [old] to [new] in the root. If [new] already
+ * exists as a file, its chain is freed first. Returns 0, or a FILE_E*. */
+unsigned long rename(const char *old, const char *newname);
 
 /* ---------------------------------------------------------------------------
  * 3c. M15 — RFILE: a BUFFERED read-only file.

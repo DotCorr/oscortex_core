@@ -744,7 +744,7 @@ grep -qF "$MAXLINE" "$SERIAL" \
 
 # ADR-0031 §4.3 rule 5 / ADR-0021: the bounce buffer goes LAST in .bss, so no
 # existing harness's "bytes from my block to the end" arithmetic moves.
-python3 - "$CORE_DIR/build/kmain.o" <<'PYEOF' || fail "the @bss tail is not ioctlStore-then-shmStore-then-wmStore; ADR-0031 §4.3 rule 5 requires the bounce buffer to sit after every block that predates it, ADR-0041 puts M21's shmStore behind it and ADR-0050 puts D4's wmStore last"
+python3 - "$CORE_DIR/build/kmain.o" <<'PYEOF' || fail "the @bss tail is not ioctlStore-then-shmStore-then-wmStore-then-kbdqStore-then-wmeventStore; ADR-0031 §4.3 rule 5 requires the bounce buffer to sit after every block that predates it, ADR-0041 puts M21's shmStore behind it, ADR-0050 puts D4's wmStore behind that, ADR-0054 puts D2's kbdqStore behind that, and ADR-0055 puts D7's wmeventStore last"
 import re, subprocess, sys
 out = subprocess.run(["llvm-nm", "--format=posix", sys.argv[1]],
                      capture_output=True, text=True).stdout
@@ -756,22 +756,17 @@ for line in out.splitlines():
 if len(blocks) < 5:
     sys.exit("only %d @bss blocks found in kmain.o" % len(blocks))
 blocks.sort()
-# M21 (ADR-0041) put `shmStore` behind the bounce buffer. ADR-0031 §4.3 rule 5's
-# REASON -- that no EARLIER block's arithmetic should move -- is unchanged: the
-# bounce buffer is still after every block that existed when the rule was
-# written. What this check asserts is therefore now the PAIR and its order, and
-# that is a strictly stronger statement than "ioctlStore is last" was.
-# D4 (ADR-0050) put `wmStore` behind M21's `shmStore`, which was behind the
-# bounce buffer. The rule's REASON is still unchanged and the assertion is still
-# strictly stronger than "ioctlStore is last" was: what is checked is the TAIL
-# AND ITS ORDER, now three deep.
-if blocks[-1][1] != "wmStore":
-    sys.exit("the last @bss block is %s at 0x%x, not wmStore" % (blocks[-1][1], blocks[-1][0]))
-if blocks[-2][1] != "shmStore":
-    sys.exit("the second-to-last @bss block is %s at 0x%x, not shmStore" % (blocks[-2][1], blocks[-2][0]))
-if blocks[-3][1] != "ioctlStore":
-    sys.exit("the third-to-last @bss block is %s at 0x%x, not ioctlStore -- the ioctl bounce buffer must stay immediately before M21's shmStore, which must stay immediately before D4's wmStore (ADR-0031 §4.3 rule 5, ADR-0033 §6.4, ADR-0041 §8, ADR-0050)" % (blocks[-3][1], blocks[-3][0]))
-print("    (%d @bss blocks; ioctlStore at 0x%x, shmStore at 0x%x, wmStore last at 0x%x)" % (len(blocks), blocks[-3][0], blocks[-2][0], blocks[-1][0]))
+if blocks[-1][1] != "wmeventStore":
+    sys.exit("the last @bss block is %s at 0x%x, not wmeventStore" % (blocks[-1][1], blocks[-1][0]))
+if blocks[-2][1] != "kbdqStore":
+    sys.exit("the second-to-last @bss block is %s at 0x%x, not kbdqStore" % (blocks[-2][1], blocks[-2][0]))
+if blocks[-3][1] != "wmStore":
+    sys.exit("the third-to-last @bss block is %s at 0x%x, not wmStore" % (blocks[-3][1], blocks[-3][0]))
+if blocks[-4][1] != "shmStore":
+    sys.exit("the fourth-to-last @bss block is %s at 0x%x, not shmStore" % (blocks[-4][1], blocks[-4][0]))
+if blocks[-5][1] != "ioctlStore":
+    sys.exit("the fifth-to-last @bss block is %s at 0x%x, not ioctlStore -- the ioctl bounce buffer must stay immediately before M21's shmStore, which must stay immediately before D4's wmStore, which must stay immediately before D2's kbdqStore, which must stay immediately before D7's wmeventStore (ADR-0031 §4.3 rule 5, ADR-0033 §6.4, ADR-0041 §8, ADR-0050, ADR-0054, ADR-0055)" % (blocks[-5][1], blocks[-5][0]))
+print("    (%d @bss blocks; ioctlStore at 0x%x, shmStore at 0x%x, wmStore at 0x%x, kbdqStore at 0x%x, wmeventStore last at 0x%x)" % (len(blocks), blocks[-5][0], blocks[-4][0], blocks[-3][0], blocks[-2][0], blocks[-1][0]))
 PYEOF
 # The three counters, read out of the kernel's own totals line, so that the
 # PASS line below states what THIS RUN did rather than what some earlier run

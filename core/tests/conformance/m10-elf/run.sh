@@ -268,10 +268,10 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # harnesses said so. ADR-0033 §6.4.
 # M21 (ADR-0041) added a block AFTER S0's, and it was the LAST one in .bss until
 # D4 (ADR-0050) put `wmStore` behind it:
-# `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
-# records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
+# `shmStore`, 8576 bytes -- 16 global counter words, four 64-byte shared-region
+# records, and an 8192-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
-# at the top of `freeFrame` O(1) instead of a linear scan on all 32768 calls of
+# at the top of `freeFrame` O(1) instead of a linear scan on all 65536 calls of
 # `frames refill` (`docs/design/memory.md` §2.4).
 #
 # Subtracted FIRST, before S0's, exactly as M14, M15, M16, M19 and S0 each were
@@ -279,7 +279,7 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # meant when it was written. This is the THIRD application of ADR-0033 §6.4's
 # correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a
-# new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
+# new block after it changes. S0's number goes 512 -> 8960 nowhere, because it
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 # D4 (ADR-0050) added a block AFTER M21's, and it is now the LAST one in .bss:
@@ -293,17 +293,37 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # it meant when it was written. This is the FOURTH application of ADR-0033 s6.4's
 # correction to ADR-0031 s4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a new
-# block after it changes. M21's number below still reads 4352 for that reason --
+# block after it changes. M21's number below still reads 8576 for that reason --
 # it is now measured to wmStore's START rather than to the end of .bss.
+# D2 (ADR-0054) added a block AFTER D4's, and it is now the LAST one in .bss:
+# `kbdqStore`, 288 bytes -- four header words (head, tail, dropped, count)
+# and 32 event slots. Subtracted FIRST, before D4's, so D4's number still
+# reads 320 -- it is now measured to kbdqStore's START rather than to the
+# end of .bss.
+# D7 (ADR-0055) added a block AFTER D2's, and it is now the LAST one in .bss:
+# `wmeventStore`, 192 bytes -- two per-window rings (four header words and
+# 8 event slots each). Subtracted FIRST, before D2's, so D2's number still
+# reads 288 -- it is now measured to wmeventStore's START rather than to
+# the end of .bss.
+D7_OFF_HEX=$(bssoff wmeventStore)
+ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
+D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
+ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
+D2_OFF_HEX=$(bssoff kbdqStore)
+ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
+D2_BSS=$(( KDATA_BSS - 16#$D2_OFF_HEX ))
+ck; [[ "$D2_BSS" -eq 288 ]] || fail "the bytes from D2's kbdqStore to D7's wmeventStore are $D2_BSS, expected 288. If that block changed size, change it in ADR-0054, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 320 ]] || fail "the bytes from D4's wmStore to the end of .bss are $D4_BSS, expected 320. If that block changed size, change it in ADR-0050, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -369,7 +389,7 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
 ck; [[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header, plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
-ck; [[ $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) -eq 5496 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M11_BSS are M11's process table and $M14_BSS are M14's filesystem block, leaving $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) — expected 5496 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in GAP-0053."
+ck; [[ $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) -eq 9720 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M11_BSS are M11's process table and $M14_BSS are M14's filesystem block, leaving $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) — expected 9720 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 # M17: scan BOTH objects. The storage moved to kmain.o, so a scan of kdata.o
 # alone would now find nothing and pass for the wrong reason.
 for obj in kmain.o kdata.o; do
@@ -587,12 +607,50 @@ ZEROES=$(grep -c 'vmZeroFrame(' "$CORE_DIR/kernel/elf.dart")
 # checked in BOTH files — every frame handed to ring 3 is zeroed first.
 PROC_ALLOCS=$(grep -c 'allocFrame();' "$CORE_DIR/kernel/proc.dart")
 PROC_ZEROES=$(grep -c 'vmZeroFrame(' "$CORE_DIR/kernel/proc.dart")
-ck; [[ "$ALLOCS" -eq 3 ]] || fail "elf.dart calls allocFrame() $ALLOCS times, expected 3 (the page-table frame, one per segment page, and the stack page). The header and sector scratch frames belong to procCreate since ADR-0034. If you added one, it needs a vmZeroFrame beside it — see GAP-0094."
-ck; [[ "$ZEROES" -eq 2 ]] || fail "elf.dart calls vmZeroFrame() $ZEROES times, expected 2 — one for every allocFrame() except the page-table frame, which vmProgTableInstall zeroes. EVERY frame this loader hands to ring 3 must be zeroed before anything is copied into it, and on QEMU no behavioural check can tell you when that stops happening (GAP-0094)."
-ck; [[ "$PROC_ZEROES" -ge "$PROC_ALLOCS" ]] || fail "proc.dart calls allocFrame() $PROC_ALLOCS times but vmZeroFrame() only $PROC_ZEROES — since ADR-0034 the header and sector scratch frames are taken here, and every frame that reaches ring 3 must be zeroed before anything is copied into it (GAP-0094)."
+# PAIRED BY NAME, NOT BY COUNT. The two counts used to be pinned at 3 and 2,
+# which was true when the loader took three frames and has not been since
+# ADR-0155/0164/0167 taught it to map a real libcef. A count says nothing
+# about WHICH frame went unzeroed, and it goes stale on every legitimate
+# addition; the invariant is per-frame and is asserted per-frame here. The one
+# permitted exemption is the same one the old comment named: a frame handed
+# straight to `vmProgTableInstall`, which zeroes it itself and is asserted to
+# below.
+capture_sh PAIR_OUT PAIR_STATUS -- "python3 - '$CORE_DIR/kernel/elf.dart' '$CORE_DIR/kernel/proc.dart' <<'PY'
+import re, sys
+bad, total = [], 0
+for path in sys.argv[1:]:
+    src = open(path).read()
+    name = path.rsplit('/', 1)[-1]
+    for n, line in enumerate(src.split('\n'), 1):
+        if 'allocFrame();' not in line or line.lstrip().startswith('//'):
+            continue
+        total += 1
+        m = re.match(r'\\s*final u64 (\\w+) = allocFrame\\(\\);\\s*\$', line)
+        if not m:
+            bad.append('%s:%d takes a frame in a shape this check cannot follow, '
+                       'so nothing here can say whether it is zeroed: %s'
+                       % (name, n, line.strip()))
+            continue
+        v = m.group(1)
+        if ('vmZeroFrame(%s)' % v) in src:
+            continue
+        if ('vmProgTableInstall(%s)' % v) in src:
+            continue
+        bad.append('%s:%d takes a frame into `%s` and neither vmZeroFrame(%s) nor '
+                   'vmProgTableInstall(%s) appears anywhere in the file. '
+                   'allocFrame() returns whatever the frame last held, and this '
+                   'one reaches ring 3 (GAP-0094).' % (name, n, v, v, v))
+if bad:
+    raise SystemExit('\n'.join(bad))
+print('    (%d allocFrame() call sites across elf.dart and proc.dart, every one '
+      'paired with a zeroing by NAME)' % total)
+PY"
+echo "$PAIR_OUT"
+ck; [[ $PAIR_STATUS -eq 0 ]] || fail "a frame this loader hands to ring 3 is not zeroed first (GAP-0094):
+$PAIR_OUT"
 ck; grep -q '^    vmZeroFrame(frame);$' "$CORE_DIR/kernel/elf.dart" || fail "elfLoadSegment no longer zeroes the frame before copying the segment into it. The .bss tail would then hold whatever the frame last contained, and ring 3 can read it."
 ck; grep -q '  vmZeroFrame(ptFrame);' "$CORE_DIR/kernel/vm.dart" || fail "vmProgTableInstall no longer zeroes the page-table frame — 512 words of allocator litter installed as a page table is 512 mappings the CPU will believe"
-echo "STRUCTURAL: pass  every one of elf.dart's $ALLOCS allocFrame() calls is paired with a zeroing ($ZEROES here, the page table's inside vmProgTableInstall), and proc.dart's $PROC_ALLOCS are covered by its $PROC_ZEROES — asserted structurally because on QEMU the behavioural check for it cannot fail (GAP-0094)"
+echo "STRUCTURAL: pass  every one of elf.dart's $ALLOCS and proc.dart's $PROC_ALLOCS allocFrame() calls is paired BY NAME with a vmZeroFrame (or with vmProgTableInstall, which zeroes it itself) — asserted structurally because on QEMU the behavioural check for it cannot fail (GAP-0094)"
 
 # 3f. EVERY @rodata TABLE IS THE SIZE ITS CALL SITE PASSES.
 #
@@ -858,6 +916,44 @@ for gone in \
             elf_store_addr; do
   ck; grep -q "\\b$gone\\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 40 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 40 (M9's 52 less the twelve accessors ADR-0021 deleted; M10 itself now adds none, because elf_store_addr was its only one)"
 ck; grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 52 from M9 plus exactly one, and kdata.o still passes standalone"

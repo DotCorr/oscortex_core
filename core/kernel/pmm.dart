@@ -60,9 +60,9 @@
 // A bitmap has to be sized before it can be filled, and three numbers want to
 // be the same number:
 //
-//   * the bitmap's own size -- 4096 bytes is exactly one page;
-//   * the RAM that covers -- 4096 bytes * 8 bits * 4KiB = 128MiB;
-//   * the extent boot.S identity-maps -- MAP_2MIB_PAGES = 64, so 128MiB.
+//   * the bitmap's own size -- 8192 bytes is exactly two pages;
+//   * the RAM that covers -- 8192 bytes * 8 bits * 4KiB = 256MiB;
+//   * the extent boot.S identity-maps -- MAP_2MIB_PAGES = 128, so 256MiB.
 //
 // The third is the one that makes this a correctness argument rather than a
 // budget. A frame the kernel cannot ADDRESS is not a frame it can hand out: if
@@ -71,10 +71,10 @@
 // diagnosable allocator bug. boot.S's own comment states the invariant and
 // `tests/conformance/m7-frames/run.sh` asserts both halves of it.
 //
-// **Exceeding the bound is loud.** Usable frames above 128MiB are counted at
+// **Exceeding the bound is loud.** Usable frames above 256MiB are counted at
 // init into the metadata's OVER word, reported by `frames` as
-// `OVER nnnnnnnn CAPPED`, and never marked free. A 256MiB machine gets a
-// working 128MiB allocator and a printed count of what it refused to manage --
+// `OVER nnnnnnnn CAPPED`, and never marked free. A 512MiB machine gets a
+// working 256MiB allocator and a printed count of what it refused to manage --
 // which is a different thing from silently truncating the memory map and
 // pretending the machine is smaller than it is. The harness boots one.
 //
@@ -646,23 +646,25 @@ const int pmmFrameBytes = 4096;
 const int pmmFrameMask = 4095;
 const int pmmFrameLastWord = 4088;
 
-/// Frames this allocator will manage, and refuse to exceed. 32768 frames is
-/// 128MiB, which is a 4096-byte bitmap and is exactly what `core/boot/boot.S`
-/// identity-maps (`MAP_2MIB_PAGES` = 64). See this file's header.
-const int pmmMaxFrames = 32768;
+/// Frames this allocator will manage, and refuse to exceed. 65536 frames is
+/// 256MiB, which is an 8192-byte bitmap and is exactly what `core/boot/boot.S`
+/// identity-maps (`MAP_2MIB_PAGES` = 128). ADR-0155 raised this with the
+/// identity map so a named platform process can plant the full 189 MiB CEF
+/// `.text` window. See this file's header.
+const int pmmMaxFrames = 65536;
 
-/// Bytes of bitmap: one bit per frame. Exactly one page.
-const int pmmBitmapBytes = 4096;
+/// Bytes of bitmap: one bit per frame. Two pages.
+const int pmmBitmapBytes = 8192;
 
 /// The bound expressed as MiB, for the report.
-const int pmmBoundMib = 128;
+const int pmmBoundMib = 256;
 
-/// Byte offsets inside the one donated block. See core/boot/kdata.S.
-const int pmmMetaOffset = 4096;
-const int pmmLedgerOffset = 4160;
+/// Byte offsets inside the one donated block.
+const int pmmMetaOffset = 8192;
+const int pmmLedgerOffset = 8256;
 
 /// Total donated bytes: bitmap + metadata + ledger.
-const int pmmStoreBytes = 4672;
+const int pmmStoreBytes = 8768;
 
 /// Metadata block: eight `u64` words at [pmmMetaOffset].
 const int pmmMetaBytes = 64;
@@ -704,7 +706,7 @@ const int pmmFreeDouble = 5;
 // turns the mutable-statics migration from three functions into an audit.
 // ---------------------------------------------------------------------------
 
-/// The 4672-byte block that holds the entire allocator, as a DCDart mutable
+/// The 8768-byte block that holds the entire allocator, as a DCDart mutable
 /// static (ADR-0021, DCDart ADR-0051).
 ///
 /// Until M17 this was `pmm_store` in `core/boot/kdata.S`, reached through an

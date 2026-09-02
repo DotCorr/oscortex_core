@@ -46,9 +46,12 @@ part of 'kmain.dart';
 //   * No involuntary revocation. A grantor cannot take a capability back;
 //     `shmdrop` releases the CALLER'S own. GAP-0233, with the mechanism it
 //     would take written out.
-//   * No resize, no partial map, no offset map. A capability names a whole
-//     region and maps it whole. GAP-0234.
-//   * No file backing, no MAP_FIXED, no mprotect, no demand paging. GAP-0235.
+//   * Grow past the create size is ADR-0150 (`shmgrow`, syscall 34).
+//     Shrink is ADR-0156 (`shmshrink`, syscall 35). Multi-mapper grow /
+//     shrink updates every address space that holds a mapping (ADR-0158).
+//     Partial / offset map is ADR-0160 (`shmmap` rdx range word).
+//     mprotect + MAP_FIXED are ADR-0163 (syscall 36 + shmmap flag).
+//     File backing + demand paging are ADR-0164 (syscall 37 shmfile).
 //   * No atomicity across a region and no lock. One writer by construction
 //     (a grant is READ-ONLY), which is most of why that is survivable.
 //     GAP-0236.
@@ -62,11 +65,12 @@ part of 'kmain.dart';
 
 /// How many regions can exist at once.
 ///
-/// **Two, and it is the same argument `chanPorts` is two.** A region is shared
-/// between a creator and one grantee, `procMax` is 4, and the window is one
-/// page-directory entry. Two regions of 256 pages each divide
-/// `[vmShmBase, vmShmEnd)` exactly.
-const int shmMax = 2;
+/// **Four.** Sit-in Start lists four named ELFs; a session that already
+/// holds two resident surfaces must still be able to spawn SET or
+/// STUDIO (ADR-0109). The window is still one page-directory entry
+/// ([vmShmPages] 512). Four regions of 128 pages each divide
+/// `[vmShmBase, vmShmEnd)` exactly. No new syscall; the table grew.
+const int shmMax = 4;
 
 /// Pages of window address space reserved per region SLOT, whatever the region
 /// in it actually asked for.
@@ -79,18 +83,18 @@ const int shmMax = 2;
 /// have packed the window tighter and made a region's address depend on the
 /// order regions happened to be created in, which is a difference two processes
 /// would then have to agree about.
-const int shmSlotPages = 256;
+const int shmSlotPages = 128;
 
 /// The largest region this kernel will create, in pages: one slot's worth.
-/// 256 pages is 1,048,576 bytes.
+/// 128 pages is 524,288 bytes.
 ///
 /// **An 800x600x32 frame is 469 pages and does NOT fit**, and that is stated
 /// here rather than discovered later. The window ([vmShmPages], 512) is large
-/// enough for one; the SLOTTING is what caps it at 256. Configuring `shmMax` 1
-/// / `shmSlotPages` 512 fits a full-screen frame today and changes no ABI, no
-/// syscall and no structure -- only these two constants. ADR-0041 §7 records
-/// why M21 did not take that configuration, and GAP-0237 carries it.
-const int shmMaxPages = 256;
+/// enough for one; the SLOTTING is what caps it. Today's FRAME surfaces are
+/// 38 pages (240x160). Configuring `shmMax` 1 / `shmSlotPages` 512 still
+/// fits a full-screen frame and changes no ABI -- GAP-0237. ADR-0109 took
+/// four slots so the DE can hold Start's apps, not one big slot.
+const int shmMaxPages = 128;
 
 // ---------------------------------------------------------------------------
 // The storage. See ADR-0021 and `docs/design/memory.md` §2.4.
@@ -105,24 +109,24 @@ const int shmRegBytes = 64;
 
 /// One bit per frame in the machine: 1 = this frame belongs to a live region.
 ///
-/// **4096 bytes, which is exactly one page and exactly the frame bitmap's own
-/// size, and the shape is copied from it deliberately.** `docs/design/memory.md`
-/// §2.4 measured the alternative: `freeFrame` is called 32768 times by
-/// `frames refill`, and a linear scan of even a 64-entry shared-frame table
-/// there is 2.1 million volatile loads added to a fixture that nine harnesses
-/// run. A bit-plane makes the test in `freeFrame` ONE BIT-TEST, which is the
-/// same operation `pmmAllocatable` already does on the same path.
-const int shmPlaneOffset = 256;
-const int shmPlaneBytes = 4096;
+/// **8192 bytes, matching the frame bitmap after ADR-0155's 256 MiB PMM
+/// raise, and the shape is copied from it deliberately.** `docs/design/memory.md`
+/// §2.4 measured the alternative: `freeFrame` is called once per managed
+/// frame by `frames refill`, and a linear scan of even a 64-entry shared-frame
+/// table there is millions of volatile loads. A bit-plane makes the test in
+/// `freeFrame` ONE BIT-TEST, which is the same operation `pmmAllocatable`
+/// already does on the same path.
+const int shmPlaneOffset = 384; // 128 + 4 * 64
+const int shmPlaneBytes = 8192;
 
 /// Frames the plane can describe: `shmPlaneBytes * 8`. Equal to `pmmMaxFrames`,
 /// and `m21-shmem/run.sh` asserts that equality rather than trusting it -- a
 /// plane shorter than the bitmap would silently stop protecting the top of
 /// memory.
-const int shmPlaneFrames = 32768;
+const int shmPlaneFrames = 65536;
 
-/// 128 + 2 * 64 + 4096.
-const int shmStoreBytes = 4352;
+/// 128 + 4 * 64 + 8192.
+const int shmStoreBytes = 8576;
 
 // Global counter words.
 const int shmMetaCreates = 0;
@@ -150,6 +154,13 @@ const int shmMetaGen = 7;
 /// finally died. `m21-shmem` requires both to be non-zero and requires the
 /// second to account for every page the boot created.
 const int shmMetaFreed = 8;
+
+/// Clipboard selection (ADR-0183). Spare meta words — not a new `@bss`.
+/// Compositor protocol in `wmext.dart`; storage here so `wmStore` stays 448.
+const int shmMetaClipReg = 9;
+const int shmMetaClipGen = 10;
+const int shmMetaClipOwner = 11;
+const int shmMetaClipLen = 12;
 
 // Region record words.
 const int shmRegState = 0;
@@ -184,6 +195,11 @@ const int shmRegGrants = 7;
 const int shmRegFree = 0;
 const int shmRegLive = 1;
 
+/// Live region whose pages are filled on first touch from a FAT fd
+/// (ADR-0164). Distinct from [shmRegLive] so grow/shrink/mprotect stay
+/// on the eager anonymous door.
+const int shmRegLiveFile = 2;
+
 /// Capabilities a process can hold at once: slot words 24..27.
 const int shmCapsPerProc = 4;
 
@@ -209,6 +225,11 @@ const int shmPermRo = 1;
 /// Read-write: what a CREATOR holds, always.
 const int shmPermRw = 3;
 
+/// ADR-0163 — `MAP_FIXED` bit in the `shmmap` perms word. When set, `rcx`
+/// must equal the slot VA of the first mapped page. Wrong address is
+/// [shmRetBadFixed]; already-mapped is still [shmRetMapped].
+const int shmMapFixed = 0x100;
+
 // ---------------------------------------------------------------------------
 // Syscall numbers. See docs/syscall-registry.md -- the registry is the
 // allocator, and 16..19 are the first free numbers after M20 and S0 (GAP-0213).
@@ -218,6 +239,29 @@ const int shmSysCreateNo = 16;
 const int shmSysGrantNo = 17;
 const int shmSysMapNo = 18;
 const int shmSysDropNo = 19;
+
+/// ADR-0150 — syscall 34, `shmgrow(handle, newPages) -> 0`.
+/// 11 stays `fdwait`. 33 is `setfs`.
+const int shmSysGrowNo = 34;
+
+/// ADR-0156 — syscall 35, `shmshrink(handle, newPages) -> 0`.
+/// 11 stays `fdwait`. 34 is `shmgrow`.
+const int shmSysShrinkNo = 35;
+
+/// ADR-0163 — syscall 36, `mprotect(handle, perms) -> 0`.
+/// Downgrade (or confirm) live mapping permissions. 11 stays `fdwait`.
+const int shmSysMprotectNo = 36;
+
+/// ADR-0164 — syscall 37, `shmfile(fd) -> handle`.
+/// File-backed region; pages demand-filled from the open FAT fd.
+/// 11 stays `fdwait`. 36 is `mprotect`.
+const int shmSysFileNo = 37;
+
+/// Trailer in the page-vector frame: file byte size (ADR-0164).
+const int shmVecFileSizeOff = 4080;
+
+/// Trailer: `(row << 8) | (fd + 1)`. Zero means not file-backed.
+const int shmVecFilePackOff = 4088;
 
 // ---------------------------------------------------------------------------
 // Return values. `file.dart`'s convention (ADR-0019 §3): one floor, every code
@@ -287,6 +331,12 @@ const int shmRetNoTable = 0xFFFFFFFFFFFFFFF1;
 /// address already occupied. Counted separately so a kernel bug does not
 /// masquerade as a caller error.
 const int shmRetMapFail = 0xFFFFFFFFFFFFFFF0;
+
+/// `MAP_FIXED` was set and `rcx` is not the slot VA of the first mapped
+/// page (ADR-0163). Distinct from [shmRetMapped] (overlap) and
+/// [shmRetBadLen] (range).
+const int shmRetBadFixed = 0xFFFFFFFFFFFFFFEF;
+
 /// The refusal line's opening: `'SHM REFUSE C '` -- 13 bytes.
 @rodata
 final List<u8> shmStrRefuse = const [
@@ -394,6 +444,27 @@ final List<u8> shmStrDrop = const [
   u8(0x52), u8(0x20),
 ];
 
+/// `'SHM GROW R '` -- 11 bytes.
+@rodata
+final List<u8> shmStrGrow = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x47), u8(0x52), u8(0x4F), u8(0x57), u8(0x20),
+  u8(0x52), u8(0x20),
+];
+
+/// `'SHM SHRINK R '` -- 13 bytes.
+@rodata
+final List<u8> shmStrShrink = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x53), u8(0x48), u8(0x52), u8(0x49), u8(0x4E),
+  u8(0x4B), u8(0x20), u8(0x52), u8(0x20),
+];
+
+/// `'SHM PROT R '` -- 11 bytes.
+@rodata
+final List<u8> shmStrProt = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x4F), u8(0x54), u8(0x20),
+  u8(0x52), u8(0x20),
+];
+
 /// Field separator: a region's live capability count. `' REFS '` -- 6 bytes.
 @rodata
 final List<u8> shmStrRefs = const [
@@ -425,13 +496,51 @@ final List<u8> shmStrPerm = const [
   u8(0x20), u8(0x50), u8(0x45), u8(0x52), u8(0x4D), u8(0x20),
 ];
 
+/// Field separator: a partial-map page offset. `' OFF '` -- 5 bytes.
+@rodata
+final List<u8> shmStrOff = const [
+  u8(0x20), u8(0x4F), u8(0x46), u8(0x46), u8(0x20),
+];
+
+/// Field separator: a partial-map page count. `' COUNT '` -- 7 bytes.
+@rodata
+final List<u8> shmStrCount = const [
+  u8(0x20), u8(0x43), u8(0x4F), u8(0x55), u8(0x4E), u8(0x54), u8(0x20),
+];
+
+/// `'SHM FILE R '` -- 11 bytes. ADR-0164.
+@rodata
+final List<u8> shmStrFile = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x46), u8(0x49), u8(0x4C), u8(0x45), u8(0x20),
+  u8(0x52), u8(0x20),
+];
+
+/// Field separator: file byte size. `' SIZE '` -- 6 bytes.
+@rodata
+final List<u8> shmStrSize = const [
+  u8(0x20), u8(0x53), u8(0x49), u8(0x5A), u8(0x45), u8(0x20),
+];
+
+/// `'SHM DEMAND R '` -- 13 bytes. ADR-0164 first-touch fill.
+@rodata
+final List<u8> shmStrDemand = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x44), u8(0x45), u8(0x4D), u8(0x41), u8(0x4E),
+  u8(0x44), u8(0x20), u8(0x52), u8(0x20),
+];
+
+/// Field separator: demand page index. `' PAGE '` -- 6 bytes.
+@rodata
+final List<u8> shmStrDemandPage = const [
+  u8(0x20), u8(0x50), u8(0x41), u8(0x47), u8(0x45), u8(0x20),
+];
+
 // ---------------------------------------------------------------------------
 // The storage seam. ADR-0011 §0: this symbol is named in exactly the four
 // accessors below and nowhere else in `core/kernel/`, which `m21-shmem/run.sh`
 // counts with a column-anchored grep.
 // ---------------------------------------------------------------------------
 
-/// The 4288 bytes this subsystem owns.
+/// The 4480 bytes this subsystem owns.
 ///
 /// **It is the LAST block in `kmain.o`'s `.bss` and that is not a filing
 /// preference.** Every earlier harness measures its own block's size as "bytes
@@ -571,6 +680,27 @@ void shmSetVec(u64 vec, u64 i, u64 v) {
   Pointer<u64>.fromAddress(vec + (i << u64(3))).value = v;
 }
 
+@bare
+u64 shmVecFileSize(u64 vec) {
+  return Pointer<u64>.fromAddress(vec + u64(shmVecFileSizeOff)).value;
+}
+
+@bare
+void shmSetVecFileSize(u64 vec, u64 sz) {
+  Pointer<u64>.fromAddress(vec + u64(shmVecFileSizeOff)).value = sz;
+}
+
+/// Packed `(row << 8) | (fd + 1)`. Zero = no file.
+@bare
+u64 shmVecFilePack(u64 vec) {
+  return Pointer<u64>.fromAddress(vec + u64(shmVecFilePackOff)).value;
+}
+
+@bare
+void shmSetVecFilePack(u64 vec, u64 pack) {
+  Pointer<u64>.fromAddress(vec + u64(shmVecFilePackOff)).value = pack;
+}
+
 // ---------------------------------------------------------------------------
 // Geometry helpers.
 // ---------------------------------------------------------------------------
@@ -601,6 +731,9 @@ u64 shmCallerId() {
 //   bits  0..3   region index + 1   (0 means the slot is empty)
 //   bits  4..7   permissions        (shmPermRo or shmPermRw)
 //   bit   8      mapped in this address space
+//   bit   9      whole map (1) or partial/offset (0) — ADR-0160
+//   bits 10..17  map offset in pages (partial only)
+//   bits 18..25  map count in pages (partial only)
 //   bits 32..63  the region's generation at the time the capability was made
 //
 // A ring-3 HANDLE is `(capIndex << 32) | generation` and carries no region
@@ -637,15 +770,34 @@ u64 shmCapMapped(u64 c) {
 }
 
 @bare
+u64 shmCapWhole(u64 c) {
+  return (c >> u64(9)) & u64(1);
+}
+
+@bare
+u64 shmCapOff(u64 c) {
+  return (c >> u64(10)) & u64(255);
+}
+
+@bare
+u64 shmCapCount(u64 c) {
+  return (c >> u64(18)) & u64(255);
+}
+
+@bare
 u64 shmCapGen(u64 c) {
   return c >> u64(32);
 }
 
 @bare
-u64 shmCapPack(u64 reg, u64 perms, u64 mapped, u64 gen) {
+u64 shmCapPack(u64 reg, u64 perms, u64 mapped, u64 whole, u64 off, u64 count,
+    u64 gen) {
   u64 w = (reg + u64(1)) & u64(15);
   w = w | ((perms & u64(15)) << u64(4));
   w = w | ((mapped & u64(1)) << u64(8));
+  w = w | ((whole & u64(1)) << u64(9));
+  w = w | ((off & u64(255)) << u64(10));
+  w = w | ((count & u64(255)) << u64(18));
   return w | (gen << u64(32));
 }
 
@@ -836,27 +988,45 @@ void shmRegionDestroy(u64 r) {
   shmSetMeta(u64(shmMetaFreed), shmMeta(u64(shmMetaFreed)) + freed);
 }
 
-/// Maps every page of region [r] into the LIVE address space at its window
-/// address, with [write] deciding W. Returns 0 or a refusal, and on a refusal
-/// has unmapped everything it mapped.
+/// Maps pages [lo, hi) of region [r] into the LIVE address space at the
+/// slot window, with [write] deciding W. Returns 0 or a refusal, and on a
+/// refusal has unmapped everything it mapped in this call.
 @bare
-u64 shmMapPages(u64 r, u64 write) {
+u64 shmMapPages(u64 r, u64 write, u64 lo, u64 hi) {
   final u64 vec = shmReg(r, u64(shmRegVec));
-  final u64 pages = shmReg(r, u64(shmRegPages));
   final u64 va = shmRegionVa(r);
-  u64 i = u64(0);
-  while (i < pages) {
-    if (vmShmMap(va + (i * u64(vmPageBytes)), shmVec(vec, i), write) !=
-        u64(vmShmOk)) {
-      // Roll back exactly the ones this loop made.
-      u64 j = u64(0);
-      while (j < i) {
-        final u64 u = vmShmUnmap(va + (j * u64(vmPageBytes)));
-        if (u != u64(vmShmOk)) {
-          shmBumpMeta(u64(shmMetaRefusals));
+  u64 i = lo;
+  while (i < hi) {
+    final u64 pa = shmVec(vec, i);
+    // ADR-0164: file-backed pages stay unmapped until first touch.
+    if (pa > u64(0)) {
+      if (vmShmMap(va + (i * u64(vmPageBytes)), pa, write) != u64(vmShmOk)) {
+        u64 j = lo;
+        while (j < i) {
+          if (shmVec(vec, j) > u64(0)) {
+            final u64 u = vmShmUnmap(va + (j * u64(vmPageBytes)));
+            if (u != u64(vmShmOk)) {
+              shmBumpMeta(u64(shmMetaRefusals));
+            }
+          }
+          j = j + u64(1);
         }
-        j = j + u64(1);
+        return u64(shmRetMapFail);
       }
+    }
+    i = i + u64(1);
+  }
+  return u64(0);
+}
+
+/// Changes W on pages [lo, hi) of region [r] in the LIVE address space.
+/// Returns 0 or [shmRetMapFail].
+@bare
+u64 shmProtectPages(u64 r, u64 write, u64 lo, u64 hi) {
+  final u64 va = shmRegionVa(r);
+  u64 i = lo;
+  while (i < hi) {
+    if (vmShmProtect(va + (i * u64(vmPageBytes)), write) != u64(vmShmOk)) {
       return u64(shmRetMapFail);
     }
     i = i + u64(1);
@@ -907,20 +1077,236 @@ void shmPageReport(u64 r) {
   }
 }
 
-/// Unmaps every page of region [r] from the LIVE address space. Frees nothing:
-/// the frames belong to the region.
+/// Unmaps pages [lo, hi) of region [r] from the LIVE address space. Frees
+/// nothing: the frames belong to the region. Empty leaves are success.
 @bare
-void shmUnmapPages(u64 r) {
-  final u64 pages = shmReg(r, u64(shmRegPages));
+void shmUnmapPages(u64 r, u64 lo, u64 hi) {
   final u64 va = shmRegionVa(r);
-  u64 i = u64(0);
-  while (i < pages) {
+  u64 i = lo;
+  while (i < hi) {
     final u64 u = vmShmUnmap(va + (i * u64(vmPageBytes)));
     if (u != u64(vmShmOk)) {
       shmBumpMeta(u64(shmMetaRefusals));
     }
     i = i + u64(1);
   }
+}
+
+/// Low page index of capability [c]'s mapping window (0 when whole).
+@bare
+u64 shmCapLo(u64 c) {
+  if (shmCapWhole(c) > u64(0)) {
+    return u64(0);
+  }
+  return shmCapOff(c);
+}
+
+/// High page index (exclusive) of capability [c]'s mapping for a region
+/// of [pages] pages. Whole maps track the live page count; partial maps
+/// keep their create-time window (clamped to [pages] on shrink leftovers).
+@bare
+u64 shmCapHi(u64 c, u64 pages) {
+  if (shmCapWhole(c) > u64(0)) {
+    return pages;
+  }
+  final u64 hi = shmCapOff(c) + shmCapCount(c);
+  if (hi > pages) {
+    return pages;
+  }
+  return hi;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-mapper grow / shrink — edit every SHM page table that maps [r].
+// ADR-0158. Tables are reached through [procSlotShmPt]; no CR3 switch.
+// ---------------------------------------------------------------------------
+
+/// 1 if slot [s] can hold a live SHM mapping (READY / RUNNING / BLOCKED).
+@bare
+u64 shmProcActive(u64 s) {
+  final u64 st = procGet(s, u64(procSlotState));
+  if (st == u64(procStateReady)) {
+    return u64(1);
+  }
+  if (st == u64(procStateRunning)) {
+    return u64(1);
+  }
+  if (st == u64(procStateBlocked)) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// Address of the leaf entry for [va] inside SHM page-table frame [pt], or 0.
+@bare
+u64 shmPtLeaf(u64 pt, u64 va) {
+  if (pt < u64(1)) {
+    return u64(0);
+  }
+  if (va < u64(vmShmBase)) {
+    return u64(0);
+  }
+  if (va >= u64(vmShmEnd)) {
+    return u64(0);
+  }
+  return pt + (((va >> u64(vmPageShift)) & u64(511)) << u64(3));
+}
+
+/// Install one leaf in [pt]. [live] is 1 when [pt] is the loaded SHM table.
+@bare
+u64 shmPtMapOne(u64 pt, u64 va, u64 pa, u64 write, u64 live) {
+  final u64 slot = shmPtLeaf(pt, va);
+  if (slot < u64(1)) {
+    return u64(shmRetMapFail);
+  }
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) > u64(0)) {
+    return u64(shmRetMapFail);
+  }
+  u64 bits = u64(vmPresent) | u64(vmUser) | vmNxBit();
+  if (write > u64(0)) {
+    bits = bits | u64(vmWritable);
+  }
+  Pointer<u64>.fromAddress(slot).value = pa | bits;
+  if (live > u64(0)) {
+    tlb_invlpg(va);
+  }
+  return u64(0);
+}
+
+/// Clear one leaf in [pt]. Empty is success (same contract as [vmShmUnmap]).
+@bare
+u64 shmPtUnmapOne(u64 pt, u64 va, u64 live) {
+  final u64 slot = shmPtLeaf(pt, va);
+  if (slot < u64(1)) {
+    return u64(shmRetMapFail);
+  }
+  Pointer<u64>.fromAddress(slot).value = u64(0);
+  if (live > u64(0)) {
+    tlb_invlpg(va);
+  }
+  return u64(0);
+}
+
+/// Unmap pages [lo, hi) of region [r] from every address space that maps it.
+/// Each capability only loses leaves inside its own window (ADR-0160).
+@bare
+void shmUnmapRangeAll(u64 r, u64 lo, u64 hi) {
+  final u64 va0 = shmRegionVa(r);
+  final u64 livePt = vmShmTable();
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (shmProcActive(s) > u64(0)) {
+      u64 ci = u64(0);
+      while (ci < u64(shmCapsPerProc)) {
+        final u64 c = shmCap(s, ci);
+        if ((c & u64(15)) > u64(0)) {
+          if (shmCapReg(c) == r) {
+            if (shmCapMapped(c) > u64(0)) {
+              final u64 pt = procGet(s, u64(procSlotShmPt));
+              if (pt > u64(0)) {
+                u64 live = u64(0);
+                if (pt == livePt) {
+                  live = u64(1);
+                }
+                final u64 clo = shmCapLo(c);
+                // Partial windows do not grow with the region; [hi] here is
+                // the caller's range (shrink's freed span), so use that as
+                // the whole-map ceiling for intersection.
+                u64 chi = hi;
+                if (shmCapWhole(c) < u64(1)) {
+                  chi = shmCapOff(c) + shmCapCount(c);
+                }
+                u64 i = lo;
+                while (i < hi) {
+                  if (i >= clo) {
+                    if (i < chi) {
+                      final u64 u = shmPtUnmapOne(
+                          pt, va0 + (i * u64(vmPageBytes)), live);
+                      if (u > u64(0)) {
+                        shmBumpMeta(u64(shmMetaRefusals));
+                      }
+                    }
+                  }
+                  i = i + u64(1);
+                }
+              }
+            }
+          }
+        }
+        ci = ci + u64(1);
+      }
+    }
+    s = s + u64(1);
+  }
+}
+
+/// Map pages [lo, hi) of region [r] into every address space that maps it.
+/// Each capability keeps its own W bit (owner RW, grant RO) and only gains
+/// leaves inside its window. On failure, rolls back every leaf this call
+/// installed via [shmUnmapRangeAll].
+@bare
+u64 shmMapRangeAll(u64 r, u64 lo, u64 hi) {
+  final u64 vec = shmReg(r, u64(shmRegVec));
+  final u64 va0 = shmRegionVa(r);
+  final u64 livePt = vmShmTable();
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (shmProcActive(s) > u64(0)) {
+      u64 ci = u64(0);
+      while (ci < u64(shmCapsPerProc)) {
+        final u64 c = shmCap(s, ci);
+        if ((c & u64(15)) > u64(0)) {
+          if (shmCapReg(c) == r) {
+            if (shmCapMapped(c) > u64(0)) {
+              final u64 pt = procGet(s, u64(procSlotShmPt));
+              if (pt < u64(1)) {
+                shmUnmapRangeAll(r, lo, hi);
+                return u64(shmRetNoTable);
+              }
+              u64 live = u64(0);
+              if (pt == livePt) {
+                live = u64(1);
+              }
+              u64 write = u64(0);
+              if (shmCapPerms(c) == u64(shmPermRw)) {
+                write = u64(1);
+              }
+              final u64 clo = shmCapLo(c);
+              u64 chi = hi;
+              if (shmCapWhole(c) < u64(1)) {
+                chi = shmCapOff(c) + shmCapCount(c);
+              }
+              u64 i = lo;
+              while (i < hi) {
+                if (i >= clo) {
+                  if (i < chi) {
+                    final u64 pa = shmVec(vec, i);
+                    if (pa > u64(0)) {
+                      final u64 me = shmPtMapOne(
+                          pt,
+                          va0 + (i * u64(vmPageBytes)),
+                          pa,
+                          write,
+                          live);
+                      if (me > u64(0)) {
+                        shmUnmapRangeAll(r, lo, hi);
+                        return me;
+                      }
+                    }
+                  }
+                }
+                i = i + u64(1);
+              }
+            }
+          }
+        }
+        ci = ci + u64(1);
+      }
+    }
+    s = s + u64(1);
+  }
+  return u64(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,7 +1400,7 @@ void shmSysCreate(u64 frame) {
   shmSetReg(r, u64(shmRegMaps), u64(0));
   shmSetReg(r, u64(shmRegGrants), u64(0));
   shmSetReg(r, u64(shmRegState), u64(shmRegLive));
-  final u64 me = shmMapPages(r, u64(1));
+  final u64 me = shmMapPages(r, u64(1), u64(0), pages);
   if (me > u64(0)) {
     shmSetReg(r, u64(shmRegState), u64(shmRegFree));
     shmCreateRollback(vec, pages);
@@ -1023,7 +1409,7 @@ void shmSysCreate(u64 frame) {
   }
   shmSetReg(r, u64(shmRegMaps), u64(1));
   shmSetMeta(u64(shmMetaGen), gen);
-  shmSetCap(s, ci, shmCapPack(r, u64(shmPermRw), u64(1), gen));
+  shmSetCap(s, ci, shmCapPack(r, u64(shmPermRw), u64(1), u64(1), u64(0), pages, gen));
   shmBumpMeta(u64(shmMetaCreates));
   uartWrite(Rodata.addressOf(shmStrCreate), u64(13));
   uartPutHex(r, u64(1));
@@ -1127,7 +1513,7 @@ void shmSysGrant(u64 frame) {
   // could convey write access would make the number of writers a property of
   // the caller's argument rather than of the design, and every claim in
   // ADR-0041 §6 about there being one writer would become conditional.
-  shmSetCap(ps, pi, shmCapPack(r, u64(shmPermRo), u64(0), gen));
+  shmSetCap(ps, pi, shmCapPack(r, u64(shmPermRo), u64(0), u64(0), u64(0), u64(0), gen));
   shmSetReg(r, u64(shmRegRefs), shmReg(r, u64(shmRegRefs)) + u64(1));
   shmSetReg(r, u64(shmRegGrants), shmReg(r, u64(shmRegGrants)) + u64(1));
   shmBumpMeta(u64(shmMetaGrants));
@@ -1142,11 +1528,15 @@ void shmSysGrant(u64 frame) {
 }
 
 // ---------------------------------------------------------------------------
-// Syscall 18 -- shmmap(handle, perms) -> virtual address
+// Syscall 18 -- shmmap(handle, perms, range) -> virtual address
+//
+// range (rdx) = (offset << 16) | count. count == 0 maps the whole region
+// (ADR-0041 / every existing harness passes 0). count > 0 maps pages
+// [offset, offset+count) only (ADR-0160). Out-of-range is shmRetBadLen.
 // ---------------------------------------------------------------------------
 
 /// Maps the region a capability names into the CALLING address space and
-/// returns its virtual address.
+/// returns the virtual address of the first mapped page.
 ///
 /// **Three refusals here are the milestone's negative controls and every one is
 /// reachable from ring 3 as a return value:**
@@ -1161,10 +1551,19 @@ void shmSysGrant(u64 frame) {
 ///     would discover it by faulting later.
 ///   * [shmRetBadCap] -- a handle naming an empty slot in the caller's own
 ///     table. This is what a FORGED handle gets.
+///   * [shmRetBadLen] -- offset/count outside the live region (ADR-0160).
 @bare
 void shmSysMap(u64 frame) {
   final u64 h = userFrame(frame, u64(userFrameRdi));
-  final u64 perms = userFrame(frame, u64(userFrameRsi));
+  final u64 rawPerms = userFrame(frame, u64(userFrameRsi));
+  final u64 range = userFrame(frame, u64(userFrameRdx));
+  final u64 wantVa = userFrame(frame, u64(userFrameRcx));
+  u64 fixed = u64(0);
+  if ((rawPerms & u64(shmMapFixed)) > u64(0)) {
+    fixed = u64(1);
+  }
+  // Clear bit 8 without `~` (DCDart). 0x100 is shmMapFixed.
+  final u64 perms = rawPerms & u64(0xFFFFFFFFFFFFFEFF);
   final u64 id = shmCallerId();
   if (id < u64(1)) {
     shmRefuse(frame, u64(shmSysMapNo), h, u64(shmRetNoProc));
@@ -1216,6 +1615,39 @@ void shmSysMap(u64 frame) {
       return;
     }
   }
+  final u64 pages = shmReg(r, u64(shmRegPages));
+  final u64 off = range >> u64(16);
+  final u64 count = range & u64(0xFFFF);
+  u64 lo = u64(0);
+  u64 hi = pages;
+  u64 whole = u64(1);
+  if (count > u64(0)) {
+    whole = u64(0);
+    if (off >= pages) {
+      shmRefuse(frame, u64(shmSysMapNo), range, u64(shmRetBadLen));
+      return;
+    }
+    if (count > (pages - off)) {
+      shmRefuse(frame, u64(shmSysMapNo), range, u64(shmRetBadLen));
+      return;
+    }
+    lo = off;
+    hi = off + count;
+  } else {
+    if (off > u64(0)) {
+      shmRefuse(frame, u64(shmSysMapNo), range, u64(shmRetBadLen));
+      return;
+    }
+  }
+  final u64 expectVa = shmRegionVa(r) + (lo * u64(vmPageBytes));
+  // MAP_FIXED before the mapped check so a wrong address is BadFixed even
+  // when the capability is already mapped (anti-vacuity for the flag).
+  if (fixed > u64(0)) {
+    if (wantVa != expectVa) {
+      shmRefuse(frame, u64(shmSysMapNo), wantVa, u64(shmRetBadFixed));
+      return;
+    }
+  }
   if (shmCapMapped(c) > u64(0)) {
     shmRefuse(frame, u64(shmSysMapNo), h, u64(shmRetMapped));
     return;
@@ -1229,25 +1661,39 @@ void shmSysMap(u64 frame) {
   if (perms == u64(shmPermRw)) {
     write = u64(1);
   }
-  final u64 me = shmMapPages(r, write);
+  final u64 me = shmMapPages(r, write, lo, hi);
   if (me > u64(0)) {
     shmRefuse(frame, u64(shmSysMapNo), h, me);
     return;
   }
-  shmSetCap(s, ci, shmCapPack(r, shmCapPerms(c), u64(1), shmCapGen(c)));
+  u64 packCount = count;
+  if (whole > u64(0)) {
+    packCount = pages;
+  }
+  shmSetCap(
+      s,
+      ci,
+      shmCapPack(r, shmCapPerms(c), u64(1), whole, lo, packCount, shmCapGen(c)));
   shmSetReg(r, u64(shmRegMaps), shmReg(r, u64(shmRegMaps)) + u64(1));
   shmBumpMeta(u64(shmMetaMaps));
+  final u64 va = expectVa;
   uartWrite(Rodata.addressOf(shmStrMap), u64(10));
   uartPutHex(r, u64(1));
   uartWrite(Rodata.addressOf(shmStrPerm), u64(6));
   uartPutHex(perms, u64(1));
+  if (whole < u64(1)) {
+    uartWrite(Rodata.addressOf(shmStrOff), u64(5));
+    uartPutHex(lo, u64(4));
+    uartWrite(Rodata.addressOf(shmStrCount), u64(7));
+    uartPutHex(hi - lo, u64(4));
+  }
   uartWrite(Rodata.addressOf(shmStrVa), u64(4));
-  uartPutHex(shmRegionVa(r), u64(16));
+  uartPutHex(va, u64(16));
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
   uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
   uartNewline();
   shmPageReport(r);
-  userSetFrame(frame, u64(userFrameRax), shmRegionVa(r));
+  userSetFrame(frame, u64(userFrameRax), va);
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,7 +1739,8 @@ void shmSysDrop(u64 frame) {
     return;
   }
   if (shmCapMapped(c) > u64(0)) {
-    shmUnmapPages(r);
+    final u64 pages = shmReg(r, u64(shmRegPages));
+    shmUnmapPages(r, shmCapLo(c), shmCapHi(c, pages));
     shmSetReg(r, u64(shmRegMaps), shmReg(r, u64(shmRegMaps)) - u64(1));
   }
   shmSetCap(s, ci, u64(0));
@@ -1311,6 +1758,564 @@ void shmSysDrop(u64 frame) {
     shmRegionDestroy(r);
   }
   userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
+// ---------------------------------------------------------------------------
+// Syscall 34 -- shmgrow(handle, newPages) -> 0
+// ---------------------------------------------------------------------------
+
+/// Extends a live region in place up to [shmMaxPages]. Same VA base
+/// (slot-sized window). Maps the new pages into EVERY address space that
+/// currently maps the region (owner RW, grant RO). ADR-0150 + ADR-0158.
+@bare
+void shmSysGrow(u64 frame) {
+  final u64 h = userFrame(frame, u64(userFrameRdi));
+  final u64 want = userFrame(frame, u64(userFrameRsi));
+  final u64 id = shmCallerId();
+  if (id < u64(1)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetNoProc));
+    return;
+  }
+  final u64 s = procCurrent();
+  final u64 ci = shmHandleIndex(h);
+  if (ci >= u64(shmCapsPerProc)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetBadCap));
+    return;
+  }
+  final u64 c = shmCap(s, ci);
+  if ((c & u64(15)) < u64(1)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetBadCap));
+    return;
+  }
+  if (shmCapGen(c) != shmHandleGen(h)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetStale));
+    return;
+  }
+  final u64 r = shmCapReg(c);
+  if (r >= u64(shmMax)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetBadCap));
+    return;
+  }
+  if (shmReg(r, u64(shmRegState)) != u64(shmRegLive)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetStale));
+    return;
+  }
+  if (shmReg(r, u64(shmRegGen)) != shmCapGen(c)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetStale));
+    return;
+  }
+  // Owner only: a RO grant must not grow the writer's region.
+  if (shmCapPerms(c) != u64(shmPermRw)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetBadPerm));
+    return;
+  }
+  final u64 old = shmReg(r, u64(shmRegPages));
+  if (want <= old) {
+    shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetBadLen));
+    return;
+  }
+  if (want > u64(shmMaxPages)) {
+    shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetBadLen));
+    return;
+  }
+  // Caller must already have this region mapped. Other mappers are
+  // updated in place via [shmMapRangeAll] (ADR-0158).
+  if (shmCapMapped(c) < u64(1)) {
+    shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetMapped));
+    return;
+  }
+  final u64 vec = shmReg(r, u64(shmRegVec));
+  u64 i = old;
+  while (i < want) {
+    final u64 pa = allocFrame();
+    if (pa < u64(1)) {
+      u64 j = old;
+      while (j < i) {
+        final u64 p = shmVec(vec, j);
+        if (p > u64(0)) {
+          shmFrameUnmark(p);
+          final u64 b = freeFrame(p);
+          if (b != u64(pmmFreeOk)) {
+            shmBumpMeta(u64(shmMetaRefusals));
+          }
+          shmSetVec(vec, j, u64(0));
+        }
+        j = j + u64(1);
+      }
+      shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetNoMem));
+      return;
+    }
+    vmZeroFrame(pa);
+    shmFrameMark(pa);
+    shmSetVec(vec, i, pa);
+    i = i + u64(1);
+  }
+  final u64 va = shmRegionVa(r);
+  final u64 me = shmMapRangeAll(r, old, want);
+  if (me > u64(0)) {
+    u64 k = old;
+    while (k < want) {
+      final u64 p = shmVec(vec, k);
+      if (p > u64(0)) {
+        shmFrameUnmark(p);
+        final u64 b = freeFrame(p);
+        if (b != u64(pmmFreeOk)) {
+          shmBumpMeta(u64(shmMetaRefusals));
+        }
+        shmSetVec(vec, k, u64(0));
+      }
+      k = k + u64(1);
+    }
+    shmRefuse(frame, u64(shmSysGrowNo), want, me);
+    return;
+  }
+  shmSetReg(r, u64(shmRegPages), want);
+  uartWrite(Rodata.addressOf(shmStrGrow), u64(11));
+  uartPutHex(r, u64(1));
+  uartWrite(Rodata.addressOf(shmStrPages), u64(7));
+  uartPutHex(want, u64(4));
+  uartWrite(Rodata.addressOf(shmStrVa), u64(4));
+  uartPutHex(va, u64(16));
+  uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
+  uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+  uartNewline();
+  userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
+// ---------------------------------------------------------------------------
+// Syscall 35 -- shmshrink(handle, newPages) -> 0
+// ---------------------------------------------------------------------------
+
+/// Truncates a live region in place down to [want] pages (at least 1).
+/// Unmaps the trailing pages from EVERY address space that maps the region
+/// and returns their frames to the allocator. ADR-0156 + ADR-0158.
+@bare
+void shmSysShrink(u64 frame) {
+  final u64 h = userFrame(frame, u64(userFrameRdi));
+  final u64 want = userFrame(frame, u64(userFrameRsi));
+  final u64 id = shmCallerId();
+  if (id < u64(1)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetNoProc));
+    return;
+  }
+  final u64 s = procCurrent();
+  final u64 ci = shmHandleIndex(h);
+  if (ci >= u64(shmCapsPerProc)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetBadCap));
+    return;
+  }
+  final u64 c = shmCap(s, ci);
+  if ((c & u64(15)) < u64(1)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetBadCap));
+    return;
+  }
+  if (shmCapGen(c) != shmHandleGen(h)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetStale));
+    return;
+  }
+  final u64 r = shmCapReg(c);
+  if (r >= u64(shmMax)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetBadCap));
+    return;
+  }
+  if (shmReg(r, u64(shmRegState)) != u64(shmRegLive)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetStale));
+    return;
+  }
+  if (shmReg(r, u64(shmRegGen)) != shmCapGen(c)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetStale));
+    return;
+  }
+  if (shmCapPerms(c) != u64(shmPermRw)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetBadPerm));
+    return;
+  }
+  final u64 old = shmReg(r, u64(shmRegPages));
+  if (want < u64(1)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), want, u64(shmRetBadLen));
+    return;
+  }
+  if (want >= old) {
+    shmRefuse(frame, u64(shmSysShrinkNo), want, u64(shmRetBadLen));
+    return;
+  }
+  if (shmCapMapped(c) < u64(1)) {
+    shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetMapped));
+    return;
+  }
+  final u64 va = shmRegionVa(r);
+  final u64 vec = shmReg(r, u64(shmRegVec));
+  shmUnmapRangeAll(r, want, old);
+  u64 freed = u64(0);
+  u64 i = want;
+  while (i < old) {
+    final u64 pa = shmVec(vec, i);
+    if (pa > u64(0)) {
+      shmFrameUnmark(pa);
+      if (freeFrame(pa) == u64(pmmFreeOk)) {
+        freed = freed + u64(1);
+      } else {
+        shmBumpMeta(u64(shmMetaRefusals));
+      }
+      shmSetVec(vec, i, u64(0));
+    }
+    i = i + u64(1);
+  }
+  shmSetReg(r, u64(shmRegPages), want);
+  if (freed > u64(0)) {
+    shmSetMeta(u64(shmMetaFreed), shmMeta(u64(shmMetaFreed)) + freed);
+  }
+  uartWrite(Rodata.addressOf(shmStrShrink), u64(13));
+  uartPutHex(r, u64(1));
+  uartWrite(Rodata.addressOf(shmStrPages), u64(7));
+  uartPutHex(want, u64(4));
+  uartWrite(Rodata.addressOf(shmStrVa), u64(4));
+  uartPutHex(va, u64(16));
+  uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
+  uartPutHex(shmReg(r, u64(shmRegMaps)), u64(4));
+  uartNewline();
+  userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
+// ---------------------------------------------------------------------------
+// Syscall 36 -- mprotect(handle, perms) -> 0
+//
+// Changes W on the caller's already-mapped window. Downgrade RW→RO is the
+// compositor door (GAP-0235). Escalate past the capability, or EXEC, refuses.
+// ---------------------------------------------------------------------------
+
+/// Changes live mapping permissions for capability [h]'s window.
+@bare
+void shmSysMprotect(u64 frame) {
+  final u64 h = userFrame(frame, u64(userFrameRdi));
+  final u64 perms = userFrame(frame, u64(userFrameRsi));
+  final u64 id = shmCallerId();
+  if (id < u64(1)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetNoProc));
+    return;
+  }
+  if ((perms & u64(shmPermExec)) > u64(0)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetExec));
+    return;
+  }
+  if (perms != u64(shmPermRo)) {
+    if (perms != u64(shmPermRw)) {
+      shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetBadPerm));
+      return;
+    }
+  }
+  final u64 s = procCurrent();
+  final u64 ci = shmHandleIndex(h);
+  if (ci >= u64(shmCapsPerProc)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetBadCap));
+    return;
+  }
+  final u64 c = shmCap(s, ci);
+  if ((c & u64(15)) < u64(1)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetBadCap));
+    return;
+  }
+  if (shmCapGen(c) != shmHandleGen(h)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetStale));
+    return;
+  }
+  final u64 r = shmCapReg(c);
+  if (r >= u64(shmMax)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetBadCap));
+    return;
+  }
+  if (shmReg(r, u64(shmRegState)) != u64(shmRegLive)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetStale));
+    return;
+  }
+  if (shmReg(r, u64(shmRegGen)) != shmCapGen(c)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetStale));
+    return;
+  }
+  if (shmCapMapped(c) < u64(1)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetMapped));
+    return;
+  }
+  // Cannot escalate past what the capability currently carries.
+  if (perms == u64(shmPermRw)) {
+    if (shmCapPerms(c) != u64(shmPermRw)) {
+      shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetBadPerm));
+      return;
+    }
+  }
+  final u64 pages = shmReg(r, u64(shmRegPages));
+  final u64 lo = shmCapLo(c);
+  final u64 hi = shmCapHi(c, pages);
+  u64 write = u64(0);
+  if (perms == u64(shmPermRw)) {
+    write = u64(1);
+  }
+  final u64 pe = shmProtectPages(r, write, lo, hi);
+  if (pe > u64(0)) {
+    shmRefuse(frame, u64(shmSysMprotectNo), h, pe);
+    return;
+  }
+  shmSetCap(
+      s,
+      ci,
+      shmCapPack(r, perms, u64(1), shmCapWhole(c), shmCapOff(c),
+          shmCapCount(c), shmCapGen(c)));
+  uartWrite(Rodata.addressOf(shmStrProt), u64(11));
+  uartPutHex(r, u64(1));
+  uartWrite(Rodata.addressOf(shmStrPerm), u64(6));
+  uartPutHex(perms, u64(1));
+  uartWrite(Rodata.addressOf(shmStrVa), u64(4));
+  uartPutHex(shmRegionVa(r) + (lo * u64(vmPageBytes)), u64(16));
+  uartNewline();
+  shmPageReport(r);
+  userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
+// ---------------------------------------------------------------------------
+// Syscall 37 -- shmfile(fd) -> handle
+//
+// Creates a RO region sized to the open FAT file. Pages are NOT allocated or
+// mapped present at create time; the first #PF NOTPRES in the window fills
+// from the file (ADR-0164 / GAP-0235).
+// ---------------------------------------------------------------------------
+
+/// Copies one page of the open file described by [pack] into physical [pa].
+/// Zeroes the frame first. Short last page leaves the tail zero.
+@bare
+u64 shmFileFillPage(u64 pack, u64 page, u64 pa, u64 fileSize) {
+  final u64 row = pack >> u64(8);
+  final u64 fd = (pack & u64(0xFF)) - u64(1);
+  if (row >= u64(fileRows)) {
+    return u64(1);
+  }
+  if (fd >= u64(fileMaxFds)) {
+    return u64(1);
+  }
+  if (fileFd(row, fd, u64(fileFdState)) != u64(fileFdOpen)) {
+    return u64(1);
+  }
+  vmZeroFrame(pa);
+  final u64 off0 = page * u64(vmPageBytes);
+  if (off0 >= fileSize) {
+    return u64(0);
+  }
+  u64 want = u64(vmPageBytes);
+  if ((fileSize - off0) < want) {
+    want = fileSize - off0;
+  }
+  final u64 cs = fileChainFor(row, fd);
+  if (cs > u64(fatErrOk)) {
+    return u64(1);
+  }
+  u64 done = u64(0);
+  while (done < want) {
+    final u64 off = off0 + done;
+    final u64 inSec = off & u64(511);
+    u64 n = u64(fatSectorBytes) - inSec;
+    if (n > (want - done)) {
+      n = want - done;
+    }
+    final u64 lba = fatFileSector(off >> u64(fatSectorShift));
+    if (lba < u64(1)) {
+      return u64(1);
+    }
+    if (fatReadSector(lba, fileBufBase()) > u64(0)) {
+      return u64(1);
+    }
+    u64 k = u64(0);
+    while (k < n) {
+      Pointer<u8>.fromAddress(pa + done + k).value =
+          Pointer<u8>.fromAddress(fileBufBase() + inSec + k).value;
+      k = k + u64(1);
+    }
+    done = done + n;
+  }
+  return u64(0);
+}
+
+/// First-touch fill for a file-backed shm page. Returns 1 when the fault
+/// was handled and the interrupted instruction should be retried; 0 to
+/// fall through to the ordinary kill path.
+@bare
+u64 shmDemandTry(u64 errorCode) {
+  if ((errorCode & u64(vmPfPresent)) > u64(0)) {
+    return u64(0);
+  }
+  if ((errorCode & u64(vmPfUser)) < u64(1)) {
+    return u64(0);
+  }
+  if (procLive() < u64(1)) {
+    return u64(0);
+  }
+  final u64 cr2 = cr2_read();
+  if (cr2 < u64(vmShmBase)) {
+    return u64(0);
+  }
+  if (cr2 >= u64(vmShmEnd)) {
+    return u64(0);
+  }
+  final u64 r =
+      (cr2 - u64(vmShmBase)) ~/ (u64(shmSlotPages) * u64(vmPageBytes));
+  if (r >= u64(shmMax)) {
+    return u64(0);
+  }
+  if (shmReg(r, u64(shmRegState)) != u64(shmRegLiveFile)) {
+    return u64(0);
+  }
+  final u64 pages = shmReg(r, u64(shmRegPages));
+  final u64 va0 = shmRegionVa(r);
+  final u64 page = (cr2 - va0) >> u64(vmPageShift);
+  if (page >= pages) {
+    return u64(0);
+  }
+  final u64 vec = shmReg(r, u64(shmRegVec));
+  final u64 pack = shmVecFilePack(vec);
+  if (pack < u64(1)) {
+    return u64(0);
+  }
+  u64 pa = shmVec(vec, page);
+  if (pa < u64(1)) {
+    pa = allocFrame();
+    if (pa < u64(1)) {
+      return u64(0);
+    }
+    final u64 fe =
+        shmFileFillPage(pack, page, pa, shmVecFileSize(vec));
+    if (fe > u64(0)) {
+      final u64 b = freeFrame(pa);
+      if (b != u64(pmmFreeOk)) {
+        shmBumpMeta(u64(shmMetaRefusals));
+      }
+      return u64(0);
+    }
+    shmFrameMark(pa);
+    shmSetVec(vec, page, pa);
+  }
+  final u64 s = procCurrent();
+  final u64 pt = procGet(s, u64(procSlotShmPt));
+  if (pt < u64(1)) {
+    return u64(0);
+  }
+  final u64 va = va0 + (page * u64(vmPageBytes));
+  final u64 slot = shmPtLeaf(pt, va);
+  if (slot < u64(1)) {
+    return u64(0);
+  }
+  final u64 old = Pointer<u64>.fromAddress(slot).value;
+  if ((old & u64(vmPresent)) < u64(1)) {
+    final u64 livePt = vmShmTable();
+    u64 live = u64(0);
+    if (pt == livePt) {
+      live = u64(1);
+    }
+    final u64 me = shmPtMapOne(pt, va, pa, u64(0), live);
+    if (me > u64(0)) {
+      return u64(0);
+    }
+  }
+  vmSetMeta(u64(vmMetaCr2), cr2);
+  vmSetMeta(u64(vmMetaErr), errorCode);
+  uartWrite(Rodata.addressOf(shmStrDemand), u64(13));
+  uartPutHex(r, u64(1));
+  uartWrite(Rodata.addressOf(shmStrDemandPage), u64(6));
+  uartPutHex(page, u64(4));
+  uartWrite(Rodata.addressOf(shmStrVa), u64(4));
+  uartPutHex(va, u64(16));
+  uartNewline();
+  return u64(1);
+}
+
+/// `shmfile(fd) -> handle`. RO capability; leaves stay not-present until
+/// [shmDemandTry] fills them from the FAT file.
+@bare
+void shmSysFile(u64 frame) {
+  final u64 fd = userFrame(frame, u64(userFrameRdi));
+  final u64 id = shmCallerId();
+  if (id < u64(1)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoProc));
+    return;
+  }
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoProc));
+    return;
+  }
+  if (fd >= u64(fileMaxFds)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetBadCap));
+    return;
+  }
+  if (fileFd(row, fd, u64(fileFdState)) != u64(fileFdOpen)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetBadCap));
+    return;
+  }
+  final u64 fileSize = fileFd(row, fd, u64(fileFdSize));
+  if (fileSize < u64(1)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetBadLen));
+    return;
+  }
+  u64 pages = (fileSize + u64(vmPageBytes) - u64(1)) >> u64(vmPageShift);
+  if (pages < u64(1)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetBadLen));
+    return;
+  }
+  if (pages > u64(shmMaxPages)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetBadLen));
+    return;
+  }
+  final u64 s = procCurrent();
+  final u64 r = shmRegionFree();
+  if (r >= u64(shmMax)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoSpace));
+    return;
+  }
+  final u64 ci = shmCapFree(s);
+  if (ci >= u64(shmCapsPerProc)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoCap));
+    return;
+  }
+  final u64 gen = shmMeta(u64(shmMetaGen)) + u64(1);
+  if (gen > u64(0xFFFFFFFF)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoSpace));
+    return;
+  }
+  final u64 te = shmEnsureTable(s);
+  if (te > u64(0)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, te);
+    return;
+  }
+  final u64 vec = allocFrame();
+  if (vec < u64(1)) {
+    shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoMem));
+    return;
+  }
+  vmZeroFrame(vec);
+  shmSetVecFileSize(vec, fileSize);
+  shmSetVecFilePack(vec, (row << u64(8)) | (fd + u64(1)));
+  shmSetReg(r, u64(shmRegVec), vec);
+  shmSetReg(r, u64(shmRegPages), pages);
+  shmSetReg(r, u64(shmRegGen), gen);
+  shmSetReg(r, u64(shmRegOwner), id);
+  shmSetReg(r, u64(shmRegRefs), u64(1));
+  shmSetReg(r, u64(shmRegMaps), u64(1));
+  shmSetReg(r, u64(shmRegGrants), u64(0));
+  shmSetReg(r, u64(shmRegState), u64(shmRegLiveFile));
+  shmSetMeta(u64(shmMetaGen), gen);
+  shmSetCap(s, ci,
+      shmCapPack(r, u64(shmPermRo), u64(1), u64(1), u64(0), pages, gen));
+  shmBumpMeta(u64(shmMetaCreates));
+  uartWrite(Rodata.addressOf(shmStrFile), u64(11));
+  uartPutHex(r, u64(1));
+  uartWrite(Rodata.addressOf(shmStrGen), u64(5));
+  uartPutHex(gen, u64(8));
+  uartWrite(Rodata.addressOf(shmStrPages), u64(7));
+  uartPutHex(pages, u64(4));
+  uartWrite(Rodata.addressOf(shmStrSize), u64(6));
+  uartPutHex(fileSize, u64(8));
+  uartWrite(Rodata.addressOf(shmStrVa), u64(4));
+  uartPutHex(shmRegionVa(r), u64(16));
+  uartNewline();
+  shmPageReport(r);
+  userSetFrame(frame, u64(userFrameRax), shmHandle(ci, gen));
 }
 
 // ---------------------------------------------------------------------------

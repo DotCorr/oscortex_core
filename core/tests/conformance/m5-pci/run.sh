@@ -305,10 +305,10 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # harnesses said so. ADR-0033 §6.4.
 # M21 (ADR-0041) added a block AFTER S0's, and it was the LAST one in .bss until
 # D4 (ADR-0050) put `wmStore` behind it:
-# `shmStore`, 4352 bytes -- 16 global counter words, two 64-byte shared-region
-# records, and a 4096-byte BIT-PLANE with one bit per frame in the machine that
+# `shmStore`, 8576 bytes -- 16 global counter words, four 64-byte shared-region
+# records, and an 8192-byte BIT-PLANE with one bit per frame in the machine that
 # says whether a live region owns that frame. The plane is what makes the guard
-# at the top of `freeFrame` O(1) instead of a linear scan on all 32768 calls of
+# at the top of `freeFrame` O(1) instead of a linear scan on all 65536 calls of
 # `frames refill` (`docs/design/memory.md` §2.4).
 #
 # Subtracted FIRST, before S0's, exactly as M14, M15, M16, M19 and S0 each were
@@ -316,7 +316,7 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # meant when it was written. This is the THIRD application of ADR-0033 §6.4's
 # correction to ADR-0031 §4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a
-# new block after it changes. S0's number goes 512 -> 4864 nowhere, because it
+# new block after it changes. S0's number goes 512 -> 8960 nowhere, because it
 # is measured to shmStore's start rather than to the end of .bss -- which is the
 # line below, and which is why it still reads 512.
 # D4 (ADR-0050) added a block AFTER M21's, and it is now the LAST one in .bss:
@@ -330,17 +330,37 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 # it meant when it was written. This is the FOURTH application of ADR-0033 s6.4's
 # correction to ADR-0031 s4.3 rule 5: last is necessary but not sufficient, and
 # the previously-last block's own to-the-end measurement is exactly the one a new
-# block after it changes. M21's number below still reads 4352 for that reason --
+# block after it changes. M21's number below still reads 8576 for that reason --
 # it is now measured to wmStore's START rather than to the end of .bss.
+# D2 (ADR-0054) added a block AFTER D4's, and it is now the LAST one in .bss:
+# `kbdqStore`, 288 bytes -- four header words (head, tail, dropped, count)
+# and 32 event slots. Subtracted FIRST, before D4's, so D4's number still
+# reads 320 -- it is now measured to kbdqStore's START rather than to the
+# end of .bss.
+# D7 (ADR-0055) added a block AFTER D2's, and it is now the LAST one in .bss:
+# `wmeventStore`, 192 bytes -- two per-window rings (four header words and
+# 8 event slots each). Subtracted FIRST, before D2's, so D2's number still
+# reads 288 -- it is now measured to wmeventStore's START rather than to
+# the end of .bss.
+D7_OFF_HEX=$(bssoff wmeventStore)
+ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
+D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
+ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
+D2_OFF_HEX=$(bssoff kbdqStore)
+ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
+D2_BSS=$(( KDATA_BSS - 16#$D2_OFF_HEX ))
+ck; [[ "$D2_BSS" -eq 288 ]] || fail "the bytes from D2's kbdqStore to D7's wmeventStore are $D2_BSS, expected 288. If that block changed size, change it in ADR-0054, in GAP-0053's running total, and in every harness that subtracts it."
+KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 320 ]] || fail "the bytes from D4's wmStore to the end of .bss are $D4_BSS, expected 320. If that block changed size, change it in ADR-0050, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 4352 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 4352. If that block changed size, change it in ADR-0041, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -407,12 +427,12 @@ ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
 ck; [[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 NON_PMM_BSS=$(( KDATA_BSS + ASM_BSS - PMM_STORE_SIZE - VM_STORE_SIZE - M9_BSS - M10_STORE - M11_BSS - M14_BSS ))
-ck; if [[ "$NON_PMM_BSS" -ne 424 ]]; then
-  fail "the kernel holds $(( KDATA_BSS + ASM_BSS )) bytes of mutable static storage, of which $PMM_STORE_SIZE are M7's pmmStore and $VM_STORE_SIZE are M8's vmStore, leaving $NON_PMM_BSS — expected 424 (392 through M4, plus 32 for the framebuffer console's state; PCI enumeration adds NONE). That number is the measured cost of DCDart having no mutable statics (known-gaps GAP-0053) — if you meant to change it, change it in kdata.S's header and in GAP-0053 too."
+ck; if [[ "$NON_PMM_BSS" -ne 440 ]]; then
+  fail "the kernel holds $(( KDATA_BSS + ASM_BSS )) bytes of mutable static storage, of which $PMM_STORE_SIZE are M7's pmmStore and $VM_STORE_SIZE are M8's vmStore, leaving $NON_PMM_BSS — expected 440 (392 through M4, plus 48 for the framebuffer console's state — 32 at M5, plus the two geometry words ADR-0064's fallback chain added so a live VirtIO/GOP aperture can outrank the Bochs 800x600 default; PCI enumeration adds NONE). That number is the measured cost of DCDart having no mutable statics (known-gaps GAP-0053) — if you meant to change it, change it in kdata.S's header and in GAP-0053 too."
 fi
 FB_STATE_SIZE=$(bsssize fbStateBlock)
-ck; [[ "$FB_STATE_SIZE" == "32" ]] || fail "fbStateBlock is ${FB_STATE_SIZE:-missing} bytes, expected 32 (four u64: base, pitch, cursor column, cursor row) — fbSetState indexes it by fixed offset and a shorter block would write past the end of its own object"
-echo "STRUCTURAL: pass  424 bytes of mutable static storage outside M7's page-allocator and M8's page-table blocks (392 through M4 + 32 for fbStateBlock; PCI enumeration added zero)"
+ck; [[ "$FB_STATE_SIZE" == "48" ]] || fail "fbStateBlock is ${FB_STATE_SIZE:-missing} bytes, expected 48 (six u64: base, pitch, cursor column, cursor row, and ADR-0064's geometry width/height) — fbSetState indexes it by fixed offset and a shorter block would write past the end of its own object"
+echo "STRUCTURAL: pass  440 bytes of mutable static storage outside M7's page-allocator and M8's page-table blocks (392 through M4 + 48 for fbStateBlock; PCI enumeration added zero)"
 
 # 2b. `port_inl` AND `port_outl` MUST BE THE 32-BIT INSTRUCTIONS.
 #
@@ -712,6 +732,44 @@ for gone in vga_cursor_addr m2_phase_addr shell_line_addr shell_len_addr \
             fb_state_addr pmm_store_addr; do
   ck; grep -q "\b$gone\b" <<<"$VERIFY_OUT" && fail "$gone is still declared extern — ADR-0021 deleted it"
 done
+# D3 added resume_user and proc_idle_gate. Subtract so this milestone's extern pin still describes THIS change.
+if [[ -f "$CORE_DIR/build/kmain.o.externs" ]]; then
+  D3_EXTERNS=$(grep -cE '^(resume_user|proc_idle_gate|kbd_drain_gate)$' "$CORE_DIR/build/kmain.o.externs" || true)
+  EXTERN_COUNT=$(( EXTERN_COUNT - D3_EXTERNS ))
+fi
+# ADR-0104 (the OS calls osgfx), ADR-0113/ADR-0133 (osxui paints through
+# osgfx), ADR-0136 (panel hex is an osgfx glyph), ADR-0172 (Venus encodes
+# retained SPIR-V) and ADR-0181 (the generative desk) gave the OS platform C
+# modules to call. Their entry points are `external` too, so the RAW count
+# moves every time the OS calls one more of its own modules -- which is not
+# what any milestone's extern pin below is about.
+#
+# Subtracted BY PATTERN rather than by a typed list, because a typed list is a
+# second place to forget: `osgfx_*` and `osxui_*` are, by ADR-0104, C module
+# entry points. Read out of dcc's own manifest, which is the authority on what
+# kmain.o declares, the same file the D3 block above reads. The pin they are
+# subtracted from still says exactly what it always said -- THIS milestone
+# added no new assembly primitive -- and each module entry point is asserted
+# NOT to be defined in assembly, which is the property the pin exists to
+# protect and which a bumped total would not state.
+EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
+ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
+PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
+PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
+  || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
+for sym in $PLAT_EXTERNS; do
+  ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
+    || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
+done
+EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
+# numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
+# DCDart spelling. Subtracted by name, and asserted to BE assembly.
+ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
+  || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
+MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
+EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
 ck; [[ "$EXTERN_COUNT" -eq 22 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's eleven, expected 22 (M4's 24 less the eight accessors ADR-0021 deleted = 16, plus M5's port_inl/port_outl for PCI configuration space and port_inw/port_outw for the Bochs VBE registers, plus M7's kernel_image_start/kernel_image_end)"
 for sym in port_inl port_outl port_inw port_outw; do
   ck; grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest — one of the four externs M5 added and still has is gone"
