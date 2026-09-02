@@ -1039,6 +1039,14 @@ void wmCompose() {
    * overlays without body fill), then Dart blits every FRAME surface so
    * FILES/SET/DESK shm survives the tick. Without gfx, solid desk + blit. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    /* The session can paint without either cache, but then there is no
+     * persistent wallpaper image for damage repair and no presentation
+     * counter for the restore path. Allocate both before publishing wmpage
+     * through wmGfxKick; wm de is the only mode that consumes them. */
+    if (wmDeOn() > u64(0)) {
+      wmDeskEnsure();
+      wmChromeBufEnsure();
+    }
     wmGfxKick();
     osgfx_guest_tick();
   } else {
