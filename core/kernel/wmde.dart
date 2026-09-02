@@ -1485,16 +1485,20 @@ u64 wmResizeHit(u64 wI, u64 x, u64 y) {
 u64 wmDeGeomHit(u64 x, u64 y) {
   final u64 top = wmMeta(u64(wmMetaTop));
   if (top < u64(wmMaxWindows)) {
-    if (wmTitleHit(top, x, y) > u64(0) ||
-        wmResizeHit(top, x, y) > u64(0)) {
+    if (wmTitleHit(top, x, y) > u64(0)) {
+      return top;
+    }
+    if (wmResizeHit(top, x, y) > u64(0)) {
       return top;
     }
   }
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
     if (i != top) {
-      if (wmTitleHit(i, x, y) > u64(0) ||
-          wmResizeHit(i, x, y) > u64(0)) {
+      if (wmTitleHit(i, x, y) > u64(0)) {
+        return i;
+      }
+      if (wmResizeHit(i, x, y) > u64(0)) {
         return i;
       }
     }
