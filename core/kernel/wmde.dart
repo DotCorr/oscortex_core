@@ -1692,21 +1692,26 @@ u64 wmDeGrab(u64 x, u64 y) {
     }
     return u64(1);
   }
-  u64 i = u64(0);
-  while (i < u64(wmMaxWindows)) {
-    if (wmCloseHit(i, x, y) > u64(0)) {
-      wmCloseWindow(i);
-      return u64(1);
+  /* CSD buttons belong to the topmost window under the pointer. A buried
+   * FILES min/max/close must not fire through SET's title. */
+  final u64 hit = wmHit(x, y);
+  if (hit < u64(wmMaxWindows)) {
+    if (wmIsPanel(hit) < u64(1)) {
+      if (wmWinOverlay(hit) < u64(1)) {
+        if (wmCloseHit(hit, x, y) > u64(0)) {
+          wmCloseWindow(hit);
+          return u64(1);
+        }
+        if (wmMaxHit(hit, x, y) > u64(0)) {
+          wmToggleMaxWindow(hit);
+          return u64(1);
+        }
+        if (wmMinHit(hit, x, y) > u64(0)) {
+          wmMinWindow(hit);
+          return u64(1);
+        }
+      }
     }
-    if (wmMaxHit(i, x, y) > u64(0)) {
-      wmToggleMaxWindow(i);
-      return u64(1);
-    }
-    if (wmMinHit(i, x, y) > u64(0)) {
-      wmMinWindow(i);
-      return u64(1);
-    }
-    i = i + u64(1);
   }
   return u64(0);
 }

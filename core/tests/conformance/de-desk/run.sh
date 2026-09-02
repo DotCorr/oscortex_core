@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=148
+ASSERTIONS_REQUIRED=149
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -197,6 +197,19 @@ ck; grep -q 'wmeventEnqueueScroll' "$CORE_DIR/kernel/wmevent.dart" \
   || fail "wheel deltas are not routed to the hovered client"
 ck; grep -q 'wmeventPushCoalesceScroll' "$CORE_DIR/kernel/wmevent.dart" \
   || fail "wheel bursts can fill the client event ring"
+ck; python3 - "$CORE_DIR/kernel/wmde.dart" <<'PY' \
+  || fail "buried CSD buttons still steal clicks from the top window"
+import sys
+s = open(sys.argv[1]).read()
+body = s[s.index("u64 wmDeGrab("):s.index("void wmDeCmd(")]
+hit = body.find("wmHit(")
+close = body.find("wmCloseHit(")
+walk = body.find("while (i < u64(wmMaxWindows))")
+if hit < 0 or close < 0 or hit > close:
+    raise SystemExit("wmDeGrab does not resolve z-order before CSD")
+if walk >= 0 and walk < close:
+    raise SystemExit("CSD still walks every slot")
+PY
 ck; grep -q 'void wmFocusCycle' "$CORE_DIR/kernel/wmde.dart" \
   || fail "Tab does not cycle window focus"
 ck; grep -q 'wmFocusCycle(back)' "$CORE_DIR/kernel/keyboard.dart" \
@@ -791,8 +804,9 @@ time.sleep(0.08)
 button(40, 500, "left", False)
 time.sleep(0.35)
 
-# Focus FILES by clicking a row, then keyboard-select / back / type-ahead.
-press(300, 160, "left", "FILES SEL")
+# SET attaches at (180,48) and covers most of FILES. Click the uncovered
+# left FILES strip so the row selects and FILES raises above SET.
+press(100, 160, "left", "FILES SEL")
 marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
 if not wait_new("FILES SEL", marked):
