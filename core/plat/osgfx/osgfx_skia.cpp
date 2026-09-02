@@ -120,12 +120,12 @@ static void drop_skia_before_rewind(void) {
   g_one.canvas = 0;
   client_g.canvas = 0;
   /*
-   * Do not traverse the process-global cache here. Its records were allocated
-   * from the frame bump arena and can already point into a rewound generation;
-   * PurgeAllCaches then hangs in SkResourceCache::remove. The zero-byte budget
-   * above prevents new unreferenced records surviving a frame.
+   * Do not traverse the process-global cache or rewind beneath it here. Skia
+   * can keep an internally referenced record even with a zero-byte unreferenced
+   * budget; reusing that storage made the next release hang in
+   * SkResourceCache::remove. Reclamation resumes only when the allocator can
+   * prove those process-global references are gone.
    */
-  osgfx_heap_frame_begin();
 }
 
 static uint64_t last_gen;
