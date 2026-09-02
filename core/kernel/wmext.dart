@@ -700,17 +700,19 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     u64 i = u64(0);
     while (i < u64(wmMaxWindows)) {
       u64 b = u64(0);
-      if (wmWindowUsable(i) > u64(0)) {
-        b = b | u64(0x80);
-        if (wmIsPanel(i) > u64(0)) {
-          b = b | u64(0x40);
+      if (wmWindowHeld(i) > u64(0)) {
+        if (wmWinOverlay(i) < u64(1)) {
+          b = b | u64(0x80);
+          if (wmIsPanel(i) > u64(0)) {
+            b = b | u64(0x40);
+          }
+          if (wmMeta(u64(wmMetaFocus)) == (i + u64(1))) {
+            b = b | u64(0x20);
+          }
+          b = b | (wmWin(i, u64(wmWinOwner)) & u64(0x1F));
+          packed = packed | (b << (i * u64(8)));
+          n = n + u64(1);
         }
-        if (wmMeta(u64(wmMetaFocus)) == (i + u64(1))) {
-          b = b | u64(0x20);
-        }
-        b = b | (wmWin(i, u64(wmWinOwner)) & u64(0x1F));
-        packed = packed | (b << (i * u64(8)));
-        n = n + u64(1);
       }
       i = i + u64(1);
     }

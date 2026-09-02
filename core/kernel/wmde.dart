@@ -78,7 +78,12 @@ const int wmHamW = 36;
 const int wmSlotGap = 8;
 
 /// One taskbar slot per held window (live or minimised).
-const int wmSlotW = 100;
+/// Sized to sit in DESK's island gap (desk.c LEFT_X+LEFT_W+8).
+const int wmIsleLeftX = 16;
+const int wmIsleLeftW = 268;
+const int wmIsleGapPad = 8;
+const int wmSlotW = 72;
+const int wmSlotPitch = 80;
 
 const int wmSlot0Color = 0x00586878;
 
@@ -554,11 +559,46 @@ u64 wmNoteHit(u64 x, u64 y) {
   return u64(1);
 }
 
-/// Taskbar-slot origin X for window [wI].
+/// 1 if window [wI] is not a task-slot card (panel, overlay, or free).
+@bare
+u64 wmSlotSkip(u64 wI) {
+  if (wmWindowHeld(wI) < u64(1)) {
+    return u64(1);
+  }
+  if (wmIsPanel(wI) > u64(0)) {
+    return u64(1);
+  }
+  if (wmWinOverlay(wI) > u64(0)) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+/// Packed index among task-slot cards, or [wmMaxWindows].
+@bare
+u64 wmSlotOrd(u64 wI) {
+  if (wmSlotSkip(wI) > u64(0)) {
+    return u64(wmMaxWindows);
+  }
+  u64 n = u64(0);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmSlotSkip(i) < u64(1)) {
+      if (i == wI) {
+        return n;
+      }
+      n = n + u64(1);
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// Taskbar-slot origin X for window [wI] — island gap, packed cards only.
 @bare
 u64 wmSlotX(u64 wI) {
-  return u64(wmStartMX) + u64(wmStartW) + u64(wmSlotGap) +
-      (wI * u64(wmSlotW));
+  return u64(wmIsleLeftX) + u64(wmIsleLeftW) + u64(wmIsleGapPad) +
+      (wmSlotOrd(wI) * u64(wmSlotPitch));
 }
 
 /// The held window whose taskbar slot contains ([x], [y]), or
@@ -577,7 +617,7 @@ u64 wmSlotHit(u64 x, u64 y) {
   }
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
-    if (wmWindowHeld(i) > u64(0)) {
+    if (wmSlotSkip(i) < u64(1)) {
       final u64 sx = wmSlotX(i);
       if (x >= sx) {
         if (x < (sx + u64(wmSlotW))) {
@@ -762,7 +802,7 @@ u64 wmDeChromeDraw() {
   u64 n = u64(0);
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
-    if (wmWindowHeld(i) > u64(0)) {
+    if (wmSlotSkip(i) < u64(1)) {
       final u64 sx = wmSlotX(i);
       wmOsxuiButton(sx, y, u64(wmSlotW), u64(wmChromeH), u64(wmStartR),
           wmSlotColor(i));

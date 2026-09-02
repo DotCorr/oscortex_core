@@ -106,6 +106,15 @@ static char start_lab[] = "Start";
 static char clock_lab[] = "3:30 PM";
 static char date_lab[] = "Oct 30";
 static char stat_lab[] = "1 C";
+static char slot_lab0[] = "1";
+static char slot_lab1[] = "2";
+#define SLOT_X0 (LEFT_X + LEFT_W + 8UL)
+#define SLOT_W 72UL
+#define SLOT_H 28UL
+#define SLOT_PITCH 80UL
+#define SLOT_Y (ISLAND_Y + 6UL)
+#define SLOT_FILL 0x00E4ECF4UL
+#define SLOT_FOCUS 0x00B8C8D8UL
 static char name_set[] = "SET.ELF";
 static char name_files[] = "FILES.ELF";
 static char name_web[] = "BROWSE.ELF";
@@ -353,12 +362,47 @@ static void paint_frost_islands(u64 wall_key) {
   }
 }
 
+static void paint_slots(u64 tasks) {
+  u64 i;
+  u64 n;
+  u64 sx;
+  u64 rgb;
+  char *lab;
+  i = 0;
+  n = 0;
+  while (i < 4UL) {
+    u64 st = osxui_app_task(tasks, i);
+    if ((st & WM_TASK_LIVE) != 0) {
+      if ((st & WM_TASK_PANEL) == 0) {
+        sx = SLOT_X0 + n * SLOT_PITCH;
+        rgb = SLOT_FILL;
+        if ((st & WM_TASK_FOCUS) != 0) {
+          rgb = SLOT_FOCUS;
+        }
+        osxui_app_rrect(shm_h, sx, SLOT_Y, SLOT_W, SLOT_H, 8UL, rgb);
+        lab = slot_lab0;
+        if (n > 0) {
+          lab = slot_lab1;
+        }
+        osxui_app_text(shm_h, sx + 10UL, SLOT_Y + 6UL, lab, 1,
+                       WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG);
+        n = n + 1;
+      }
+    }
+    i = i + 1;
+  }
+  if (n > 0) {
+    u64 at = put(0, "DESK TASK ");
+    at = put_hex(at, n, 1);
+    emit(at);
+  }
+}
+
 static void paint_bar(u64 tasks) {
   u64 i;
   u64 ix;
   u64 hy;
   volatile u32 *p;
-  (void)tasks;
   clear_bar();
   layout_right();
   /* Frost islands: sample wallpaper once per wallpaper key, then blit. */
@@ -368,6 +412,7 @@ static void paint_bar(u64 tasks) {
                  WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG_MUTED);
   osxui_app_text(shm_h, LEFT_X + 100UL, ISLAND_Y + 12UL, stat_lab, 3,
                  WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG_MUTED);
+  paint_slots(tasks);
   hy = ISLAND_Y + 12UL;
   osxui_app_rrect(shm_h, LEFT_X + HAM_OFF + 8UL, hy, 20UL, 2UL, 1UL,
                   OSXUI_GLASS_FG);

@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=149
+ASSERTIONS_REQUIRED=152
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -210,6 +210,12 @@ if geom < 0 or close < 0 or geom > close:
 if walk >= 0 and walk < close:
     raise SystemExit("CSD still walks every slot")
 PY
+ck; grep -q 'wmIsleLeftW' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "task slots are not placed in the island gap"
+ck; grep -q 'wmSlotSkip' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "task slots still include panel and overlay cards"
+ck; grep -q 'osxui_app_task' "$DESK_C" \
+  || fail "DESK does not paint live task pills from WM_SCREEN_TASKS"
 ck; grep -q 'void wmFocusCycle' "$CORE_DIR/kernel/wmde.dart" \
   || fail "Tab does not cycle window focus"
 ck; grep -q 'wmFocusCycle(back)' "$CORE_DIR/kernel/keyboard.dart" \
@@ -849,23 +855,24 @@ time.sleep(0.3)
 press(100, 160, "left", "FILES SEL")
 
 # CSD min / gap-slot restore / max on the original FILES card, then SE
-# clamp. FILES attaches at (48,40) 400x280. Slot 1 sits in the island
-# gap at x=212. SE-corner drag past the screen edge must clamp, not vanish.
+# clamp. FILES attaches at (48,40) 400x280. Packed task pills sit in
+# the island gap starting at x=292. SE-corner drag past the screen
+# edge must clamp, not vanish.
 press(405, 57, "left", "WM MIN")
 started = False
 for _ in range(8):
     marked = read()
-    place(220, 572)
+    place(328, 572)
     time.sleep(0.1)
-    button(220, 572, "left", True)
+    button(328, 572, "left", True)
     if wait_new("WM REST", marked, timeout=1.2):
         started = True
         break
-    button(220, 572, "left", False)
+    button(328, 572, "left", False)
     time.sleep(0.2)
 if not started:
     raise SystemExit("task slot did not restore the minimised window")
-button(220, 572, "left", False)
+button(328, 572, "left", False)
 time.sleep(0.25)
 press(379, 57, "left", "WM MAX")
 # Toggle back so the SE handle stays at the attach geom.
