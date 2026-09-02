@@ -124,6 +124,21 @@ def mouse_state(q, serial):
     raise RuntimeError("mouse command produced no state")
 
 
+def announced_state(q, serial, x, y):
+    """Read back tablet coordinates from an ignored middle-button edge."""
+    before = len(serial_text(serial))
+    button(q, x, y, "middle", True)
+    deadline = time.time() + 5
+    pattern = re.compile(r"^MOUSE ABS  X ([0-9A-F]+) Y ([0-9A-F]+)", re.M)
+    while time.time() < deadline:
+        match = pattern.search(serial_text(serial)[before:])
+        if match:
+            button(q, x, y, "middle", False)
+            return int(match.group(1), 16), int(match.group(2), 16)
+        time.sleep(0.03)
+    raise RuntimeError("middle-button edge produced no absolute state")
+
+
 def fb_geometry(serial):
     match = re.search(
         r"^WM ON BASE ([0-9A-F]+) PITCH ([0-9A-F]+)",
@@ -285,9 +300,7 @@ def main():
 
     # Exact clipping at every absolute edge and final clean artifact.
     for point in ((0, 0), (799, 0), (0, 599), (799, 599)):
-        place(q, *point)
-        time.sleep(0.05)
-        got = mouse_state(q, serial)
+        got = announced_state(q, serial, *point)
         if got != point:
             raise RuntimeError("edge %r became %r" % (point, got))
     place(q, 700, 420)
