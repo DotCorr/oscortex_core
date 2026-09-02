@@ -1,4 +1,4 @@
-# Mac DE critical fixes (fallback flash + mouse trails)
+# Mac DE critical fixes (fallback flash + mouse trails + alpha/glass)
 
 Cloud Linux (`milestones-m1-m6`) has **no** Skia COMP tree. Screenshot
 `QEMU oscortex-abs-pointer` with purple wallpaper + glass dock is Mac-only.
@@ -8,6 +8,48 @@ Cloud Linux (`milestones-m1-m6`) has **no** Skia COMP tree. Screenshot
 (`~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro`)
 
 **COMP path:** `/private/tmp/claude-501/.../scratchpad/COMP` (or `git worktree list`)
+
+## 0) Alpha compositing / rounded glass shows black surroundings
+
+User: corner radius looks wrong; transparency is not understood — rounded
+corners / glass show as **black surroundings** instead of see-through
+wallpaper/desktop. Classic black halo around dock pill and island cards.
+
+Evidence (Mac sit-in, not cloud):
+`/opt/cursor/artifacts/oscortex-mac-de-alpha-trails-bug.png`
+(also under `.cursor/artifacts/` when synced). Dock ends and island
+outside-radius are solid black; wallpaper does not show through.
+
+### Likely causes (hunt on COMP)
+
+1. **Clear-to-black + SRC blit.** Glass / rrect chrome is painted into a
+   scratch or shm surface cleared to opaque black (`0xFF000000` / Sk clear
+   black). Soft AA leaves black outside the curve. Present then uses
+   **SRC** (opaque copy) instead of **SRC_OVER**, so black surrounds land
+   on the desk.
+2. **Forced opaque RGB.** Paths like `sk_rgb()` that always
+   `SkColorSetARGB(255, …)` drop glass alpha; frosted panels become opaque
+   cards with black-filled corners if the outer rect is still cleared.
+3. **Straight vs premul.** Soft AA / `osgfx_blend_px` coverage must write
+   **premul ARGB** into N32Premul stores. Straight alpha + SRC_OVER =
+   dark fringes; zero-alpha pixels must be `0`, not black RGB with A=0
+   mishandled on blit.
+4. **Frost sample path.** ADR-0198 `osgfx_glass_frost` (5×5 wallpaper
+   blur + tint) must fill *only* covered samples; outside the rrect mask
+   must stay transparent (or never be blitted). Radius / `OSGFX_BLIT_INSET`
+   / `wmGfxRadius` stay lockstep (ADR-0196/0198) — inset that is too small
+   leaves black AA rings.
+
+### Required Mac edits
+
+- Clear glass/chrome scratch and guest shm to **transparent 0**, not black.
+- Present / `desk_blit` / chrome cache blit: **SRC_OVER** (premul) onto
+  wallpaper; never SRC-copy a rect that includes outside-rrect black.
+- `osgfx_fill_rrect` / Sk `drawRRect`: real coverage alpha on corners
+  (`rrect_cover` / soft AA); glass tints use non-255 A where intended.
+- Harness: `de-chrome`, `de-desk`, `de-session`, `view-door` (frost ink
+  not flat), sit-in-view — dock/island corners show purple wallpaper,
+  not black.
 
 ## 1) DELETE old fallback UI (Start strip flash)
 
@@ -53,9 +95,16 @@ Hunt and fix on Mac COMP:
 cd "$COMP"
 # confirm osgfx_desk.c is hundreds of lines (desk_blit), not a ~100-line stub
 git add -A   # exclude secrets / huge build trees
-git commit -m "DE: remove fallback Start strip; fix pointer/desk damage trails"
+git commit -m "DE: glass SRC_OVER alpha; remove fallback Start; fix pointer trails"
 git push -u origin HEAD:compositor
 git ls-remote origin refs/heads/compositor
 ```
 
 Do **not** reinvent this stack on cloud `milestones-m1-m6`.
+
+## Cloud Linux reality (this host)
+
+- `uname`: Linux — framebuffer shell only (`fb` console). No `plat/osgfx`.
+- Live QEMU proof on milestones: `/opt/cursor/artifacts/oscortex-milestones-fb-console.png`
+  (800×600 `fb` console after `FB BAR … OK`).
+- Alpha / Start-flash / trails fixes require Mac COMP + `origin/compositor`.
