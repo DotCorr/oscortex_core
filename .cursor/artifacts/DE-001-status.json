@@ -1,0 +1,27 @@
+{
+  "defect": "DE-001",
+  "host": {
+    "uname": "Linux",
+    "darwin": false,
+    "comp_tree": false,
+    "origin_compositor": "MISSING"
+  },
+  "action_taken": "Wrote precise Mac COMP patch plan only; did not invent Skia on milestones",
+  "patch_plan": ".cursor/patches/DE-001-alpha.md",
+  "screenshot": "/opt/cursor/artifacts/DE-001-mac-black-glass-surrounds.png",
+  "screenshot_workspace": "/workspace/.cursor/artifacts/DE-001-mac-black-glass-surrounds.png",
+  "mac_worker": {
+    "workerId": "54470311-d074-5e4c-a8c1-e3cc777eac29",
+    "displayName": "~/Desktop/dc_sys/oscortex_core @ Tahiru's MacBook Pro",
+    "required": true,
+    "note": "Parent Task must bind workerId. Nested Linux agents cannot re-home."
+  },
+  "fix_on_comp": [
+    "Clear glass/chrome scratch + shm to transparent 0 (not 0xFF000000)",
+    "Present/desk_blit/chrome blit: SRC_OVER premul onto wallpaper (not SRC of black AABB)",
+    "osgfx_fill_rrect / blend_px: real coverage alpha, premul stores",
+    "osgfx_glass_frost: write only inside rrect mask; outside stays transparent",
+    "Rebuild OSGFX_SKIA=1; sit-in --abs; purple through dock corners; push origin HEAD:compositor"
+  ],
+  "out_of_scope": ["DE-002", "DE-003", "DE-004"]
+}
