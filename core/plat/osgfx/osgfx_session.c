@@ -413,7 +413,7 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   top = (int)((cmd->flags >> 8) & 3u);
   held0 = cmd->win0;
   held1 = cmd->win1;
-  if (held0 != 0) {
+  if (held0 != 0 && panel == 0) {
     paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
                         OSGFX_WIN_FILL);
   }
@@ -423,16 +423,17 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   }
   if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
     if (session_csd == 0) {
-      if (held0 != 0) {
+      if (held0 != 0 && panel == 0) {
         paint_de_title_controls(g, fb, pitch, ww, hh, held0, 0);
       } else {
-        if (held0_noted == 0) {
+        if (held0_noted == 0 && panel == 0) {
           held0_noted = 1;
           com1_puts("OSGFX TITLE HELD0 0\n");
         }
       }
       if (held1 != 0) {
-        paint_de_title_controls(g, fb, pitch, ww, hh, held1, 1);
+        paint_de_title_controls(g, fb, pitch, ww, hh, held1,
+                                panel != 0 ? 0 : 1);
       }
     }
   } else {
