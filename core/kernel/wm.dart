@@ -433,6 +433,8 @@ const int wmDescStride = 6;
 /// ATTACH: byte offset of pixel (0, 0) within the region. **An OFFSET and not
 /// a pointer** -- see this file's header §3.
 const int wmDescOffset = 7;
+const int wmViewportFlag = 0x8000000000000000;
+const int wmOffsetMask = 0x7FFFFFFFFFFFFFFF;
 
 /// COMMIT: the client's own frame counter, echoed into the transcript so that
 /// "the compositor composed the frame the client thought it committed" is a
@@ -838,8 +840,35 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
   final u64 scale = wmWinScaleOf(wI);
   final u64 stride = wmWinStrideOf(wI);
-  final u64 rowOff = wmWin(wI, u64(wmWinOffsetW)) +
-      ((py * scale) * stride);
+  final u64 off = wmWinOffsetOf(wI);
+  final u64 pages = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages));
+  final u64 bytes = pages << u64(vmPageShift);
+  u64 sourceW = stride >> u64(2);
+  u64 sourceH = u64(1);
+  if (bytes > off) {
+    sourceH = (bytes - off) ~/ stride;
+  }
+  if (scale > u64(1)) {
+    sourceW = sourceW ~/ scale;
+    sourceH = sourceH ~/ scale;
+  }
+  u64 sourceY = py;
+  if (wmWinViewportOf(wI) > u64(0)) {
+    if (h > sourceH) {
+      if (py >= u64(wmTitleH)) {
+        if (sourceH > u64(wmTitleH)) {
+          sourceY = u64(wmTitleH) +
+              (((py - u64(wmTitleH)) * (sourceH - u64(wmTitleH))) ~/
+                  (h - u64(wmTitleH)));
+        } else {
+          sourceY = (py * sourceH) ~/ h;
+        }
+      } else {
+        sourceY = (py * sourceH) ~/ h;
+      }
+    }
+  }
+  final u64 rowOff = off + ((sourceY * scale) * stride);
   final u64 panel = wmIsPanel(wI);
   u64 x0 = u64(0);
   u64 x1 = w;
@@ -873,7 +902,13 @@ void wmBlitRow(u64 wI, u64 py) {
   }
   u64 px = x0;
   while (px < x1) {
-    final u64 boff = rowOff + ((px * scale) << u64(2));
+    u64 sourceX = px;
+    if (wmWinViewportOf(wI) > u64(0)) {
+      if (w > sourceW) {
+        sourceX = (px * sourceW) ~/ w;
+      }
+    }
+    final u64 boff = rowOff + ((sourceX * scale) << u64(2));
     final u64 src = wmRegionPixel(vec, boff);
     if (panel > u64(0)) {
       /* Resolve against the stable wallpaper layer, not the previous scanout
@@ -1428,7 +1463,9 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 y = wmDesc(ptr, u64(wmDescY));
   final u64 w = wmDesc(ptr, u64(wmDescW));
   final u64 hh = wmDesc(ptr, u64(wmDescH));
-  final u64 off = wmDesc(ptr, u64(wmDescOffset));
+  final u64 rawOff = wmDesc(ptr, u64(wmDescOffset));
+  final u64 viewport = rawOff & u64(wmViewportFlag);
+  final u64 off = rawOff & u64(wmOffsetMask);
   final u64 r = wmResolve(h);
   if (r == u64(shmMax)) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetBadCap));
@@ -1492,7 +1529,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinGen), shmReg(r, u64(shmRegGen)));
   wmSetWin(slot, u64(wmWinGeom), wmPackGeom(x, y, w, hh));
   wmSetWin(slot, u64(wmWinStride), (scale << u64(32)) | stride);
-  wmSetWin(slot, u64(wmWinOffsetW), off);
+  wmSetWin(slot, u64(wmWinOffsetW), off | viewport);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
   if (wmPageAddr() > u64(0)) {
@@ -2419,8 +2456,41 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
   final u64 scale = wmWinScaleOf(wI);
   final u64 stride = wmWinStrideOf(wI);
   final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
-  final u64 off = wmWin(wI, u64(wmWinOffsetW)) +
-      (((y - wy) * scale) * stride) + (((x - wx) * scale) << u64(2));
+  final u64 baseOff = wmWinOffsetOf(wI);
+  u64 sourceX = x - wx;
+  u64 sourceY = y - wy;
+  if (wmWinViewportOf(wI) > u64(0)) {
+    final u64 pages = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages));
+    final u64 bytes = pages << u64(vmPageShift);
+    u64 sourceW = stride >> u64(2);
+    u64 sourceH = u64(1);
+    if (bytes > baseOff) {
+      sourceH = (bytes - baseOff) ~/ stride;
+    }
+    if (scale > u64(1)) {
+      sourceW = sourceW ~/ scale;
+      sourceH = sourceH ~/ scale;
+    }
+    if (ww > sourceW) {
+      sourceX = (sourceX * sourceW) ~/ ww;
+    }
+    if (wh > sourceH) {
+      if (sourceY >= u64(wmTitleH)) {
+        if (sourceH > u64(wmTitleH)) {
+          sourceY = u64(wmTitleH) +
+              (((sourceY - u64(wmTitleH)) *
+                      (sourceH - u64(wmTitleH))) ~/
+                  (wh - u64(wmTitleH)));
+        } else {
+          sourceY = (sourceY * sourceH) ~/ wh;
+        }
+      } else {
+        sourceY = (sourceY * sourceH) ~/ wh;
+      }
+    }
+  }
+  final u64 off = baseOff +
+      ((sourceY * scale) * stride) + ((sourceX * scale) << u64(2));
   final u64 src = wmRegionPixel(vec, off);
   if (wmIsPanel(wI) > u64(0)) {
     u64 under = wmDeskPixel(x, y);
@@ -2843,7 +2913,7 @@ u64 wmClampSize(u64 wI, u64 ox, u64 oy, u64 nw, u64 nh) {
   }
   final u64 pages = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages));
   final u64 bytes = pages << u64(vmPageShift);
-  final u64 off = wmWin(wI, u64(wmWinOffsetW));
+  final u64 off = wmWinOffsetOf(wI);
   final u64 scale = wmWinScaleOf(wI);
   u64 maxH = u64(wmResizeMinH);
   if (bytes > off) {
@@ -2855,11 +2925,13 @@ u64 wmClampSize(u64 wI, u64 ox, u64 oy, u64 nw, u64 nh) {
     maxW = maxW ~/ scale;
     maxH = maxH ~/ scale;
   }
-  if (w > maxW) {
-    w = maxW;
-  }
-  if (h > maxH) {
-    h = maxH;
+  if (wmWinViewportOf(wI) < u64(1)) {
+    if (w > maxW) {
+      w = maxW;
+    }
+    if (h > maxH) {
+      h = maxH;
+    }
   }
   final u64 b = u64(wmBorder);
   if ((ox + w + b) > fbGeomWidth()) {

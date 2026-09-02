@@ -64,6 +64,8 @@ typedef unsigned int u32;
 #define LAB_PAD_X 20UL
 #define LAB_FG 0x00202830UL
 #define ICON_FG 0x00405060UL
+#define WIN_PAGES 110UL
+#define SURF_OFFSET 1024UL
 #define YIELD_SPIN 40000UL
 #define ROW_H 28UL
 #define MODE_WRITE 1UL
@@ -537,7 +539,13 @@ static void files_on_event(u64 ev) {
   if (typ == WMEVENT_TYPE_CONFIGURE) {
     u64 nw = (ev >> 40) & 0xFFFUL;
     u64 nh = (ev >> 52) & 0xFFFUL;
-    if (nw > 0 && nh > 0 && nw <= files_cap_w && nh <= files_cap_h) {
+    if (nw > 0 && nh > 0) {
+      if (nw > files_cap_w) {
+        nw = files_cap_w;
+      }
+      if (nh > files_cap_h) {
+        nh = files_cap_h;
+      }
       if (nw != files_w || nh != files_height) {
         files_w = nw;
         files_height = nh;
@@ -616,24 +624,14 @@ static void try_strip(u64 names, u32 swatch) {
   u64 h;
   u64 va;
   u64 frames;
-  u64 screen;
-  u64 pages;
 
-  screen = osxui_app_screen();
-  files_cap_w = screen >> 32;
-  files_cap_h = screen & 0xFFFFFFFFUL;
-  if (files_cap_w < WIN_W) {
-    files_cap_w = WIN_W;
-  }
-  if (files_cap_h < WIN_H) {
-    files_cap_h = WIN_H;
-  }
+  files_cap_w = WIN_W;
+  files_cap_h = WIN_H;
   files_w = WIN_W;
   files_height = WIN_H;
-  files_stride = files_cap_w * 4UL;
-  pages = (files_stride * files_cap_h + 4095UL) / 4096UL;
+  files_stride = WIN_W * 4UL;
 
-  h = sys1(SYS_SHMCREATE, pages);
+  h = sys1(SYS_SHMCREATE, WIN_PAGES);
   if (h >= WM_RET_FLOOR) {
     return;
   }
@@ -645,7 +643,7 @@ static void try_strip(u64 names, u32 swatch) {
   desc[WM_DESC_W] = WIN_W;
   desc[WM_DESC_H] = WIN_H;
   desc[WM_DESC_STRIDE] = files_stride;
-  desc[WM_DESC_OFFSET] = 0;
+  desc[WM_DESC_OFFSET] = WM_SURFACE_VIEWPORT | SURF_OFFSET;
   va = sys1(SYS_WMSURFACE, (u64)&desc[0]);
   if (va >= WM_RET_FLOOR) {
     return;
