@@ -875,8 +875,6 @@ if not started:
 button(328, 572, "left", False)
 time.sleep(0.25)
 press(379, 57, "left", "WM MAX")
-# Toggle back so the SE handle stays at the attach geom.
-press(379, 57, "left", "WM MAX")
 place(444, 316)
 time.sleep(0.08)
 button(444, 316, "left", True)
