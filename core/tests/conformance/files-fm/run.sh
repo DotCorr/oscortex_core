@@ -52,11 +52,13 @@ export OSGFX_SKIA=0
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-# Floor: ADR-0118 was 152; ADR-0149 flips move-source-gone checks; ADR-0192
-# adds the four row-caption checks below. The floor was pinned at 154 against a
-# run that reaches 152, so it was FAILING before ADR-0192 touched this harness
-# -- re-derived from a run, which is how _lib/harness.sh says to update it.
-ASSERTIONS_REQUIRED=161
+# Floor: Linux executes 147 portable checks. macOS adds two seven-check
+# hdiutil inspections (before and after the guest mutates the FAT image).
+# Keep each platform's anti-vacuity floor equal to the work it can execute.
+ASSERTIONS_REQUIRED=147
+if command -v hdiutil >/dev/null 2>&1; then
+  ASSERTIONS_REQUIRED=161
+fi
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-readelf \
             x86_64-elf-objdump x86_64-elf-nm; do
