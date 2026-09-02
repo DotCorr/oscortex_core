@@ -2909,10 +2909,11 @@ void wmResizeStep(u64 x, u64 y) {
   final u64 rh = oh + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
   wmeventEnqueueConfigure(wI);
-  /* Compose old∪new once. Two independent repaints exposed an intermediate
-   * frame and reused the damage scratch with two different extents. */
-  final u64 px = wmRepaintUnion2(
-      rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
+  /* Geometry changes invalidate the retained session chrome as well as the
+   * client rectangles. A rectangle-only repaint is overwritten by the old
+   * retained frame on the next tick, blanking clients or leaving trails. */
+  wmCompose();
+  final u64 px = fbGeomWidth() * fbGeomHeight();
   wmSetMeta(u64(wmMetaRectPixels), px);
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
@@ -2981,7 +2982,8 @@ void wmDragStep(u64 x, u64 y) {
   final u64 oh = h + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
   wmeventEnqueueConfigure(wI);
-  u64 px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+  wmCompose();
+  u64 px = fbGeomWidth() * fbGeomHeight();
   wmSetMeta(u64(wmMetaRectPixels), px);
   wmBumpMeta(u64(wmMetaMoves));
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
