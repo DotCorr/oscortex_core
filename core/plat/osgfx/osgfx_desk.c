@@ -319,13 +319,16 @@ void osgfx_fill_desk_generative(uint32_t *fb, int pitch, int x, int y, int w, in
 }
 
 static int glass_rrect_cover(int px, int py, int x, int y, int w, int h, int r) {
+  int sx;
+  int sy;
+  int sample_x;
+  int sample_y;
   int cx;
   int cy;
   int dx;
   int dy;
-  int d2;
-  int outer;
-  int inner;
+  int rr;
+  int hits;
 
   if (w <= 0 || h <= 0) {
     return 0;
@@ -342,33 +345,53 @@ static int glass_rrect_cover(int px, int py, int x, int y, int w, int h, int r) 
   if (r > h / 2) {
     r = h / 2;
   }
-  if (px < x + r && py < y + r) {
-    cx = x + r;
-    cy = y + r;
-  } else if (px >= x + w - r && py < y + r) {
-    cx = x + w - 1 - r;
-    cy = y + r;
-  } else if (px < x + r && py >= y + h - r) {
-    cx = x + r;
-    cy = y + h - 1 - r;
-  } else if (px >= x + w - r && py >= y + h - r) {
-    cx = x + w - 1 - r;
-    cy = y + h - 1 - r;
-  } else {
+  if (px >= x + r && px < x + w - r) {
     return 255;
   }
-  dx = px - cx;
-  dy = py - cy;
-  d2 = dx * dx + dy * dy;
-  outer = (r + 2) * (r + 2);
-  inner = (r > 2) ? (r - 2) * (r - 2) : 0;
-  if (d2 <= inner) {
+  if (py >= y + r && py < y + h - r) {
     return 255;
   }
-  if (d2 >= outer) {
-    return 0;
+
+  /* A real 4x4 area sample in fixed point. The old squared-distance ramp
+   * spread the edge across four pixels and used centres that differed by one
+   * pixel at the right/bottom corners. Besides looking soft rather than
+   * antialiased, that asymmetry exposed dark scratch pixels at dock tips.
+   *
+   * Units are eighths of a pixel; samples are at 1/8, 3/8, 5/8 and 7/8.
+   * This matches SkRRect's geometric centres (x+r, x+w-r), and yields
+   * coverage only for the pixel area actually inside the curve. */
+  rr = r * 8;
+  hits = 0;
+  sy = 0;
+  while (sy < 4) {
+    sample_y = py * 8 + 1 + sy * 2;
+    if (sample_y < (y + r) * 8) {
+      cy = (y + r) * 8;
+    } else if (sample_y > (y + h - r) * 8) {
+      cy = (y + h - r) * 8;
+    } else {
+      cy = sample_y;
+    }
+    sx = 0;
+    while (sx < 4) {
+      sample_x = px * 8 + 1 + sx * 2;
+      if (sample_x < (x + r) * 8) {
+        cx = (x + r) * 8;
+      } else if (sample_x > (x + w - r) * 8) {
+        cx = (x + w - r) * 8;
+      } else {
+        cx = sample_x;
+      }
+      dx = sample_x - cx;
+      dy = sample_y - cy;
+      if (dx * dx + dy * dy <= rr * rr) {
+        hits = hits + 1;
+      }
+      sx = sx + 1;
+    }
+    sy = sy + 1;
   }
-  return (255 * (outer - d2)) / (outer - inner + 1);
+  return (hits * 255 + 8) / 16;
 }
 
 static uint32_t glass_mix(uint32_t wall, uint32_t tint) {
@@ -398,6 +421,10 @@ static uint32_t glass_mix(uint32_t wall, uint32_t tint) {
 void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y,
                        int w, int h, int radius, int scr_x0, int scr_y0,
                        uint32_t tint) {
+  int x0;
+  int x1;
+  int y0;
+  int y1;
   int yy;
   int xx;
   int sx;
@@ -418,6 +445,19 @@ void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y
   if (dst == 0 || pitch_px < 4 || w < 1 || h < 1 || dw < 1 || dh < 1) {
     return;
   }
+  x0 = x < 0 ? 0 : x;
+  y0 = y < 0 ? 0 : y;
+  x1 = x + w;
+  y1 = y + h;
+  if (x1 > dw) {
+    x1 = dw;
+  }
+  if (y1 > dh) {
+    y1 = dh;
+  }
+  if (x0 >= x1 || y0 >= y1 || pitch_px < dw) {
+    return;
+  }
   int desk_h;
 
   seed = 0xD074A17u;
@@ -428,10 +468,10 @@ void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y
   if (desk_h < 1) {
     desk_h = dh;
   }
-  yy = y;
-  while (yy < y + h) {
-    xx = x;
-    while (xx < x + w) {
+  yy = y0;
+  while (yy < y1) {
+    xx = x0;
+    while (xx < x1) {
       cover = glass_rrect_cover(xx, yy, x, y, w, h, radius);
       if (cover > 0) {
         acc_r = 0;
@@ -467,8 +507,11 @@ void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y
               ((((out >> 16) & 0xffu) * (uint32_t)(unsigned)cover / 255u) << 16) |
               ((((out >> 8) & 0xffu) * (uint32_t)(unsigned)cover / 255u) << 8) |
               ((out & 0xffu) * (uint32_t)(unsigned)cover / 255u);
-        ((uint32_t *)((uint8_t *)dst + (unsigned)yy * (unsigned)pitch_px))[xx] =
-            out;
+        dst[(unsigned)yy * (unsigned)pitch_px + (unsigned)xx] = out;
+      } else {
+        /* WM_PAINT_GLASS targets premultiplied client scratch. Outside the
+         * rrect is transparent, never stale RGB or opaque black. */
+        dst[(unsigned)yy * (unsigned)pitch_px + (unsigned)xx] = 0;
       }
       xx = xx + 1;
     }

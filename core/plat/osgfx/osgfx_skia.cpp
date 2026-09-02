@@ -338,13 +338,16 @@ static void blend_px(OsGfx *g, int x, int y, uint32_t rgb, int alpha) {
 
 /* Soft coverage for corner pixels — reads as AA without SkScan FillPath. */
 static int rrect_cover(int px, int py, int x, int y, int w, int h, int r) {
+  int sx;
+  int sy;
+  int sample_x;
+  int sample_y;
   int cx;
   int cy;
   int dx;
   int dy;
-  int d2;
-  int outer;
-  int inner;
+  int rr;
+  int hits;
   if (w <= 0 || h <= 0) {
     return 0;
   }
@@ -360,34 +363,49 @@ static int rrect_cover(int px, int py, int x, int y, int w, int h, int r) {
   if (r > h / 2) {
     r = h / 2;
   }
-  if (px < x + r && py < y + r) {
-    cx = x + r;
-    cy = y + r;
-  } else if (px >= x + w - r && py < y + r) {
-    cx = x + w - 1 - r;
-    cy = y + r;
-  } else if (px < x + r && py >= y + h - r) {
-    cx = x + r;
-    cy = y + h - 1 - r;
-  } else if (px >= x + w - r && py >= y + h - r) {
-    cx = x + w - 1 - r;
-    cy = y + h - 1 - r;
-  } else {
+  if (px >= x + r && px < x + w - r) {
     return 255;
   }
-  dx = px - cx;
-  dy = py - cy;
-  d2 = dx * dx + dy * dy;
-  /* ~2px soft fringe — reads as AA, not binary paper discs. */
-  outer = (r + 2) * (r + 2);
-  inner = (r > 2) ? (r - 2) * (r - 2) : 0;
-  if (d2 <= inner) {
+  if (py >= y + r && py < y + h - r) {
     return 255;
   }
-  if (d2 >= outer) {
-    return 0;
+
+  /* Deterministic 4x4 fixed-point area coverage for the no-canvas fallback.
+   * Samples use the same geometric corner centres as SkRRect, including the
+   * right and bottom corners; partial coverage is then blended over the live
+   * destination by every caller below. */
+  rr = r * 8;
+  hits = 0;
+  sy = 0;
+  while (sy < 4) {
+    sample_y = py * 8 + 1 + sy * 2;
+    if (sample_y < (y + r) * 8) {
+      cy = (y + r) * 8;
+    } else if (sample_y > (y + h - r) * 8) {
+      cy = (y + h - r) * 8;
+    } else {
+      cy = sample_y;
+    }
+    sx = 0;
+    while (sx < 4) {
+      sample_x = px * 8 + 1 + sx * 2;
+      if (sample_x < (x + r) * 8) {
+        cx = (x + r) * 8;
+      } else if (sample_x > (x + w - r) * 8) {
+        cx = (x + w - r) * 8;
+      } else {
+        cx = sample_x;
+      }
+      dx = sample_x - cx;
+      dy = sample_y - cy;
+      if (dx * dx + dy * dy <= rr * rr) {
+        hits = hits + 1;
+      }
+      sx = sx + 1;
+    }
+    sy = sy + 1;
   }
-  return (255 * (outer - d2)) / (outer - inner + 1);
+  return (hits * 255 + 8) / 16;
 }
 
 /* Soft AA for all chrome rrects. Title bars are wide (w>128) but thin —
