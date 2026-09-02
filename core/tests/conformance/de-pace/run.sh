@@ -331,10 +331,10 @@ ck; [[ "$DESK_REGEN" -eq 1 ]] \
   || fail "the generative field was regenerated $DESK_REGEN times, expected exactly 1 — the cache key is not stable across frames"
 ck; [[ "$DESK_BLIT" -gt "$DESK_REGEN" ]] \
   || fail "the cache was blitted $DESK_BLIT times and generated $DESK_REGEN — one generate did not serve more than one paint, so nothing was saved"
-# And the DAMAGE path reads it too, which is the half that makes stage 2
-# possible at all: `wmDeskPixel` served this many desktop pixels to a
-# damage-limited repaint. Before the cache, Dart's only desktop colour was
-# one flat blue and this number could only have been zero.
+# And the DAMAGE path reads it too: the driver opens a wallpaper menu on empty
+# desktop, moves outside it, and dismisses it. Restoring the card's old
+# rectangle must resolve through `wmDeskPixel`; pointer motion no longer proves
+# this because the compositor correctly restores its save-under directly.
 ck; [[ "$DESK_READ" -gt 0 ]] \
   || fail "no damage repaint ever read the cached field — Dart is still painting the desktop from a flat constant"
 
@@ -381,12 +381,8 @@ PATCH_RGB=$(jget patch_rgb)
 ck; python3 "$PROBE" "$FB_BIN" "$PITCH" "$PATCH_X" "$PATCH_Y" "$PATCH_RGB" "dpc_patch" \
   || fail "the client's damage patch is not on the screen at ($PATCH_X,$PATCH_Y) in $PATCH_RGB — a damage-limited present that is cheap and paints nothing is not a present"
 # THE RECTANGLE THE POINTER VACATED. `wm on` composes the arrow at the origin;
-# the driver then walks it to the middle of the desktop in twenty steps, and
-# `wmPointerTick` repaints each rectangle it leaves. Those are DESKTOP pixels
-# painted by Dart, out of the cache. If Dart were still answering
-# [wmColorDesktop] for a desktop pixel, this 12x16 corner would be one flat
-# 0x00184060 -- which is exactly the hole the gfx arm was recomposing the
-# world to avoid.
+# the driver then walks it away. The save-under restore must put the varied
+# wallpaper back rather than a flat colour or cursor ink.
 CUR_W=$(jget cursor_w)
 CUR_H=$(jget cursor_h)
 capture_sh HOLE_OUT HOLE_STATUS -- "python3 - '$FB_BIN' $PITCH $CUR_W $CUR_H <<'PY'

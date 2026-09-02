@@ -160,12 +160,9 @@ DESK_RE = re.compile(
 )
 
 # Where the pointer starts (`wm on` composes it at the origin) and how far it
-# is moved. Moving it is the ONE thing in this harness that makes a damage
-# repaint cover DESKTOP pixels: `wmPointerTick` repaints the rectangle the
-# arrow vacated, which resolves through `wmPixelAt` -> `wmDeskPixel` -> the
-# cached generative field. Before the cache, Dart's only answer for a desktop
-# pixel was one flat blue, and that is the whole reason the gfx arm refused to
-# honour damage.
+# is moved. The compositor now restores pointer save-under directly, so pointer
+# motion no longer exercises `wmDeskPixel`; phase 1b opens and dismisses a
+# desktop popover to force an explicit Dart damage restore through the cache.
 CURSOR_W, CURSOR_H = 12, 16
 CURSOR_TO = (520, 300)
 
@@ -230,6 +227,32 @@ def main():
             {"type": "rel", "data": {"axis": "y", "value": step_y}},
         ])
         time.sleep(0.06)
+    time.sleep(0.5)
+
+    # Open the wallpaper menu on empty desktop, move outside it, and dismiss
+    # it. Hiding the card repaints its old rectangle through
+    # wmPopDamageRestore -> wmRepaintRect -> wmDeskPixel, providing runtime
+    # evidence that Dart damage repair reads the generated cache.
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "right", "down": True}},
+    ])
+    if not wait_marker(serial, "WM WALL MENU\n", timeout=10):
+        raise SystemExit("desktop right-click did not open the wallpaper menu")
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "right", "down": False}},
+    ])
+    for _ in range(8):
+        q.cmd("input-send-event", events=[
+            {"type": "rel", "data": {"axis": "x", "value": 10}},
+            {"type": "rel", "data": {"axis": "y", "value": 10}},
+        ])
+        time.sleep(0.04)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": True}},
+    ])
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": False}},
+    ])
     time.sleep(0.5)
 
     # ---- phase 2: the client floods, UNPACED ------------------------------
