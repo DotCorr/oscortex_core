@@ -60,13 +60,12 @@ command -v dart >/dev/null 2>&1 || setup_error "dart not found on PATH (source e
 # is actually on disk (a dirty tree is NOT the commit it claims to be, which is
 # the case a hash alone cannot catch).
 #
-# A mismatch is a warning by default.  With OSCORTEX_REQUIRE_PIN=1, an exact
-# clean match passes immediately.  A different or dirty checkout must instead
-# pass verify-dcdart-compat.sh, which compiles and inspects the load-bearing
-# Volatile, @rodata/GlobalDCE and no-FP semantics.  This fallback is necessary
-# because 02631a77 was rewritten out of the public DCDart repository; rejecting
-# a Mac's surviving compatible checkout by identity would make the pin a
-# permanent build deadlock.
+# A mismatch is a warning by default.  With OSCORTEX_REQUIRE_PIN=1, every
+# checkout must pass verify-dcdart-compat.sh, which compiles and inspects the
+# load-bearing Volatile, @rodata/GlobalDCE and no-FP semantics.  Git identity is
+# still printed for provenance, but cannot be the gate: 02631a77 was rewritten
+# out of the public DCDart repository, and rejecting a Mac's surviving
+# compatible checkout by identity would make the pin a permanent deadlock.
 DCDART_DESC="(not a git checkout)"
 DCDART_FULL=""
 DCDART_DIRTY=""
@@ -96,12 +95,10 @@ if [[ -n "$DCDART_DIRTY" ]]; then
   echo "              A build that picks up somebody's in-flight compiler change can move every" >&2
   echo "              byte-exact golden in this suite for a reason no commit in THIS repo explains." >&2
 fi
-if [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]] &&
-   { [[ -n "$DCDART_DIRTY" ]] || [[ -z "$DCDART_FULL" ]] ||
-     [[ "$DCDART_FULL" != "$PIN_WANT"* ]]; }; then
-  echo "build-kernel: exact clean pin unavailable; proving compiler compatibility" >&2
+if [[ "${OSCORTEX_REQUIRE_PIN:-0}" == "1" ]]; then
+  echo "build-kernel: strict mode; proving compiler compatibility" >&2
   bash "$COMPAT_PROBE" "$DCDART_HOME" \
-    || setup_error "toolchain is neither an exact clean pin nor probe-compatible"
+    || setup_error "toolchain failed the required semantic compatibility probe"
 fi
 
 if ! command -v clang >/dev/null 2>&1; then

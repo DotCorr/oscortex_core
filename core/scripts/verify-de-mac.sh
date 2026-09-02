@@ -171,14 +171,11 @@ DCDART_SHORT="$(git -C "$DCDART_HOME" rev-parse --short HEAD 2>/dev/null || true
 echo "verify-de-mac: DCDART_HOME=$DCDART_HOME"
 echo "verify-de-mac: toolchain=${DCDART_FULL:-not-a-git-checkout}"
 echo "verify-de-mac: required-pin=$PIN_WANT"
-if [[ -z "$DCDART_FULL" || "$DCDART_FULL" != "$PIN_WANT"* ||
-      -n "$(git -C "$DCDART_HOME" status --porcelain 2>/dev/null)" ]]; then
-  echo "verify-de-mac: exact clean pin unavailable; running semantic compiler probe"
-  bash "$COMPAT_PROBE" "$DCDART_HOME" || {
-    echo "verify-de-mac: FAIL — toolchain is neither an exact clean pin nor probe-compatible" >&2
-    exit 2
-  }
-fi
+echo "verify-de-mac: running semantic compiler probe"
+bash "$COMPAT_PROBE" "$DCDART_HOME" || {
+  echo "verify-de-mac: FAIL — toolchain failed the required semantic compatibility probe" >&2
+  exit 2
+}
 
 for tool in bash python3 git clang qemu-system-x86_64; do
   command -v "$tool" >/dev/null 2>&1 || {
