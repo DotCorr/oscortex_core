@@ -696,6 +696,8 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
   int ow;
   int oh;
   int orad;
+  int layer;
+  int spread;
   uint32_t col;
 
   if (g == 0 || w <= 0 || h <= 0) {
@@ -705,7 +707,6 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
   if (col == 0) {
     col = 0x00081018u;
   }
-  (void)blur;
   /*
    * SkMaskFilter::MakeBlur installs mask resources in Skia's process-global
    * cache. That cache cannot share the freestanding frame bump arena: records
@@ -713,28 +714,39 @@ void osgfx_shadow(OsGfx *g, int x, int y, int w, int h, int radius, int blur,
    * bounded premultiplied-alpha fallback for shadows; shapes and text continue
    * through Skia's AA paths without creating cached blur masks.
    */
-  ox = x + 6;
-  oy = y + 10;
-  ow = w + 4;
-  oh = h + 4;
-  orad = radius + 1;
-  alpha = 56;
-  yy = oy;
-  while (yy < oy + oh) {
-    xx = ox;
-    while (xx < ox + ow) {
-      if (xx >= ox + orad && xx < ox + ow - orad && yy >= oy + orad &&
-          yy < oy + oh - orad) {
-        xx = ox + ow - orad;
-        continue;
+  spread = blur / 6;
+  if (spread < 1) {
+    spread = 1;
+  }
+  if (spread > 3) {
+    spread = 3;
+  }
+  layer = spread;
+  while (layer >= 0) {
+    ox = x - layer;
+    oy = y - layer;
+    ow = w + layer + layer;
+    oh = h + layer + layer;
+    orad = radius + layer;
+    alpha = 10 + (spread - layer) * 8;
+    yy = oy;
+    while (yy < oy + oh) {
+      xx = ox;
+      while (xx < ox + ow) {
+        if (xx >= ox + orad && xx < ox + ow - orad && yy >= oy + orad &&
+            yy < oy + oh - orad) {
+          xx = ox + ow - orad;
+          continue;
+        }
+        cover = rrect_cover(xx, yy, ox, oy, ow, oh, orad);
+        if (cover > 0) {
+          blend_px(g, xx, yy, col, (alpha * cover) / 255);
+        }
+        xx = xx + 1;
       }
-      cover = rrect_cover(xx, yy, ox, oy, ow, oh, orad);
-      if (cover > 0) {
-        blend_px(g, xx, yy, col, (alpha * cover) / 255);
-      }
-      xx = xx + 1;
+      yy = yy + 1;
     }
-    yy = yy + 1;
+    layer = layer - 1;
   }
 }
 
