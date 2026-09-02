@@ -342,12 +342,26 @@ void virtabApply(u64 hdr, u64 ev) {
   if (typ == u64(virtabEvRel)) {
     if (code == u64(virtabRelWheel)) {
       /*
-       * Linux REL_WHEEL is signed 32-bit; the FRAME protocol needs the low
-       * signed byte (QEMU emits -1/1). Keep it until SYN_REPORT so the pending
-       * ABS axes and wheel target are one coherent report.
+       * Linux REL_WHEEL is positive for up, while PS/2 (and the FRAME wire)
+       * is negative for up. Normalize here: QEMU emits +1/-1, and the client
+       * receives 0xff/0x01 respectively. Keep it until SYN_REPORT so pending
+       * ABS axes and the wheel target are one coherent report.
        */
-      if ((value & u64(0xFF)) > u64(0)) {
-        virtgpuRamPut32(hdr + u64(40), value & u64(0xFF));
+      final u64 low = value & u64(0xFF);
+      if (low > u64(0)) {
+        if ((low & u64(0x80)) > u64(0)) {
+          u64 magnitude = u64(0x100) - low;
+          if (magnitude > u64(127)) {
+            magnitude = u64(127);
+          }
+          virtgpuRamPut32(hdr + u64(40), magnitude);
+        } else {
+          u64 magnitude = low;
+          if (magnitude > u64(127)) {
+            magnitude = u64(127);
+          }
+          virtgpuRamPut32(hdr + u64(40), u64(0x100) - magnitude);
+        }
       }
     }
     return;
