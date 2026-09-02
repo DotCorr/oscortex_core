@@ -868,9 +868,9 @@ void wmBlitRow(u64 wI, u64 py) {
         }
       }
       if (py >= (h - u64(wmGfxRadius))) {
-        x0 = u64(wmGfxRadius);
-        if (w > u64(wmGfxRadius)) {
-          x1 = w - u64(wmGfxRadius);
+        x0 = wmGfxRowInset(py, w, h);
+        if (w > x0) {
+          x1 = w - x0;
         }
       }
     }
@@ -897,6 +897,20 @@ void wmBlitRow(u64 wI, u64 py) {
     }
     px = px + u64(1);
   }
+}
+
+/// Horizontal client inset for one rounded bottom row.
+@bare
+u64 wmGfxRowInset(u64 py, u64 w, u64 h) {
+  u64 inset = u64(0);
+  final u64 r = u64(wmGfxRadius);
+  while (inset < r) {
+    if (wmRrectHit(inset, py, u64(0), u64(0), w, h, r) > u64(0)) {
+      return inset;
+    }
+    inset = inset + u64(1);
+  }
+  return r;
 }
 
 /// Draws window [wI] -- border first, then its client's pixels, then the
@@ -2212,18 +2226,26 @@ u64 wmGfxCornerHole(u64 wI, u64 x, u64 y) {
   final u64 r = u64(wmGfxRadius);
   if (py < r) {
     if (px < r) {
-      return u64(1);
+      if (wmRrectHit(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
+        return u64(1);
+      }
     }
     if (px >= ww - r) {
-      return u64(1);
+      if (wmRrectHit(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
+        return u64(1);
+      }
     }
   }
   if (py >= wh - r) {
     if (px < r) {
-      return u64(1);
+      if (wmRrectHit(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
+        return u64(1);
+      }
     }
     if (px >= ww - r) {
-      return u64(1);
+      if (wmRrectHit(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
+        return u64(1);
+      }
     }
   }
   return u64(0);

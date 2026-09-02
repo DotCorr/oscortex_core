@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=123
+ASSERTIONS_REQUIRED=124
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -119,6 +119,8 @@ ck; grep -q 'DESK READY' "$DESK_C" || fail "desk.c no DESK READY"
 ck; grep -q 'ADR-0183' "$WM" || fail "wm.dart missing ADR-0183"
 ck; grep -q 'osgfx_guest_tick' "$WM" || fail "wmCompose lost tick"
 ck; grep -q 'wmDrawWindow' "$WM" || fail "wmCompose lost blit"
+ck; grep -q 'wmGfxRowInset(py, w, h)' "$WM" \
+  || fail "client body still leaves square wallpaper blocks at rounded corners"
 # Body fill must not paint OSGFX_WIN_FILL over the window interior.
 ck; ! grep -n 'osgfx_fill_rrect(g, x, y, w, h, r, fill)' "$SESS" \
   || fail "session still fills full window body with fill colour"
