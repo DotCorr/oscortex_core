@@ -809,6 +809,16 @@ void wmPaintOp(u64 frame, u64 ptr, u64 id) {
     ww = wmGeomW(g) * scale;
     hh = wmGeomH(g) * scale;
     pitch = wmWinStrideOf(slot);
+    if (wmWinViewportOf(slot) > u64(0)) {
+      ww = pitch >> u64(2);
+      final u64 bytes =
+          shmReg(wmWin(slot, u64(wmWinReg)), u64(shmRegPages))
+              << u64(vmPageShift);
+      final u64 baseOff = wmWinOffsetOf(slot);
+      if (bytes > baseOff) {
+        hh = (bytes - baseOff) ~/ pitch;
+      }
+    }
     final u64 vec = shmReg(wmWin(slot, u64(wmWinReg)), u64(shmRegVec));
     final u64 off = wmWinOffsetOf(slot);
     px = shmVec(vec, off >> u64(vmPageShift)) + (off & u64(vmPageMask));

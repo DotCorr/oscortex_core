@@ -290,13 +290,9 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
     title_noted = 1;
     com1_puts("OSGFX TITLE CLOSE\n");
   }
-  if (slot == 0) {
-    cap = "FILES";
-    cap_n = 5;
-  } else {
-    cap = "SET";
-    cap_n = 3;
-  }
+  (void)slot;
+  cap = "FILES";
+  cap_n = 5;
   i = SESS_TITLE_BAND;
   if (i > h) {
     i = h;
