@@ -300,8 +300,8 @@ def main():
     # cache reads after pointer save-under made motion the wrong mechanism.
     for _ in range(20):
         q.cmd("input-send-event", events=[
-            {"type": "rel", "data": {"axis": "x", "value": -15}},
-            {"type": "rel", "data": {"axis": "y", "value": -12}},
+            {"type": "rel", "data": {"axis": "x", "value": -11}},
+            {"type": "rel", "data": {"axis": "y", "value": -8}},
         ])
         time.sleep(0.04)
     q.cmd("input-send-event", events=[
