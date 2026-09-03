@@ -80,6 +80,9 @@ void osgfx_chrome_glyph_count(int hit);
 uint32_t *osgfx_chrome_band(int w, int h);
 int osgfx_chrome_band_fresh(int w, int h, uint32_t top, uint32_t bot);
 void osgfx_chrome_band_stamp(int w, int h, uint32_t top, uint32_t bot);
+uint32_t *osgfx_chrome_prep_target(int which);
+int osgfx_chrome_prep_copy_live(int which);
+int osgfx_chrome_prep_stamp(int which, uint64_t win0, uint64_t win1);
 }
 
 /* Weak until osgfx_graphite_guest.o is linked (Graphite+Vulkan lib). */
@@ -1503,6 +1506,79 @@ void osgfx_guest_tick(void) {
   tick_body();
   asm volatile("movq %0, %%rsp" : : "m"(saved_rsp) : "memory");
   painting = 0;
+}
+
+void osgfx_guest_ack(void) {
+  last_gen = osgfx_guest_cmd.gen;
+}
+
+static uint64_t chrome_prep_body(uint64_t win0, uint64_t win1) {
+  struct OsGfxGuestCmd *m;
+  struct OsGfxGuestCmd local;
+  uint32_t *dst;
+  OsGfx *g;
+  int ww;
+  int hh;
+
+  m = &osgfx_guest_cmd;
+  if (m->magic != OSGFX_GUEST_MAGIC) {
+    return 0;
+  }
+  if ((m->flags & OSGFX_GUEST_ON) == 0) {
+    return 0;
+  }
+  if (m->w < 8 || m->h < 8) {
+    return 0;
+  }
+  if (osgfx_chrome_prep_copy_live(0) == 0) {
+    return 0;
+  }
+  dst = osgfx_chrome_prep_target(0);
+  if (dst == 0) {
+    return 0;
+  }
+  ww = (int)m->w;
+  hh = (int)m->h;
+  local = *m;
+  local.win0 = win0;
+  local.win1 = win1;
+  local.fb = (uint64_t)(uintptr_t)dst;
+  local.pitch = m->w * 4;
+  g = osgfx_create(ww, hh);
+  if (g == 0) {
+    return 0;
+  }
+  g->px = dst;
+  g->pitch = (int)local.pitch;
+  (void)canvas_of(g);
+  g_one_own = SKIA_OWN_PAINT;
+  osgfx_session_paint_geom(g, &local, m->win0, m->win1);
+  osgfx_flush(g);
+  chrome_heap_after_paint();
+  if (osgfx_chrome_prep_stamp(0, win0, win1) == 0) {
+    return 0;
+  }
+  com1_puts("OSGFX CHROME PREP\n");
+  return 1;
+}
+
+extern "C" uint64_t osgfx_chrome_prep(uint64_t win0, uint64_t win1) {
+  void *top;
+  uint64_t ok;
+
+  if (painting != 0) {
+    return 0;
+  }
+  painting = 1;
+  top = paint_stack + sizeof(paint_stack);
+  asm volatile("movq %%rsp, %0\n\tmovq %1, %%rsp"
+               : "=m"(saved_rsp)
+               : "r"(top)
+               : "memory");
+  ok = chrome_prep_body(win0, win1);
+  asm volatile("movq %0, %%rsp" : : "m"(saved_rsp) : "memory");
+  painting = 0;
+  return ok;
 }
 
 /* WM_OP_PAINT and pointer raster share one client canvas (ADR-0195). */

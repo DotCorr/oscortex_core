@@ -1585,6 +1585,10 @@ void userSyscall(u64 frame) {
       }
     }
   }
+  /* Drain IRQ-enqueued WM geometry off the input path. Syscall CR3. */
+  if (wmActive() > u64(0)) {
+    wmDefDrain();
+  }
   // M11: `yield` (syscall 3). Refused unless a PROCESS is live, and that is not
   // a formality: with no process table entry to save into there is nothing to
   // suspend, and an M9 payload or an M10 `run` program calling it would

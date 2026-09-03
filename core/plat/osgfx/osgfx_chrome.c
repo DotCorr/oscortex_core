@@ -62,6 +62,21 @@ extern struct OsGfxGuestCmd osgfx_guest_cmd;
 
 const char osgfx_chrome_cache_door[] = "osgfx-chrome-cache";
 
+/* Guest CRT memcpy is a byte loop. TCG turns `rep movsl` into a host copy. */
+static void chrome_movs(uint32_t *dst, const uint32_t *src, unsigned n) {
+  uint32_t *d;
+  const uint32_t *s;
+  unsigned c;
+
+  if (n == 0u || dst == 0 || src == 0) {
+    return;
+  }
+  d = dst;
+  s = src;
+  c = n;
+  asm volatile("rep movsl" : "+D"(d), "+S"(s), "+c"(c) : : "memory");
+}
+
 /* The compositor state page, or 0. The magic is checked because `wmpage` is an
  * address Dart wrote and a zeroed frame is the ONE thing this must not mistake
  * for a valid header. */
@@ -771,4 +786,147 @@ void osgfx_chrome_band_stamp(int w, int h, uint32_t top, uint32_t bot) {
   pg[OSGFX_WMPAGE_W_BAND_H] = (uint64_t)(unsigned)h;
   pg[OSGFX_WMPAGE_W_BAND_FILL] = pg[OSGFX_WMPAGE_W_BAND_FILL] + 1;
   pg[OSGFX_WMPAGE_W_BAND_HAVE] = band_key(w, h, top, bot);
+}
+
+/* Idle max/restore chrome slots. which 0 = native-max, 1 = restore. */
+uint32_t *osgfx_chrome_prep_target(int which) {
+  uint64_t *pg;
+  uint64_t need;
+  uint64_t buf;
+
+  pg = chrome_page();
+  if (pg == 0) {
+    return 0;
+  }
+  need = pg[OSGFX_WMPAGE_W_CHROME_W] * pg[OSGFX_WMPAGE_W_CHROME_H];
+  if (need < 8u * 8u) {
+    need = osgfx_guest_cmd.w * osgfx_guest_cmd.h;
+  }
+  if (need < 1 || need > pg[OSGFX_WMPAGE_W_PREP_PX]) {
+    return 0;
+  }
+  buf = (which == 0) ? pg[OSGFX_WMPAGE_W_PREP_BUF] : pg[OSGFX_WMPAGE_W_PREP_REST];
+  if (buf == 0) {
+    return 0;
+  }
+  return (uint32_t *)(uintptr_t)buf;
+}
+
+int osgfx_chrome_prep_copy_live(int which) {
+  uint64_t *pg;
+  uint32_t *live;
+  uint32_t *dst;
+  uint64_t n;
+
+  pg = chrome_page();
+  live = chrome_buf(&osgfx_guest_cmd, pg);
+  dst = osgfx_chrome_prep_target(which);
+  if (pg == 0 || live == 0 || dst == 0) {
+    return 0;
+  }
+  n = pg[OSGFX_WMPAGE_W_CHROME_W] * pg[OSGFX_WMPAGE_W_CHROME_H];
+  if (n < 1 || n > pg[OSGFX_WMPAGE_W_CHROME_PX] || n > pg[OSGFX_WMPAGE_W_PREP_PX]) {
+    return 0;
+  }
+  chrome_movs(dst, live, (unsigned)n);
+  return 1;
+}
+
+int osgfx_chrome_prep_stamp(int which, uint64_t win0, uint64_t win1) {
+  uint64_t *pg;
+  uint64_t bit;
+
+  pg = chrome_page();
+  if (pg == 0 || osgfx_chrome_prep_target(which) == 0) {
+    return 0;
+  }
+  bit = (which == 0) ? 1ull : 2ull;
+  pg[OSGFX_WMPAGE_W_PREP_HAVE] = pg[OSGFX_WMPAGE_W_PREP_HAVE] | bit;
+  if (which == 0) {
+    pg[OSGFX_WMPAGE_W_PREP_WIN0] = win0;
+    pg[OSGFX_WMPAGE_W_PREP_WIN1] = win1;
+  }
+  return 1;
+}
+
+uint64_t osgfx_chrome_prep_rest(void) {
+  if (osgfx_chrome_prep_copy_live(1) == 0) {
+    return 0;
+  }
+  if (osgfx_chrome_prep_stamp(1, osgfx_guest_cmd.win0, osgfx_guest_cmd.win1) == 0) {
+    return 0;
+  }
+  com1_puts("OSGFX CHROME PREP REST\n");
+  return 1;
+}
+
+uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh) {
+  uint64_t *pg;
+  const struct OsGfxGuestCmd *m;
+  uint32_t *live;
+  uint32_t *src;
+  uint32_t *fb;
+  int w;
+  int h;
+  int pitch;
+  int x0;
+  int y0;
+  int rw;
+  int rh;
+  int yy;
+  uint32_t *drow;
+  const uint32_t *srow;
+
+  m = &osgfx_guest_cmd;
+  pg = chrome_page();
+  live = chrome_buf(m, pg);
+  src = osgfx_chrome_prep_target((int)which);
+  if (pg == 0 || live == 0 || src == 0 || m->fb == 0) {
+    return 0;
+  }
+  w = (int)m->w;
+  h = (int)m->h;
+  if (w < 8 || h < 8 || m->pitch < m->w * 4) {
+    return 0;
+  }
+  chrome_movs(live, src, (unsigned)w * (unsigned)h);
+  pg[OSGFX_WMPAGE_W_CHROME_W] = m->w;
+  pg[OSGFX_WMPAGE_W_CHROME_H] = m->h;
+  pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);
+  chrome_note_mailbox(m);
+  x0 = (int)(xy >> 32);
+  y0 = (int)(xy & 0xffffffffu);
+  rw = (int)(wh >> 32);
+  rh = (int)(wh & 0xffffffffu);
+  if (x0 < 0) {
+    rw = rw + x0;
+    x0 = 0;
+  }
+  if (y0 < 0) {
+    rh = rh + y0;
+    y0 = 0;
+  }
+  if (x0 + rw > w) {
+    rw = w - x0;
+  }
+  if (y0 + rh > h) {
+    rh = h - y0;
+  }
+  if (rw < 1 || rh < 1) {
+    return 0;
+  }
+  fb = (uint32_t *)(uintptr_t)m->fb;
+  pitch = (int)m->pitch;
+  yy = 0;
+  while (yy < rh) {
+    drow = (uint32_t *)((uint8_t *)fb + (unsigned)(y0 + yy) * (unsigned)pitch);
+    srow = live + (unsigned)(y0 + yy) * (unsigned)w + (unsigned)x0;
+    chrome_movs(drow + x0, srow, (unsigned)rw);
+    yy = yy + 1;
+  }
+  pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
+  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
+    pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
+  }
+  return (uint64_t)(unsigned)rw * (uint64_t)(unsigned)rh;
 }

@@ -14,3 +14,17 @@ __attribute__((weak)) int osgfx_pointer_raster(uint32_t *out, int w, int h) {
 }
 __attribute__((weak)) unsigned osgfx_vk_spirv_ready(void) { return 0; }
 __attribute__((weak)) unsigned osgfx_vk_venus_encode(void) { return 0; }
+__attribute__((weak)) uint64_t osgfx_chrome_prep_rest(void) { return 0; }
+__attribute__((weak)) uint64_t osgfx_chrome_prep(uint64_t win0, uint64_t win1) {
+  (void)win0;
+  (void)win1;
+  return 0;
+}
+__attribute__((weak)) uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy,
+                                                        uint64_t wh) {
+  (void)which;
+  (void)xy;
+  (void)wh;
+  return 0;
+}
+__attribute__((weak)) void osgfx_guest_ack(void) {}

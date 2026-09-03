@@ -253,11 +253,39 @@ final List<u8> wmStrRest = const [
   u8(0x20), u8(0x57), u8(0x20),
 ];
 
-/// `'WM WARM TCG'` -- 11 bytes. Attach paid first-translation of max/restore.
+/// `'WM DEFN ENQ '` -- 12 bytes.
 @rodata
-final List<u8> wmStrWarmTcg = const [
-  u8(0x57), u8(0x4D), u8(0x20), u8(0x57), u8(0x41), u8(0x52), u8(0x4D),
-  u8(0x20), u8(0x54), u8(0x43), u8(0x47),
+final List<u8> wmStrDefEnq = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x45), u8(0x46), u8(0x4E),
+  u8(0x20), u8(0x45), u8(0x4E), u8(0x51), u8(0x20),
+];
+
+/// `'WM DEFN BEGIN '` -- 14 bytes.
+@rodata
+final List<u8> wmStrDefBegin = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x45), u8(0x46), u8(0x4E),
+  u8(0x20), u8(0x42), u8(0x45), u8(0x47), u8(0x49), u8(0x4E), u8(0x20),
+];
+
+/// `'WM DEFN COMMIT '` -- 15 bytes.
+@rodata
+final List<u8> wmStrDefCommit = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x45), u8(0x46), u8(0x4E),
+  u8(0x20), u8(0x43), u8(0x4F), u8(0x4D), u8(0x4D), u8(0x49), u8(0x54),
+  u8(0x20),
+];
+
+/// `'WM IRQ '` -- 7 bytes. PIT ticks spent in the input enqueue.
+@rodata
+final List<u8> wmStrIrq = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x49), u8(0x52), u8(0x51), u8(0x20),
+];
+
+/// `'WM PREP MAX'` -- 11 bytes. Idle chrome prep, no visible toggle.
+@rodata
+final List<u8> wmStrPrepMax = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x50),
+  u8(0x20), u8(0x4D), u8(0x41), u8(0x58),
 ];
 
 /// `'WM FOCUS '` -- 9 bytes.
@@ -1476,7 +1504,7 @@ void wmCloseWindow(u64 wI) {
   wmeventResetSlot(wI);
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWLaunch0) + wI, u64(0));
-    wmWarmClear(wI);
+    wmDefClear(wI);
   }
   wmSetWin(wI, u64(wmWinState), u64(wmWinFree));
   if (wmMeta(u64(wmMetaLive)) > u64(0)) {
@@ -1548,6 +1576,253 @@ void wmRestWindow(u64 wI) {
 /// Toggle saved geometry against the largest rectangle the attached backing
 /// store can safely supply. [wmClampSize] keeps this inside stride/pages.
 @bare
+u64 wmDefMaxGeom(u64 wI) {
+  final u64 b = u64(wmBorder);
+  final u64 size = wmClampSize(
+      wI, b, b, fbGeomWidth() - b - b,
+      fbGeomHeight() - u64(wmChromeH) - b - b);
+  return wmPackGeom(b, b, size >> u64(32), size & u64(0xFFFFFFFF));
+}
+
+@bare
+void wmDefEnqueue(u64 kind, u64 slot, u64 oldG, u64 nextG) {
+  final u64 t0 = tick_count();
+  u64 flags = u64(wmDefFlagPending);
+  final u64 prev = wmPage(u64(wmPageWDefOp));
+  if (((prev >> u64(16)) & u64(wmDefFlagPending)) > u64(0)) {
+    /* Last-wins on the same slot. A max then restore keeps final geom. */
+    if (((prev >> u64(8)) & u64(0xFF)) == slot) {
+      oldG = wmPage(u64(wmPageWDefOld));
+    }
+  }
+  wmPageSet(u64(wmPageWDefOp), kind | (slot << u64(8)) | (flags << u64(16)));
+  wmPageSet(u64(wmPageWDefOld), oldG);
+  wmPageSet(u64(wmPageWDefNext), nextG);
+  wmPageSet(u64(wmPageWDefEnqTick), t0);
+  final u64 dt = tick_count() - t0;
+  wmPageSet(u64(wmPageWIrqDt), dt);
+  uartWrite(Rodata.addressOf(wmStrDefEnq), u64(12));
+  uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(kind, u64(1));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(slot, u64(1));
+  uartNewline();
+  uartWrite(Rodata.addressOf(wmStrIrq), u64(7));
+  uartPutHex(dt, u64(2));
+  uartNewline();
+}
+
+@bare
+void wmDefClear(u64 slot) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  final u64 op = wmPage(u64(wmPageWDefOp));
+  if (((op >> u64(8)) & u64(0xFF)) == slot) {
+    wmPageSet(u64(wmPageWDefOp), u64(0));
+  }
+  wmPageSet(u64(wmPageWPrepHave), u64(0));
+}
+
+@bare
+void wmIdlePrep() {
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    return;
+  }
+  if (wmDeOn() < u64(1)) {
+    return;
+  }
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  /* BIOS de-desk is narrower; skip Skia idle prep so scroll is not held. */
+  if (fbGeomWidth() < u64(1200)) {
+    return;
+  }
+  if ((wmPage(u64(wmPageWDefOp)) & u64(wmDefFlagPending)) > u64(0)) {
+    return;
+  }
+  if (wmPrepBufEnsure() < u64(1)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWChromeHave)) < u64(1)) {
+    return;
+  }
+  u64 slot = u64(wmMaxWindows);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmPage(u64(wmPageWLaunch0) + i) == u64(1)) {
+      if (wmWindowUsable(i) > u64(0)) {
+        if (wmGeomW(wmWin(i, u64(wmWinGeom))) >= u64(400)) {
+          slot = i;
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  final u64 have = wmPage(u64(wmPageWPrepHave));
+  final u64 maxG = wmDefMaxGeom(slot);
+  u64 win0 = u64(0);
+  u64 win1 = u64(0);
+  u64 win0Slot = u64(wmMaxWindows);
+  u64 win1Slot = u64(wmMaxWindows);
+  u64 i2 = u64(0);
+  while (i2 < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i2) > u64(0)) {
+      if (wmIsPanel(i2) < u64(1)) {
+        if (wmIsOverlay(i2) < u64(1)) {
+          u64 g = wmWin(i2, u64(wmWinGeom));
+          if (i2 == slot) {
+            g = maxG;
+          }
+          if (win0Slot >= u64(wmMaxWindows)) {
+            win0Slot = i2;
+            win0 = g;
+          } else {
+            if (win1Slot >= u64(wmMaxWindows)) {
+              win1Slot = i2;
+              win1 = g;
+            }
+          }
+        }
+      }
+    }
+    i2 = i2 + u64(1);
+  }
+  if ((have & u64(1)) > u64(0)) {
+    if (wmPage(u64(wmPageWPrepWin0)) == win0) {
+      if (wmPage(u64(wmPageWPrepWin1)) == win1) {
+        if ((have & u64(2)) > u64(0)) {
+          return;
+        }
+      }
+    }
+  }
+  if ((have & u64(2)) < u64(1)) {
+    final u64 rest = osgfx_chrome_prep_rest();
+  }
+  if (osgfx_chrome_prep(win0, win1) < u64(1)) {
+    return;
+  }
+  uartWrite(Rodata.addressOf(wmStrPrepMax), u64(11));
+  uartNewline();
+}
+
+@bare
+void wmDefDrain() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (wmActive() < u64(1)) {
+    return;
+  }
+  if (wmMeta(u64(wmMetaBusy)) > u64(0)) {
+    return;
+  }
+  final u64 packed = wmPage(u64(wmPageWDefOp));
+  if (((packed >> u64(16)) & u64(wmDefFlagPending)) < u64(1)) {
+    return;
+  }
+  final u64 kind = packed & u64(0xFF);
+  final u64 slot = (packed >> u64(8)) & u64(0xFF);
+  final u64 oldG = wmPage(u64(wmPageWDefOld));
+  final u64 nextG = wmPage(u64(wmPageWDefNext));
+  uartWrite(Rodata.addressOf(wmStrDefBegin), u64(14));
+  uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+  uartNewline();
+  wmSetMeta(u64(wmMetaBusy), u64(1));
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerRestore();
+  }
+  if (kind == u64(wmDefKindMax)) {
+    final u64 b = u64(wmBorder);
+    u64 ux = wmGeomX(oldG) - b;
+    u64 uy = wmGeomY(oldG) - b;
+    u64 uw = wmGeomW(oldG) + b + b;
+    u64 uh = wmGeomH(oldG) + b + b;
+    final u64 nx = wmGeomX(nextG) - b;
+    final u64 ny = wmGeomY(nextG) - b;
+    final u64 nw = wmGeomW(nextG) + b + b;
+    final u64 nh = wmGeomH(nextG) + b + b;
+    if (nx < ux) {
+      ux = nx;
+    }
+    if (ny < uy) {
+      uy = ny;
+    }
+    if ((nx + nw) > (ux + uw)) {
+      uw = (nx + nw) - ux;
+    }
+    if ((ny + nh) > (uy + uh)) {
+      uh = (ny + nh) - uy;
+    }
+    u64 which = u64(1);
+    if (wmPage(u64(wmPageWMax0) + slot) > u64(0)) {
+      which = u64(0);
+    }
+    final u64 have = wmPage(u64(wmPageWPrepHave));
+    u64 ready = u64(0);
+    if (which == u64(0)) {
+      if ((have & u64(1)) > u64(0)) {
+        ready = u64(1);
+      }
+    } else {
+      if ((have & u64(2)) > u64(0)) {
+        ready = u64(1);
+      }
+    }
+    if (ready > u64(0)) {
+      wmGfxKick();
+      wmSessionOwedClear();
+      wmPageSet(u64(wmPageWDefOp), packed | (u64(wmDefFlagSeq0) << u64(16)));
+      final u64 xy = (ux << u64(32)) | uy;
+      final u64 wh = (uw << u64(32)) | uh;
+      final u64 px = osgfx_chrome_prep_present(which, xy, wh);
+      osgfx_guest_ack();
+      if (slot < u64(wmMaxWindows)) {
+        final u64 body = wmDrawWindow(slot, u64(1));
+      }
+      wmDamageRect(ux, uy, uw, uh);
+    } else {
+      /* Prep not ready: keep the previous frame. Client COMMIT presents. */
+      wmPageSet(u64(wmPageWDefOp), u64(0));
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        wmPointerPlace(
+            mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+      }
+      wmSetMeta(u64(wmMetaBusy), u64(0));
+      uartWrite(Rodata.addressOf(wmStrDefCommit), u64(15));
+      uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+      uartNewline();
+      return;
+    }
+  } else {
+    if (kind == u64(wmDefKindFocus)) {
+      if (slot < u64(wmMaxWindows)) {
+        final u64 unused = wmRepaintWindow(slot);
+      }
+    }
+  }
+  wmPageSet(u64(wmPageWDefOp), u64(0));
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPointerPlace(
+        mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  }
+  wmSetMeta(u64(wmMetaBusy), u64(0));
+  uartWrite(Rodata.addressOf(wmStrDefCommit), u64(15));
+  uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+  uartNewline();
+  wmLatNotePresent();
+}
+
+@bare
 void wmToggleMaxWindow(u64 wI) {
   if (wmWindowUsable(wI) < u64(1)) {
     return;
@@ -1568,12 +1843,7 @@ void wmToggleMaxWindow(u64 wI) {
   u64 next = saved;
   if (saved < u64(1)) {
     wmPageSet(at, old);
-    u64 size = u64(0);
-    size = wmClampSize(
-        wI, b, b, fbGeomWidth() - b - b,
-        fbGeomHeight() - u64(wmChromeH) - b - b);
-    next = wmPackGeom(
-        b, b, size >> u64(32), size & u64(0xFFFFFFFF));
+    next = wmDefMaxGeom(wI);
   } else {
     wmPageSet(at, u64(0));
   }
@@ -1594,106 +1864,12 @@ void wmToggleMaxWindow(u64 wI) {
   uartNewline();
   uartWrite(Rodata.addressOf(wmStrPhzMax), u64(10));
   uartNewline();
-  final u64 px = wmRepaintUnion2(
-      wmGeomX(old) - b, wmGeomY(old) - b,
-      wmGeomW(old) + b + b, wmGeomH(old) + b + b,
-      wmGeomX(next) - b, wmGeomY(next) - b,
-      wmGeomW(next) + b + b, wmGeomH(next) + b + b);
-  wmSetMeta(
-      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  /* IRQ captures final geom only. Compose waits for a syscall drain. */
+  wmDefEnqueue(u64(wmDefKindMax), wI, old, next);
+  wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
   uartWrite(Rodata.addressOf(wmStrMax), u64(9));
   uartPutHex(wI, u64(1));
   uartNewline();
-}
-
-/// Clears per-slot first-attach warmup so a relaunched FILES pays it again.
-@bare
-void wmWarmClear(u64 slot) {
-  if (wmPageAddr() < u64(1)) {
-    return;
-  }
-  if (slot >= u64(wmMaxWindows)) {
-    return;
-  }
-  final u64 mask = u64(1) << slot;
-  final u64 done = wmPage(u64(wmPageWWarmDone));
-  wmPageSet(u64(wmPageWWarmDone), done - (done & mask));
-  final u64 w = wmPage(u64(wmPageWWarm));
-  if ((w & u64(0xFF)) == (slot + u64(1))) {
-    wmPageSet(u64(wmPageWWarm), u64(0));
-  }
-}
-
-/// After a FILES commit, walk maximize then restore once so TCG translates
-/// toggle + configure + chrome GEOM off the first user click. Body blit
-/// stays held until the client COMMIT (atomic; no cream mid-frame).
-@bare
-void wmWarmupAfterCommit(u64 slot) {
-  if (wmPageAddr() < u64(1)) {
-    return;
-  }
-  if (slot >= u64(wmMaxWindows)) {
-    return;
-  }
-  final u64 cap = wmPage(u64(wmPageWLaunch0) + slot);
-  /* After SET lands, walk FILES max/restore once more so chrome GEOM
-   * with both clients live is translated before the first user click. */
-  if (cap == u64(2)) {
-    if (wmPage(u64(wmPageWDeskWarm)) > u64(0)) {
-      return;
-    }
-    wmPageSet(u64(wmPageWDeskWarm), u64(1));
-    u64 i = u64(0);
-    while (i < u64(wmMaxWindows)) {
-      if (wmPage(u64(wmPageWLaunch0) + i) == u64(1)) {
-        if (wmGeomW(wmWin(i, u64(wmWinGeom))) >= u64(400)) {
-          final u64 mask = u64(1) << i;
-          final u64 done = wmPage(u64(wmPageWWarmDone));
-          wmPageSet(u64(wmPageWWarmDone), done - (done & mask));
-          wmPageSet(u64(wmPageWWarm), u64(0));
-          wmWarmupAfterCommit(i);
-          return;
-        }
-      }
-      i = i + u64(1);
-    }
-    return;
-  }
-  if (cap != u64(1)) {
-    return;
-  }
-  /* Desk overlay cards also land cap=1 at 160×88. Only FILES is 400+. */
-  if (wmGeomW(wmWin(slot, u64(wmWinGeom))) < u64(400)) {
-    return;
-  }
-  final u64 w = wmPage(u64(wmPageWWarm));
-  final u64 id = w & u64(0xFF);
-  final u64 phase = w >> u64(8);
-  final u64 mask = u64(1) << slot;
-  final u64 done = wmPage(u64(wmPageWWarmDone));
-  if (id == (slot + u64(1))) {
-    if (phase == u64(1)) {
-      if (wmPage(u64(wmPageWMax0) + slot) > u64(0)) {
-        wmPageSet(u64(wmPageWWarm), (slot + u64(1)) | (u64(2) << u64(8)));
-        wmToggleMaxWindow(slot);
-      }
-      return;
-    }
-    if (phase == u64(2)) {
-      if (wmPage(u64(wmPageWMax0) + slot) < u64(1)) {
-        wmPageSet(u64(wmPageWWarm), u64(0));
-        uartWrite(Rodata.addressOf(wmStrWarmTcg), u64(11));
-        uartNewline();
-      }
-      return;
-    }
-  }
-  if ((done & mask) > u64(0)) {
-    return;
-  }
-  wmPageSet(u64(wmPageWWarmDone), done | mask);
-  wmPageSet(u64(wmPageWWarm), (slot + u64(1)) | (u64(1) << u64(8)));
-  wmToggleMaxWindow(slot);
 }
 
 /// 1 if `wm de` is on and ([x], [y]) is on window [wI]'s SE resize
@@ -1851,7 +2027,14 @@ u64 wmDeGrab(u64 x, u64 y) {
     } else {
       wmSetMeta(u64(wmMetaTop), slot);
       wmFocusTo(slot);
-      final u64 unused = wmRepaintWindow(slot);
+      if (wmPageAddr() > u64(0)) {
+        wmLatStamp(u64(wmLatKindFocus));
+        wmDefEnqueue(u64(wmDefKindFocus), slot, wmWin(slot, u64(wmWinGeom)),
+            wmWin(slot, u64(wmWinGeom)));
+        wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+      } else {
+        final u64 unused = wmRepaintWindow(slot);
+      }
     }
     return u64(1);
   }

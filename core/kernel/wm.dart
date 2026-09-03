@@ -891,7 +891,13 @@ void wmBlitRow(u64 wI, u64 py) {
    * (848k-store black lower body). Chrome still paints the frame;
    * the hole stays wallpaper until the completion token. */
   if (wmWin(wI, u64(wmWinSeq)) < u64(1)) {
-    return;
+    if (wmPageAddr() < u64(1)) {
+      return;
+    }
+    if (((wmPage(u64(wmPageWDefOp)) >> u64(16)) & u64(wmDefFlagSeq0)) <
+        u64(1)) {
+      return;
+    }
   }
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
@@ -1092,6 +1098,7 @@ void wmCompose() {
     if (wmDeOn() > u64(0)) {
       final u64 deskReady = wmDeskEnsure();
       final u64 chromeReady = wmChromeBufEnsure();
+      final u64 prepReady = wmPrepBufEnsure();
     }
     wmGfxKick();
     osgfx_guest_tick();
@@ -1783,7 +1790,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWMax0) + slot, u64(0));
     wmPageSet(u64(wmPageWLaunch0) + slot, cap);
-    wmWarmClear(slot);
+    wmDefClear(slot);
   }
   // THE NEWEST SURFACE IS ON TOP. That is the whole of this compositor's
   // stacking policy, it is one line, and `display-protocol.md` §0.1 is explicit
@@ -1892,6 +1899,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   }
   wmSetWin(slot, u64(wmWinSeq), seq);
   wmBumpMeta(u64(wmMetaCommits));
+  wmDefDrain();
   uartWrite(Rodata.addressOf(wmStrCommit), u64(12));
   uartPutHex(slot, u64(1));
   uartWrite(Rodata.addressOf(wmStrSeq), u64(5));
@@ -1914,6 +1922,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
       if (dw == ww) {
         if (dh == hh) {
           wmComposeCommit(slot, u64(1), u64(0), u64(0), u64(0), u64(0));
+          wmIdlePrep();
           userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
           return;
         }
@@ -1921,6 +1930,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     }
   }
   wmComposeCommit(slot, u64(0), dx, dy, dw, dh);
+  wmIdlePrep();
   userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
 }
 

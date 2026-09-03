@@ -260,13 +260,28 @@ const int wmPageWEvSeq = 386;
 /// Mailbox win0/win1 caption codes (low 8 / next 8). 1 = FILES, 2 = SET.
 const int wmPageWCapMail = 387;
 
-/// First-attach TCG warmup of maximize/restore (FILES only).
-/// [wmPageWWarm]: low 8 = slot+1, next 8 = phase (1 max issued, 2 restore).
-/// [wmPageWWarmDone]: bit per slot, sticky until close/reattach.
-const int wmPageWWarm = 388;
-const int wmPageWWarmDone = 389;
-/// 1 after SET's first commit triggered a FILES re-walk with both clients live.
-const int wmPageWDeskWarm = 390;
+/// Deferred WM op (Round 14): IRQ enqueues, syscall drains.
+/// [wmPageWDefOp]: kind:8 | slot:8 | flags:8. Kind 1 = max/restore, 2 = focus.
+/// Flags: bit0 pending, bit1 allow seq-0 body blit.
+const int wmPageWDefOp = 388;
+const int wmPageWDefOld = 389;
+const int wmPageWDefNext = 390;
+const int wmPageWDefEnqTick = 391;
+const int wmPageWIrqDt = 392;
+/// Two idle chrome preps (max + restore). Not the live chrome cache.
+const int wmPageWPrepBuf = 393;
+const int wmPageWPrepRest = 394;
+const int wmPageWPrepPx = 395;
+const int wmPageWPrepFrames = 396;
+const int wmPageWPrepHave = 397;
+const int wmPageWPrepWin0 = 398;
+const int wmPageWPrepWin1 = 399;
+
+const int wmDefKindNone = 0;
+const int wmDefKindMax = 1;
+const int wmDefKindFocus = 2;
+const int wmDefFlagPending = 1;
+const int wmDefFlagSeq0 = 2;
 
 const int wmLatKindPtr = 1;
 const int wmLatKindWheel = 2;
@@ -300,6 +315,9 @@ const int wmDeskMaxFrames = 2048;
 /// [wmChromeBufEnsure] declines, `osgfx_chrome_target` answers 0, and the
 /// session tick rasterises straight into the scanout — slowly, and correctly.
 const int wmChromeMaxFrames = 2560;
+
+/// Two idle chrome preps (max + restore), 10 MiB. Separate from the live cache.
+const int wmPrepMaxFrames = 2560;
 
 /// Most frames a damage-repaint scratch may take: 2 MiB, which covers a
 /// decorated 440×280 FRAME window (SET/FILES) and the vacated+new union of a
@@ -1070,6 +1088,58 @@ void wmChromeBufFree() {
   wmPageSet(u64(wmPageWBandBuf), u64(0));
   wmPageSet(u64(wmPageWBandPx), u64(0));
   wmPageSet(u64(wmPageWBandHave), u64(0));
+  wmPrepBufFree();
+}
+
+/// Allocates two full-screen idle chrome preps (max + restore).
+@bare
+u64 wmPrepBufEnsure() {
+  if (wmPageEnsure() < u64(1)) {
+    return u64(0);
+  }
+  final u64 want = wmChromeFramePixels() + wmChromeFramePixels();
+  if (want < u64(1)) {
+    return u64(0);
+  }
+  if (wmPage(u64(wmPageWPrepPx)) >= wmChromeFramePixels()) {
+    if (wmPage(u64(wmPageWPrepBuf)) > u64(0)) {
+      if (wmPage(u64(wmPageWPrepRest)) > u64(0)) {
+        return u64(1);
+      }
+    }
+  }
+  wmPrepBufFree();
+  final u64 n = wmRunFrames(want);
+  if (n > u64(wmPrepMaxFrames)) {
+    return u64(0);
+  }
+  final u64 first = wmRunAlloc(n);
+  if (first < u64(1)) {
+    return u64(0);
+  }
+  final u64 frameB = wmChromeFramePixels() << u64(2);
+  wmPageSet(u64(wmPageWPrepBuf), first);
+  wmPageSet(u64(wmPageWPrepRest), first + frameB);
+  wmPageSet(u64(wmPageWPrepPx), wmChromeFramePixels());
+  wmPageSet(u64(wmPageWPrepFrames), n);
+  wmPageSet(u64(wmPageWPrepHave), u64(0));
+  return u64(1);
+}
+
+@bare
+void wmPrepBufFree() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 buf = wmPage(u64(wmPageWPrepBuf));
+  if (buf > u64(0)) {
+    wmDeskGiveBack(buf, wmPage(u64(wmPageWPrepFrames)));
+  }
+  wmPageSet(u64(wmPageWPrepBuf), u64(0));
+  wmPageSet(u64(wmPageWPrepRest), u64(0));
+  wmPageSet(u64(wmPageWPrepPx), u64(0));
+  wmPageSet(u64(wmPageWPrepFrames), u64(0));
+  wmPageSet(u64(wmPageWPrepHave), u64(0));
 }
 
 /// Marks the cached frame stale WITHOUT giving the buffer back, so the next

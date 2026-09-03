@@ -18,6 +18,18 @@ external u64 osgfx_vk_spirv_ready();
 @extern
 external u64 osgfx_vk_venus_encode();
 
+@extern
+external u64 osgfx_chrome_prep(u64 win0, u64 win1);
+
+@extern
+external u64 osgfx_chrome_prep_rest();
+
+@extern
+external u64 osgfx_chrome_prep_present(u64 which, u64 xy, u64 wh);
+
+@extern
+external void osgfx_guest_ack();
+
 const int wmGfxRadius = 18;
 
 const int wmMetaGfx = 23;
