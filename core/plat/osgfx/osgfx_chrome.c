@@ -680,6 +680,7 @@ static uint64_t g_hit_pop;
 /* HIT present: restore a vacated menu rect from the cache. Never a 1280×720
  * blit — that was the 1.1 s TCG focus hitch after every kick. */
 uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m) {
+  uint64_t *pg;
   uint64_t old;
   int ox;
   int oy;
@@ -695,6 +696,15 @@ uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m) {
     (void)chrome_present_clip(m, ox, oy, OSGFX_POP_W + 8, OSGFX_POP_H + 10);
   }
   g_hit_pop = m->pop;
+  /* Count a cache serve even when the scanout copy is overlay-only.
+   * de-chrome-cache watches BLIT move across unchanged wmCompose ticks. */
+  pg = chrome_page();
+  if (pg != 0) {
+    pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
+    if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
+      pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
+    }
+  }
   return 1;
 }
 
