@@ -1677,6 +1677,63 @@ void wmDamageAll() {
   wmDamageRect(u64(0), u64(0), fbGeomWidth(), fbGeomHeight());
 }
 
+/// Drag/max must present the vacated∪live AABB, not a cursor-sized slice.
+/// Geom is installed in the IRQ before drain; a pointer-only present then
+/// stamps a corner of the new window onto the old one (ghost trail).
+@bare
+void wmDamageDragUnion() {
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  final u64 uw = wmPage(u64(wmPageWDefUw));
+  if (uw > u64(0)) {
+    wmDamageRect(wmPage(u64(wmPageWDefUx)), wmPage(u64(wmPageWDefUy)), uw,
+        wmPage(u64(wmPageWDefUh)));
+    return;
+  }
+  final u64 drag = wmMeta(u64(wmMetaDrag));
+  if (drag < u64(1)) {
+    return;
+  }
+  final u64 wI = drag - u64(1);
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 b = u64(wmBorder);
+  u64 x = wmGeomX(g);
+  u64 y = wmGeomY(g);
+  if (x >= b) {
+    x = x - b;
+  } else {
+    x = u64(0);
+  }
+  if (y >= b) {
+    y = y - b;
+  } else {
+    y = u64(0);
+  }
+  wmDamageRect(x, y, wmGeomW(g) + b + b, wmGeomH(g) + b + b);
+}
+
+@bare
+u64 wmDamageNeedAtomic() {
+  if (wmMeta(u64(wmMetaDrag)) > u64(0)) {
+    return u64(1);
+  }
+  final u64 op = wmPage(u64(wmPageWDefOp));
+  if (((op >> u64(16)) & u64(wmDefFlagPending)) > u64(0)) {
+    final u64 kind = op & u64(0xFF);
+    if (kind == u64(wmDefKindDrag)) {
+      return u64(1);
+    }
+    if (kind == u64(wmDefKindMax)) {
+      return u64(1);
+    }
+  }
+  return u64(0);
+}
+
 @bare
 void wmDamageClear() {
   final u64 f = wmPage(u64(wmPageWFlags));
@@ -1757,8 +1814,12 @@ void wmPacePresent() {
   u64 px = u64(0);
   final u64 unionA = (x1 - x0) * (y1 - y0);
   final u64 screen = fbGeomWidth() * fbGeomHeight();
-  /* Atomic union when the AABB is most of the scanout (drag/max). */
-  if ((unionA + unionA + unionA) > (screen + screen)) {
+  /* Drag/max: always the AABB (no discrete cursor slice). Full fallback
+   * only when the union covers most of the scanout. */
+  if (wmDamageNeedAtomic() > u64(0)) {
+    px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
+    regs = u64(1);
+  } else if ((unionA + unionA + unionA) > (screen + screen)) {
     px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
     regs = u64(1);
     wmPageSet(u64(wmPageWDmgFull), wmPage(u64(wmPageWDmgFull)) + u64(1));

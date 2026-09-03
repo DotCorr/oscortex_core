@@ -135,10 +135,23 @@ def title_seam(pix, x, y, cw, ch, r, th=32):
     teeth = 0
     y0 = y + r
     y1 = y + th
+    # Interior of the rrect only. The AABB flanks past the top radius are
+    # outside the mask (wallpaper is correct). An outside focus ring used
+    # to paint those flanks and hide this; the 2px inset ring does not.
+    x0 = x + r
+    x1 = x + cw - r
+    # A short-card seam is a wide wedge, not a 4px caption/icon chip
+    # whose teal happens to match the wallpaper field.
+    run_min = 16
     for yy in range(max(0, y0), min(y + ch, y1)):
-        for xx in range(x, x + cw):
+        run = 0
+        for xx in range(max(0, x0), min(x + cw, x1)):
             if is_wallpaper(pix[xx, yy]):
-                teeth += 1
+                run += 1
+                if run >= run_min:
+                    teeth += 1
+            else:
+                run = 0
     return teeth
 
 

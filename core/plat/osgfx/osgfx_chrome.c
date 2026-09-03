@@ -511,7 +511,8 @@ static int chrome_span_hit(int x, int x0, int x1) {
  * leave stale FILES pixels in SET's 333-wide hole. */
 static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
                         int h, uint64_t win0, uint64_t win1, uint64_t pop,
-                        uint64_t flags, int csd) {
+                        uint64_t flags, int csd, int cx, int cy, int cw,
+                        int ch) {
   int yy;
   uint32_t *drow;
   const uint32_t *srow;
@@ -538,8 +539,31 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
   if (g_uncover0 != 0 || g_uncover1 != 0) {
     desk = osgfx_desk_cache(&dw, &dh);
   }
-  yy = 0;
-  while (yy < h) {
+  if (cw < 1 || ch < 1) {
+    cx = 0;
+    cy = 0;
+    cw = w;
+    ch = h;
+  }
+  if (cx < 0) {
+    cw = cw + cx;
+    cx = 0;
+  }
+  if (cy < 0) {
+    ch = ch + cy;
+    cy = 0;
+  }
+  if (cx + cw > w) {
+    cw = w - cx;
+  }
+  if (cy + ch > h) {
+    ch = h - cy;
+  }
+  if (cw < 1 || ch < 1) {
+    return;
+  }
+  yy = cy;
+  while (yy < cy + ch) {
     drow = (uint32_t *)((uint8_t *)fb + (unsigned)yy * (unsigned)pitch);
     srow = src + (unsigned)yy * (unsigned)w;
     chrome_body_span(win0, yy, &a0, &a1, csd);
@@ -565,8 +589,8 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
         q1 = px - OSGFX_POP_VIS_L + OSGFX_POP_VIS_W;
       }
     }
-    xx = 0;
-    while (xx < w) {
+    xx = cx;
+    while (xx < cx + cw) {
       hit = chrome_span_hit(xx, a0, a1);
       if (chrome_span_hit(xx, b0, b1) != 0) {
         hit = 1;
@@ -582,7 +606,7 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
         continue;
       }
       x1 = xx + 1;
-      while (x1 < w) {
+      while (x1 < cx + cw) {
         hit = chrome_span_hit(x1, a0, a1);
         if (chrome_span_hit(x1, b0, b1) != 0) {
           hit = 1;
@@ -632,7 +656,7 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m) {
    * every ordinary window as soon as the dock attached.
    */
   chrome_blit((uint32_t *)(uintptr_t)m->fb, (int)m->pitch, buf, (int)m->w,
-              (int)m->h, m->win0, m->win1, m->pop, m->flags, 0);
+              (int)m->h, m->win0, m->win1, m->pop, m->flags, 0, 0, 0, 0, 0);
   pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
   /* The sealed desk field is what this chrome snapshot displays. Count
    * the present as a desk-cache serve so de-pace sees BLIT > REGEN
@@ -918,7 +942,8 @@ uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh) {
   pitch = (int)m->pitch;
   /* Hole-preserving blit: raw row copies stamped wallpaper over SET
    * (and any other client that is not the max/restore slot). */
-  chrome_blit(fb, pitch, live, w, h, m->win0, m->win1, m->pop, m->flags, 0);
+  chrome_blit(fb, pitch, live, w, h, m->win0, m->win1, m->pop, m->flags, 0,
+              x0, y0, rw, rh);
   pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
   if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
     pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;

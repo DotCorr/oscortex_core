@@ -3720,6 +3720,11 @@ void wmPointerTick() {
           wmDamageRect(x, y, u64(wmPtrW), u64(wmPtrH));
         }
       }
+      /* Geom is already the live window. Cursor-only present would
+       * stamp a title-corner chip onto the vacated field. */
+      if (wmMeta(u64(wmMetaDrag)) > u64(0)) {
+        wmDamageDragUnion();
+      }
     }
   } else {
     if (ox != x) {

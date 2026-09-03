@@ -1977,6 +1977,13 @@ void wmDefDrain() {
           u64 uy = wmPage(u64(wmPageWDefUy));
           u64 uw = wmPage(u64(wmPageWDefUw));
           u64 uh = wmPage(u64(wmPageWDefUh));
+          /* Geom-only chrome so the title band follows the live origin
+           * before the union is transferred. Discrete cursor presents
+           * must not run against a stale cache. */
+          if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+            wmGfxKick();
+            osgfx_guest_tick();
+          }
           if (uw < u64(1)) {
             final u64 px = wmRepaintUnion2(
                 wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
@@ -1985,6 +1992,9 @@ void wmDefDrain() {
           } else {
             final u64 px = wmRepaintRect(ux, uy, uw, uh);
           }
+          /* Drain already transferred the AABB. Drop cursor-sized
+           * leftovers so the same tick cannot chip the vacated field. */
+          wmDamageClear();
         }
       }
     }
