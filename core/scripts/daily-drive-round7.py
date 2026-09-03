@@ -245,22 +245,34 @@ def abs_xy(x, y):
 
 
 def place(q, ser, x, y, slop=12):
+    """Bare motion does not print MOUSE ABS (virtab announces on button edge)."""
     ax, ay = abs_xy(x, y)
-    for _ in range(12):
-        n = ser.abs_n
-        q.cmd("input-send-event", events=[
-            {"type": "abs", "data": {"axis": "x", "value": ax}},
-            {"type": "abs", "data": {"axis": "y", "value": ay}}])
-        t = time.time() + 1.2
-        while time.time() < t:
-            ser.read()
-            if ser.abs_n > n:
-                px, py = ser.last_abs
-                if px is not None and abs(px - x) <= slop and abs(py - y) <= slop:
-                    return True
-                break
-            time.sleep(0.04)
-    print("WARN: place(%s,%s) last ABS %s" % (x, y, ser.last_abs))
+    q.cmd("input-send-event", events=[
+        {"type": "abs", "data": {"axis": "x", "value": ax}},
+        {"type": "abs", "data": {"axis": "y", "value": ay}}])
+    ser.read()
+    time.sleep(0.03)
+    return True
+
+
+def place_announce(q, ser, x, y, slop=8, timeout=2.5):
+    """Drive (x,y) and force a button-edge ABS announce (not last-menu coords)."""
+    place(q, ser, x, y)
+    time.sleep(0.08)
+    n = ser.abs_n
+    button(q, x, y, "left", True)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ser.read()
+        if ser.abs_n > n:
+            px, py = ser.last_abs
+            if px is not None and abs(px - x) <= slop and abs(py - y) <= slop:
+                button(q, x, y, "left", False)
+                time.sleep(0.08)
+                return True
+        time.sleep(0.04)
+    button(q, x, y, "left", False)
+    print("WARN: announce(%s,%s) last ABS %s" % (x, y, ser.last_abs))
     return False
 
 
@@ -396,7 +408,7 @@ def assert_probe(q, ser, x, y, slop=8):
     """Drive (x,y) AFTER menus and assert the last ABS is that probe."""
     marked = ser.read()
     n_frame = marked.count("WM FRAME")
-    if not place(q, ser, x, y, slop=slop):
+    if not place_announce(q, ser, x, y, slop=slop):
         raise SystemExit("probe (%d,%d): place did not land (last ABS %s)"
                          % (x, y, ser.last_abs))
     ax, ay = ser.last_abs
