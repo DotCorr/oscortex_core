@@ -337,6 +337,8 @@ def main():
           "files_dock", FILES_DOCK_XY, "wall", WALL_XY, "panel_y", PANEL_Y,
           "gop", gop_w, gop_h)
 
+    # FILES first so SET focus cannot steal later send-key. Dock gear is
+    # SET; never use Start row 1. Absolute tablet after VTAB OK.
     press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left", "FILES CSD", timeout=8)
     time.sleep(0.8)
     press(q, ser, SET_DOCK_XY[0], SET_DOCK_XY[1], "left", "SET CSD", timeout=12)
