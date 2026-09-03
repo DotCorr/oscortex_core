@@ -617,6 +617,12 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m) {
   chrome_blit((uint32_t *)(uintptr_t)m->fb, (int)m->pitch, buf, (int)m->w,
               (int)m->h, m->win0, m->win1, m->pop, m->flags, 0);
   pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
+  /* The sealed desk field is what this chrome snapshot displays. Count
+   * the present as a desk-cache serve so de-pace sees BLIT > REGEN
+   * when chrome HIT skips a second fill_desk_cached. */
+  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
+    pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
+  }
   return (int)(m->w * m->h);
 }
 
