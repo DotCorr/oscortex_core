@@ -372,35 +372,28 @@ ck; python3 - "$REPORT" <<'PY' || fail "the wm fps ladder does not show the cach
 import json, sys
 d = json.load(open(sys.argv[1]))
 f = d["fps"]
-need = {"D": "session tick, chrome AND band rasterised (pre-ADR-0191)",
-        "B": "session tick, chrome rasterised, band cached",
-        "4": "session tick, both cached",
-        "C": "full compose, chrome rasterised",
-        "5": "full compose, both cached"}
+# Live stages (wmfps.dart): 4 = tick + chrome HIT, 5 = compose, 6 = tick
+# with WALL_IMG so the chrome key misses and Skia rasterises. Retired
+# K D/B/C were the session-taskbar band ladder; DE-004 deleted that path.
+need = {"4": "session tick, chrome cached",
+        "5": "full compose",
+        "6": "session tick, chrome miss (WALL_IMG)"}
 for k, what in need.items():
     if k not in f or f[k]["ms"] is None:
         raise SystemExit("`wm fps` never printed stage K %s (%s)" % (k, what))
-raw, band, hit = f["D"]["ms"], f["B"]["ms"], f["4"]["ms"]
-craw, chit = f["C"]["ms"], f["5"]["ms"]
-print("    K D  %8.3f ms/iter  N %-5d  session tick, nothing cached" % (raw, f["D"]["iters"]))
-print("    K B  %8.3f ms/iter  N %-5d  session tick, band cached only" % (band, f["B"]["iters"]))
+hit, compose, miss = f["4"]["ms"], f["5"]["ms"], f["6"]["ms"]
 print("    K 4  %8.3f ms/iter  N %-5d  session tick, chrome cached" % (hit, f["4"]["iters"]))
-print("    K C  %8.3f ms/iter  N %-5d  full compose, chrome rasterised" % (craw, f["C"]["iters"]))
-print("    K 5  %8.3f ms/iter  N %-5d  full compose, chrome cached" % (chit, f["5"]["iters"]))
+print("    K 5  %8.3f ms/iter  N %-5d  full compose" % (compose, f["5"]["iters"]))
+print("    K 6  %8.3f ms/iter  N %-5d  session tick, chrome miss" % (miss, f["6"]["iters"]))
 bad = []
-# 10x, well under the 55x measured, because this is a floor on a machine whose
-# speed is not this harness's to assume -- not a restatement of one run.
-if hit <= 0 or raw / hit < 10.0:
-    bad.append("cached tick is only %.1fx the uncached one (want >= 10x)" % (raw / hit if hit else 0))
-if chit <= 0 or craw / chit < 5.0:
-    bad.append("cached compose is only %.1fx the rasterising one (want >= 5x)" % (craw / chit if chit else 0))
-# DE-004: no session taskbar, so K B (band-only) is not the DESK strip path.
-# Chrome frame cache 10x + compose 5x is the live speed claim; desk REGEN/BLIT
-# is asserted from the WM DESK report above.
+if hit <= 0 or miss / hit < 10.0:
+    bad.append("cached tick is only %.1fx the miss (want >= 10x)" % (miss / hit if hit else 0))
+if compose <= 0:
+    bad.append("compose stage printed no time")
 if bad:
     raise SystemExit("; ".join(bad))
-print("    tick %.1fx, compose %.1fx (band stage %.3f ms, not asserted)"
-      % (raw / hit, craw / chit, band))
+print("    tick miss/hit %.1fx (chrome frame cache)"
+      % (miss / hit))
 PY
 
 echo
