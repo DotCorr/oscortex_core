@@ -1009,6 +1009,31 @@ u64 wmDrawWindow(u64 wI, u64 focus) {
   return (w + b + b) * (h + b + b);
 }
 
+/// Draw every live titled client. Prep present copies wallpaper into
+/// client holes; only redrawing the max/restore slot left SET's body
+/// teal. [top] is painted last so z-order stays honest.
+@bare
+void wmDrawLiveClients(u64 top) {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (i != top) {
+      if (wmWindowUsable(i) > u64(0)) {
+        if (wmIsPanel(i) < u64(1)) {
+          if (wmIsOverlay(i) < u64(1)) {
+            final u64 unused = wmDrawWindow(i, u64(0));
+          }
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  if (top < u64(wmMaxWindows)) {
+    if (wmWindowUsable(top) > u64(0)) {
+      final u64 body = wmDrawWindow(top, u64(1));
+    }
+  }
+}
+
 /// Records [px], releases the re-entrancy guard, and prints `WM FRAME`.
 ///
 /// The pointer has already been drawn (or left alone) by the caller. This is
@@ -2983,6 +3008,12 @@ u64 wmRepaintRect(u64 x, u64 y, u64 w, u64 h) {
        * screen row wrote far beyond the allocation during drag/resize and
        * then blitted unrelated rows back as teal warp. */
       wmRepaintScratchRow(scratch, x, y + j, ww, ww, j);
+      j = j + u64(1);
+    }
+    /* Compose the whole union offscreen, then blit. Row-at-a-time
+     * scanout stores showed the old geometry as a teal ghost. */
+    j = u64(0);
+    while (j < hh) {
       wmRepaintBlitRow(scratch, x, y + j, ww, ww, j);
       j = j + u64(1);
     }

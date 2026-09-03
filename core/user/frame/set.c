@@ -608,12 +608,8 @@ void _start(void) {
     die(0x5E000003UL | (pix_va << 32));
   }
 
-  /* Identity probe before the first fill: a wrong-stride paint used to
-   * fault and never reach SET CSD. */
-  if (csd_noted == 0) {
-    csd_noted = 1;
-    wr(msg_csd, sizeof(msg_csd) - 1);
-  }
+  /* Do not print SET CSD until the first full body is committed.
+   * An early token let the host screenshot a wallpaper hole. */
   {
     u64 n = 0;
     while (n < 8UL) {

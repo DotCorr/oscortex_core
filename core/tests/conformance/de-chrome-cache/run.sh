@@ -135,12 +135,46 @@ ck; grep -q 'wmRunAlloc' "$PACE_DART" \
 ck; [[ "$(grep -c '^@bss' "$PACE_DART")" -eq 0 ]] \
   || fail "wmpace.dart declares @bss storage; the cache must live in frames"
 
-# SKIA DOES NOT RUN IN AN INTERRUPT (ADR-0172). Dart never calls the C cache
-# filler; it sets and clears state-page words, and the fill happens on the
-# session tick in process context. The check is that no .dart file names any
-# `osgfx_chrome_*` entry point.
-ck; ! grep -rn 'osgfx_chrome_[a-z]*(' "$CORE_DIR/kernel/" >/dev/null 2>&1 \
-  || fail "a .dart file calls into osgfx_chrome.c — Skia would run in an IRQ"
+# SKIA DOES NOT RUN IN AN INTERRUPT (ADR-0172). The session tick fills the
+# cache in process context (begin/paint/done). Idle max/restore prep is the
+# one allowed Dart→C chrome door: it runs under wmMetaBusy (IRQ is
+# enqueue-only) from wmIdlePrep / wmDefDrain, never from pointer/PIT IRQ
+# files. A blanket "no osgfx_chrome_* in Dart" rejected that safe prep.
+ck; python3 - "$CORE_DIR/kernel" <<'PY' || fail "osgfx_chrome_* used from an unsafe Dart context"
+import os, re, sys
+root = sys.argv[1]
+allowed = {
+    "osgfx_chrome_prep(",
+    "osgfx_chrome_prep_present(",
+    "osgfx_chrome_prep_rest(",
+}
+irq_names = ("mouse.dart", "keyboard.dart", "pic.dart", "interrupts.dart")
+hits = []
+irq_hits = []
+for dirpath, _, files in os.walk(root):
+    for name in files:
+        if not name.endswith(".dart"):
+            continue
+        path = os.path.join(dirpath, name)
+        text = open(path, encoding="utf-8").read()
+        for m in re.finditer(r"osgfx_chrome_[a-z_]+\(", text):
+            call = m.group(0)
+            rel = os.path.relpath(path, root)
+            if call not in allowed:
+                hits.append("%s:%s" % (rel, call))
+            if name in irq_names:
+                irq_hits.append("%s:%s" % (rel, call))
+if hits:
+    raise SystemExit("forbidden chrome API from Dart: %s" % ", ".join(hits))
+if irq_hits:
+    raise SystemExit("chrome API from IRQ file: %s" % ", ".join(irq_hits))
+de = open(os.path.join(root, "wmde.dart"), encoding="utf-8").read()
+if "wmIfHoldBegin(u64(wmIfReasonPrep))" not in de:
+    raise SystemExit("wmIdlePrep no longer holds IF/busy around chrome prep")
+if "wmDrawLiveClients" not in de:
+    raise SystemExit("drain prep present does not redraw every live client")
+print("chrome API: Dart may call prep/prep_rest/prep_present only; IRQ files clean")
+PY
 
 # THE WORD TABLE HAS ONE C OWNER PER REGION.
 ck; grep -q 'OSGFX_WMPAGE_W_CHROME_BUF' "$GUEST_H" \

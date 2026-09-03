@@ -1943,9 +1943,10 @@ void wmDefDrain() {
       final u64 wh = (uw << u64(32)) | uh;
       final u64 px = osgfx_chrome_prep_present(which, xy, wh);
       osgfx_guest_ack();
-      if (slot < u64(wmMaxWindows)) {
-        final u64 body = wmDrawWindow(slot, u64(1));
-      }
+      /* Prep copies wallpaper into every client hole. Redraw all
+       * titled surfaces, not only the max/restore slot, or SET's
+       * body stays teal until a later full compose. */
+      wmDrawLiveClients(slot);
       wmDamageRect(ux, uy, uw, uh);
     } else {
       /* Prep not ready: keep the previous frame. Client COMMIT presents. */

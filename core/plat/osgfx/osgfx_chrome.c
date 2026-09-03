@@ -873,9 +873,6 @@ uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh) {
   int y0;
   int rw;
   int rh;
-  int yy;
-  uint32_t *drow;
-  const uint32_t *srow;
 
   m = &osgfx_guest_cmd;
   pg = chrome_page();
@@ -917,13 +914,9 @@ uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh) {
   }
   fb = (uint32_t *)(uintptr_t)m->fb;
   pitch = (int)m->pitch;
-  yy = 0;
-  while (yy < rh) {
-    drow = (uint32_t *)((uint8_t *)fb + (unsigned)(y0 + yy) * (unsigned)pitch);
-    srow = live + (unsigned)(y0 + yy) * (unsigned)w + (unsigned)x0;
-    chrome_movs(drow + x0, srow, (unsigned)rw);
-    yy = yy + 1;
-  }
+  /* Hole-preserving blit: raw row copies stamped wallpaper over SET
+   * (and any other client that is not the max/restore slot). */
+  chrome_blit(fb, pitch, live, w, h, m->win0, m->win1, m->pop, m->flags, 0);
   pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
   if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
     pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
