@@ -1445,13 +1445,11 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
       com1_puts("OSGFX CLIENT SHAPE SKIA RRECT\n");
     }
     (void)osgfx_flush(g);
-    skia_release_client();
     return 0;
   }
   if (kind == 2) {
     osgfx_fill_rrect_vgrad(g, x, y, rw, rh, rad, (uint32_t)c0, (uint32_t)c1);
     (void)osgfx_flush(g);
-    skia_release_client();
     return 0;
   }
   if (kind == 3) {
@@ -1467,13 +1465,11 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
       com1_puts("OSGFX CLIENT TEXT OUTLINE\n");
     }
     (void)osgfx_flush(g);
-    skia_release_client();
     return (uint64_t)(unsigned)adv;
   }
   if (kind == 4) {
     osgfx_shadow(g, x, y, rw, rh, rad, 12, (uint32_t)c0);
     (void)osgfx_flush(g);
-    skia_release_client();
     return 0;
   }
   if (kind == 5) {
