@@ -1116,6 +1116,47 @@ def main():
         "max_cold": [], "max_warm": [], "restore_cold": [], "restore_warm": [],
     }
 
+    # First user-visible max/restore immediately after SET re-warm, before
+    # menus translate other TBs. Op-id pairing waits FILES PHZ E.
+    press(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "left", "WM FOCUS", timeout=2)
+    drain_idle(ser)
+    t_max = time.perf_counter()
+    walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
+                                         timeout=4.0, want_opid=True,
+                                         label="max_cold"))
+    drain_idle(ser, quiet=0.08, cap=0.6)
+    shot(q, os.path.join(art, "oscortex-round13-cold-max.png"),
+         os.path.join(fallback, "oscortex-round13-cold-max.png"))
+    try:
+        copy_file(os.path.join(art, "oscortex-round13-cold-max.png"),
+                  os.path.join(art, "oscortex-round13-atomic-max.png"))
+        copy_file(os.path.join(art, "oscortex-round13-cold-max.png"),
+                  os.path.join(art, "oscortex-round13-full-max.png"))
+    except OSError:
+        pass
+    if PHASE_TIMELINES:
+        PHASE_TIMELINES[-1]["qmp_fb_ms"] = round(
+            (time.perf_counter() - t_max) * 1000.0, 1)
+    drain_idle(ser, quiet=0.08, cap=0.6)
+    t_rest = time.perf_counter()
+    walls["restore_cold"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
+                                             FILES_MAX_MAXED_XY[1],
+                                             timeout=4.0, want_opid=True,
+                                             label="restore_cold"))
+    drain_idle(ser)
+    shot(q, os.path.join(art, "oscortex-round13-cold-restore.png"),
+         os.path.join(fallback, "oscortex-round13-cold-restore.png"))
+    if PHASE_TIMELINES:
+        PHASE_TIMELINES[-1]["qmp_fb_ms"] = round(
+            (time.perf_counter() - t_rest) * 1000.0, 1)
+    atomic_png = (
+        os.path.join(art, "oscortex-round13-atomic-max.png")
+        if os.path.isfile(os.path.join(art, "oscortex-round13-atomic-max.png"))
+        else os.path.join(art, "oscortex-round13-cold-max.png")
+    )
+    print("atomic_max", json.dumps(assert_atomic_max(atomic_png)))
+    serial_fatal(serial_path, ser.read())
+
     press(q, ser, FILES_BODY_XY[0], FILES_BODY_XY[1], "left", "FILES SEL", timeout=3)
     walls["focus"].append(timed_click(q, ser, SET_TITLE_XY[0], SET_TITLE_XY[1],
                                       want_opid=True, label="focus"))
@@ -1148,48 +1189,6 @@ def main():
 
     probe_abs = assert_probe(q, ser, PROBE_XY[0], PROBE_XY[1])
 
-    # First user-visible max/restore. Guest attach already walked the
-    # toggle (WM WARM TCG) so TCG is not paid on this click.
-    press(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "left", "WM FOCUS", timeout=2)
-    drain_idle(ser)
-    t_max = time.perf_counter()
-    walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
-                                         timeout=4.0, want_opid=True,
-                                         label="max_cold"))
-    drain_idle(ser, quiet=0.04, cap=0.25)
-    # One dump while maxed (atomic + cold-max). Further dumps waited
-    # until after restore so UART stays drained.
-    shot(q, os.path.join(art, "oscortex-round13-cold-max.png"),
-         os.path.join(fallback, "oscortex-round13-cold-max.png"))
-    try:
-        copy_file(os.path.join(art, "oscortex-round13-cold-max.png"),
-                  os.path.join(art, "oscortex-round13-atomic-max.png"))
-        copy_file(os.path.join(art, "oscortex-round13-cold-max.png"),
-                  os.path.join(art, "oscortex-round13-full-max.png"))
-    except OSError:
-        pass
-    if PHASE_TIMELINES:
-        PHASE_TIMELINES[-1]["qmp_fb_ms"] = round(
-            (time.perf_counter() - t_max) * 1000.0, 1)
-    drain_idle(ser, quiet=0.04, cap=0.25)
-    t_rest = time.perf_counter()
-    walls["restore_cold"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
-                                             FILES_MAX_MAXED_XY[1],
-                                             timeout=4.0, want_opid=True,
-                                             label="restore_cold"))
-    drain_idle(ser)
-    shot(q, os.path.join(art, "oscortex-round13-cold-restore.png"),
-         os.path.join(fallback, "oscortex-round13-cold-restore.png"))
-    if PHASE_TIMELINES:
-        PHASE_TIMELINES[-1]["qmp_fb_ms"] = round(
-            (time.perf_counter() - t_rest) * 1000.0, 1)
-    atomic_png = (
-        os.path.join(art, "oscortex-round13-atomic-max.png")
-        if os.path.isfile(os.path.join(art, "oscortex-round13-atomic-max.png"))
-        else os.path.join(art, "oscortex-round13-cold-max.png")
-    )
-    print("atomic_max", json.dumps(assert_atomic_max(atomic_png)))
-    serial_fatal(serial_path, ser.read())
     cold_text = ser.read()
     if "FILES CSD" not in cold_text and not file_has_token(serial_path, "FILES CSD"):
         raise SystemExit("cold max/restore lost FILES CSD")

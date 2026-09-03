@@ -1662,6 +1662,10 @@ void wmWarmupAfterCommit(u64 slot) {
   if (cap != u64(1)) {
     return;
   }
+  /* Desk overlay cards also land cap=1 at 160×88. Only FILES is 400+. */
+  if (wmGeomW(wmWin(slot, u64(wmWinGeom))) < u64(400)) {
+    return;
+  }
   final u64 w = wmPage(u64(wmPageWWarm));
   final u64 id = w & u64(0xFF);
   final u64 phase = w >> u64(8);
