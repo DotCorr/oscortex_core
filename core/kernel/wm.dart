@@ -1518,8 +1518,10 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   while (i < u64(wmMaxWindows)) {
     if (wmWindowUsable(i) > u64(0)) {
       if (wmIsPanel(i) < u64(1)) {
-        prev = i;
-        n = n + u64(1);
+        if (wmWinResizableOf(i) > u64(0)) {
+          prev = i;
+          n = n + u64(1);
+        }
       }
     }
     i = i + u64(1);

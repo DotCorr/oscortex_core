@@ -829,8 +829,8 @@ time.sleep(0.08)
 button(40, 500, "left", False)
 time.sleep(0.35)
 
-# SET attaches at (180,48) and covers most of FILES. Click the uncovered
-# left FILES strip so the row selects and FILES raises above SET.
+# SET is tiled or right-packed by wmPlaceClient (not over FILES's
+# origin). Click the FILES body so the row selects and FILES raises.
 press(100, 160, "left", "FILES SEL")
 marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
