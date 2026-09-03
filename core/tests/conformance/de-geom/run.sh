@@ -37,7 +37,7 @@ ck; grep -q 'dw = ww - dx' "$WM" \
 ck; grep -q 'dh = hh - dy' "$WM" \
   || fail "stale tall commits are still refused instead of clipped"
 ck; grep -q 'if (dx >= ww)' "$WM" \
-  || fail "origin-outside commits are no longer refused"
+  || fail "origin-outside commits are no longer clipped into the live geom"
 ck; grep -q 'if (dw < u64(1))' "$WM" \
   || fail "zero-extent commits are no longer refused"
 ck; grep -q 'const int wmPopW = 168' "$POP" \

@@ -1797,47 +1797,37 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   final u64 g = wmWin(slot, u64(wmWinGeom));
   final u64 ww = wmGeomW(g);
   final u64 hh = wmGeomH(g);
-  final u64 dx = wmDesc(ptr, u64(wmDescX));
-  final u64 dy = wmDesc(ptr, u64(wmDescY));
+  u64 dx = wmDesc(ptr, u64(wmDescX));
+  u64 dy = wmDesc(ptr, u64(wmDescY));
   u64 dw = wmDesc(ptr, u64(wmDescW));
   u64 dh = wmDesc(ptr, u64(wmDescH));
-  // Origin outside the live window or a zero extent is refused. A
-  // damage rect that overruns the live geom is clipped: rapid
-  // max/restore leaves a stale full-surface commit in the client
+  // Zero extent is still a refusal (garbage from the client). A
+  // damage rect that misses or overruns the live geom is clipped:
+  // rapid max/restore leaves a stale commit at the old origin/size
   // before configure is popped, and that is valid input.
-  if (dx >= ww) {
+  if (dw < u64(1)) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
     return;
+  }
+  if (dh < u64(1)) {
+    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
+    return;
+  }
+  if (dx >= ww) {
+    dx = u64(0);
+    dw = ww;
+  } else {
+    if (dw > (ww - dx)) {
+      dw = ww - dx;
+    }
   }
   if (dy >= hh) {
-    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
-    return;
-  }
-  if (dw < u64(1)) {
-    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
-    return;
-  }
-  if (dh < u64(1)) {
-    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
-    return;
-  }
-  // Stale full-surface commits after a shrink or restore are clipped
-  // to the live geom. A clamp of the damage rect is not a lie about
-  // the window size: the return is the frame count. Origin outside
-  // the live window or a zero extent is still a refusal.
-  if (dw > (ww - dx)) {
-    dw = ww - dx;
-  }
-  if (dh > (hh - dy)) {
-    dh = hh - dy;
-  }
-  if (dw < u64(1)) {
-    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
-    return;
-  }
-  if (dh < u64(1)) {
-    wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
-    return;
+    dy = u64(0);
+    dh = hh;
+  } else {
+    if (dh > (hh - dy)) {
+      dh = hh - dy;
+    }
   }
   wmSetWin(slot, u64(wmWinSeq), seq);
   wmBumpMeta(u64(wmMetaCommits));
