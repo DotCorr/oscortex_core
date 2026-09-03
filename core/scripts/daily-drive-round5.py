@@ -40,12 +40,12 @@ class Qmp:
         last = None
         while time.time() < deadline:
             try:
-        self.s = socket.create_connection(("127.0.0.1", port), timeout=2)
-        self.s.settimeout(90)
-        self.f = self.s.makefile("rw", encoding="utf-8")
-        json.loads(self.f.readline())
-        self.cmd("qmp_capabilities")
-        return
+                self.s = socket.create_connection(("127.0.0.1", port), timeout=2)
+                self.s.settimeout(90)
+                self.f = self.s.makefile("rw", encoding="utf-8")
+                json.loads(self.f.readline())
+                self.cmd("qmp_capabilities")
+                return
             except OSError as e:
                 last = e
                 time.sleep(0.2)
