@@ -1402,6 +1402,7 @@ def main():
             walls["max_cold"].append(timed_click(
                 q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1], timeout=4.0,
                 want_opid=True, label="max_cold"))
+            wait_mark(ser, "FILES PHZ PAINT E", ser.read(), 2)
             time.sleep(0.12)
             walls["restore_cold"].append(timed_click(
                 q, ser, FILES_MAX_MAXED_XY[0], FILES_MAX_MAXED_XY[1],
@@ -1465,7 +1466,7 @@ def main():
     if heap_hi == 0:
         heap_hi = parse_heap_hi(serial_fatal(serial_path, text))
     metrics = {
-        "round": 14,
+        "round": 15,
         "git_sha": git_sha,
         "kernel_sha256": kernel_sha,
         "iso_sha256": iso_sha,
@@ -1554,7 +1555,7 @@ def main():
     payload = json.dumps(metrics, indent=2) + "\n"
     open(os.path.join(outdir, "metrics.json"), "w").write(payload)
     mem_payload = json.dumps({
-        "round": 14,
+        "round": 15,
         "heap_high_water": heap_hi,
         "heap_cap": 4 * 1024 * 1024,
         "osgfx_oom": metrics["osgfx_oom"],
@@ -1571,7 +1572,7 @@ def main():
         open(os.path.join(fallback, "oscortex-round15-memory.json"), "w").write(mem_payload)
     live_pages = [int(x, 16) for x in re.findall(r"^SHM LIVE ([0-9A-F]+)", text, re.M)]
     shm_payload = json.dumps({
-        "round": 14,
+        "round": 15,
         "window_pages": 1024,
         "retain_max_backing": True,
         "max_pages_per_region": 1021,
@@ -1594,7 +1595,7 @@ def main():
         open(os.path.join(fallback, "oscortex-round15-latency.json"), "w").write(payload)
         print("WARN: latency JSON written to fallback")
     phase_payload = json.dumps({
-        "round": 14,
+        "round": 15,
         "pairing": metrics.get("pairing"),
         "counts": metrics["phase"],
         "timelines": metrics.get("phase_timelines") or [],
