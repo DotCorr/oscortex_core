@@ -284,6 +284,14 @@ static void bind(OsGfx *g) {
     g_one_bound_pitch = g->pitch;
     g_one_bound_w = g->w;
     g_one_bound_h = g->h;
+    /* Raise the seal to this wrapper. client_begin must not rewind a
+     * canvas that bind() just allocated above the previous mark —
+     * that left unique_ptr holding a dead object and the next
+     * drawRRect/internalRestore #GP/#PF'd (de-pace OP 488B, UEFI
+     * CR2 FFFFFFFFFFFFFF48). Do not set g_one_paint_sealed here:
+     * chrome_heap_after_paint still has to raise the seal again so
+     * first-paint Skia records stay with the live canvas. */
+    osgfx_heap_chrome_seal();
   }
 }
 
@@ -307,6 +315,9 @@ static SkCanvas *canvas_of(OsGfx *g) {
       if (g_one_paint_sealed != 0) {
         osgfx_heap_client_begin();
       }
+      /* Next chrome_heap_after_paint must reseal: this wrapper and
+       * its first-paint records sit above the previous mark. */
+      g_one_paint_sealed = 0;
     }
   }
   if (g->canvas == 0) {
@@ -1374,12 +1385,6 @@ __attribute__((noinline)) static void tick_body(void) {
       osgfx_chrome_begin(m);
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
-      /* Full miss: drop and rebind. Reusing a canvas whose device was
-       * allocated then overwritten by arena rewind is de-pace's first
-       * CHROME MISS #GP (SkCanvas::drawRRect +0x7, OP 488B). */
-      g->owned.reset();
-      g->canvas = 0;
-      g_one_bound_px = 0;
       (void)canvas_of(g);
       if (geom_only != 0) {
         uint64_t old0;
