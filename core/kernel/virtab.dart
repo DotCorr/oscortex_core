@@ -254,6 +254,9 @@ void virtabInit(u64 announce) {
     return;
   }
   virtgpuRamPut32(frame + u64(virtabOffHdr) + u64(32), qsz);
+  /* Last announced pixel xy. 0xFFFFFFFF = never, so the first place prints. */
+  virtgpuRamPut32(frame + u64(virtabOffHdr) + u64(36), u64(0xFFFFFFFF));
+  virtgpuRamPut32(frame + u64(virtabOffHdr) + u64(40), u64(0xFFFFFFFF));
   virtgpuCfgPut16(cfg, u64(virtgpuCfgQSize), qsz);
   virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), frame);
   virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), frame + u64(virtabOffAvail));
@@ -289,13 +292,41 @@ void virtabCommit(u64 hdr) {
   final u64 prev = virtgpuRamGet32(hdr + u64(28));
   final u64 x = virtabScale(rawX, maxX, fbGeomWidth());
   final u64 y = virtabScale(rawY, maxY, fbGeomHeight());
-  // Every SYN would flood COM1 while cocoa tracks the host cursor and
-  // qmp-drive waits for serial quiet. Print on a button edge (the
-  // Start-click prove) and stay silent on bare motion.
+  // Every SYN would flood COM1. Print on a button edge or when the
+  // pointer has moved at least 12px from the last announced sample
+  // so bare place/drag proves ABS without a button edge.
   u64 announce = u64(0);
+  final u64 lastX = virtgpuRamGet32(hdr + u64(36));
+  final u64 lastY = virtgpuRamGet32(hdr + u64(40));
   if (buttons != prev) {
     announce = u64(1);
     virtgpuRamPut32(hdr + u64(28), buttons);
+  }
+  if (lastX == u64(0xFFFFFFFF)) {
+    announce = u64(1);
+  } else {
+    u64 dx = u64(0);
+    u64 dy = u64(0);
+    if (x > lastX) {
+      dx = x - lastX;
+    } else {
+      dx = lastX - x;
+    }
+    if (y > lastY) {
+      dy = y - lastY;
+    } else {
+      dy = lastY - y;
+    }
+    if (dx >= u64(12)) {
+      announce = u64(1);
+    }
+    if (dy >= u64(12)) {
+      announce = u64(1);
+    }
+  }
+  if (announce > u64(0)) {
+    virtgpuRamPut32(hdr + u64(36), x);
+    virtgpuRamPut32(hdr + u64(40), y);
   }
   mouseAbsPlace(x, y, buttons, announce);
 }

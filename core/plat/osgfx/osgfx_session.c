@@ -356,9 +356,9 @@ static void paint_soft_shadow(OsGfx *g, uint32_t *fb, int pitch, int x, int y,
   osgfx_shadow(g, x + 6, y + 10, w, h, r, 18, SESS_SHADOW);
 }
 
-/* Mid-span sides only. An AABB through the curve stamped OSGFX_FOCUS
- * (near-white) onto wallpaper and read as corner teeth. Corner pixels
- * are the coverage difference of the outer vs inner rrect. */
+/* 2px inset ring following the window rrect. Outer = window inset 2
+ * (radius r-2); inner = that minus thickness b. An outside AABB mid
+ * bar missed the mask and read as a straight-edge mismatch. */
 static void paint_border_corner(OsGfx *g, int x0, int y0, int x1, int y1, int wx,
                                 int wy, int ww, int wh, int r, int b,
                                 uint32_t border) {
@@ -367,16 +367,47 @@ static void paint_border_corner(OsGfx *g, int x0, int y0, int x1, int y1, int wx
   int cov;
   int cov_o;
   int cov_i;
+  int ox;
+  int oy;
+  int ow;
+  int oh;
   int orad;
+  int ix;
+  int iy;
+  int iw;
+  int ih;
+  int irad;
+  int inset;
 
-  orad = r + b;
+  inset = 2;
+  ox = wx + inset;
+  oy = wy + inset;
+  ow = ww - inset - inset;
+  oh = wh - inset - inset;
+  orad = r - inset;
+  if (orad < 1) {
+    orad = 1;
+  }
+  if (ow < 2 || oh < 2) {
+    return;
+  }
+  ix = ox + b;
+  iy = oy + b;
+  iw = ow - b - b;
+  ih = oh - b - b;
+  irad = orad - b;
+  if (irad < 1) {
+    irad = 1;
+  }
   yy = y0;
   while (yy < y1) {
     xx = x0;
     while (xx < x1) {
-      cov_o = osgfx_rrect_cover(xx, yy, wx - b, wy - b, ww + b + b, wh + b + b,
-                                orad);
-      cov_i = osgfx_rrect_cover(xx, yy, wx, wy, ww, wh, r);
+      cov_o = osgfx_rrect_cover(xx, yy, ox, oy, ow, oh, orad);
+      cov_i = 0;
+      if (iw > 0 && ih > 0) {
+        cov_i = osgfx_rrect_cover(xx, yy, ix, iy, iw, ih, irad);
+      }
       cov = cov_o - cov_i;
       if (cov > 255) {
         cov = 255;
@@ -397,6 +428,12 @@ static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
   int h;
   int b;
   int r;
+  int inset;
+  int ox;
+  int oy;
+  int ow;
+  int oh;
+  int orad;
   int mid_w;
   int mid_h;
 
@@ -418,24 +455,36 @@ static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
   if (r + r > h) {
     r = h / 2;
   }
-  mid_w = w - r - r;
-  mid_h = h - r - r;
+  inset = 2;
+  ox = x + inset;
+  oy = y + inset;
+  ow = w - inset - inset;
+  oh = h - inset - inset;
+  orad = r - inset;
+  if (orad < 1) {
+    orad = 1;
+  }
+  if (ow < 4 || oh < 4) {
+    return;
+  }
+  mid_w = ow - orad - orad;
+  mid_h = oh - orad - orad;
   if (mid_w > 0) {
-    osgfx_fill_rect(g, x + r, y - b, mid_w, b, border);
-    osgfx_fill_rect(g, x + r, y + h, mid_w, b, border);
+    osgfx_fill_rect(g, ox + orad, oy, mid_w, b, border);
+    osgfx_fill_rect(g, ox + orad, oy + oh - b, mid_w, b, border);
   }
   if (mid_h > 0) {
-    osgfx_fill_rect(g, x - b, y + r, b, mid_h, border);
-    osgfx_fill_rect(g, x + w, y + r, b, mid_h, border);
+    osgfx_fill_rect(g, ox, oy + orad, b, mid_h, border);
+    osgfx_fill_rect(g, ox + ow - b, oy + orad, b, mid_h, border);
   }
-  paint_border_corner(g, x - b, y - b, x + r + 1, y + r + 1, x, y, w, h, r, b,
-                      border);
-  paint_border_corner(g, x + w - r - 1, y - b, x + w + b, y + r + 1, x, y, w, h,
+  paint_border_corner(g, ox, oy, ox + orad + b + 1, oy + orad + b + 1, x, y, w, h,
                       r, b, border);
-  paint_border_corner(g, x - b, y + h - r - 1, x + r + 1, y + h + b, x, y, w, h,
-                      r, b, border);
-  paint_border_corner(g, x + w - r - 1, y + h - r - 1, x + w + b, y + h + b, x, y,
-                      w, h, r, b, border);
+  paint_border_corner(g, ox + ow - orad - b - 1, oy, ox + ow, oy + orad + b + 1, x,
+                      y, w, h, r, b, border);
+  paint_border_corner(g, ox, oy + oh - orad - b - 1, ox + orad + b + 1, oy + oh, x,
+                      y, w, h, r, b, border);
+  paint_border_corner(g, ox + ow - orad - b - 1, oy + oh - orad - b - 1, ox + ow,
+                      oy + oh, x, y, w, h, r, b, border);
 }
 
 /* ADR-0183: frame + title band only — never fill the client body.

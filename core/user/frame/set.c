@@ -208,38 +208,74 @@ static void fill_cpu(u64 va, u64 x, u64 y, u64 w, u64 h, u32 rgb) {
   }
 }
 
+/* 3 cols need SIDE_W+12+2*96+88 = 412. A 320-wide sit-in tile gets 2. */
+static u64 appear_cols(void) {
+  if (set_w >= (SIDE_W + 12UL + 192UL + 88UL)) {
+    return 3UL;
+  }
+  if (set_w >= (SIDE_W + 12UL + 96UL + 88UL)) {
+    return 2UL;
+  }
+  return 1UL;
+}
+
+static u64 appear_row_h(void) {
+  if (appear_cols() < 3UL) {
+    return 36UL;
+  }
+  return 48UL;
+}
+
+static u64 appear_card_h(void) {
+  if (appear_cols() < 3UL) {
+    return 32UL;
+  }
+  return 40UL;
+}
+
 static void paint_appear_chrome(u64 on) {
   u64 tx;
+  u64 ty;
   u64 i;
+  u64 cols;
+  u64 ch;
+  u64 rh;
   const char *state;
   unsigned nstate;
 
+  cols = appear_cols();
+  ch = appear_card_h();
+  rh = appear_row_h();
   osxui_app_text(shm_h, SIDE_W + 16UL, OSXUI_CSD_H + 12UL, lab_app, 10UL,
                  WM_TEXT_TITLE_PX, WM_TEXT_MEDIUM, LAB_FG);
   i = 0;
   while (i < 6UL) {
-    tx = SIDE_W + 12UL + (i % 3UL) * 96UL;
-    osxui_app_card(shm_h, tx, OSXUI_CSD_H + 52UL + (i / 3UL) * 48UL, 88UL, 40UL,
-                   (i == theme_sel) ? 1UL : 0UL, THEME_CARD, SIDE_SEL);
-    fill_cpu(pix_va, tx + 10UL, OSXUI_CSD_H + 68UL + (i / 3UL) * 48UL, 8UL, 8UL,
-             0x00E07070UL);
-    fill_cpu(pix_va, tx + 24UL, OSXUI_CSD_H + 68UL + (i / 3UL) * 48UL, 8UL, 8UL,
-             0x00E0C040UL);
-    fill_cpu(pix_va, tx + 38UL, OSXUI_CSD_H + 68UL + (i / 3UL) * 48UL, 8UL, 8UL,
-             ACCENT_SEL);
+    tx = SIDE_W + 12UL + (i % cols) * 96UL;
+    ty = OSXUI_CSD_H + 52UL + (i / cols) * rh;
+    osxui_app_card(shm_h, tx, ty, 88UL, ch, (i == theme_sel) ? 1UL : 0UL,
+                   THEME_CARD, SIDE_SEL);
+    osxui_app_rrect(shm_h, tx + 10UL, ty + 12UL, 8UL, 8UL, 4UL, 0x00E07070UL);
+    osxui_app_rrect(shm_h, tx + 24UL, ty + 12UL, 8UL, 8UL, 4UL, 0x00E0C040UL);
+    osxui_app_rrect(shm_h, tx + 38UL, ty + 12UL, 8UL, 8UL, 4UL, ACCENT_SEL);
     i = i + 1;
   }
-  fill_cpu(pix_va, SIDE_W + 16UL, CTL_Y - 18UL, 52UL, 22UL, SIDE_SEL);
-  fill_cpu(pix_va, CTL_X, CTL_Y + 28UL, 18UL, 18UL, 0x00E05050UL);
-  fill_cpu(pix_va, CTL_X + 28UL, CTL_Y + 28UL, 18UL, 18UL, 0x00E0C040UL);
-  fill_cpu(pix_va, CTL_X + 56UL, CTL_Y + 28UL, 18UL, 18UL, 0x0040C060UL);
+  osxui_app_rrect(shm_h, SIDE_W + 16UL, CTL_Y - 18UL, 52UL, 22UL, 8UL, SIDE_SEL);
+  osxui_app_rrect(shm_h, CTL_X, CTL_Y + 28UL, 18UL, 18UL, 8UL, 0x00E05050UL);
+  osxui_app_rrect(shm_h, CTL_X + 28UL, CTL_Y + 28UL, 18UL, 18UL, 8UL,
+                  0x00E0C040UL);
+  osxui_app_rrect(shm_h, CTL_X + 56UL, CTL_Y + 28UL, 18UL, 18UL, 8UL,
+                  0x0040C060UL);
   if (on > 0) {
-    fill_cpu(pix_va, CTL_X + 84UL, CTL_Y + 28UL, 18UL, 18UL, ACCENT_SEL);
-    fill_cpu(pix_va, CTL_X + 88UL, CTL_Y + 32UL, 10UL, 10UL, 0x00F8FCFFUL);
+    osxui_app_rrect(shm_h, CTL_X + 84UL, CTL_Y + 28UL, 18UL, 18UL, 8UL,
+                    ACCENT_SEL);
+    osxui_app_rrect(shm_h, CTL_X + 88UL, CTL_Y + 32UL, 10UL, 10UL, 4UL,
+                    0x00F8FCFFUL);
   } else {
-    fill_cpu(pix_va, CTL_X + 84UL, CTL_Y + 28UL, 18UL, 18UL, 0x00A0B0C0UL);
+    osxui_app_rrect(shm_h, CTL_X + 84UL, CTL_Y + 28UL, 18UL, 18UL, 8UL,
+                    0x00A0B0C0UL);
   }
-  fill_cpu(pix_va, CTL_X + 112UL, CTL_Y + 28UL, 18UL, 18UL, 0x008060C0UL);
+  osxui_app_rrect(shm_h, CTL_X + 112UL, CTL_Y + 28UL, 18UL, 18UL, 8UL,
+                  0x008060C0UL);
   state = lab_off;
   nstate = 3U;
   if (on > 0) {
@@ -251,16 +287,33 @@ static void paint_appear_chrome(u64 on) {
 }
 
 static void paint_devices_chrome(void) {
+  u64 x0;
+  u64 x1;
+  u64 cw;
+
   osxui_app_text(shm_h, SIDE_W + 16UL, OSXUI_CSD_H + 12UL, lab_dev, 7UL,
                  WM_TEXT_TITLE_PX, WM_TEXT_MEDIUM, LAB_FG);
-  osxui_app_card(shm_h, SIDE_W + 12UL, OSXUI_CSD_H + 48UL, 140UL, 56UL, 0UL,
-                 THEME_CARD, SIDE_SEL);
-  osxui_app_card(shm_h, SIDE_W + 164UL, OSXUI_CSD_H + 48UL, 140UL, 56UL, 0UL,
-                 THEME_CARD, SIDE_SEL);
-  osxui_app_card(shm_h, SIDE_W + 12UL, OSXUI_CSD_H + 116UL, 140UL, 56UL, 0UL,
-                 THEME_CARD, SIDE_SEL);
-  osxui_app_card(shm_h, SIDE_W + 164UL, OSXUI_CSD_H + 116UL, 140UL, 56UL, 0UL,
-                 THEME_CARD, SIDE_SEL);
+  x0 = SIDE_W + 12UL;
+  cw = 140UL;
+  x1 = x0 + cw + 12UL;
+  if ((x1 + cw) > set_w) {
+    cw = 0;
+  }
+  osxui_app_card(shm_h, x0, OSXUI_CSD_H + 48UL, 140UL, 56UL, 0UL, THEME_CARD,
+                 SIDE_SEL);
+  if (cw > 0) {
+    osxui_app_card(shm_h, x1, OSXUI_CSD_H + 48UL, 140UL, 56UL, 0UL, THEME_CARD,
+                   SIDE_SEL);
+    osxui_app_card(shm_h, x0, OSXUI_CSD_H + 116UL, 140UL, 56UL, 0UL, THEME_CARD,
+                   SIDE_SEL);
+    osxui_app_card(shm_h, x1, OSXUI_CSD_H + 116UL, 140UL, 56UL, 0UL, THEME_CARD,
+                   SIDE_SEL);
+  } else {
+    osxui_app_card(shm_h, x0, OSXUI_CSD_H + 112UL, 140UL, 56UL, 0UL, THEME_CARD,
+                   SIDE_SEL);
+    osxui_app_card(shm_h, x0, OSXUI_CSD_H + 176UL, 140UL, 56UL, 0UL, THEME_CARD,
+                   SIDE_SEL);
+  }
 }
 
 static void paint_sidebar(void) {
@@ -268,12 +321,14 @@ static void paint_sidebar(void) {
     fill_cpu(pix_va, 0, OSXUI_CSD_H, SIDE_W, set_h - OSXUI_CSD_H, SIDE_FILL);
   }
   if (page == PAGE_APPEAR) {
-    fill_cpu(pix_va, 8UL, OSXUI_CSD_H + 68UL, SIDE_W - 16UL, 24UL, SIDE_SEL);
+    osxui_app_rrect(shm_h, 8UL, OSXUI_CSD_H + 68UL, SIDE_W - 16UL, 24UL, 12UL,
+                    SIDE_SEL);
   }
   osxui_app_text(shm_h, 16UL, OSXUI_CSD_H + 72UL, lab_app, 10UL,
                  WM_TEXT_LABEL_PX, WM_TEXT_MEDIUM, LAB_FG);
   if (page == PAGE_DEVICES) {
-    fill_cpu(pix_va, 8UL, OSXUI_CSD_H + 100UL, SIDE_W - 16UL, 24UL, SIDE_SEL);
+    osxui_app_rrect(shm_h, 8UL, OSXUI_CSD_H + 100UL, SIDE_W - 16UL, 24UL, 12UL,
+                    SIDE_SEL);
   }
   osxui_app_text(shm_h, 16UL, OSXUI_CSD_H + 104UL, lab_dev, 7UL,
                  WM_TEXT_LABEL_PX, WM_TEXT_MEDIUM, LAB_FG);
@@ -457,12 +512,12 @@ static u64 press_in_theme(u64 ev) {
   }
   i = 0;
   while (i < 6UL) {
-    tx = SIDE_W + 12UL + (i % 3UL) * 96UL;
-    ty = OSXUI_CSD_H + 52UL + (i / 3UL) * 48UL;
+    tx = SIDE_W + 12UL + (i % appear_cols()) * 96UL;
+    ty = OSXUI_CSD_H + 52UL + (i / appear_cols()) * appear_row_h();
     if (rx >= tx) {
       if (rx < (tx + 88UL)) {
         if (ry >= ty) {
-          if (ry < (ty + 40UL)) {
+          if (ry < (ty + appear_card_h())) {
             theme_sel = i;
             paint_all(pix_va, armed);
             commit_rect(0, 0, set_w, set_h, 6);

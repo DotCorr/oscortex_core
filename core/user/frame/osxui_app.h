@@ -475,30 +475,18 @@ static inline void osxui_app_chrome_close(unsigned long h, unsigned long x,
 static inline void osxui_app_csd_win(unsigned long h, unsigned long win_w,
                                      unsigned long win_h, const char *cap,
                                      unsigned long ncap) {
-  unsigned long cx;
-  unsigned long mx;
-  unsigned long xx;
   unsigned long hh = win_h;
   if (hh < OSXUI_CSD_H + OSXUI_CSD_R) {
     hh = OSXUI_CSD_H + OSXUI_CSD_R;
   }
-  /* Window-rrect title band, not a short card (that rounded the caption
-   * bottom and contradicted the compositor mask). Compositor still skips
-   * py < wmTitleH; SHM geometry matches the scanout card. */
-  osxui_app_title_band(h, 0, 0, win_w, hh, OSXUI_CSD_H, OSXUI_CSD_R,
-                       OSXUI_CSD_TOP, OSXUI_CSD_BOT);
-  osxui_app_rrect(h, 2UL, 1UL, win_w - 4UL, 2UL, 1UL, OSXUI_GLASS_HAIR);
-  osxui_app_rrect(h, 0, OSXUI_CSD_H - 1UL, win_w, 1, 0, 0x00C8D0D8UL);
-  cx = win_w - OSXUI_CSD_GAP - OSXUI_CSD_BTN;
-  mx = cx - OSXUI_CSD_GAP - OSXUI_CSD_BTN;
-  xx = mx - OSXUI_CSD_GAP - OSXUI_CSD_BTN;
-  osxui_app_chrome_max(h, xx, OSXUI_CSD_PAD);
-  osxui_app_chrome_min(h, mx, OSXUI_CSD_PAD);
-  osxui_app_chrome_close(h, cx, OSXUI_CSD_PAD);
-  if (cap != 0 && ncap > 0) {
-    osxui_app_text(h, 16UL, 9UL, cap, ncap, WM_TEXT_TITLE_PX, WM_TEXT_MEDIUM,
-                   OSXUI_CSD_FG);
-  }
+  /* Compositor owns the scanout title (skips py < wmTitleH on blit).
+   * Do not waste a window-rrect vgrad or caption the compositor will
+   * never sample. osxui_app_title_band stays a published primitive. */
+  (void)h;
+  (void)win_w;
+  (void)hh;
+  (void)cap;
+  (void)ncap;
 }
 
 static inline void osxui_app_csd(unsigned long h, unsigned long win_w,
