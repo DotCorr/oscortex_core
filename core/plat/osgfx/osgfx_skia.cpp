@@ -1188,9 +1188,6 @@ __attribute__((noinline)) static void tick_body(void) {
     last_gen = m->gen;
     return;
   }
-  if (heap_needs_rewind() != 0) {
-    drop_skia_before_rewind();
-  }
   ww = (int)m->w;
   hh = (int)m->h;
   g = osgfx_create(ww, hh);
@@ -1201,14 +1198,28 @@ __attribute__((noinline)) static void tick_body(void) {
     struct OsGfxGuestCmd local = *m;
     uint32_t *target = osgfx_chrome_target(m);
     uint32_t seed;
+    int focus_only;
+    int geom_only;
     if (target != 0) {
       local.fb = (uint64_t)(uintptr_t)target;
       local.pitch = m->w * 4;
     }
+    focus_only = (target != 0 && osgfx_chrome_is_focus_only(m) != 0);
+    geom_only = (target != 0 && focus_only == 0 &&
+                 osgfx_chrome_is_geom_only(m) != 0);
+    /* Rewind only on a full miss. Focus/geom keep g_one; a tight-heap
+     * drop here was the 1.8s TCG hitch on every raise/max. */
+    if (focus_only == 0 && geom_only == 0 && heap_needs_rewind() != 0) {
+      drop_skia_before_rewind();
+      g = osgfx_create(ww, hh);
+      if (g == 0) {
+        return;
+      }
+    }
     /* Focus/raise flips only TOP. Patch the 2px rings; do not zero the
      * cache or re-run wallpaper + title + 18px shadow (583 PIT ticks).
      * begin < paint < done must stay in that source order (de-chrome-cache). */
-    if (target != 0 && osgfx_chrome_is_focus_only(m) != 0) {
+    if (focus_only != 0) {
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
@@ -1219,7 +1230,7 @@ __attribute__((noinline)) static void tick_body(void) {
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
-      if (target != 0 && osgfx_chrome_is_geom_only(m) != 0) {
+      if (geom_only != 0) {
         seed = 0xD074A17u;
         if (local.desk != 0) {
           seed = (uint32_t)local.desk;

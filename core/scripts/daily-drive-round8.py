@@ -263,11 +263,14 @@ class Serial:
             pass
 
     def lat_seq_gaps(self):
-        if len(self.lat_seq) < 2:
+        # PRES is the single present seq; LAT may drop on a busy sock.
+        # Gaps are missing presents, not UART-kind splits.
+        seqs = self.pres_seq if len(self.pres_seq) >= 2 else self.lat_seq
+        if len(seqs) < 2:
             return 0
         gaps = 0
-        prev = self.lat_seq[0]
-        for cur in self.lat_seq[1:]:
+        prev = seqs[0]
+        for cur in seqs[1:]:
             if cur == prev:
                 continue
             d = seq_fwd(prev, cur)
