@@ -49,8 +49,8 @@ FILES_TITLE_XY = (120, 55)
 SET_TITLE_XY = (min(SCREEN_W - 40, 500), 55)
 PROBE_XY = (120, 180)
 FILES_MAX_XY = (min(SCREEN_W - 24, 379), 57)
-# Maximized traffic-light: wx+ww-78 for the max disc (8+1264-78=1194).
-FILES_MAX_MAXED_XY = (min(SCREEN_W - 24, 1194 + 9), 16)
+# Maximized at (8,8) keeping the 400-wide backing: wx+ww-78 = 330.
+FILES_MAX_MAXED_XY = (min(SCREEN_W - 24, 330 + 9), 16)
 SET_MAX_XY = (min(SCREEN_W - 24, 728), 20)
 
 SEQ_MASK = 0xFFFFFFFF

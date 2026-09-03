@@ -817,26 +817,6 @@ void wmPaintOp(u64 frame, u64 ptr, u64 id) {
     /* Skia spans rows and pages. Physical frames in a region are not
      * contiguous; the stable SHM virtual extent is. */
     px = shmRegionVa(reg) + off;
-    /* Pre-grown SHM: wrap the native backing so first maximize reuses
-     * the canvas warmed at attach, not a first-use TCG compile. */
-    if (pitch >= u64(4)) {
-      final u64 capW = pitch >> u64(2);
-      final u64 bytes = shmReg(reg, u64(shmRegPages)) << u64(vmPageShift);
-      u64 room = u64(0);
-      if (bytes > off) {
-        room = bytes - off;
-      }
-      u64 capH = u64(0);
-      if (pitch > u64(0)) {
-        capH = room ~/ pitch;
-      }
-      if (capW > ww) {
-        ww = capW;
-      }
-      if (capH > hh) {
-        hh = capH;
-      }
-    }
     scr_x = wmAbsX(slot);
     scr_y = wmAbsY(slot);
   }
