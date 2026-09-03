@@ -1332,7 +1332,6 @@ __attribute__((noinline)) static void tick_body(void) {
       com1_puts("OSGFX CHROME GEOM\n");
     } else {
       com1_puts("OSGFX CHROME MISS\n");
-      osgfx_session_prewarm_pop(g, &local);
     }
     /* Card lives on scanout. Cache stays pop-free so hide is a blit. */
     if (m->pop != 0) {

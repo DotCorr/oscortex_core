@@ -773,35 +773,10 @@ void osgfx_session_paint_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
 }
 
 void osgfx_session_prewarm_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
-  static int warmed;
-  int ww;
-  int hh;
-  int pitch;
-  uint32_t *fb;
-
-  if (warmed != 0 || g == 0 || cmd == 0) {
-    return;
-  }
-  if ((cmd->flags & OSGFX_GUEST_DE) == 0) {
-    return;
-  }
-  ww = (int)cmd->w;
-  hh = (int)cmd->h;
-  pitch = (int)cmd->pitch;
-  if (ww < 8 || hh < 8 || pitch < ww * 4) {
-    return;
-  }
-  fb = (uint32_t *)(uintptr_t)cmd->fb;
-  /* Clip-compile the card shaders at first chrome paint. Off-origin so
-   * a later uncover restores wallpaper if any coverage leaked. */
-  osgfx_shadow(g, -OSGFX_POP_W, -OSGFX_POP_H, OSGFX_POP_W, OSGFX_POP_H,
-               OSGFX_RADIUS, OSGFX_POP_SHADOW_BLUR, 0x000C2030u);
-  osgfx_fill_rrect(g, -OSGFX_POP_W, -OSGFX_POP_H, OSGFX_POP_W, OSGFX_POP_H,
-                   OSGFX_RADIUS, 0x00F4F6FAu);
-  paint_ctx_menu(g, fb, pitch, ww, hh, -OSGFX_POP_W, -OSGFX_POP_H, 1u, 0xFFu);
-  paint_ctx_menu(g, fb, pitch, ww, hh, -OSGFX_POP_W, -OSGFX_POP_H, 4u, 0xFFu);
-  paint_ctx_menu(g, fb, pitch, ww, hh, -OSGFX_POP_W, -OSGFX_POP_H, 5u, 0xFFu);
-  warmed = 1;
+  /* DESK paints the live card at attach. Negative-origin prewarm
+   * underflowed fb+y*pitch and #PF'd the kernel (CR2 in FILES shm). */
+  (void)g;
+  (void)cmd;
 }
 
 /* TOP-only chrome miss: rewrite the 2px focus rings on the cached frame.
