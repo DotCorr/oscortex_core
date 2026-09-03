@@ -15,6 +15,7 @@ void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
                               uint64_t old0, uint64_t old1);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
+void osgfx_session_blit_menu(uint32_t *fb, int pitch, int ww, int hh, uint64_t pop);
 
 #ifdef __cplusplus
 }

@@ -101,6 +101,14 @@ static uint64_t mix(uint64_t h, uint64_t v) {
   return (h << 13) | (h >> 51);
 }
 
+#define OSGFX_CHROME_TOP_MASK (3ULL << OSGFX_GUEST_TOP_SHIFT)
+#define OSGFX_CHROME_POP_MASK (3ULL << OSGFX_GUEST_POP_SHIFT)
+#define OSGFX_CHROME_OVERLAY_MASK \
+  (OSGFX_CHROME_TOP_MASK | OSGFX_CHROME_POP_MASK)
+#define OSGFX_CHROME_GEOM_MASK \
+  (OSGFX_CHROME_TOP_MASK | OSGFX_CHROME_POP_MASK | OSGFX_GUEST_HELD0 | \
+   OSGFX_GUEST_HELD1)
+
 /* EVERY MAILBOX WORD `osgfx_session_paint` READS, AND NOTHING ELSE.
  *
  * `gen` is absent on purpose — it is the tick counter, it changes on every
@@ -118,14 +126,14 @@ static uint64_t chrome_key(const struct OsGfxGuestCmd *m, const uint64_t *pg) {
   uint64_t h;
 
   h = 0xC1A0B0C0D0E0F001ULL;
-  /* Flags carry ON, DE, WALL_IMG, the top slot, the popover kind and the two
-   * held bits. All of them change the picture. */
-  h = mix(h, m->flags);
+  /* TOP and POP kind are scanout overlays (focus ring / menu card).
+   * Folding them forced a 900 ms session MISS on every raise and
+   * first menu. Held/DE/WALL/PANEL still change the cached picture. */
+  h = mix(h, m->flags & ~OSGFX_CHROME_OVERLAY_MASK);
   h = mix(h, m->w);
   h = mix(h, m->h);
   h = mix(h, m->win0);
   h = mix(h, m->win1);
-  h = mix(h, m->pop);
   h = mix(h, m->desk);
   h = mix(h, m->wall);
   /* The client edge tones. This is the pair `wmGfxChromeSig` does not have. */
@@ -228,10 +236,6 @@ static uint64_t g_stamp_launch2;
 static uint64_t g_stamp_launch3;
 static uint64_t g_stamp_cap_mail;
 
-#define OSGFX_CHROME_TOP_MASK (3ULL << OSGFX_GUEST_TOP_SHIFT)
-#define OSGFX_CHROME_GEOM_MASK \
-  (OSGFX_CHROME_TOP_MASK | OSGFX_GUEST_HELD0 | OSGFX_GUEST_HELD1)
-
 static void chrome_note_mailbox(const struct OsGfxGuestCmd *m) {
   uint64_t *pg;
 
@@ -285,7 +289,7 @@ int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m) {
   if (m->win0 != g_stamp_win0 || m->win1 != g_stamp_win1) {
     return 0;
   }
-  if (m->pop != g_stamp_pop || m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
+  if (m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
     return 0;
   }
   if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
@@ -356,7 +360,7 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
   if (m->win0 == g_stamp_win0 && m->win1 == g_stamp_win1) {
     return 0;
   }
-  if (m->pop != g_stamp_pop || m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
+  if (m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
     return 0;
   }
   if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
@@ -665,6 +669,294 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m) {
     pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
   }
   return (int)(m->w * m->h);
+}
+
+/* Clipped cache→scanout. Same holes as a full present. */
+static uint64_t chrome_present_clip(const struct OsGfxGuestCmd *m, int x, int y,
+                                    int rw, int rh) {
+  uint64_t *pg;
+  uint32_t *buf;
+  uint32_t *fb;
+  int w;
+  int h;
+
+  pg = chrome_page();
+  if (pg == 0 || m == 0 || m->fb == 0) {
+    return 0;
+  }
+  buf = chrome_buf(m, pg);
+  if (buf == 0) {
+    return 0;
+  }
+  w = (int)m->w;
+  h = (int)m->h;
+  if (w < 8 || h < 8 || m->pitch < m->w * 4) {
+    return 0;
+  }
+  if (rw < 1 || rh < 1) {
+    return 0;
+  }
+  fb = (uint32_t *)(uintptr_t)m->fb;
+  chrome_blit(fb, (int)m->pitch, buf, w, h, m->win0, m->win1, m->pop, m->flags,
+              0, x, y, rw, rh);
+  pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
+  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != 0) {
+    pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
+  }
+  if (rw < 1 || rh < 1) {
+    return 0;
+  }
+  return (uint64_t)(unsigned)rw * (uint64_t)(unsigned)rh;
+}
+
+static void chrome_clip_rect(int *x, int *y, int *rw, int *rh, int w, int h) {
+  if (*x < 0) {
+    *rw = *rw + *x;
+    *x = 0;
+  }
+  if (*y < 0) {
+    *rh = *rh + *y;
+    *y = 0;
+  }
+  if (*x + *rw > w) {
+    *rw = w - *x;
+  }
+  if (*y + *rh > h) {
+    *rh = h - *y;
+  }
+  if (*rw < 0) {
+    *rw = 0;
+  }
+  if (*rh < 0) {
+    *rh = 0;
+  }
+}
+
+/* Overlap-safe rectangle move inside the chrome cache. */
+static void chrome_move_rect(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
+                             int oy, int nx, int ny, int rw, int rh) {
+  int row;
+  int col;
+  int y;
+  int x;
+  uint32_t *srow;
+  uint32_t *drow;
+
+  chrome_clip_rect(&ox, &oy, &rw, &rh, ww, hh);
+  if (rw < 1 || rh < 1) {
+    return;
+  }
+  {
+    int nrw;
+    int nrh;
+    nrw = rw;
+    nrh = rh;
+    chrome_clip_rect(&nx, &ny, &nrw, &nrh, ww, hh);
+    if (nrw < rw) {
+      rw = nrw;
+    }
+    if (nrh < rh) {
+      rh = nrh;
+    }
+  }
+  if (rw < 1 || rh < 1) {
+    return;
+  }
+  if (ox == nx && oy == ny) {
+    return;
+  }
+  if (ny > oy) {
+    row = rh - 1;
+    while (row >= 0) {
+      srow = fb + (unsigned)(oy + row) * (unsigned)pitch_px;
+      drow = fb + (unsigned)(ny + row) * (unsigned)pitch_px;
+      if (nx > ox) {
+        col = rw - 1;
+        while (col >= 0) {
+          drow[nx + col] = srow[ox + col];
+          col = col - 1;
+        }
+      } else {
+        col = 0;
+        while (col < rw) {
+          drow[nx + col] = srow[ox + col];
+          col = col + 1;
+        }
+      }
+      row = row - 1;
+    }
+    return;
+  }
+  row = 0;
+  while (row < rh) {
+    srow = fb + (unsigned)(oy + row) * (unsigned)pitch_px;
+    drow = fb + (unsigned)(ny + row) * (unsigned)pitch_px;
+    if (nx > ox) {
+      col = rw - 1;
+      while (col >= 0) {
+        drow[nx + col] = srow[ox + col];
+        col = col - 1;
+      }
+    } else {
+      x = 0;
+      while (x < rw) {
+        drow[nx + x] = srow[ox + x];
+        x = x + 1;
+      }
+    }
+    row = row + 1;
+  }
+}
+
+static void chrome_desk_rect(uint32_t *fb, int pitch_px, int x, int y, int rw,
+                             int rh, uint32_t seed) {
+  if (rw < 1 || rh < 1) {
+    return;
+  }
+  osgfx_fill_desk_cached(fb, pitch_px * 4, x, y, rw, rh, seed);
+}
+
+static void chrome_vacate(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
+                          int oy, int ow, int oh, int nx, int ny, int nw,
+                          int nh, uint32_t seed) {
+  int ix;
+  int iy;
+  int iw;
+  int ih;
+  int ax1;
+  int ay1;
+  int bx1;
+  int by1;
+
+  chrome_clip_rect(&ox, &oy, &ow, &oh, ww, hh);
+  chrome_clip_rect(&nx, &ny, &nw, &nh, ww, hh);
+  if (ow < 1 || oh < 1) {
+    return;
+  }
+  ax1 = ox + ow;
+  ay1 = oy + oh;
+  bx1 = nx + nw;
+  by1 = ny + nh;
+  ix = ox;
+  if (nx > ix) {
+    ix = nx;
+  }
+  iy = oy;
+  if (ny > iy) {
+    iy = ny;
+  }
+  iw = ax1;
+  if (bx1 < iw) {
+    iw = bx1;
+  }
+  iw = iw - ix;
+  ih = ay1;
+  if (by1 < ih) {
+    ih = by1;
+  }
+  ih = ih - iy;
+  if (iw < 1 || ih < 1) {
+    chrome_desk_rect(fb, pitch_px, ox, oy, ow, oh, seed);
+    return;
+  }
+  if (oy < iy) {
+    chrome_desk_rect(fb, pitch_px, ox, oy, ow, iy - oy, seed);
+  }
+  if (ay1 > iy + ih) {
+    chrome_desk_rect(fb, pitch_px, ox, iy + ih, ow, ay1 - (iy + ih), seed);
+  }
+  if (ox < ix) {
+    chrome_desk_rect(fb, pitch_px, ox, iy, ix - ox, ih, seed);
+  }
+  if (ax1 > ix + iw) {
+    chrome_desk_rect(fb, pitch_px, ix + iw, iy, ax1 - (ix + iw), ih, seed);
+  }
+}
+
+/* Discrete old/new drag. No session MISS, no giant AABB. Mailbox already
+ * holds the live geom (Dart kicked). Returns transferred cache pixels. */
+uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
+  const struct OsGfxGuestCmd *m;
+  uint64_t *pg;
+  uint32_t *buf;
+  uint32_t seed;
+  int ox;
+  int oy;
+  int ow;
+  int oh;
+  int nx;
+  int ny;
+  int nw;
+  int nh;
+  int ww;
+  int hh;
+  int dx;
+  int dy;
+  uint64_t px;
+
+  m = &osgfx_guest_cmd;
+  pg = chrome_page();
+  buf = chrome_buf(m, pg);
+  if (pg == 0 || buf == 0 || m->fb == 0) {
+    return 0;
+  }
+  ww = (int)m->w;
+  hh = (int)m->h;
+  if (ww < 8 || hh < 8) {
+    return 0;
+  }
+  chrome_unpack_geom(old_g, &ox, &oy, &ow, &oh);
+  chrome_unpack_geom(new_g, &nx, &ny, &nw, &nh);
+  if (ow < 1 || oh < 1 || nw < 1 || nh < 1) {
+    return 0;
+  }
+  seed = 0xD074A17u;
+  if (m->desk != 0) {
+    seed = (uint32_t)m->desk;
+  }
+  chrome_move_rect(buf, ww, ww, hh, ox, oy, nx, ny, ow, oh);
+  chrome_vacate(buf, ww, ww, hh, ox, oy, ow, oh, nx, ny, nw, nh, seed);
+  g_uncover0 = old_g;
+  g_uncover1 = 0;
+  dx = nx - ox;
+  if (dx < 0) {
+    dx = ox - nx;
+  }
+  dy = ny - oy;
+  if (dy < 0) {
+    dy = oy - ny;
+  }
+  px = 0;
+  if (dx < 24 && dy < 24) {
+    if (nx != ox) {
+      if (nx > ox) {
+        px = px + chrome_present_clip(m, ox, oy, nx - ox, oh);
+        px = px + chrome_present_clip(m, ox + ow, ny, nx - ox, nh);
+      } else {
+        px = px + chrome_present_clip(m, nx + nw, oy, ox - nx, oh);
+        px = px + chrome_present_clip(m, nx, ny, ox - nx, nh);
+      }
+    }
+    if (ny != oy) {
+      if (ny > oy) {
+        px = px + chrome_present_clip(m, ox, oy, ow, ny - oy);
+        px = px + chrome_present_clip(m, nx, oy + oh, nw, ny - oy);
+      } else {
+        px = px + chrome_present_clip(m, ox, ny + nh, ow, oy - ny);
+        px = px + chrome_present_clip(m, nx, ny, nw, oy - ny);
+      }
+    }
+    px = px + chrome_present_clip(m, nx, ny, nw, OSGFX_TITLE_H + 4);
+  } else {
+    px = px + chrome_present_clip(m, ox, oy, ow, oh);
+    px = px + chrome_present_clip(m, nx, ny, nw, nh);
+  }
+  g_uncover0 = 0;
+  pg[OSGFX_WMPAGE_W_CHROME_W] = m->w;
+  pg[OSGFX_WMPAGE_W_CHROME_H] = m->h;
+  pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);
+  chrome_note_mailbox(m);
+  return px;
 }
 
 /* Called BEFORE the paint. Clears the key, so a #GP or a reset half way

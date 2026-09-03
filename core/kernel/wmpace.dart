@@ -297,6 +297,15 @@ const int wmPageWDmgR0 = 408;
 const int wmPageWDmgPx = 424;
 const int wmPageWDmgFull = 425;
 const int wmPageWDmgRegs = 426;
+const int wmPageWPtrDmgX0 = 427;
+const int wmPageWPtrDmgY0 = 428;
+const int wmPageWPtrDmgX1 = 429;
+const int wmPageWPtrDmgY1 = 430;
+const int wmPageWPtrDmgX2 = 431;
+const int wmPageWPtrDmgY2 = 432;
+const int wmPageWPtrDmgX3 = 433;
+const int wmPageWPtrDmgY3 = 434;
+const int wmPageWPtrPx = 435;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
@@ -323,6 +332,7 @@ const int wmPageFlagPaced = 1;
 const int wmPageFlagDamage = 2;
 const int wmPageFlagFull = 4;
 const int wmPageFlagLog = 8;
+const int wmPageFlagPtrDmg = 16;
 
 /// The tick rate the frame clock divides. `pitInit` programs channel 0 with a
 /// divisor of 0x2E9C, and 1193182 / 11932 is 100.0 Hz to four figures — so
@@ -471,11 +481,24 @@ final List<u8> wmPaceStrLate = const [
   u8(0x20), u8(0x4C), u8(0x41), u8(0x54), u8(0x45), u8(0x20),
 ];
 
+/// `'wm dmg'` -- 6 bytes. Snapshot last transferred pixels while DESK holds
+/// the shell (no `wm pace` UART flood).
+@rodata
+final List<u8> wmDmgStrCmd = const [
+  u8(0x77), u8(0x6D), u8(0x20), u8(0x64), u8(0x6D), u8(0x67),
+];
+
 /// `'WM DMG '` -- 7 bytes. Discrete-region counters; not a WM PACE field.
 @rodata
 final List<u8> wmDmgStrLine = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x4D), u8(0x47),
   u8(0x20),
+];
+
+/// `' PTR '` -- 5 bytes.
+@rodata
+final List<u8> wmDmgStrPtr = const [
+  u8(0x20), u8(0x50), u8(0x54), u8(0x52), u8(0x20),
 ];
 
 /// `' RG '` -- 4 bytes.
@@ -1718,20 +1741,60 @@ void wmDamageDragUnion() {
 
 @bare
 u64 wmDamageNeedAtomic() {
-  if (wmMeta(u64(wmMetaDrag)) > u64(0)) {
-    return u64(1);
-  }
   final u64 op = wmPage(u64(wmPageWDefOp));
   if (((op >> u64(16)) & u64(wmDefFlagPending)) > u64(0)) {
     final u64 kind = op & u64(0xFF);
-    if (kind == u64(wmDefKindDrag)) {
-      return u64(1);
-    }
     if (kind == u64(wmDefKindMax)) {
       return u64(1);
     }
   }
   return u64(0);
+}
+
+/// Pointer-only dirty rects. Never unions into the window region list, so a
+/// cursor packet cannot inherit leftover window AABB and report 100k px.
+@bare
+void wmDamagePtr(u64 x, u64 y, u64 w, u64 h) {
+  if (w < u64(1)) {
+    return;
+  }
+  if (h < u64(1)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  u64 x1 = x + w;
+  u64 y1 = y + h;
+  if (x1 > fbGeomWidth()) {
+    x1 = fbGeomWidth();
+  }
+  if (y1 > fbGeomHeight()) {
+    y1 = fbGeomHeight();
+  }
+  if (x >= x1) {
+    return;
+  }
+  if (y >= y1) {
+    return;
+  }
+  final u64 f = wmPage(u64(wmPageWFlags));
+  if ((f & u64(wmPageFlagPtrDmg)) < u64(1)) {
+    wmPageSet(u64(wmPageWPtrDmgX0), x);
+    wmPageSet(u64(wmPageWPtrDmgY0), y);
+    wmPageSet(u64(wmPageWPtrDmgX1), x1);
+    wmPageSet(u64(wmPageWPtrDmgY1), y1);
+    wmPageSet(u64(wmPageWPtrDmgX2), x);
+    wmPageSet(u64(wmPageWPtrDmgY2), y);
+    wmPageSet(u64(wmPageWPtrDmgX3), x1);
+    wmPageSet(u64(wmPageWPtrDmgY3), y1);
+  } else {
+    wmPageSet(u64(wmPageWPtrDmgX2), x);
+    wmPageSet(u64(wmPageWPtrDmgY2), y);
+    wmPageSet(u64(wmPageWPtrDmgX3), x1);
+    wmPageSet(u64(wmPageWPtrDmgY3), y1);
+  }
+  wmPageSet(u64(wmPageWFlags), f | u64(wmPageFlagPtrDmg));
 }
 
 @bare
@@ -1755,7 +1818,67 @@ u64 wmDamagePending() {
 /// Presents pending dirty region(s) and clears them. Dart only.
 /// Snapshot the discrete list before [wmDamageClear] zeros N.
 @bare
+void wmDmgLine() {
+  uartWrite(Rodata.addressOf(wmDmgStrLine), u64(7));
+  uartPutHex(wmPage(u64(wmPageWDmgPx)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrRg), u64(4));
+  uartPutHex(wmPage(u64(wmPageWDmgRegs)), u64(2));
+  uartWrite(Rodata.addressOf(wmDmgStrFl), u64(4));
+  uartPutHex(wmPage(u64(wmPageWDmgFull)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrPtr), u64(5));
+  uartPutHex(wmPage(u64(wmPageWPtrPx)), u64(8));
+  uartNewline();
+}
+
+@bare
+void wmDmgCmd() {
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  wmDmgLine();
+}
+
+@bare
 void wmPacePresent() {
+  final u64 flags0 = wmPage(u64(wmPageWFlags));
+  u64 ptrOnly = u64(0);
+  if ((flags0 & u64(wmPageFlagPtrDmg)) > u64(0)) {
+    if (wmDamagePending() < u64(1)) {
+      ptrOnly = u64(1);
+    }
+    wmPageSet(u64(wmPageWFlags), flags0 - (flags0 & u64(wmPageFlagPtrDmg)));
+  }
+  if (ptrOnly > u64(0)) {
+    u64 ptrPx = u64(0);
+    final u64 ax0 = wmPage(u64(wmPageWPtrDmgX0));
+    final u64 ay0 = wmPage(u64(wmPageWPtrDmgY0));
+    final u64 ax1 = wmPage(u64(wmPageWPtrDmgX1));
+    final u64 ay1 = wmPage(u64(wmPageWPtrDmgY1));
+    final u64 bx0 = wmPage(u64(wmPageWPtrDmgX2));
+    final u64 by0 = wmPage(u64(wmPageWPtrDmgY2));
+    final u64 bx1 = wmPage(u64(wmPageWPtrDmgX3));
+    final u64 by1 = wmPage(u64(wmPageWPtrDmgY3));
+    if (ax1 > ax0) {
+      if (ay1 > ay0) {
+        ptrPx = ptrPx + ((ax1 - ax0) * (ay1 - ay0));
+      }
+    }
+    if (bx1 > bx0) {
+      if (by1 > by0) {
+        ptrPx = ptrPx + ((bx1 - bx0) * (by1 - by0));
+      }
+    }
+    wmPageSet(u64(wmPageWPtrPx), ptrPx);
+    wmPageSet(u64(wmPageWDmgPx), ptrPx);
+    wmPageSet(u64(wmPageWDmgRegs), u64(2));
+    wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+    wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+    wmLatNotePresent();
+    return;
+  }
+  if (wmDamagePending() < u64(1)) {
+    return;
+  }
   final u64 x0 = wmPage(u64(wmPageWDmgX0));
   final u64 y0 = wmPage(u64(wmPageWDmgY0));
   final u64 x1 = wmPage(u64(wmPageWDmgX1));
@@ -1941,13 +2064,7 @@ void wmPaceLine() {
   uartWrite(Rodata.addressOf(wmPaceStrLate), u64(6));
   uartPutHex(wmPage(u64(wmPageWLate)), u64(8));
   uartNewline();
-  uartWrite(Rodata.addressOf(wmDmgStrLine), u64(7));
-  uartPutHex(wmPage(u64(wmPageWDmgPx)), u64(8));
-  uartWrite(Rodata.addressOf(wmDmgStrRg), u64(4));
-  uartPutHex(wmPage(u64(wmPageWDmgRegs)), u64(2));
-  uartWrite(Rodata.addressOf(wmDmgStrFl), u64(4));
-  uartPutHex(wmPage(u64(wmPageWDmgFull)), u64(8));
-  uartNewline();
+  wmDmgLine();
   if (wmPage(u64(wmPageWDeskBuf)) < u64(1)) {
     uartWrite(Rodata.addressOf(wmDeskStrNone), u64(12));
     uartNewline();

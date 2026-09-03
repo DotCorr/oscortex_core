@@ -1796,6 +1796,10 @@ void shellExecute() {
     wmPaceCmd();
     return;
   }
+  if (shellIsCmd(Rodata.addressOf(wmDmgStrCmd), u64(6)) > u64(0)) {
+    wmDmgCmd();
+    return;
+  }
   if (shellIsCmd(Rodata.addressOf(wmStrCmdDe), u64(5)) > u64(0)) {
     wmDeCmd();
     return;

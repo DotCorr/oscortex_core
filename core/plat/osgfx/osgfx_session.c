@@ -18,6 +18,17 @@
 extern void com1_puts(const char *s);
 extern struct OsGfxGuestCmd osgfx_guest_cmd;
 
+uint64_t osgfx_phz_desk_cyc;
+uint64_t osgfx_phz_win_cyc;
+
+static uint64_t sess_rdtsc(void) {
+  unsigned lo;
+  unsigned hi;
+
+  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+
 /* DE geometry — keep in lockstep with wmde.dart / osxui.h / wmchrome.dart. */
 enum {
   SESS_START_W = 96,
@@ -895,6 +906,7 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
                   OSGFX_TEXT_TITLE_PX, OSGFX_TEXT_MEDIUM, SESS_TITLE_FG);
 }
 
+__attribute__((unused))
 static void paint_ctx_menu(OsGfx *g, uint32_t *fb, int pitch, int ww, int hh,
                            int px, int py, unsigned kind, unsigned hover) {
   int rx;
@@ -941,6 +953,111 @@ static void paint_ctx_menu(OsGfx *g, uint32_t *fb, int pitch, int ww, int hh,
                   OSGFX_TEXT_LABEL_PX, OSGFX_TEXT_REGULAR,
                   (hover & 0x200u) != 0 ? SESS_POP_DISABLED : SESS_POP_FG);
   (void)SESS_POP_LAB_Y;
+}
+
+enum { MENU_CARD_W = OSGFX_POP_W, MENU_CARD_H = OSGFX_POP_H };
+static uint32_t menu_card[MENU_CARD_W * MENU_CARD_H];
+static int menu_card_ready;
+
+static void menu_prewarm_cpu(void) {
+  int yy;
+  int xx;
+  uint32_t fill;
+  uint32_t row;
+  uint32_t edge;
+
+  fill = 0x00F4F6FAu;
+  row = 0x00E8EEF4u;
+  edge = 0x00C8D0D8u;
+  yy = 0;
+  while (yy < MENU_CARD_H) {
+    xx = 0;
+    while (xx < MENU_CARD_W) {
+      menu_card[(unsigned)yy * MENU_CARD_W + (unsigned)xx] = fill;
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  yy = 8;
+  while (yy < 8 + 28) {
+    xx = 6;
+    while (xx < MENU_CARD_W - 6) {
+      menu_card[(unsigned)yy * MENU_CARD_W + (unsigned)xx] = row;
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  yy = 8 + 30;
+  while (yy < 8 + 30 + 28) {
+    xx = 6;
+    while (xx < MENU_CARD_W - 6) {
+      menu_card[(unsigned)yy * MENU_CARD_W + (unsigned)xx] = row;
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  xx = 0;
+  while (xx < MENU_CARD_W) {
+    menu_card[xx] = edge;
+    menu_card[(unsigned)(MENU_CARD_H - 1) * MENU_CARD_W + (unsigned)xx] = edge;
+    xx = xx + 1;
+  }
+  yy = 0;
+  while (yy < MENU_CARD_H) {
+    menu_card[(unsigned)yy * MENU_CARD_W] = edge;
+    menu_card[(unsigned)yy * MENU_CARD_W + (unsigned)(MENU_CARD_W - 1)] = edge;
+    yy = yy + 1;
+  }
+  menu_card_ready = 1;
+}
+
+void osgfx_session_blit_menu(uint32_t *fb, int pitch, int ww, int hh,
+                             uint64_t pop) {
+  int px;
+  int py;
+  int yy;
+  int xx;
+  int w;
+  int h;
+  uint32_t *drow;
+
+  if (fb == 0 || pop == 0 || pitch < 4) {
+    return;
+  }
+  if (menu_card_ready == 0) {
+    menu_prewarm_cpu();
+  }
+  px = (int)(pop >> 32);
+  py = (int)(pop & 0xffffffffu);
+  w = MENU_CARD_W;
+  h = MENU_CARD_H;
+  if (px < 0) {
+    w = w + px;
+    px = 0;
+  }
+  if (py < 0) {
+    h = h + py;
+    py = 0;
+  }
+  if (px + w > ww) {
+    w = ww - px;
+  }
+  if (py + h > hh) {
+    h = hh - py;
+  }
+  if (w < 1 || h < 1) {
+    return;
+  }
+  yy = 0;
+  while (yy < h) {
+    drow = (uint32_t *)((uint8_t *)fb + (unsigned)(py + yy) * (unsigned)pitch);
+    xx = 0;
+    while (xx < w) {
+      drow[px + xx] = menu_card[(unsigned)yy * MENU_CARD_W + (unsigned)xx];
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
 }
 
 void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite_ready) {
@@ -1002,24 +1119,33 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   if (user != 0) {
     frame = user ^ (uint32_t)cmd->gen;
   }
-  if ((cmd->flags & OSGFX_GUEST_WALL_IMG) != 0) {
-    osgfx_fill_rect(g, 0, 0, ww, desk_h, (uint32_t)cmd->wall & 0x00ffffffu);
-  } else if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-    /* The cached entry point owns both paths: on a miss it generates into
-     * Dart's buffer, stamps the key, and blits; on a hit it only blits.
-     * Calling the uncached generator while HAVE is zero would leave HAVE zero
-     * forever, so the cache could never reach its hot path. */
-    if (cmd->wmpage != 0) {
-      osgfx_fill_desk_cached(fb, pitch, 0, 0, ww, desk_h, seed);
+  {
+    uint64_t t0;
+    uint64_t t1;
+    t0 = sess_rdtsc();
+    if ((cmd->flags & OSGFX_GUEST_WALL_IMG) != 0) {
+      osgfx_fill_rect(g, 0, 0, ww, desk_h, (uint32_t)cmd->wall & 0x00ffffffu);
+    } else if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+      /* The cached entry point owns both paths: on a miss it generates into
+       * Dart's buffer, stamps the key, and blits; on a hit it only blits.
+       * Calling the uncached generator while HAVE is zero would leave HAVE zero
+       * forever, so the cache could never reach its hot path. */
+      if (cmd->wmpage != 0) {
+        osgfx_fill_desk_cached(fb, pitch, 0, 0, ww, desk_h, seed);
+      } else {
+        osgfx_fill_desk_generative(fb, pitch, 0, 0, ww, desk_h, seed, frame);
+      }
+    } else if (graphite_ready != 0) {
+      osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
     } else {
-      osgfx_fill_desk_generative(fb, pitch, 0, 0, ww, desk_h, seed, frame);
+      osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
     }
-  } else if (graphite_ready != 0) {
-    osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
-  } else {
-    osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
+    t1 = sess_rdtsc();
+    osgfx_phz_desk_cyc = t1 - t0;
+    t0 = t1;
+    osgfx_session_paint_windows(g, cmd);
+    osgfx_phz_win_cyc = sess_rdtsc() - t0;
   }
-  osgfx_session_paint_windows(g, cmd);
 }
 
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
@@ -1144,15 +1270,16 @@ void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
     /* PANEL means the dock strip exists. win0/win1 are ordinary FRAME
      * clients (wmgfx skips the strip). Gating their chrome on panel
      * left FILES untitled and forced SET's caption to FILES. */
+    /* Focus rings are a scanout overlay. Cache stays unfocused so a
+     * TOP flip is a HIT + patch, not a 900 ms session MISS. */
+    (void)top;
     if (held0 != 0) {
-      paint_window_chrome(g, fb, pitch, held0,
-                          top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
-                          OSGFX_WIN_FILL, ww, hh);
+      paint_window_chrome(g, fb, pitch, held0, OSGFX_UNFOCUS, OSGFX_WIN_FILL,
+                          ww, hh);
     }
     if (held1 != 0) {
-      paint_window_chrome(g, fb, pitch, held1,
-                          top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
-                          OSGFX_WIN2_FILL, ww, hh);
+      paint_window_chrome(g, fb, pitch, held1, OSGFX_UNFOCUS, OSGFX_WIN2_FILL,
+                          ww, hh);
     }
     if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
       if (session_csd == 0) {
@@ -1173,28 +1300,16 @@ void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
                       OSGFX_CHROME);
     }
   }
-  if (cmd->pop != 0 && panel == 0) {
-    int px = (int)(cmd->pop >> 32);
-    int py = (int)(cmd->pop & 0xffffffffu);
-    pop_kind = (unsigned)((cmd->flags >> OSGFX_GUEST_POP_SHIFT) & 3u);
-    osgfx_shadow(g, px + OSGFX_POP_SHADOW_OX, py + OSGFX_POP_SHADOW_OY,
-                 OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, OSGFX_POP_SHADOW_BLUR,
-                 0x000C2030u);
-    osgfx_fill_rrect(g, px, py, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS,
-                     0x00F4F6FAu);
-    if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-      unsigned hover = 0xFFu;
-      unsigned ck = pop_kind;
-      if (cmd->wmpage != 0) {
-        const uint64_t *page = (const uint64_t *)(uintptr_t)cmd->wmpage;
-        ck = (unsigned)page[OSGFX_WMPAGE_W_CTX_KIND];
-        hover = (unsigned)page[OSGFX_WMPAGE_W_CTX_SLOT];
-      }
-      if (ck == 0) {
-        ck = pop_kind;
-      }
-      paint_ctx_menu(g, fb, pitch, ww, hh, px, py, ck, hover);
-    }
+  /* Menu card is a position-independent overlay (osgfx_session_blit_menu).
+   * Baking cmd->pop into the cache was the first-click 900 ms MISS. */
+  (void)pop_kind;
+  (void)panel;
+  if (title_slices_ready == 0) {
+    title_build_material(SESS_TITLE_BAND, OSGFX_RADIUS, SESS_TITLE_TOP,
+                         OSGFX_TITLE);
+  }
+  if (menu_card_ready == 0) {
+    menu_prewarm_cpu();
   }
 }
 

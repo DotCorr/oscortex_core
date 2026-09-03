@@ -31,6 +31,9 @@ Four fields are exempt, and each exemption is a claim that can be wrong:
     folding it in would make the key an expensive way to spell "always miss".
   * `magic` -- the mailbox header. `osgfx_guest_tick` refuses a bad magic before
     the paint is reached, so it cannot vary across two ticks that both paint.
+  * `pop` -- menu card xy is a scanout overlay (`osgfx_session_blit_menu`).
+    Folding it forced a full session MISS on the first click. The paint must
+    not read `cmd->pop`; the overlay reads the live mailbox from the tick.
 
 Exit 0 covered, 1 uncovered, 2 could not parse.
 """
@@ -38,7 +41,7 @@ Exit 0 covered, 1 uncovered, 2 could not parse.
 import re
 import sys
 
-EXEMPT = {"fb", "pitch", "gen", "magic"}
+EXEMPT = {"fb", "pitch", "gen", "magic", "pop"}
 
 
 def fields(path, var):

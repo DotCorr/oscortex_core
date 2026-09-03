@@ -1973,27 +1973,29 @@ void wmDefDrain() {
         wmPopDrainPaint(oldG, nextG);
       } else {
         if (kind == u64(wmDefKindDrag)) {
-          u64 ux = wmPage(u64(wmPageWDefUx));
-          u64 uy = wmPage(u64(wmPageWDefUy));
-          u64 uw = wmPage(u64(wmPageWDefUw));
-          u64 uh = wmPage(u64(wmPageWDefUh));
-          /* Geom-only chrome so the title band follows the live origin
-           * before the union is transferred. Discrete cursor presents
-           * must not run against a stale cache. */
           if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
             wmGfxKick();
-            osgfx_guest_tick();
-          }
-          if (uw < u64(1)) {
-            final u64 px = wmRepaintUnion2(
-                wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
-                wmGeomX(nextG), wmGeomY(nextG), wmGeomW(nextG),
-                wmGeomH(nextG));
+            final u64 dpx = osgfx_chrome_drag_step(oldG, nextG);
+            if (slot < u64(wmMaxWindows)) {
+              final u64 body = wmDrawWindow(slot, u64(1));
+            }
+            wmPageSet(u64(wmPageWDmgPx), dpx);
           } else {
-            final u64 px = wmRepaintRect(ux, uy, uw, uh);
+            u64 ux = wmPage(u64(wmPageWDefUx));
+            u64 uy = wmPage(u64(wmPageWDefUy));
+            u64 uw = wmPage(u64(wmPageWDefUw));
+            u64 uh = wmPage(u64(wmPageWDefUh));
+            if (uw < u64(1)) {
+              final u64 px = wmRepaintUnion2(
+                  wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
+                  wmGeomX(nextG), wmGeomY(nextG), wmGeomW(nextG),
+                  wmGeomH(nextG));
+            } else {
+              final u64 px = wmRepaintRect(ux, uy, uw, uh);
+            }
           }
-          /* Drain already transferred the AABB. Drop cursor-sized
-           * leftovers so the same tick cannot chip the vacated field. */
+          /* Discrete old/new already on scanout. Do not leave an AABB
+           * for the pointer path to inherit. */
           wmDamageClear();
         }
       }

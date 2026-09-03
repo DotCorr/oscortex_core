@@ -147,6 +147,7 @@ allowed = {
     "osgfx_chrome_prep(",
     "osgfx_chrome_prep_present(",
     "osgfx_chrome_prep_rest(",
+    "osgfx_chrome_drag_step(",
 }
 irq_names = ("mouse.dart", "keyboard.dart", "pic.dart", "interrupts.dart")
 hits = []
@@ -375,18 +376,15 @@ R3_REGEN=$(jq_num "$REPORT" r3.regen)
 R4_REGEN=$(jq_num "$REPORT" r4.regen)
 R5_REGEN=$(jq_num "$REPORT" r5.regen)
 R6_REGEN=$(jq_num "$REPORT" r6.regen)
-echo "    report 3: REGEN $R3_REGEN   Start pill clicked, launcher open (mailbox \`pop\`)"
-echo "    report 4: REGEN $R4_REGEN   desktop clicked, launcher closed (\`pop\` back to 0)"
+echo "    report 3: REGEN $R3_REGEN   Start pill clicked, launcher open (overlay, not MISS)"
+echo "    report 4: REGEN $R4_REGEN   desktop clicked, launcher closed (overlay)"
 echo "    report 6: REGEN $R6_REGEN   window A mapped (\`win0\`, \`tone0\`, \`tone1\`)"
 ck; grep -q 'WM DE START' "$SER" \
   || fail "the Start pill click never opened the launcher — the popover leg did not run"
-ck; [[ "$R3_REGEN" -gt "$R2_REGEN" ]] \
-  || fail "a popover opened and the chrome was NOT repainted (REGEN stuck at $R2_REGEN) — the cache is frozen"
-# The popover CLOSING matters as much as it opening, and it is the harder half:
-# `wmDePopHide` clears `wmMetaPop` through a damage repaint rather than a
-# compose, so this only passes if the KEY noticed rather than the paint path.
-ck; [[ "$R4_REGEN" -gt "$R3_REGEN" ]] \
-  || fail "the popover closed and the chrome was NOT repainted (REGEN stuck at $R3_REGEN) — the key does not see \`pop\` going back to 0"
+ck; [[ "$R3_REGEN" -eq "$R2_REGEN" ]] \
+  || fail "a popover opened and forced chrome REGEN $R2_REGEN -> $R3_REGEN — pop must be an overlay"
+ck; [[ "$R4_REGEN" -eq "$R3_REGEN" ]] \
+  || fail "the popover closed and forced chrome REGEN $R3_REGEN -> $R4_REGEN — pop must leave the cache"
 ck; [[ "$R6_REGEN" -gt "$R5_REGEN" ]] \
   || fail "a window mapped and the chrome was NOT repainted (REGEN stuck at $R5_REGEN) — the key does not see geometry"
 

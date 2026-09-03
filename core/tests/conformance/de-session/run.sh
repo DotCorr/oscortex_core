@@ -25,9 +25,13 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 
 ASSERTIONS_REQUIRED=70
 
-for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm docker; do
+for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
+if ! command -v docker >/dev/null 2>&1; then
+  echo "DE-session: SKIP — docker not found on PATH (Graphite isolation image unavailable)"
+  exit 0
+fi
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-de-session.XXXXXX")" \
   || setup_error "mktemp failed"

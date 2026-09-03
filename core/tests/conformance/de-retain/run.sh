@@ -161,7 +161,7 @@ body = body[:body.index('\n}\n')]
 if 'wmGfxKick();' in body:
     raise SystemExit('wmPointerTick still kicks — every packet is a '
                      'session tick (Round 19 dirty-region gate)')
-if 'wmDamageRect(ox, oy' not in body:
+if 'wmDamagePtr(ox, oy' not in body and 'wmDamageRect(ox, oy' not in body:
     raise SystemExit('wmPointerTick does not dirty old cursor bounds')
 if 'wmLatNotePresent' not in body:
     raise SystemExit('wmPointerTick does not same-tick note LAT')

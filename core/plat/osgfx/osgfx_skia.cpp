@@ -73,7 +73,10 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
+void osgfx_session_blit_menu(uint32_t *fb, int pitch, int ww, int hh, uint64_t pop);
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
+extern uint64_t osgfx_phz_desk_cyc;
+extern uint64_t osgfx_phz_win_cyc;
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
                               uint64_t old0, uint64_t old1);
 void osgfx_chrome_glyph_count(int hit);
@@ -1264,6 +1267,45 @@ __attribute__((noinline)) static void probe_body(void) {
   com1_puts("OSGFX PROBE END\n");
 }
 
+static void chrome_overlay_scanout(const struct OsGfxGuestCmd *m) {
+  OsGfx scratch;
+
+  if (m == 0 || m->fb == 0) {
+    return;
+  }
+  scratch.canvas = 0;
+  scratch.px = (uint32_t *)(uintptr_t)m->fb;
+  scratch.pitch = (int)m->pitch;
+  scratch.w = (int)m->w;
+  scratch.h = (int)m->h;
+  osgfx_session_patch_focus(&scratch, m);
+  if (m->pop != 0) {
+    osgfx_session_blit_menu(scratch.px, scratch.pitch, scratch.w, scratch.h,
+                            m->pop);
+  }
+}
+
+static uint64_t skia_rdtsc(void) {
+  unsigned lo;
+  unsigned hi;
+
+  asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+
+static void phz_hex(uint64_t v) {
+  char hx[17];
+  int i;
+  unsigned d;
+
+  for (i = 0; i < 16; i++) {
+    d = (unsigned)((v >> (60 - i * 4)) & 15u);
+    hx[i] = (char)(d < 10u ? '0' + d : 'A' + (d - 10u));
+  }
+  hx[16] = 0;
+  com1_puts(hx);
+}
+
 __attribute__((noinline)) static void tick_body(void) {
   struct OsGfxGuestCmd *m;
   OsGfx *g;
@@ -1298,6 +1340,7 @@ __attribute__((noinline)) static void tick_body(void) {
   if (client_in_paint != 0) {
     if (osgfx_chrome_fresh(m) != 0) {
       (void)osgfx_chrome_present(m);
+      chrome_overlay_scanout(m);
     }
     return;
   }
@@ -1322,6 +1365,10 @@ __attribute__((noinline)) static void tick_body(void) {
       com1_puts("OSGFX CHROME HIT\n");
     }
     (void)osgfx_chrome_present(m);
+    chrome_overlay_scanout(m);
+    if (chrome_hit_n <= 4u) {
+      com1_puts("OSGFX CHROME OVERLAY\n");
+    }
     last_gen = m->gen;
     return;
   }
@@ -1397,17 +1444,44 @@ __attribute__((noinline)) static void tick_body(void) {
           g_one_want_rich_seal = 1;
         }
       } else {
+        uint64_t t_paint;
+        static unsigned phz_n;
         com1_puts("OSGFX CHROME MISS\n");
         osgfx_chrome_note_uncover(0, 0);
+        t_paint = skia_rdtsc();
         osgfx_session_paint(g, &local, osgfx_graphite_ready());
+        t_paint = skia_rdtsc() - t_paint;
         if (((local.win0 & 0xffffu) > 48u) || ((local.win1 & 0xffffu) > 48u)) {
           g_one_want_rich_seal = 1;
+        }
+        if (phz_n < 3u) {
+          phz_n = phz_n + 1u;
+          com1_puts("OSGFX PHZ DESK ");
+          phz_hex(osgfx_phz_desk_cyc);
+          com1_puts(" WIN ");
+          phz_hex(osgfx_phz_win_cyc);
+          com1_puts(" PAINT ");
+          phz_hex(t_paint);
+          com1_puts("\n");
         }
       }
       osgfx_flush(g);
       chrome_heap_after_paint();
     }
-    osgfx_chrome_done(m);
+    {
+      uint64_t t_copy;
+      static unsigned phz_copy_n;
+      t_copy = skia_rdtsc();
+      osgfx_chrome_done(m);
+      t_copy = skia_rdtsc() - t_copy;
+      if (focus_only == 0 && geom_only == 0 && phz_copy_n < 3u) {
+        phz_copy_n = phz_copy_n + 1u;
+        com1_puts("OSGFX PHZ COPY ");
+        phz_hex(t_copy);
+        com1_puts("\n");
+      }
+    }
+    chrome_overlay_scanout(m);
   }
   /* ADR-0153 proof stamp — never on live DE chrome. Under wm de the
    * (64,48) Graphite ICD rrect landed on FILES title (binary coverage =

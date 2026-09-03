@@ -1851,6 +1851,13 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   // to fit there used to drop the tile and leave SET over FILES.
   if (nx != x) {
     x = nx;
+    /* 1280 tile: grant SET 320 so commit stride matches the visible
+     * column. remainW after FILES is ~814, so PlaceExtent would keep 440. */
+    if (fbGeomWidth() >= u64(1200)) {
+      if (w > u64(320)) {
+        w = u64(320);
+      }
+    }
   }
   if (ny != y) {
     y = ny;
@@ -3712,18 +3719,21 @@ void wmPointerTick() {
     wmLatNotePresent();
     if (wmPaced() > u64(0)) {
       if (ox != x) {
-        wmDamageRect(ox, oy, u64(wmPtrW), u64(wmPtrH));
-        wmDamageRect(x, y, u64(wmPtrW), u64(wmPtrH));
+        wmDamagePtr(ox, oy, u64(wmPtrW), u64(wmPtrH));
+        wmDamagePtr(x, y, u64(wmPtrW), u64(wmPtrH));
       } else {
         if (oy != y) {
-          wmDamageRect(ox, oy, u64(wmPtrW), u64(wmPtrH));
-          wmDamageRect(x, y, u64(wmPtrW), u64(wmPtrH));
+          wmDamagePtr(ox, oy, u64(wmPtrW), u64(wmPtrH));
+          wmDamagePtr(x, y, u64(wmPtrW), u64(wmPtrH));
         }
       }
-      /* Geom is already the live window. Cursor-only present would
-       * stamp a title-corner chip onto the vacated field. */
-      if (wmMeta(u64(wmMetaDrag)) > u64(0)) {
-        wmDamageDragUnion();
+      /* Sprite already transferred old+new cursor bounds. Consume the
+       * pointer queue so leftover window damage is not inherited. */
+      if ((wmPage(u64(wmPageWFlags)) & u64(wmPageFlagPtrDmg)) > u64(0)) {
+        wmPageSet(u64(wmPageWPtrPx),
+            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
+        final u64 pf = wmPage(u64(wmPageWFlags));
+        wmPageSet(u64(wmPageWFlags), pf - (pf & u64(wmPageFlagPtrDmg)));
       }
     }
   } else {
