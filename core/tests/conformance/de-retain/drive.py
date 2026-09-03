@@ -156,16 +156,82 @@ class Qmp:
         self.click(button)
 
 
-def read_serial(path):
+class Serial:
+    """Incremental ingest. YIELD/SHM/PREEMPT are dropped so a storm cannot
+    wash WM ATTACH / COMMIT out of the window a later wait_marker reads."""
+
+    _ARCHIVE = (
+        "WM ATTACH", "USER WRITE D3S COMMIT", "WM GFX ON", "WM DE ON",
+        "OSGFX DESK GEN", "WM PACE 01", "VTAB OK", "WM ON BASE",
+        "WM WALL MENU", "WM REAP", "M1 END",
+    )
+
+    def __init__(self, path):
+        self.path = path
+        self.buf = ""
+        self.archive = ""
+        self.off = 0
+
+    def _keep_line(self, line):
+        if line.startswith("PROC YIELD"):
+            return False
+        if line.startswith("SHM PAGE"):
+            return False
+        if line.startswith("PROC PREEMPT"):
+            return False
+        return True
+
+    def _interesting(self, line):
+        for tok in self._ARCHIVE:
+            if tok in line:
+                return True
+        return False
+
+    def _ingest(self, text):
+        if not text:
+            return
+        kept = []
+        arch = []
+        for ln in text.splitlines():
+            if not self._keep_line(ln):
+                continue
+            kept.append(ln)
+            if self._interesting(ln):
+                arch.append(ln)
+        if kept:
+            self.buf = (self.buf + "\n" + "\n".join(kept))[-262144:]
+        if arch:
+            self.archive = (self.archive + "\n" + "\n".join(arch))[-1048576:]
+
+    def read(self):
+        try:
+            size = os.path.getsize(self.path)
+            if size > self.off:
+                with open(self.path, "rb") as f:
+                    f.seek(self.off)
+                    while self.off < size:
+                        chunk = f.read(min(size - self.off, 1048576))
+                        if not chunk:
+                            break
+                        self.off += len(chunk)
+                        self._ingest(chunk.decode("latin-1", "replace"))
+        except OSError:
+            pass
+        return self.archive + "\n" + self.buf
+
+
+def read_serial(path, ser=None):
+    if ser is not None:
+        return ser.read()
     if not os.path.exists(path):
         return ""
     return open(path, "r", encoding="latin-1", errors="replace").read()
 
 
-def wait_marker(path, marker, timeout=60, at_least=1):
+def wait_marker(path, marker, timeout=60, at_least=1, ser=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if read_serial(path).count(marker) >= at_least:
+        if read_serial(path, ser).count(marker) >= at_least:
             return True
         time.sleep(0.1)
     return False
@@ -221,7 +287,8 @@ def main():
     os.makedirs(fbdir, exist_ok=True)
 
     q = Qmp(port)
-    if not wait_marker(serial, "M1 END\n"):
+    ser = Serial(serial)
+    if not wait_marker(serial, "M1 END\n", ser=ser):
         raise SystemExit("kernel never reached the prompt")
     time.sleep(0.5)
 
@@ -258,17 +325,17 @@ def main():
     time.sleep(3.0)
     q.line("wm de")
     time.sleep(2.0)
-    if not wait_marker(serial, "OSGFX DESK GEN\n"):
+    if not wait_marker(serial, "OSGFX DESK GEN\n", ser=ser):
         raise SystemExit("the generative desk never ran")
     q.line("wm pace")
-    if not wait_marker(serial, "WM PACE 01 ", timeout=15):
+    if not wait_marker(serial, "WM PACE 01 ", timeout=15, ser=ser):
         raise SystemExit("`wm pace` did not arm the frame clock")
     q.line("vtab")
-    if not wait_marker(serial, "VTAB OK", timeout=8):
+    if not wait_marker(serial, "VTAB OK", timeout=8, ser=ser):
         raise SystemExit("vtab did not arm the tablet")
     time.sleep(1.0)
 
-    text = read_serial(serial)
+    text = read_serial(serial, ser)
     m = re.search(r"^WM ON BASE ([0-9A-Fa-f]+) PITCH ([0-9A-Fa-f]+)", text, re.M)
     if not m:
         raise SystemExit("never saw WM ON BASE")
@@ -276,17 +343,21 @@ def main():
 
     # ---- two clients, one commit each, and then silence -------------------
     q.line("proc spawn " + lba_a)
-    if not wait_marker(serial, "USER WRITE D3S COMMIT\n", timeout=60):
+    if not wait_marker(serial, "USER WRITE D3S COMMIT\n", timeout=60, ser=ser):
         raise SystemExit("client A never committed")
     time.sleep(1.5)
     q.line("proc spawn " + lba_b)
-    if not wait_marker(serial, "USER WRITE D3S COMMIT\n", timeout=60, at_least=2):
+    if not wait_marker(serial, "USER WRITE D3S COMMIT\n", timeout=60, at_least=2,
+                       ser=ser):
         raise SystemExit("client B never committed")
     time.sleep(3.0)
 
-    text = read_serial(serial)
+    text = read_serial(serial, ser)
+    # Attach grew P/C/Q (owner, caption, requested width) between W and R.
     atts = re.findall(
-        r"^WM ATTACH W [0-9A-Fa-f]+ R [0-9A-Fa-f]+ GEN [0-9A-Fa-f]+ "
+        r"^WM ATTACH W [0-9A-Fa-f]+"
+        r"(?: P [0-9A-Fa-f]+)?(?: C [0-9A-Fa-f]+)?(?: Q [0-9A-Fa-f]+)?"
+        r" R [0-9A-Fa-f]+ GEN [0-9A-Fa-f]+ "
         r"X ([0-9A-Fa-f]+) Y ([0-9A-Fa-f]+) W ([0-9A-Fa-f]+) H ([0-9A-Fa-f]+)",
         text, re.M)
     if len(atts) < 2:
@@ -373,7 +444,7 @@ def main():
 
     write_png(png, SCREEN_W, SCREEN_H, pitch, fbN)
 
-    text = read_serial(serial)
+    text = read_serial(serial, ser)
     last = stages[-1]
     out = {
         "base": base,

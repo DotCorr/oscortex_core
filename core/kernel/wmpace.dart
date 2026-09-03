@@ -375,6 +375,18 @@ final List<u8> wmLatStrS = const [
   u8(0x20), u8(0x53), u8(0x20),
 ];
 
+/// `' G '` -- chrome-cache regen count at present (TCG vs schedule).
+@rodata
+final List<u8> wmLatStrG = const [
+  u8(0x20), u8(0x47), u8(0x20),
+];
+
+/// `' A '` -- coalesced damage area in pixels at present.
+@rodata
+final List<u8> wmLatStrA = const [
+  u8(0x20), u8(0x41), u8(0x20),
+];
+
 /// `' COAL '` -- 6 bytes.
 @rodata
 final List<u8> wmPaceStrCoal = const [
@@ -563,6 +575,18 @@ void wmLatNotePresent() {
   uartPutHex(delta, u64(4));
   uartWrite(Rodata.addressOf(wmLatStrS), u64(3));
   uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+  uartWrite(Rodata.addressOf(wmLatStrG), u64(3));
+  uartPutHex(wmPage(u64(wmPageWChromeRegen)), u64(4));
+  uartWrite(Rodata.addressOf(wmLatStrA), u64(3));
+  u64 aw = u64(0);
+  u64 ah = u64(0);
+  if (wmPage(u64(wmPageWDmgX1)) > wmPage(u64(wmPageWDmgX0))) {
+    aw = wmPage(u64(wmPageWDmgX1)) - wmPage(u64(wmPageWDmgX0));
+  }
+  if (wmPage(u64(wmPageWDmgY1)) > wmPage(u64(wmPageWDmgY0))) {
+    ah = wmPage(u64(wmPageWDmgY1)) - wmPage(u64(wmPageWDmgY0));
+  }
+  uartPutHex(aw * ah, u64(8));
   uartNewline();
   wmPageSet(u64(wmPageWEvKind), u64(0));
 }

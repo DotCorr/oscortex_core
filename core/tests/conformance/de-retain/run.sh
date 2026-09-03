@@ -250,6 +250,7 @@ PNG="$CORE_DIR/build/de-retain.png"
 : >"$SER"
 ck; PORT=$(python3 "$PICKER") || fail "no free QMP port"
 timeout 900 qemu-system-x86_64 \
+  -name oscortex-de-retain \
   -kernel "$KERNEL_ELF" \
   -m 128M -cpu qemu64 -vga std \
   -device virtio-tablet-pci \

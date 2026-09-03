@@ -1333,9 +1333,12 @@ if [[ "$MODE" == "uefi-hd" ]]; then
   command -v xorriso >/dev/null 2>&1 || {
     if [[ "$ABS_DOOR" == 1 ]]; then MODE=local; else fail "xorriso not found"; fi
   }
-  command -v limine >/dev/null 2>&1 || {
+  # Prefer Limine 12 even when PATH has Limine 8 (KERNEL_PATH panic).
+  if ! eval "$(bash "$CORE_DIR/scripts/find-limine.sh")"; then
     if [[ "$ABS_DOOR" == 1 ]]; then MODE=local; else fail "limine not found"; fi
-  }
+  fi
+  export LIMINE LIMINE_DATADIR LIMINE_MAJOR
+  export PATH="$(dirname "${LIMINE:-/usr/bin/limine}"):$PATH"
 fi
 if [[ "$MODE" == "uefi-hd" ]]; then
   find_ovmf_code() {
@@ -1385,6 +1388,7 @@ timeout: 0
 /oscortex
     protocol: multiboot
     path: boot():/boot/kernel.elf
+    KERNEL_PATH: boot():/boot/kernel.elf
     resolution: ${VIEW_W}x${VIEW_H}x32
 EOF
   ISO="$RUN_DIR/view-uefi.iso"
@@ -1401,7 +1405,7 @@ if [[ "$MODE" == "uefi-hd" ]]; then
     -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE_FILE" \
     -drive "if=pflash,format=raw,file=$OVMF_VARS_COPY" \
     -cdrom "$ISO" \
-    -m 256M -cpu qemu64 \
+    -m 512M -cpu qemu64 \
     -serial "file:$SER" \
     $DISPLAY_ARG \
     -device virtio-tablet-pci \
@@ -1440,7 +1444,7 @@ if ! kill -0 "$QEMU_PID" 2>/dev/null; then
       -name "$QEMU_NAME" \
       -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE_FILE" \
       -drive "if=pflash,format=raw,file=$OVMF_VARS_COPY" \
-      -cdrom "$ISO" -m 256M -cpu qemu64 \
+      -cdrom "$ISO" -m 512M -cpu qemu64 \
       -serial "file:$SER" $DISPLAY_ARG -device virtio-tablet-pci \
       "${NET_ARGS[@]}" -no-reboot \
       -drive "file=$RUN_DIR/disk.img,format=raw,if=ide,index=0,media=disk" \

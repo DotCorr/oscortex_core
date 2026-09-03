@@ -29,7 +29,7 @@ setup_error() { echo "GFX2-compose: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=78
+ASSERTIONS_REQUIRED=82
 
 for tool in clang++ python3 file nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -144,6 +144,18 @@ ck; [[ "$HDR_POP_W" -eq "$POP_W" ]] \
   || fail "OSGFX_POP_W is $HDR_POP_W but wmPopW is $POP_W — preview and live menu geometry must match"
 ck; [[ "$HDR_POP_H" -eq "$POP_H" ]] \
   || fail "OSGFX_POP_H is $HDR_POP_H but wmPopH is $POP_H — preview and live menu geometry must match"
+HDR_VIS_W=$(awk -F'= *' '/OSGFX_POP_VIS_W *=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$HDR")
+HDR_VIS_H=$(awk -F'= *' '/OSGFX_POP_VIS_H *=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$HDR")
+POP_VIS_W=$(awk -F'= *' '/^const int wmPopVisW /{gsub(/[^0-9]/,"",$2); print $2; exit}' "$POP")
+POP_VIS_H=$(awk -F'= *' '/^const int wmPopVisH /{gsub(/[^0-9]/,"",$2); print $2; exit}' "$POP")
+ck; [[ -n "$HDR_VIS_W" && -n "$POP_VIS_W" ]] \
+  || fail "could not read visual menu width from osgfx.h / wmpop.dart"
+ck; [[ "$HDR_VIS_W" -eq "$POP_VIS_W" ]] \
+  || fail "OSGFX_POP_VIS_W is $HDR_VIS_W but wmPopVisW is $POP_VIS_W"
+ck; [[ "$HDR_VIS_H" -eq "$POP_VIS_H" ]] \
+  || fail "OSGFX_POP_VIS_H is $HDR_VIS_H but wmPopVisH is $POP_VIS_H"
+ck; [[ "$HDR_VIS_W" -gt "$HDR_POP_W" ]] \
+  || fail "visual width $HDR_VIS_W is not larger than content $HDR_POP_W — AA/shadow extent missing"
 HDR_RADIUS=$(awk -F'= *' '/OSGFX_RADIUS *=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$HDR")
 PY_RADIUS=$(awk -F'= *' '/^RADIUS = /{print $2; exit}' "$DERIVE")
 ck; [[ -n "$HDR_RADIUS" && -n "$PY_RADIUS" ]] \

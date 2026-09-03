@@ -3416,7 +3416,6 @@ void wmPointerTick() {
     return;
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
-  wmLatStamp(u64(wmLatKindPtr));
   // THE LIFETIME CHECK, before anything reads a frame vector. See [wmReap].
   wmReap();
   final u64 x = mouseState(u64(mouseWordX));
@@ -3472,6 +3471,10 @@ void wmPointerTick() {
        * before the client-restore half runs. */
       if (dragBefore < u64(1)) {
         if (wmMeta(u64(wmMetaDrag)) < u64(1)) {
+          /* Stamp only when a present is actually queued. A sprite-only
+           * move used to stamp here and inherit the next chrome-regen
+           * compose (tens of PIT ticks) as if it were pointer latency. */
+          wmLatStamp(u64(wmLatKindPtr));
           wmGfxKick();
         }
       }

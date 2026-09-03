@@ -55,9 +55,9 @@ export OSMEDIA_FFMPEG=0
 # Floor: Linux executes 147 portable checks. macOS adds two seven-check
 # hdiutil inspections (before and after the guest mutates the FAT image).
 # Keep each platform's anti-vacuity floor equal to the work it can execute.
-ASSERTIONS_REQUIRED=155
+ASSERTIONS_REQUIRED=158
 if command -v hdiutil >/dev/null 2>&1; then
-  ASSERTIONS_REQUIRED=169
+  ASSERTIONS_REQUIRED=172
 fi
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-readelf \
@@ -76,7 +76,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-KERNEL_ELF="$CORE_DIR/build/kernel.elf"
+LIVE_KERNEL="$CORE_DIR/build/kernel.elf"
+LIVE_SKIA="$CORE_DIR/build/kernel-skia.elf"
+# Snapshot BEFORE the isolated noskia link so this harness cannot be
+# accused of stomping the live Skia kernel / sit-in FAT image.
+if [[ -f "$LIVE_KERNEL" ]]; then
+  LIVE_SHA=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+else
+  LIVE_SHA=""
+fi
+if [[ -f "$LIVE_SKIA" ]]; then
+  LIVE_SKIA_SHA=$(sha256sum "$LIVE_SKIA" | awk '{print $1}')
+else
+  LIVE_SKIA_SHA=""
+fi
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
 FILE_SRC="$CORE_DIR/kernel/file.dart"
 FAT_SRC="$CORE_DIR/kernel/fat.dart"
@@ -86,20 +99,31 @@ ck; [[ -f "$FRAME_H" ]] || setup_error "no osframe.h at $FRAME_H"
 ck; [[ -f "$FILE_SRC" ]] || setup_error "no file.dart"
 ck; [[ -f "$FAT_SRC" ]] || setup_error "no fat.dart"
 
-echo "=== BUILD ==="
-capture_sh BUILD_OUT BUILD_STATUS -- "bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+echo "=== BUILD (isolated OSGFX_SKIA=0) ==="
+export BUILD_DIR="$WORKDIR/kbuild"
+mkdir -p "$BUILD_DIR"
+capture_sh BUILD_OUT BUILD_STATUS -- "BUILD_DIR='$BUILD_DIR' bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
 echo "$BUILD_OUT"
 ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
-ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
-# Snapshot: a sibling may relink kernel.elf (Skia CRT is 12MiB and
-# blows vmFineBytes). Boot the image this harness just built.
+KERNEL_ELF="$BUILD_DIR/kernel.elf"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "no isolated kernel.elf after a successful build"
+# Boot the isolated noskia image. Live core/build/kernel.elf stays Skia.
 cp "$KERNEL_ELF" "$WORKDIR/kernel.elf" \
-  || fail "could not snapshot kernel.elf"
+  || fail "could not snapshot isolated kernel.elf"
 KERNEL_ELF="$WORKDIR/kernel.elf"
 KERN_END=$(x86_64-elf-nm "$KERNEL_ELF" | awk '$3=="__kernel_end"{print $1; exit}')
 ck; [[ -n "$KERN_END" ]] || fail "snapshot kernel has no __kernel_end"
 ck; [[ $((16#$KERN_END)) -le 4194304 ]] \
   || fail "snapshot kernel __kernel_end is 0x$KERN_END, above vmFineBytes 4MiB"
+# Isolation is the point: the live Skia kernel must still be the one we
+# hashed before this OSGFX_SKIA=0 link.
+if [[ -n "$LIVE_SHA" ]]; then
+  NOW_LIVE=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+  ck; [[ "$NOW_LIVE" == "$LIVE_SHA" ]] \
+    || fail "live kernel.elf changed during the isolated noskia build"
+else
+  ck; [[ ! -f "$LIVE_KERNEL" ]] || fail "live kernel appeared during isolated build"
+fi
 
 echo
 echo "=== STRUCTURAL ==="
@@ -141,7 +165,7 @@ ck; grep -q '11 is `fdwait`' "$CORE_DIR/docs/syscall-registry.md" \
   || fail "syscall 11 is no longer fdwait"
 ck; ! grep -qE 'fileFdRoot|FILES\.ELF|:ROOT' "$CORE_DIR/docs/syscall-registry.md" \
   || fail "the registry grew a FILES row — no new syscall"
-HELP_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+HELP_SIZE=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="shellStrHelp"{print $3+0; exit}')
 ck; [[ "$HELP_SIZE" -eq 2511 ]] \
   || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511 — no help line"
@@ -149,15 +173,15 @@ ck; ! grep -qE 'FILES\.ELF|files\.c|:ROOT' "$CORE_DIR/kernel/shell.dart" \
   || fail "shell.dart grew a FILES name — no new help"
 ck; grep -q 'const int fileStoreBytes = 2560;' "$FILE_SRC" \
   || fail "fileStoreBytes is no longer 2560"
-FILE_STORE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+FILE_STORE=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="fileStore"{print $3+0; exit}')
 ck; [[ "$FILE_STORE" -eq 2560 ]] || fail "fileStore is ${FILE_STORE:-missing} bytes, expected 2560"
-EV_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+EV_SIZE=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="wmeventStore"{print $3+0; exit}')
-EV_OFF=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+EV_OFF=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="wmeventStore"{print $2; exit}')
 ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 384"
-DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
+DART_BSS_HEX=$(x86_64-elf-objdump -h "$BUILD_DIR/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
   || fail "wmeventStore is not last in .bss — FILES stole D7's slot"
@@ -578,6 +602,22 @@ if command -v hdiutil >/dev/null 2>&1; then
 fi
 echo "CHECK: pass  volume A mutated; dest bytes equal the plants; move source gone; fsck_msdos clean"
 
+# Live Skia kernel / FAT image must still be the pre-run snapshot.
+if [[ -n "$LIVE_SHA" ]]; then
+  END_LIVE=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+  ck; [[ "$END_LIVE" == "$LIVE_SHA" ]] \
+    || fail "live kernel.elf changed across files-fm — rebuild the Skia kernel"
+else
+  ck; [[ ! -f "$LIVE_KERNEL" ]] || fail "files-fm created a live kernel.elf"
+fi
+if [[ -n "$LIVE_SKIA_SHA" ]]; then
+  END_SKIA=$(sha256sum "$LIVE_SKIA" | awk '{print $1}')
+  ck; [[ "$END_SKIA" == "$LIVE_SKIA_SHA" ]] \
+    || fail "kernel-skia.elf changed across files-fm"
+else
+  ck; true
+fi
+
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "FILES-FM: PASS — FILES.ELF listed planted $NAME_A and $NAME_C, catted $HEX_A, copied to $COPY_A, renamed $NAME_C to $MOVE_C ($HEX_C, source gone); image B printed its own plant and copy; empty dir had no plant; raw OSCXPRG1 refused :ROOT; GHOST.DAT was a miss; rename 32 consumed; icons ADR-0154"
+echo "FILES-FM: PASS — FILES.ELF listed planted $NAME_A and $NAME_C, catted $HEX_A, copied to $COPY_A, renamed $NAME_C to $MOVE_C ($HEX_C, source gone); image B printed its own plant and copy; empty dir had no plant; raw OSCXPRG1 refused :ROOT; GHOST.DAT was a miss; rename 32 consumed; icons ADR-0154; live Skia kernel isolated"
 exit 0

@@ -18,7 +18,7 @@ setup_error() { echo "DE-geom: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=18
+ASSERTIONS_REQUIRED=22
 
 WM="$CORE_DIR/kernel/wm.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
@@ -44,6 +44,14 @@ ck; grep -q 'if (dw < u64(1))' "$WM" \
   || fail "zero-extent commits are no longer refused"
 ck; grep -q 'const int wmPopW = 168' "$POP" \
   || fail "menu geometry is still the primitive 96x64 card"
+ck; grep -q 'const int wmPopVisW = 174' "$POP" \
+  || fail "menu visual width is not the measured AA/shadow bbox 174"
+ck; grep -q 'const int wmPopVisH = 93' "$POP" \
+  || fail "menu visual height is not the measured AA/shadow bbox 93"
+ck; grep -q 'OSGFX_POP_VIS_W = 174' "$CORE_DIR/plat/osgfx/osgfx.h" \
+  || fail "osgfx.h visual width drifted from wmpop.dart"
+ck; grep -q 'OSGFX_POP_VIS_H' "$CORE_DIR/plat/osgfx/osgfx_chrome.c" \
+  || fail "chrome_blit still holes only the 168×80 content rect"
 ck; grep -q 'files_show_empty' "$FILES" \
   || fail "FILES has no empty-folder sit-in"
 ck; grep -q 'VOID=:dir' "$DISK" \

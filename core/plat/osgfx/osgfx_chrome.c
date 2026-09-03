@@ -316,9 +316,12 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
     if (pop != 0) {
       px = (int)(pop >> 32);
       py = (int)(pop & 0xffffffffu);
-      if (yy >= py && yy < py + OSGFX_POP_H) {
-        q0 = px;
-        q1 = px + OSGFX_POP_W;
+      /* Effect bounds, not the 168×80 hit-test rect: AA + south/east
+       * shadow must not be overwritten by a chrome-cache blit. */
+      if (yy >= py - OSGFX_POP_VIS_T &&
+          yy < py - OSGFX_POP_VIS_T + OSGFX_POP_VIS_H) {
+        q0 = px - OSGFX_POP_VIS_L;
+        q1 = px - OSGFX_POP_VIS_L + OSGFX_POP_VIS_W;
       }
     }
     xx = 0;

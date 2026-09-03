@@ -244,7 +244,7 @@ launch_qemu() {
       -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE_FILE"
       -drive "if=pflash,format=raw,file=$OVMF_VARS_COPY"
       -cdrom "$ISO"
-      -m 256M
+      -m 512M
       -cpu qemu64
       -serial "file:$SER"
       $DISPLAY_ARG

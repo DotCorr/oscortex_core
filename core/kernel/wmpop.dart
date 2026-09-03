@@ -32,6 +32,39 @@ const int wmPopW = 168;
 /// Two action rows plus pad. Variable via [wmPopRows] × [wmPopRowH].
 const int wmPopH = 80;
 
+/// Soft shadow painted at content+(ox,oy). Session / Skia use the same pair.
+const int wmPopShadowOffX = 4;
+
+/// Soft shadow painted at content+(ox,oy).
+const int wmPopShadowOffY = 6;
+
+/// Blur passed to osgfx_shadow. Guest Skia uses blur/6 spread, clamped 1..3.
+const int wmPopShadowBlur = 14;
+
+/// Guest Skia shadow spread for [wmPopShadowBlur] (14/6 → 2).
+const int wmPopShadowSpread = 2;
+
+/// Skia rrect AA halo outside the content rect. ~3px/side.
+const int wmPopAA = 3;
+
+/// Visual pad west of content (AA). Hit-test stays [wmPopW]×[wmPopH].
+const int wmPopVisL = 3;
+
+/// Visual pad north of content (AA).
+const int wmPopVisT = 3;
+
+/// Visual pad east of content (AA + shadow ox/spread).
+const int wmPopVisR = 3;
+
+/// Visual pad south of content (AA + shadow oy + spread). 80+3+10 = 93.
+const int wmPopVisB = 10;
+
+/// Near-white card bbox including AA/shadow bleed. Not the hit-test size.
+const int wmPopVisW = 174;
+
+/// Near-white card bbox including AA/shadow bleed. Measured 174×93.
+const int wmPopVisH = 93;
+
 /// Offset from the pointer to the popover origin. Positive is right and down.
 const int wmPopGap = 8;
 

@@ -491,7 +491,8 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
     int px = (int)(cmd->pop >> 32);
     int py = (int)(cmd->pop & 0xffffffffu);
     pop_kind = (unsigned)((cmd->flags >> OSGFX_GUEST_POP_SHIFT) & 3u);
-    osgfx_shadow(g, px + 4, py + 6, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, 14,
+    osgfx_shadow(g, px + OSGFX_POP_SHADOW_OX, py + OSGFX_POP_SHADOW_OY,
+                 OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, OSGFX_POP_SHADOW_BLUR,
                  0x000C2030u);
     osgfx_fill_rrect(g, px, py, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS,
                      0x00F4F6FAu);

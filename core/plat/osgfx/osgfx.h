@@ -51,6 +51,21 @@ enum {
   OSGFX_POP_H = 80,
   OSGFX_POP_X = 520,
   OSGFX_POP_Y = 80,
+  /* Content rect is POP_W×POP_H (hit-test). Visual/effect bounds are
+   * the near-white card plus Skia AA (~3px) and the south/east shadow
+   * (offset 4,6; blur 14 → spread 2). Measured white bbox 174×93 is
+   * this extent, not a 168×80 layout mismatch. */
+  OSGFX_POP_SHADOW_OX = 4,
+  OSGFX_POP_SHADOW_OY = 6,
+  OSGFX_POP_SHADOW_BLUR = 14,
+  OSGFX_POP_SHADOW_SPREAD = 2,
+  OSGFX_POP_AA = 3,
+  OSGFX_POP_VIS_L = 3,
+  OSGFX_POP_VIS_T = 3,
+  OSGFX_POP_VIS_R = 3,
+  OSGFX_POP_VIS_B = 10,
+  OSGFX_POP_VIS_W = 174,
+  OSGFX_POP_VIS_H = 93,
   OSGFX_DESK = 0x00184060,
   /* Pearl title / elevated slate taskbar — designed chrome, not neon stamps. */
   OSGFX_TITLE = 0x00E8E0D0,

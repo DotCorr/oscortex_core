@@ -200,6 +200,7 @@ timeout: 0
 /oscortex
     protocol: multiboot
     path: boot():/boot/kernel.elf
+    KERNEL_PATH: boot():/boot/kernel.elf
     resolution: ${GOP_W}x${GOP_H}x${GOP_BPP}
 EOF
 

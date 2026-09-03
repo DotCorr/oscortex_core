@@ -27,10 +27,12 @@ OUT_ISO="${2:-}"
 [[ -f "$KERNEL_ELF" ]] || setup_error "no kernel at $KERNEL_ELF"
 
 command -v xorriso >/dev/null 2>&1 || setup_error "xorriso not found on PATH (brew install xorriso)"
-command -v limine >/dev/null 2>&1 || setup_error "limine not found on PATH (brew install limine)"
-
-LIMINE_DATADIR="${LIMINE_DATADIR:-$(limine --print-datadir)}"
-[[ -d "$LIMINE_DATADIR" ]] || setup_error "Limine datadir not found at $LIMINE_DATADIR"
+# Prefer Limine 12 (path:) over PATH Limine 8 (KERNEL_PATH). A standalone
+# Limine 12 has no --print-datadir; find-limine.sh uses the binary's directory.
+# shellcheck disable=SC1090
+eval "$(bash "$SCRIPT_DIR/find-limine.sh")" || setup_error "limine not found (need Limine 12+ at /opt/cursor/limine-binary or on PATH)"
+[[ -n "${LIMINE:-}" && -x "$LIMINE" ]] || setup_error "find-limine.sh did not export LIMINE"
+[[ -d "${LIMINE_DATADIR:-}" ]] || setup_error "Limine datadir not found at ${LIMINE_DATADIR:-}"
 [[ -f "$LIMINE_DATADIR/BOOTX64.EFI" ]] || setup_error "no BOOTX64.EFI in $LIMINE_DATADIR"
 [[ -f "$LIMINE_DATADIR/limine-uefi-cd.bin" ]] || setup_error "no limine-uefi-cd.bin in $LIMINE_DATADIR"
 [[ -f "$LIMINE_DATADIR/limine-bios-cd.bin" ]] || setup_error "no limine-bios-cd.bin in $LIMINE_DATADIR"
@@ -66,7 +68,7 @@ XORRISO_STATUS=$?
 # Stage 1/2 into the ISO MBR so QEMU SeaBIOS can boot `-cdrom` *or*
 # `-drive` without OVMF and without `-kernel`. El Torito already
 # carries limine-bios-cd.bin; this is the hybrid half.
-limine bios-install "$OUT_ISO" || fail "limine bios-install exited $?"
+"$LIMINE" bios-install "$OUT_ISO" || fail "limine bios-install exited $?"
 
-echo "build-uefi-image: PASS — $OUT_ISO (Limine hybrid, UEFI + BIOS)"
+echo "build-uefi-image: PASS — $OUT_ISO (Limine ${LIMINE_VERSION:-hybrid}, UEFI + BIOS)"
 exit 0

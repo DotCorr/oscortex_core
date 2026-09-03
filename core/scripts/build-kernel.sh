@@ -139,7 +139,10 @@ find_elf_linker() {
 
 LD_CMD="$(find_elf_linker)" || setup_error "no ELF linker found (need x86_64-elf-ld or GNU ld; on macOS: brew install x86_64-elf-binutils). Set LD=<linker> to override."
 
-BUILD_DIR="$CORE_DIR/build"
+# Isolated harnesses (files-fm OSGFX_SKIA=0) must not mv onto the live
+# Skia kernel. Honour BUILD_DIR; the prelude symlink stays at
+# core/build/dcdart because kmain.dart imports that spelling.
+BUILD_DIR="${BUILD_DIR:-$CORE_DIR/build}"
 mkdir -p "$BUILD_DIR"
 
 # ---------------------------------------------------------------------------

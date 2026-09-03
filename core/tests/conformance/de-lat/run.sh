@@ -18,14 +18,14 @@ setup_error() { echo "DE-lat: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=16
+ASSERTIONS_REQUIRED=18
 
 PACE="$CORE_DIR/kernel/wmpace.dart"
 WM="$CORE_DIR/kernel/wm.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
 EV="$CORE_DIR/kernel/wmevent.dart"
 GUEST_H="$CORE_DIR/plat/osgfx/osgfx_guest.h"
-DRIVE="$CORE_DIR/scripts/daily-drive-round5.py"
+DRIVE="$CORE_DIR/scripts/daily-drive-round6.py"
 
 ck; [[ -f "$PACE" ]] || fail "no wmpace.dart"
 ck; grep -q 'void wmLatStamp' "$PACE" || fail "no guest-tick stamp"
@@ -34,7 +34,8 @@ ck; grep -q 'tick_count()' "$PACE" || fail "latency path does not read PIT ticks
 ck; grep -q 'wmLatStrLine' "$PACE" || fail "no WM LAT UART token"
 ck; grep -q 'wmPageWEvTick' "$PACE" || fail "no event-tick page word"
 ck; grep -q 'wmPageWEvToPres' "$PACE" || fail "no event-to-present page word"
-ck; grep -q 'wmLatKindPtr' "$WM" || fail "pointer path does not stamp"
+ck; grep -q 'wmLatStamp(u64(wmLatKindPtr))' "$WM" \
+  || fail "pointer path does not stamp"
 ck; grep -q 'wmLatKindDrag' "$WM" || fail "drag path does not stamp"
 ck; grep -q 'wmLatKindFocus' "$WM" || fail "focus path does not stamp"
 ck; grep -q 'wmLatKindWheel' "$EV" || fail "wheel path does not stamp"
@@ -46,6 +47,10 @@ ck; grep -q 'PROC YIELD' "$DRIVE" \
   || fail "driver does not drop YIELD lines from the latency window"
 ck; grep -q 'self.off' "$DRIVE" \
   || fail "driver still rereads the UART logfile from offset 0"
+ck; grep -q 'wmLatStrG' "$PACE" \
+  || fail "present note does not print chrome-regen (TCG vs schedule)"
+ck; awk '/wmLatStamp\(u64\(wmLatKindPtr\)\)/{p=NR} /wmGfxKick\(\)/{if(p && NR-p<8) ok=1} END{exit ok?0:1}' "$WM" \
+  || fail "pointer LAT is not stamped on the kick (sprite-only moves inherit the next compose)"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick event→present, not wall time"
