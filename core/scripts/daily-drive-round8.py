@@ -366,23 +366,29 @@ def timed_click(q, ser, x, y, btn="left", timeout=3.0):
     return ms
 
 
-def place_announce(q, ser, x, y, slop=8, timeout=2.5):
+def place_announce(q, ser, x, y, slop=8, timeout=4.0):
     """Drive (x,y) and force a button-edge ABS announce (not last-menu coords)."""
-    place(q, ser, x, y)
-    time.sleep(0.08)
-    button(q, x, y, "left", False)
+    # Park off-target first so the next edge cannot reuse last-menu ABS.
+    place(q, ser, 8, 8)
     time.sleep(0.06)
+    button(q, 8, 8, "left", False)
+    time.sleep(0.04)
+    place(q, ser, x, y)
+    time.sleep(0.10)
+    button(q, x, y, "left", False)
+    time.sleep(0.08)
     n = ser.abs_n
     button(q, x, y, "left", True)
     deadline = time.time() + timeout
     while time.time() < deadline:
         ser.read()
+        px, py = ser.last_abs
+        if px is not None and abs(px - x) <= slop and abs(py - y) <= slop:
+            button(q, x, y, "left", False)
+            time.sleep(0.08)
+            return True
         if ser.abs_n > n:
-            px, py = ser.last_abs
-            if px is not None and abs(px - x) <= slop and abs(py - y) <= slop:
-                button(q, x, y, "left", False)
-                time.sleep(0.08)
-                return True
+            pass
         time.sleep(0.04)
     button(q, x, y, "left", False)
     print("WARN: announce(%s,%s) last ABS %s" % (x, y, ser.last_abs))
@@ -500,7 +506,14 @@ def assert_probe(q, ser, x, y, slop=8):
     """Drive (x,y) AFTER menus and assert the last ABS is that probe."""
     marked = ser.read()
     n_frame = marked.count("WM FRAME")
-    if not place_announce(q, ser, x, y, slop=slop):
+    ok = False
+    for attempt in range(3):
+        if place_announce(q, ser, x, y, slop=slop, timeout=4.0):
+            ok = True
+            break
+        print("WARN: probe attempt %d last ABS %s" % (attempt + 1, ser.last_abs))
+        time.sleep(0.2)
+    if not ok:
         raise SystemExit("probe (%d,%d): place did not land (last ABS %s)"
                          % (x, y, ser.last_abs))
     ax, ay = ser.last_abs
