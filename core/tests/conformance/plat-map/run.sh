@@ -80,13 +80,13 @@ VM_PLAT_PD=$(dartconst vmPlatPdCount vm.dart)
 MMAP_NO=$(dartconst heapSysMmapNo heap.dart)
 ck; [[ "$HEAP_MAX" -eq 2097152 ]] \
   || fail "heapMaxInc moved — TAP/FILES must stay at the 2 MiB cap"
-ck; [[ "$HEAP_PLAT_MAX" -eq 231718912 ]] \
-  || fail "heapPlatMaxInc moved — platform window is RO+RX LOAD span (ADR-0168)"
+ck; [[ "$HEAP_PLAT_MAX" -eq 229318656 ]] \
+  || fail "heapPlatMaxInc moved — platform window is RO+RX LOAD span after SHM PDE 2"
 ck; [[ "$ELF_MAX" -eq 65536 ]] \
   || fail "elfImageMax moved — TAP/FILES stay 64 KiB"
 ck; [[ "$VM_PROG_END" -eq 270532608 ]] \
   || fail "vmProgEnd moved — app load window must stay 2 MiB"
-ck; [[ "$VM_PLAT_BASE" -eq 272629760 ]] \
+ck; [[ "$VM_PLAT_BASE" -eq 274726912 ]] \
   || fail "vmPlatBase moved — mmap VA is derived from this"
 # DERIVED from the window itself, not typed. plat-map pinned 95 and plat-huge
 # pinned 111 for the SAME constant; vm.dart says 111 (ADR-0168 grew the plat
@@ -328,10 +328,10 @@ if fails:
     print("\n".join(ser.splitlines()[-100:]), file=sys.stderr)
     sys.exit(1)
 
-print("    (PLAT.ELF mmap 3 MiB at 0x10400000 + heap write + xor; "
+print("    (PLAT.ELF mmap 3 MiB at 0x10600000 + heap write + xor; "
       "ASK.ELF same bytes refused; FREED delta is plat tables + mapped pages)")
 PY
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "PLAT-MAP: PASS — named PLAT.ELF mmap'd 3 MiB at 0x10400000 (syscall 27); write() from those pages; teardown freed vmPlatPdCount tables + 768 frames above ASK.ELF; ASK.ELF is the same bytes and is refused; TAP/FILES stay 64K/2MiB; leftovers clone / futex / dlopen"
+echo "PLAT-MAP: PASS — named PLAT.ELF mmap'd 3 MiB at 0x10600000 (syscall 27); write() from those pages; teardown freed vmPlatPdCount tables + 768 frames above ASK.ELF; ASK.ELF is the same bytes and is refused; TAP/FILES stay 64K/2MiB; leftovers clone / futex / dlopen"
 exit 0

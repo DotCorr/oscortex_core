@@ -96,12 +96,12 @@ ck; [[ "$ELF_MAX" -eq 65536 ]] \
   || fail "elfImageMax moved — TAP/FILES stay 64 KiB"
 ck; [[ "$VM_PROG_END" -eq 270532608 ]] \
   || fail "vmProgEnd moved — app load window must stay 2 MiB"
-ck; [[ "$VM_PLAT_BASE" -eq 272629760 ]] \
+ck; [[ "$VM_PLAT_BASE" -eq 274726912 ]] \
   || fail "vmPlatBase moved — mmap VA is derived from this"
-ck; [[ "$HEAP_PLAT_MAX" -eq 231718912 ]] \
-  || fail "heapPlatMaxInc is $HEAP_PLAT_MAX, expected 231718912 (RO+RX LOAD span)"
-ck; [[ "$VM_PLAT_BYTES" -eq 231718912 ]] \
-  || fail "vmPlatBytes is $VM_PLAT_BYTES, expected 231718912"
+ck; [[ "$HEAP_PLAT_MAX" -eq 229318656 ]] \
+  || fail "heapPlatMaxInc is $HEAP_PLAT_MAX, expected 229318656 (RO+RX LOAD span)"
+ck; [[ "$VM_PLAT_BYTES" -eq 229318656 ]] \
+  || fail "vmPlatBytes is $VM_PLAT_BYTES, expected 229318656"
 ck; [[ "$HEAP_PLAT_MAX" -ge "$WANT_BYTES" ]] \
   || fail "platform window below the 189 MiB plant floor"
 ck; [[ "$HEAP_PLAT_MAX" -gt "$OLD_WIN" ]] \
@@ -368,11 +368,11 @@ if fails:
     print("\n".join(ser.splitlines()[-100:]), file=sys.stderr)
     sys.exit(1)
 
-print("    (PLAT.ELF mmap 189 MiB at 0x10400000 + heap write + xor; "
+print("    (PLAT.ELF mmap 189 MiB at 0x10600000 + heap write + xor; "
       "ASK.ELF same bytes refused; FREED delta is 111 tables + 48384 pages; "
       "leftover DT_NEEDED / OnPaint)")
 PY
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "PLAT-HUGE: PASS — named PLAT.ELF mmap'd 189 MiB at 0x10400000 (syscall 27); write() from those pages; teardown freed 111 tables + 48384 frames above ASK.ELF; ASK.ELF is the same bytes and is refused; TAP/FILES stay 64K/2MiB; leftovers rest of DT_NEEDED / OnPaint"
+echo "PLAT-HUGE: PASS — named PLAT.ELF mmap'd 189 MiB at 0x10600000 (syscall 27); write() from those pages; teardown freed 111 tables + 48384 frames above ASK.ELF; ASK.ELF is the same bytes and is refused; TAP/FILES stay 64K/2MiB; leftovers rest of DT_NEEDED / OnPaint"
 exit 0

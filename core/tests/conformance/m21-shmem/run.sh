@@ -394,8 +394,10 @@ echo "$CLEAN_OUT"
 # `procSpaceBuild` copies all 512 page-directory entries by value and must clear
 # BOTH windows' entries afterwards. Missing the second one would give every
 # process created after a region existed a silent path to another's memory.
-ck; grep -q "vmSetEntry(pd, u64(vmShmPdIndex), u64(0));" "$CORE_DIR/kernel/proc.dart" \
-  || fail "procSpaceBuild does not clear PD[vmShmPdIndex]; a new address space would INHERIT whatever shared-region page table the kernel's page directory happened to carry"
+ck; grep -q "vmShmPdCount" "$CORE_DIR/kernel/proc.dart" \
+  || fail "procSpaceBuild does not walk vmShmPdCount; a new address space would INHERIT a shared-region page table from a second SHM PDE"
+ck; grep -q "vmSetEntry(pd, u64(vmShmPdIndex) + shmPdI, u64(0));" "$CORE_DIR/kernel/proc.dart" \
+  || fail "procSpaceBuild does not clear PD[vmShmPdIndex + i]; a new address space would INHERIT whatever shared-region page table the kernel's page directory happened to carry"
 ck; grep -q "vmSetEntry(pd, u64(vmProgPdIndex), u64(0));" "$CORE_DIR/kernel/proc.dart" \
   || fail "procSpaceBuild no longer clears PD[vmProgPdIndex]"
 

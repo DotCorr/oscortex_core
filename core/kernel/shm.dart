@@ -67,9 +67,9 @@ part of 'kmain.dart';
 ///
 /// **Four.** Sit-in Start lists four named ELFs; a session that already
 /// holds two resident surfaces must still be able to spawn SET or
-/// STUDIO (ADR-0109). The window is still one page-directory entry
-/// ([vmShmPages] 512). Four regions of 128 pages each divide
-/// `[vmShmBase, vmShmEnd)` exactly. No new syscall; the table grew.
+/// STUDIO (ADR-0109). The window is two page-directory entries
+/// ([vmShmPages] 1024) so dock + SET + a native-max FILES body can
+/// live together. Four regions still share the first-fit VA map.
 const int shmMax = 4;
 
 /// Pages of window address space reserved per region SLOT, whatever the region
@@ -88,12 +88,10 @@ const int shmSlotPages = 128;
 /// The largest region this kernel will create, in pages: one slot's worth.
 /// 128 pages is 524,288 bytes.
 ///
-/// **An 800x600x32 frame is 469 pages and does NOT fit**, and that is stated
-/// here rather than discovered later. The window ([vmShmPages], 512) is large
-/// enough for one; the SLOTTING is what caps it. Today's FRAME surfaces are
-/// 38 pages (240x160). Configuring `shmMax` 1 / `shmSlotPages` 512 still
-/// fits a full-screen frame and changes no ABI -- GAP-0237. ADR-0109 took
-/// four slots so the DE can hold Start's apps, not one big slot.
+/// **An 800x600x32 frame is 469 pages and now fits beside its neighbors.**
+/// The window ([vmShmPages], 1024) holds dock + SET + native-max FILES
+/// (583 pages). [shmMaxPages] stays 510 because two vector words are
+/// file metadata. ADR-0109 still takes four regions, not one big slot.
 /* A region may use the shared window's free extent. The two final vector
  * words are file metadata, leaving 510 physical-page entries. */
 const int shmMaxPages = 510;
@@ -733,7 +731,7 @@ u64 shmRegionVa(u64 r) {
   return u64(vmShmBase) + (shmRegionBasePage(r) * u64(vmPageBytes));
 }
 
-/// First-fit contiguous extent in the 512-page shared window.
+/// First-fit contiguous extent in the 1024-page shared window.
 @bare
 u64 shmVaFind(u64 pages) {
   u64 at = u64(0);
@@ -948,30 +946,57 @@ void shmRefuse(u64 frame, u64 no, u64 h, u64 code) {
 /// is not safe for the load window.
 @bare
 u64 shmEnsureTable(u64 s) {
-  if (vmShmTable() > u64(0)) {
-    return u64(0);
-  }
-  final u64 f = allocFrame();
-  if (f < u64(1)) {
-    return u64(shmRetNoMem);
-  }
-  // Zeroed HERE as well as inside `vmShmTableInstall`. The install zeroes it
-  // because a page table full of allocator litter is 512 mappings the CPU will
-  // believe; this line is what keeps `m7-frames`' "every allocFrame call site
-  // names its frame to vmZeroFrame in the same file" check (ADR-0026) true
-  // without adding a delegating exemption for one call site.
-  vmZeroFrame(f);
-  if (vmShmTableInstall(f) != u64(vmShmOk)) {
-    final u64 back = freeFrame(f);
-    if (back != u64(pmmFreeOk)) {
-      // Nothing this function can do about it, and it is counted where every
-      // other allocator error is: `pmmMetaErrors`, which `frames` prints.
-      shmBumpMeta(u64(shmMetaRefusals));
-    }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
     return u64(shmRetNoTable);
   }
-  procSet(s, u64(procSlotShmPt), f);
+  u64 i = u64(0);
+  while (i < u64(vmShmPdCount)) {
+    final u64 pdi = u64(vmShmPdIndex) + i;
+    final u64 e = vmGetEntry(pd, pdi);
+    if ((e & u64(vmPresent)) < u64(1)) {
+      final u64 f = allocFrame();
+      if (f < u64(1)) {
+        return u64(shmRetNoMem);
+      }
+      vmZeroFrame(f);
+      if (vmShmPdInstall(pdi, f) != u64(vmShmOk)) {
+        final u64 back = freeFrame(f);
+        if (back != u64(pmmFreeOk)) {
+          shmBumpMeta(u64(shmMetaRefusals));
+        }
+        return u64(shmRetNoTable);
+      }
+    }
+    i = i + 1;
+  }
+  procSet(s, u64(procSlotShmPt), vmShmTable());
   return u64(0);
+}
+
+/// Page-table frame in slot [s] for the 2 MiB PDE that contains [va].
+@bare
+u64 shmProcPt(u64 s, u64 va) {
+  if (va < u64(vmShmBase)) {
+    return u64(0);
+  }
+  if (va >= u64(vmShmEnd)) {
+    return u64(0);
+  }
+  final u64 pd = procGet(s, u64(procSlotPd));
+  if (pd < u64(1)) {
+    return u64(0);
+  }
+  final u64 off = va - u64(vmShmBase);
+  final u64 pdi = u64(vmShmPdIndex) + (off >> u64(vmBigShift));
+  final u64 e = vmGetEntry(pd, pdi);
+  if ((e & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  return vmEntryAddr(e);
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,7 +1291,6 @@ u64 shmPtUnmapOne(u64 pt, u64 va, u64 live) {
 @bare
 void shmUnmapRangeAll(u64 r, u64 lo, u64 hi) {
   final u64 va0 = shmRegionVa(r);
-  final u64 livePt = vmShmTable();
   u64 s = u64(0);
   while (s < u64(procMax)) {
     if (shmProcActive(s) > u64(0)) {
@@ -1276,33 +1300,33 @@ void shmUnmapRangeAll(u64 r, u64 lo, u64 hi) {
         if ((c & u64(15)) > u64(0)) {
           if (shmCapReg(c) == r) {
             if (shmCapMapped(c) > u64(0)) {
-              final u64 pt = procGet(s, u64(procSlotShmPt));
-              if (pt > u64(0)) {
-                u64 live = u64(0);
-                if (pt == livePt) {
-                  live = u64(1);
-                }
-                final u64 clo = shmCapLo(c);
-                // Partial windows do not grow with the region; [hi] here is
-                // the caller's range (shrink's freed span), so use that as
-                // the whole-map ceiling for intersection.
-                u64 chi = hi;
-                if (shmCapWhole(c) < u64(1)) {
-                  chi = shmCapOff(c) + shmCapCount(c);
-                }
-                u64 i = lo;
-                while (i < hi) {
-                  if (i >= clo) {
-                    if (i < chi) {
-                      final u64 u = shmPtUnmapOne(
-                          pt, va0 + (i * u64(vmPageBytes)), live);
+              final u64 clo = shmCapLo(c);
+              // Partial windows do not grow with the region; [hi] here is
+              // the caller's range (shrink's freed span), so use that as
+              // the whole-map ceiling for intersection.
+              u64 chi = hi;
+              if (shmCapWhole(c) < u64(1)) {
+                chi = shmCapOff(c) + shmCapCount(c);
+              }
+              u64 i = lo;
+              while (i < hi) {
+                if (i >= clo) {
+                  if (i < chi) {
+                    final u64 va = va0 + (i * u64(vmPageBytes));
+                    final u64 pt = shmProcPt(s, va);
+                    if (pt > u64(0)) {
+                      u64 live = u64(0);
+                      if (pt == vmShmTableAt(va)) {
+                        live = u64(1);
+                      }
+                      final u64 u = shmPtUnmapOne(pt, va, live);
                       if (u > u64(0)) {
                         shmBumpMeta(u64(shmMetaRefusals));
                       }
                     }
                   }
-                  i = i + u64(1);
                 }
+                i = i + u64(1);
               }
             }
           }
@@ -1322,7 +1346,6 @@ void shmUnmapRangeAll(u64 r, u64 lo, u64 hi) {
 u64 shmMapRangeAll(u64 r, u64 lo, u64 hi) {
   final u64 vec = shmReg(r, u64(shmRegVec));
   final u64 va0 = shmRegionVa(r);
-  final u64 livePt = vmShmTable();
   u64 s = u64(0);
   while (s < u64(procMax)) {
     if (shmProcActive(s) > u64(0)) {
@@ -1332,15 +1355,6 @@ u64 shmMapRangeAll(u64 r, u64 lo, u64 hi) {
         if ((c & u64(15)) > u64(0)) {
           if (shmCapReg(c) == r) {
             if (shmCapMapped(c) > u64(0)) {
-              final u64 pt = procGet(s, u64(procSlotShmPt));
-              if (pt < u64(1)) {
-                shmUnmapRangeAll(r, lo, hi);
-                return u64(shmRetNoTable);
-              }
-              u64 live = u64(0);
-              if (pt == livePt) {
-                live = u64(1);
-              }
               u64 write = u64(0);
               if (shmCapPerms(c) == u64(shmPermRw)) {
                 write = u64(1);
@@ -1354,14 +1368,19 @@ u64 shmMapRangeAll(u64 r, u64 lo, u64 hi) {
               while (i < hi) {
                 if (i >= clo) {
                   if (i < chi) {
+                    final u64 va = va0 + (i * u64(vmPageBytes));
+                    final u64 pt = shmProcPt(s, va);
+                    if (pt < u64(1)) {
+                      shmUnmapRangeAll(r, lo, hi);
+                      return u64(shmRetNoTable);
+                    }
+                    u64 live = u64(0);
+                    if (pt == vmShmTableAt(va)) {
+                      live = u64(1);
+                    }
                     final u64 pa = shmVec(vec, i);
                     if (pa > u64(0)) {
-                      final u64 me = shmPtMapOne(
-                          pt,
-                          va0 + (i * u64(vmPageBytes)),
-                          pa,
-                          write,
-                          live);
+                      final u64 me = shmPtMapOne(pt, va, pa, write, live);
                       if (me > u64(0)) {
                         shmUnmapRangeAll(r, lo, hi);
                         return me;
@@ -2274,20 +2293,19 @@ u64 shmDemandTry(u64 errorCode) {
     shmSetVec(vec, page, pa);
   }
   final u64 s = procCurrent();
-  final u64 pt = procGet(s, u64(procSlotShmPt));
+  final u64 va = va0 + (page * u64(vmPageBytes));
+  final u64 pt = shmProcPt(s, va);
   if (pt < u64(1)) {
     return u64(0);
   }
-  final u64 va = va0 + (page * u64(vmPageBytes));
   final u64 slot = shmPtLeaf(pt, va);
   if (slot < u64(1)) {
     return u64(0);
   }
   final u64 old = Pointer<u64>.fromAddress(slot).value;
   if ((old & u64(vmPresent)) < u64(1)) {
-    final u64 livePt = vmShmTable();
     u64 live = u64(0);
-    if (pt == livePt) {
+    if (pt == vmShmTableAt(va)) {
       live = u64(1);
     }
     final u64 me = shmPtMapOne(pt, va, pa, u64(0), live);

@@ -74,7 +74,7 @@ ELF_MAX=$(dartconst elfImageMax elf.dart)
 VM_PROG_END=$(dartconst vmProgEnd vm.dart)
 ck; [[ "$HEAP_MAX" -eq 2097152 ]] \
   || fail "heapMaxInc moved — TAP/FILES must stay at the 2 MiB cap"
-ck; [[ "$HEAP_PLAT_MAX" -eq 231718912 ]] \
+ck; [[ "$HEAP_PLAT_MAX" -eq 229318656 ]] \
   || fail "heapPlatMaxInc moved — platform window is RO+RX LOAD span (ADR-0168)"
 ck; [[ "$ELF_MAX" -eq 65536 ]] \
   || fail "elfImageMax moved — TAP/FILES stay 64 KiB"

@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=164
+ASSERTIONS_REQUIRED=169
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -189,6 +189,10 @@ s = open(sys.argv[1]).read()
 n = int(re.search(r"const int shmMaxPages = (\d+);", s).group(1))
 sys.exit(0 if 424 <= n <= 510 else 1)
 PY
+ck; grep -q 'const int vmShmPages = 1024;' "$CORE_DIR/kernel/vm.dart" \
+  || fail "SHM window is still one PDE — native-max FILES cannot grow"
+ck; grep -q 'const int vmShmPdCount = 2;' "$CORE_DIR/kernel/vm.dart" \
+  || fail "SHM mapper has no second PDE"
 ck; grep -q 'wmPointerPending' "$WM" \
   || fail "pointer packets arriving during composition are still discarded"
 ck; grep -q 'wmeventEnqueue(panel, x, y)' "$WM" \
@@ -578,7 +582,7 @@ echo "RUNTIME: pass  DESK READY; frosted glass dock; empty desk"
 # Skia pointer is noted on the first tablet packet, not at DESK READY.
 ck; grep -q 'VTAB OK' "$SER" || fail "vtab did not arm the tablet"
 ck; python3 - "$PORT" "$SER" <<'PY' || fail "contextual / Start click stage failed"
-import json, socket, sys, time
+import json, os, re, socket, sys, time
 
 port = int(sys.argv[1])
 ser = sys.argv[2]
@@ -886,6 +890,68 @@ if not started:
 button(328, 572, "left", False)
 time.sleep(0.25)
 press(379, 57, "left", "WM MAX")
+grow_at = time.time()
+grew = False
+while time.time() < grow_at + 8:
+    now = read()
+    if "FILES GROW REFUSE" in now:
+        raise SystemExit("FILES SHMGROW refused after maximize")
+    if "FILES GROW" in now:
+        grew = True
+        break
+    time.sleep(0.05)
+if not grew:
+    raise SystemExit("FILES did not grow backing after maximize")
+m = re.search(r"WM ON BASE ([0-9A-F]{8}) PITCH ([0-9A-F]{8})", read())
+if not m:
+    raise SystemExit("no WM ON BASE for maximize pmemsave")
+fb_base = int(m.group(1), 16)
+fb_pitch = int(m.group(2), 16)
+fb_size = fb_pitch * GH
+fbmax = os.path.abspath(os.path.join(os.path.dirname(ser), "fb-max.raw"))
+q.cmd("pmemsave", val=fb_base, size=fb_size, filename=fbmax)
+if not os.path.exists(fbmax) or os.path.getsize(fbmax) != fb_size:
+    raise SystemExit("maximize pmemsave failed")
+
+def px(path, x, y):
+    data = open(path, "rb").read()
+    off = y * fb_pitch + x * 4
+    return int.from_bytes(data[off:off + 4], "little") & 0xFFFFFF
+
+def is_files_body(ink):
+    r, g, b = (ink >> 16) & 255, (ink >> 8) & 255, ink & 255
+    if r + g + b < 400:
+        return False
+    if abs(r - g) > 48 or abs(g - b) > 48:
+        return False
+    return r >= 160 and g >= 160 and b >= 160
+
+far = px(fbmax, 700, 500)
+mid = px(fbmax, 400, 350)
+if not is_files_body(far):
+    raise SystemExit("grown FILES page (700,500)=%06X not painted" % far)
+if not is_files_body(mid):
+    raise SystemExit("max FILES body (400,350)=%06X not painted" % mid)
+
+# Max button moves with the native client rect: x=3,w=794 → max at 719.
+press(728, 20, "left", "WM MAX")
+rest_at = time.time()
+restored = False
+while time.time() < rest_at + 8:
+    if "FILES REST" in read():
+        restored = True
+        break
+    time.sleep(0.05)
+if not restored:
+    raise SystemExit("FILES did not restore prior geometry")
+fbrest = os.path.abspath(os.path.join(os.path.dirname(ser), "fb-rest.raw"))
+q.cmd("pmemsave", val=fb_base, size=fb_size, filename=fbrest)
+far2 = px(fbrest, 700, 500)
+near = px(fbrest, 100, 160)
+if is_files_body(far2):
+    raise SystemExit("restore left FILES ink at (700,500)=%06X" % far2)
+if not is_files_body(near):
+    raise SystemExit("restore lost FILES content (100,160)=%06X" % near)
 place(444, 316)
 time.sleep(0.08)
 button(444, 316, "left", True)
@@ -971,6 +1037,12 @@ ck; grep -q 'WM REST W' "$SER" \
   || fail "task slot did not restore the minimised window"
 ck; grep -q 'WM MAX W' "$SER" \
   || fail "title max did not toggle FILES"
+ck; grep -q 'FILES GROW' "$SER" \
+  || fail "FILES did not complete SHMGROW for native maximize"
+ck; ! grep -q 'FILES GROW REFUSE' "$SER" \
+  || fail "FILES SHMGROW refused — native maximize did not fill"
+ck; grep -q 'FILES REST' "$SER" \
+  || fail "FILES did not restore prior geometry after maximize"
 ck; ! grep -q 'OSGFX OOM' "$SER" \
   || fail "Skia bump exhausted after combined daily-drive input"
 # M1 FAULT 06 is the deliberate boot #UD before M1 END. A later vector,

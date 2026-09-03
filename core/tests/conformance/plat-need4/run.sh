@@ -114,7 +114,7 @@ VM_PROG_END=$(dartconst vmProgEnd vm.dart)
 DLOPEN_NO=$(dartconst elfSysDlopenNo elf.dart)
 ck; [[ "$HEAP_MAX" -eq 2097152 ]] \
   || fail "heapMaxInc moved — TAP/FILES must stay at the 2 MiB cap"
-ck; [[ "$HEAP_PLAT_MAX" -eq 231718912 ]] \
+ck; [[ "$HEAP_PLAT_MAX" -eq 229318656 ]] \
   || fail "heapPlatMaxInc moved — platform window is RO+RX LOAD span (ADR-0168)"
 ck; [[ "$ELF_MAX" -eq 65536 ]] \
   || fail "elfImageMax moved — TAP/FILES stay 64 KiB"
@@ -373,7 +373,7 @@ if len(opens) < 16:
 else:
     for va_s in opens[:16]:
         va = int(va_s, 16)
-        if va < 0x10400000 or va >= 0x1C100000:
+        if va < 0x10600000 or va >= 0x1C100000:
             fails.append("dlopen VA %s outside platform heap" % va_s)
 
 # Anti-vacuity: missing LIBX1.SO → LINE1..15 ok, no LINE16.

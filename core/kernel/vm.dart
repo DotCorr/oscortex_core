@@ -2308,9 +2308,9 @@ u64 vmProgUnmap(u64 va) {
 // lives in a SECOND window immediately above it, at page-directory entry 129,
 // which nothing M0-M20 built has ever touched.
 //
-//   [vmProgBase, vmProgEnd)  0x10000000..0x10200000  PD[128]  load region
-//   [vmShmBase,  vmShmEnd)   0x10200000..0x10400000  PD[129]  shared regions
-//   [vmProgBase, vmUserEnd)  0x10000000..0x10400000           what ring 3 can reach
+//   [vmProgBase, vmProgEnd)  0x10000000..0x10200000  PD[128]     load region
+//   [vmShmBase,  vmShmEnd)   0x10200000..0x10600000  PD[129..130] shared regions
+//   [vmProgBase, vmUserEnd)  0x10000000..0x1E0FC000              ring-3 reach
 //
 // WHAT THAT BUYS, AND IT IS THE WHOLE REASON FOR THE SHAPE: `prog.ld` in nine
 // harnesses is unchanged, `heapTop`/`heapTopIndex`/`heapGuardPage`/
@@ -2320,10 +2320,10 @@ u64 vmProgUnmap(u64 va) {
 // and the 47 golden occurrences of `101FE000`/`101FF000`/`10200000` across nine
 // `expected*.txt` files do not move.
 //
-// ONE PAGE-DIRECTORY ENTRY IS 2 MiB IS 512 PAGES, AND THAT IS NOT AN ARBITRARY
-// SIZE: an 800x600x32 frame is 1,920,000 bytes = 469 pages, so a full-screen
-// compositor frame fits inside ONE such window with 43 pages to spare. The
-// window is sized by what the client this exists for actually needs.
+// TWO PAGE-DIRECTORY ENTRIES ARE 4 MiB IS 1024 PAGES. One 800x600x32
+// frame is 469 pages and fits in a single PDE; dock + SET + a native-max
+// FILES body is 38 + 121 + 424 = 583 pages and does not. The second PDE
+// is the grow room native maximize needs, not a second load region.
 //
 // A SHARED PAGE IS NEVER EXECUTABLE. [vmShmMap] has no `exec` parameter at all
 // -- not a parameter that is checked, ABSENT -- and unconditionally sets the NX
@@ -2337,24 +2337,26 @@ u64 vmProgUnmap(u64 va) {
 /// Base of the shared-region window: 258MiB, immediately above [vmProgEnd].
 const int vmShmBase = 0x10200000;
 
-/// One past its end: 260MiB. Exactly one page-directory entry, so exactly one
-/// page table, so [vmShmLeafSlot]'s `& 511` is correct for the same reason
-/// [vmProgLeafSlot]'s is. `docs/design/memory.md` §1.2(b) names the aliasing
-/// bug a multi-table window would introduce; this window has one table and
-/// therefore cannot have it.
-const int vmShmEnd = 0x10400000;
+/// One past its end: 262MiB. Two page-directory entries, so two page
+/// tables. [vmShmLeafSlot] selects the table from the VA's PDE, then
+/// applies `& 511` inside that table — the §1.2(b) aliasing bug is the
+/// `& 511` against a *single* table spanning more than 2 MiB.
+const int vmShmEnd = 0x10600000;
 
 /// Its size and page count. Spelled out rather than computed, for GAP-0077's
 /// reason (`dcc` at `DCDART_PIN.txt`'s commit refuses a `u64` literal built
 /// from a constant expression); `m21-shmem/run.sh` multiplies them against each
 /// other and against [vmShmPdIndex].
-const int vmShmBytes = 2097152;
-const int vmShmPages = 512;
+const int vmShmBytes = 4194304;
+const int vmShmPages = 1024;
 
-/// Index of this window's entry in the page directory for `[0, 1GiB)`:
-/// `vmShmBase / vmBigBytes` = 129. Entry 128 is the load region; 129..511 were
-/// all zero before M21 (`docs/design/memory.md` §1.1 counts them).
+/// Index of this window's first entry in the page directory for `[0, 1GiB)`:
+/// `vmShmBase / vmBigBytes` = 129. The window occupies [vmShmPdCount]
+/// consecutive entries. Platform begins at the next index.
 const int vmShmPdIndex = 129;
+
+/// How many page-directory entries the shared window occupies.
+const int vmShmPdCount = 2;
 
 /// **One past the last address ring 3 can reach, which is no longer
 /// [vmProgEnd].**
@@ -2392,30 +2394,30 @@ const int vmUserEnd = 0x1E0FC000;
 // host plant for full LOADs is alias-mapped, not double-buffered.
 //
 //   [vmProgBase, vmProgEnd)  0x10000000..0x10200000  PD[128]       app load
-//   [vmShmBase,  vmShmEnd)   0x10200000..0x10400000  PD[129]       shared
-//   [vmPlatBase, vmPlatEnd)  0x10400000..0x1E0FC000  PD[130..240]  platform
+//   [vmShmBase,  vmShmEnd)   0x10200000..0x10600000  PD[129..130]  shared
+//   [vmPlatBase, vmPlatEnd)  0x10600000..0x1E0FC000  PD[131..240]  platform
 //   [vmProgBase, vmUserEnd)  0x10000000..0x1E0FC000               ring-3 reach
 //
 // THE LOAD REGION DID NOT MOVE. heapTop, the guard page, the stack, and
 // m12-heap's goldens stay. vmFineBytes is not this file's to shrink.
 // ---------------------------------------------------------------------------
 
-/// Base of the platform window: 272MiB, immediately above [vmShmEnd].
-const int vmPlatBase = 0x10400000;
+/// Base of the platform window: 262MiB, immediately above [vmShmEnd].
+const int vmPlatBase = 0x10600000;
 
 /// One past its end. RO+RX official LOAD span (ADR-0168).
 const int vmPlatEnd = 0x1E0FC000;
 
 /// Its size and page count. Spelled out rather than computed (GAP-0077).
-/// Page-aligned official RO+RX VA span: 0xDCFC000 = 231718912.
-const int vmPlatBytes = 231718912;
-const int vmPlatPages = 56572;
+/// `[vmPlatEnd - vmPlatBase] = 0xDAFC000 = 229318656` after SHM took PD[130].
+const int vmPlatBytes = 229318656;
+const int vmPlatPages = 56034;
 
-/// First page-directory index: `vmPlatBase / vmBigBytes` = 130.
-const int vmPlatPdIndex = 130;
+/// First page-directory index: `vmPlatBase / vmBigBytes` = 131.
+const int vmPlatPdIndex = 131;
 
-/// How many page-directory entries the window occupies: ceil(span/2MiB) = 111.
-const int vmPlatPdCount = 111;
+/// How many page-directory entries the window occupies: ceil(span/2MiB) = 110.
+const int vmPlatPdCount = 110;
 
 const int vmPlatOk = 0;
 const int vmPlatNotReady = 1;
@@ -2458,6 +2460,66 @@ u64 vmShmTable() {
     return u64(0);
   }
   return vmEntryAddr(e);
+}
+
+/// Page-table frame for the 2 MiB PDE that contains [va], or 0.
+///
+/// This is the table-selection half of [vmShmLeafSlot]. `& 511` is only
+/// safe against the table this returns, never against [vmShmTable] for a
+/// VA in the second megabyte.
+@bare
+u64 vmShmTableAt(u64 va) {
+  if (va < u64(vmShmBase)) {
+    return u64(0);
+  }
+  if (va >= u64(vmShmEnd)) {
+    return u64(0);
+  }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(0);
+  }
+  final u64 off = va - u64(vmShmBase);
+  final u64 pdi = u64(vmShmPdIndex) + (off >> u64(vmBigShift));
+  final u64 e = vmGetEntry(pd, pdi);
+  if ((e & u64(vmPresent)) < u64(1)) {
+    return u64(0);
+  }
+  if ((e & u64(vmHuge)) > u64(0)) {
+    return u64(0);
+  }
+  return vmEntryAddr(e);
+}
+
+/// Installs [ptFrame] as the page table for shared-window PDE [pdi].
+/// Already-present is success so [shmEnsureTable] can fill missing PDs.
+@bare
+u64 vmShmPdInstall(u64 pdi, u64 ptFrame) {
+  if (vmMeta(u64(vmMetaReady)) < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  if ((ptFrame & u64(vmPageMask)) > u64(0)) {
+    return u64(vmShmBadAlign);
+  }
+  if (pdi < u64(vmShmPdIndex)) {
+    return u64(vmShmOutside);
+  }
+  if (pdi >= (u64(vmShmPdIndex) + u64(vmShmPdCount))) {
+    return u64(vmShmOutside);
+  }
+  final u64 pd = vmProgPd();
+  if (pd < u64(1)) {
+    return u64(vmShmNotReady);
+  }
+  final u64 old = vmGetEntry(pd, pdi);
+  if ((old & u64(vmPresent)) > u64(0)) {
+    return u64(vmShmOk);
+  }
+  vmZeroFrame(ptFrame);
+  vmSetEntry(pd, pdi,
+      ptFrame | u64(vmPresent) | u64(vmWritable) | u64(vmUser));
+  vmShmFlush();
+  return u64(vmShmOk);
 }
 
 /// Drops TLB and paging-structure-cache entries for the whole shared window.
@@ -2538,7 +2600,7 @@ u64 vmShmLeafSlot(u64 va) {
   if (va >= u64(vmShmEnd)) {
     return u64(0);
   }
-  final u64 t = vmShmTable();
+  final u64 t = vmShmTableAt(va);
   if (t < u64(1)) {
     return u64(0);
   }
@@ -2586,7 +2648,7 @@ u64 vmShmMap(u64 va, u64 pa, u64 write) {
   if (va >= u64(vmShmEnd)) {
     return u64(vmShmOutside);
   }
-  final u64 t = vmShmTable();
+  final u64 t = vmShmTableAt(va);
   if (t < u64(1)) {
     return u64(vmShmNoTable);
   }

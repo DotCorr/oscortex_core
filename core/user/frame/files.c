@@ -793,11 +793,15 @@ static void files_on_event(u64 ev) {
     u64 nw = (ev >> 40) & 0xFFFUL;
     u64 nh = (ev >> 52) & 0xFFFUL;
     if (nw > 0 && nh > 0) {
+      unsigned at;
       if (nw > files_cap_w || nh > files_cap_h) {
         u64 stride = nw * 4UL;
         u64 pages = (SURF_OFFSET + stride * nh + 4095UL) / 4096UL;
         u64 grown = sys2(SYS_SHMGROW, files_h, pages);
         if (grown >= WM_RET_FLOOR) {
+          at = put(0, "FILES GROW REFUSE ");
+          at = putdec(at, pages);
+          emit(at);
           return;
         }
         desc[WM_DESC_OP] = WM_OP_BACKING;
@@ -809,8 +813,22 @@ static void files_on_event(u64 ev) {
         files_stride = stride;
         files_cap_w = nw;
         files_cap_h = nh;
+        at = put(0, "FILES GROW ");
+        at = putdec(at, pages);
+        at = put(at, " W ");
+        at = putdec(at, nw);
+        at = put(at, " H ");
+        at = putdec(at, nh);
+        emit(at);
       }
       if (nw != files_w || nh != files_height) {
+        if (nw < files_w || nh < files_height) {
+          at = put(0, "FILES REST ");
+          at = putdec(at, nw);
+          at = put(at, " ");
+          at = putdec(at, nh);
+          emit(at);
+        }
         files_w = nw;
         files_height = nh;
         files_repaint();

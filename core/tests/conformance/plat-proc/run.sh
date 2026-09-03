@@ -87,9 +87,9 @@ ck; [[ "$ELF_MAX" -eq 65536 ]] \
   || fail "elfImageMax moved — TAP/FILES stay 64 KiB"
 ck; [[ "$VM_PLAT_BASE" -eq "$VM_SHM_END" ]] \
   || fail "vmPlatBase is not immediately above SHM"
-ck; [[ "$VM_PLAT_BYTES" -eq 231718912 ]] \
+ck; [[ "$VM_PLAT_BYTES" -eq 229318656 ]] \
   || fail "platform window is $VM_PLAT_BYTES, expected 189 MiB"
-ck; [[ "$HEAP_PLAT_MAX" -eq 231718912 ]] \
+ck; [[ "$HEAP_PLAT_MAX" -eq 229318656 ]] \
   || fail "heapPlatMaxInc is not the RO+RX LOAD span"
 ck; [[ "$VM_USER_END" -eq "$VM_PLAT_END" ]] \
   || fail "vmUserEnd is not one past the platform window"
@@ -289,7 +289,7 @@ if "PT_INTERP" in ser and "REFUSED" not in ser:
     fails.append("a PT_INTERP binary ran")
 
 heaps = re.findall(r"PROC HEAP .*NEW ([0-9A-Fa-f]+)", ser)
-plat_news = [h for h in heaps if int(h, 16) >= 0x10400000]
+plat_news = [h for h in heaps if int(h, 16) >= 0x10600000]
 if not plat_news:
     fails.append("no PROC HEAP NEW in the platform window — sbrk did not grow past 2 MiB")
 
@@ -304,5 +304,5 @@ print("    (PLAT.ELF 16 MiB sbrk + heap write + xor; ASK.ELF same bytes, 2 MiB c
 PY
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "PLAT-PROC: PASS — named PLAT.ELF sbrk'd 3 MiB at 0x10400000 (16 MiB cap); write() from those pages; ASK.ELF is the same bytes and is refused the platform window; TAP/FILES stay 64K/2MiB; leftovers PT_INTERP / libc / 189 MiB .text"
+echo "PLAT-PROC: PASS — named PLAT.ELF sbrk'd 3 MiB at 0x10600000 (16 MiB cap); write() from those pages; ASK.ELF is the same bytes and is refused the platform window; TAP/FILES stay 64K/2MiB; leftovers PT_INTERP / libc / 189 MiB .text"
 exit 0

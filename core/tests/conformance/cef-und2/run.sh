@@ -125,7 +125,7 @@ FACE_MAX=$(dartconst elfCefUndFaceMax elf.dart)
 DLOPEN_NO=$(dartconst elfSysDlopenNo elf.dart)
 ck; [[ "$HEAP_MAX" -eq 2097152 ]] \
   || fail "heapMaxInc moved — TAP/FILES must stay at the 2 MiB cap"
-ck; [[ "$HEAP_PLAT_MAX" -eq 231718912 ]] \
+ck; [[ "$HEAP_PLAT_MAX" -eq 229318656 ]] \
   || fail "heapPlatMaxInc is $HEAP_PLAT_MAX — do not break cef-load window"
 ck; [[ "$ELF_MAX" -eq 65536 ]] \
   || fail "elfImageMax moved — TAP/FILES stay 64 KiB"
@@ -429,7 +429,7 @@ if not m:
     fails.append("no CEF PLT MEMSET <va> line")
 else:
     va = int(m.group(1), 16)
-    if va < 0x10400000 or va >= 0x1E0FC000:
+    if va < 0x10600000 or va >= 0x1E0FC000:
         fails.append("bound memset VA %s outside platform heap" % m.group(1))
     if va == 0:
         fails.append("bound memset VA is zero — vacuous")

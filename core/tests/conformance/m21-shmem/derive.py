@@ -28,8 +28,8 @@ import sys
 # against the kernel's rather than trusting either.
 # ---------------------------------------------------------------------------
 SHM_BASE = 0x10200000
-SHM_END = 0x10400000
-SHM_PAGES = 512
+SHM_END = 0x10600000
+SHM_PAGES = 1024
 SHM_PD_INDEX = 129
 USER_END = 0x17400000
 PROG_BASE = 0x10000000

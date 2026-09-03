@@ -4,7 +4,7 @@
  * The bytes are identical. Only the 8.3 name may mmap the
  * 189 MiB platform window (ADR-0155).
  *
- *   PLAT.ELF  — mmap(189 MiB) maps real pages at 0x10400000.
+ *   PLAT.ELF  — mmap(189 MiB) maps real pages at 0x10600000.
  *               Every page is touched; write() of a string on
  *               that VA walks live tables; teardown frees them.
  *   ASK.ELF   — same binary: mmap(189 MiB) is heapRetBadArg.
@@ -24,7 +24,7 @@
 
 #define PAGE 4096UL
 #define WANT 0xBD00000UL
-#define PLAT_BASE 0x10400000UL
+#define PLAT_BASE 0x10600000UL
 #define WANT_PAGES 48384UL
 #define PLAT_CAP 0xBD00000UL
 #define APP_CAP 0x200000UL

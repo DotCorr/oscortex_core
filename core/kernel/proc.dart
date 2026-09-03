@@ -1572,9 +1572,13 @@ u64 procSpaceBuild(u64 s) {
   // reach another process's shared region. `docs/design/memory.md` §1.3's own
   // warning, and it costs one line to be structurally impossible instead of
   // merely unlikely. `m21-shmem/run.sh` asserts both clears are present.
-  vmSetEntry(pd, u64(vmShmPdIndex), u64(0));
+  u64 shmPdI = u64(0);
+  while (shmPdI < u64(vmShmPdCount)) {
+    vmSetEntry(pd, u64(vmShmPdIndex) + shmPdI, u64(0));
+    shmPdI = shmPdI + u64(1);
+  }
   // ADR-0124: the platform window, same inheritance lock. A new
-  // address space must not inherit PD[130..137] from a previous
+  // address space must not inherit PD[131..] from a previous
   // platform process or from a kernel directory that never maps them.
   u64 p = u64(0);
   while (p < u64(vmPlatPdCount)) {
@@ -1670,34 +1674,38 @@ u64 procSpaceFree(u64 s) {
     // it and putting it in this function would miss the other four). So this
     // loop is written exactly as the one above it, and the frames it must not
     // release are the ones it does not count.
-    final u64 se = vmGetEntry(pd, u64(vmShmPdIndex));
-    if ((se & u64(vmPresent)) > u64(0)) {
-      final u64 spt = vmEntryAddr(se);
-      u64 j = u64(0);
-      while (j < u64(vmEntries)) {
-        final u64 sle = vmGetEntry(spt, j);
-        if ((sle & u64(vmPresent)) > u64(0)) {
-          final u64 pa = vmEntryAddr(sle);
-          // Asked BEFORE the call, because the call is what may clear the bit.
-          // This is the one place the count and the guard have to agree: a
-          // frame the guard RETAINS was not given back, and `procSpaceFree`'s
-          // contract is "frames actually given back" (`docs/design/memory.md`
-          // §2.3). Counting a retained frame would make the free-count bracket
-          // nine harnesses assert come out right for the wrong reason.
-          final u64 shared = shmFrameShared(pa);
-          if (freeFrame(pa) == u64(pmmFreeOk)) {
-            if (shared < u64(1)) {
-              freed = freed + u64(1);
+    u64 shmPdI = u64(0);
+    while (shmPdI < u64(vmShmPdCount)) {
+      final u64 se = vmGetEntry(pd, u64(vmShmPdIndex) + shmPdI);
+      if ((se & u64(vmPresent)) > u64(0)) {
+        final u64 spt = vmEntryAddr(se);
+        u64 j = u64(0);
+        while (j < u64(vmEntries)) {
+          final u64 sle = vmGetEntry(spt, j);
+          if ((sle & u64(vmPresent)) > u64(0)) {
+            final u64 pa = vmEntryAddr(sle);
+            // Asked BEFORE the call, because the call is what may clear the bit.
+            // This is the one place the count and the guard have to agree: a
+            // frame the guard RETAINS was not given back, and `procSpaceFree`'s
+            // contract is "frames actually given back" (`docs/design/memory.md`
+            // §2.3). Counting a retained frame would make the free-count bracket
+            // nine harnesses assert come out right for the wrong reason.
+            final u64 shared = shmFrameShared(pa);
+            if (freeFrame(pa) == u64(pmmFreeOk)) {
+              if (shared < u64(1)) {
+                freed = freed + u64(1);
+              }
             }
           }
+          j = j + u64(1);
         }
-        j = j + u64(1);
+        vmSetEntry(pd, u64(vmShmPdIndex) + shmPdI, u64(0));
+        // The TABLE, by contrast, is this process's own and is always freed.
+        if (freeFrame(spt) == u64(pmmFreeOk)) {
+          freed = freed + u64(1);
+        }
       }
-      vmSetEntry(pd, u64(vmShmPdIndex), u64(0));
-      // The TABLE, by contrast, is this process's own and is always freed.
-      if (freeFrame(spt) == u64(pmmFreeOk)) {
-        freed = freed + u64(1);
-      }
+      shmPdI = shmPdI + u64(1);
     }
     // ADR-0124: platform-window tables and the leaves under them.
     // Every present leaf is a frame this process owns (sbrk), so they

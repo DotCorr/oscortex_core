@@ -182,7 +182,7 @@ const int heapPlatTop = 0x1E0FC000;
 /// Largest increment a platform process may ask for: the RO+RX LOAD
 /// span (ADR-0168). TAP/FILES stay at [heapMaxInc] 2 MiB. The 189 MiB
 /// CEF `.text` plant (ADR-0155) still fits inside this window.
-const int heapPlatMaxInc = 231718912;
+const int heapPlatMaxInc = 229318656;
 
 /// Page-alignment mask as a positive literal: `~4095` in 64 bits.
 const int heapPageAlignMask = 0xFFFFFFFFFFFFF000;

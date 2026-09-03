@@ -12,7 +12,7 @@ import re
 
 SIG = 0xA1280000C0DE0001
 WANT_PAGES = 768
-PLAT_BASE = 0x10400000
+PLAT_BASE = 0x10600000
 
 
 def _dartconst(name):
