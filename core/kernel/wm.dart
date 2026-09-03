@@ -1653,8 +1653,12 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 placed = wmPlaceClient(x, y, w, hh);
   final u64 nx = placed >> u64(32);
   final u64 ny = placed & u64(0xFFFFFFFF);
-  if (wmFits(nx, ny, w, hh) > u64(0)) {
+  // Always take the tile/cascade origin. Requiring the requested width
+  // to fit there used to drop the tile and leave SET over FILES.
+  if (nx != x) {
     x = nx;
+  }
+  if (ny != y) {
     y = ny;
   }
   // Panel / chrome-strip clients already fit. Shrinking them against the

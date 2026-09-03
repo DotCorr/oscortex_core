@@ -496,6 +496,10 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
   }
   paint_scrollbar(h, names, visible);
   if (names == 0) {
+    if (files_height > TITLE_H) {
+      osxui_app_rrect(h, 4UL, TITLE_H, files_w - 8UL, files_height - TITLE_H,
+                      0, SURF_FILL);
+    }
     if (files_err > 0) {
       osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_error, 24,
                      WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, SURF_EMPTY_FG);
@@ -798,8 +802,8 @@ static void files_show_empty(void) {
   scroll_off = 0;
   menu_on = 0;
   empty_noted = 0;
-  wr(msg_empty, sizeof(msg_empty) - 1);
   files_repaint();
+  wr(msg_empty, sizeof(msg_empty) - 1);
 }
 
 static void files_show_error(void) {
@@ -813,8 +817,9 @@ static void files_show_error(void) {
   scroll_off = 0;
   menu_on = 0;
   empty_noted = 0;
-  wr(msg_error, sizeof(msg_error) - 1);
   files_repaint();
+  wr(msg_error, sizeof(msg_error) - 1);
+  wr(msg_err, sizeof(msg_err) - 1);
 }
 
 static void files_restore_root(void) {
@@ -884,7 +889,6 @@ static void do_file_open(u64 row) {
   }
   fd = sys2(SYS_OPEN, (u64)dotted[row], (u64)dotlen[row]);
   if (fd >= ERR_FLOOR) {
-    wr(msg_err, sizeof(msg_err) - 1);
     if (fd == FILE_RET_ISDIR) {
       files_show_empty();
       return;

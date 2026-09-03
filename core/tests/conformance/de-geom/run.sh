@@ -18,7 +18,7 @@ setup_error() { echo "DE-geom: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=12
+ASSERTIONS_REQUIRED=13
 
 WM="$CORE_DIR/kernel/wm.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
@@ -32,6 +32,8 @@ ck; grep -q 'u64 wmPlaceExtent' "$WM" \
   || fail "attach does not shrink a client that would leave the work area"
 ck; grep -q 'remainW >= minW' "$WM" \
   || fail "800x600 tile-right path is gone"
+ck; grep -q 'if (nx != x)' "$WM" \
+  || fail "attach still drops a tile origin that needs a shrink"
 ck; grep -q 'dw = ww - dx' "$WM" \
   || fail "stale full-surface commits are still refused instead of clipped"
 ck; grep -q 'dh = hh - dy' "$WM" \
