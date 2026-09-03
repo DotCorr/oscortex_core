@@ -317,6 +317,34 @@ void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1) {
   }
 }
 
+/* Packed wm geom is x<<48|y<<32|w<<16|h. Area-only: a native max is
+ * not a small move even if the origin stays near (3,3). */
+static unsigned chrome_geom_area(uint64_t g) {
+  unsigned w;
+  unsigned h;
+
+  w = (unsigned)((g >> 16) & 0xffffu);
+  h = (unsigned)(g & 0xffffu);
+  return w * h;
+}
+
+static int chrome_geom_small(uint64_t a, uint64_t b) {
+  unsigned aa;
+  unsigned ba;
+  unsigned d;
+
+  if (a == 0 || b == 0) {
+    return 1;
+  }
+  aa = chrome_geom_area(a);
+  ba = chrome_geom_area(b);
+  d = aa > ba ? aa - ba : ba - aa;
+  if (d > 200000u) {
+    return 0;
+  }
+  return 1;
+}
+
 /* 1 when the cached frame is still the right picture except window
  * geometry (maximize / restore / resize). Desk, pop, wall, tones, page
  * and flags-minus-TOP stay. Title/borders are recomposed from slices;
@@ -366,6 +394,15 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
     return 0;
   }
   if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
+    return 0;
+  }
+  /* Native 1274×666 max → 400×280 restore. Area delta is ~736k px.
+   * GEOM uncover left the old client body on the scanout (wallpaper
+   * sentinel failed). A change this large is a full miss. */
+  if (chrome_geom_small(m->win0, g_stamp_win0) == 0) {
+    return 0;
+  }
+  if (chrome_geom_small(m->win1, g_stamp_win1) == 0) {
     return 0;
   }
   return 1;

@@ -964,7 +964,7 @@ def main():
     press(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "left", "WM FOCUS", timeout=2)
     walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                          timeout=4.0))
-    time.sleep(0.35)
+    time.sleep(1.2)
     serial_fatal(serial_path, ser.read())
     shot(q, os.path.join(art, "oscortex-round11-full-max.png"),
          os.path.join(fallback, "oscortex-round11-full-max.png"))
