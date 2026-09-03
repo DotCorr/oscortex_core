@@ -633,6 +633,9 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
   }
 }
 
+static uint64_t chrome_present_clip(const struct OsGfxGuestCmd *m, int x, int y,
+                                    int rw, int rh);
+
 /* Blits the cached frame to the scanout. Returns pixels, or 0 if it declined.
  *
  * The pixel count is returned rather than dropped so a caller cannot mistake
@@ -669,6 +672,30 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m) {
     pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
   }
   return (int)(m->w * m->h);
+}
+
+/* Last pop packed into scanout by a HIT overlay. Not in the chrome key. */
+static uint64_t g_hit_pop;
+
+/* HIT present: restore a vacated menu rect from the cache. Never a 1280×720
+ * blit — that was the 1.1 s TCG focus hitch after every kick. */
+uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m) {
+  uint64_t old;
+  int ox;
+  int oy;
+
+  if (m == 0) {
+    return 0;
+  }
+  old = g_hit_pop;
+  if (old != 0 && old != m->pop) {
+    ox = (int)(old >> 32);
+    oy = (int)(old & 0xffffffffu);
+    /* Card plus the 4×6 shadow the overlay does not own. */
+    (void)chrome_present_clip(m, ox, oy, OSGFX_POP_W + 8, OSGFX_POP_H + 10);
+  }
+  g_hit_pop = m->pop;
+  return 1;
 }
 
 /* Clipped cache→scanout. Same holes as a full present. */

@@ -1965,8 +1965,17 @@ void wmDefDrain() {
     }
   } else {
     if (kind == u64(wmDefKindFocus)) {
-      if (slot < u64(wmMaxWindows)) {
-        final u64 unused = wmRepaintWindow(slot);
+      /* Rings are a HIT overlay from wmFocusTo. A decorated wmRepaintWindow
+       * was the 1.1 s TCG hitch on every other raise. Client blit only
+       * so a raise still stacks overlapping bodies. */
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        if (slot < u64(wmMaxWindows)) {
+          final u64 body = wmDrawWindow(slot, u64(1));
+        }
+      } else {
+        if (slot < u64(wmMaxWindows)) {
+          final u64 unused = wmRepaintWindow(slot);
+        }
       }
     } else {
       if (kind == u64(wmDefKindMenu)) {

@@ -3334,9 +3334,14 @@ void wmGrab(u64 x, u64 y) {
   }
   // D9: click-to-focus. PLUS ONE so window 0 is expressible.
   // ADR-0142: under `wm de` a change is enter/leave on the ring.
-  wmFocusTo(hit);
   final u64 was = wmMeta(u64(wmMetaTop));
   final u64 g = wmWin(hit, u64(wmWinGeom));
+  /* Publish TOP before the overlay kick so rings match the raise. */
+  if (was != hit) {
+    wmSetMeta(u64(wmMetaTop), hit);
+    wmBumpMeta(u64(wmMetaRaises));
+  }
+  wmFocusTo(hit);
   u64 drag = u64(1);
   if (de > u64(0)) {
     drag = u64(0);
@@ -3378,19 +3383,18 @@ void wmGrab(u64 x, u64 y) {
     wmSetMeta(u64(wmMetaDrag), hit + u64(1));
   }
   if (was == hit) {
-    return; // already on top: nothing changed on screen
+    return; // already on top: overlay already painted the rings
   }
-  wmSetMeta(u64(wmMetaTop), hit);
-  wmBumpMeta(u64(wmMetaRaises));
   // RAISING CHANGES BOTH WINDOWS: the one coming up, and the one whose border
-  // just went from bright to dim. Repainting both decorated rectangles is the
-  // smallest correct answer with two windows and it is what `wmMaxWindows`
-  // being 2 buys.
+  // just went from bright to dim. Under gfx the overlay owns the rings;
+  // drain only blits the raised client body.
   u64 px = u64(0);
   if (wmPageAddr() > u64(0)) {
-    wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
-        wmWin(hit, u64(wmWinGeom)));
-    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+    if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+      wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
+          wmWin(hit, u64(wmWinGeom)));
+      wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+    }
   } else {
     px = wmRepaintWindow(was);
     px = px + wmRepaintWindow(hit);

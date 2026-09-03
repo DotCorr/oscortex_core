@@ -65,7 +65,7 @@ ck; grep -q 'osgfx_session_patch_focus' "$SESSION_C" \
 ck; grep -q 'wmLatNotePresent' "$PACE" \
   && awk '/void wmSessionRestore/{p=1} p&&/wmLatNotePresent/{ok=1} END{exit ok?0:1}' "$PACE" \
   || fail "session restore does not note LAT after the C tick (focus inherits maximize)"
-ck; awk '/void wmPointerTick/{p=1} p&&/wmDamageRect\(ox, oy/{ok=1} END{exit ok?0:1}' "$WM" \
+ck; awk '/void wmPointerTick/{p=1} p&&/wmDamage(Ptr|Rect)\(ox, oy/{ok=1} END{exit ok?0:1}' "$WM" \
   || fail "pointer path does not dirty old+new cursor bounds"
 ck; grep -q 'wmMetaGfx' "$PROC" \
   || fail "procYield is not gated under wm gfx (COM1 flood)"

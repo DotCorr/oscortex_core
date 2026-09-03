@@ -70,6 +70,7 @@ int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1);
 int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
+uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
@@ -1339,6 +1340,8 @@ __attribute__((noinline)) static void tick_body(void) {
    * Present a fresh cache if we have one; never session_paint. */
   if (client_in_paint != 0) {
     if (osgfx_chrome_fresh(m) != 0) {
+      /* IRQ during a client paint: the scanout may be mid-blit. Full
+       * present is the safe repair; interactive HIT below is overlay-only. */
       (void)osgfx_chrome_present(m);
       chrome_overlay_scanout(m);
     }
@@ -1364,7 +1367,7 @@ __attribute__((noinline)) static void tick_body(void) {
     if (chrome_hit_n <= 2u || (chrome_hit_n & 63u) == 0u) {
       com1_puts("OSGFX CHROME HIT\n");
     }
-    (void)osgfx_chrome_present(m);
+    (void)osgfx_chrome_hit_present(m);
     chrome_overlay_scanout(m);
     if (chrome_hit_n <= 4u) {
       com1_puts("OSGFX CHROME OVERLAY\n");

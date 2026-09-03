@@ -160,8 +160,10 @@ ck; grep -q 'OSGFX SESSION CHROME CLIENT' "$SESS" \
   || fail "session has no CSD-withdraw token"
 ck; grep -q 'if (session_csd == 0)' "$SESS" \
   || fail "session still paints the title band with DESK up"
-ck; grep -q 'cmd->pop != 0 && panel == 0' "$SESS" \
-  || fail "session still paints menus with DESK up"
+ck; grep -q 'osgfx_session_blit_menu' "$SESS" \
+  || fail "session has no menu overlay (pop must not bake into the chrome cache)"
+ck; ! grep -q 'cmd->pop != 0' "$SESS" \
+  || fail "session still paints menus from cmd->pop into the chrome cache"
 ck; grep -q 'WMEVENT_TYPE_CONTEXT' "$CORE_DIR/user/frame/osframe.h" \
   || fail "no context press type for file-row menus"
 ck; grep -q 'WM_SCREEN_POP' "$CORE_DIR/user/frame/osframe.h" \
@@ -314,7 +316,7 @@ if title < guard:
     raise SystemExit("title hole is not guarded away from panels")
 call = chrome[chrome.index("chrome_blit((uint32_t"):chrome.index(
     "pg[OSGFX_WMPAGE_W_CHROME_BLITS]")]
-if "m->win0, m->win1, m->pop, m->flags, 0);" not in call:
+if "m->win0, m->win1, m->pop, m->flags, 0" not in call:
     raise SystemExit("panel-presence is still passed as global CSD policy")
 for name, end in (("u64 wmPixelAt(", "void wmRepaintScratchRow("),
                   ("u64 wmHit(", "u64 wmClampOrigin(")):

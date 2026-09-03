@@ -1119,33 +1119,28 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   if (user != 0) {
     frame = user ^ (uint32_t)cmd->gen;
   }
-  {
-    uint64_t t0;
-    uint64_t t1;
-    t0 = sess_rdtsc();
-    if ((cmd->flags & OSGFX_GUEST_WALL_IMG) != 0) {
-      osgfx_fill_rect(g, 0, 0, ww, desk_h, (uint32_t)cmd->wall & 0x00ffffffu);
-    } else if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-      /* The cached entry point owns both paths: on a miss it generates into
-       * Dart's buffer, stamps the key, and blits; on a hit it only blits.
-       * Calling the uncached generator while HAVE is zero would leave HAVE zero
-       * forever, so the cache could never reach its hot path. */
-      if (cmd->wmpage != 0) {
-        osgfx_fill_desk_cached(fb, pitch, 0, 0, ww, desk_h, seed);
-      } else {
-        osgfx_fill_desk_generative(fb, pitch, 0, 0, ww, desk_h, seed, frame);
-      }
-    } else if (graphite_ready != 0) {
-      osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
+  osgfx_phz_desk_cyc = sess_rdtsc();
+  if ((cmd->flags & OSGFX_GUEST_WALL_IMG) != 0) {
+    osgfx_fill_rect(g, 0, 0, ww, desk_h, (uint32_t)cmd->wall & 0x00ffffffu);
+  } else if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+    /* The cached entry point owns both paths: on a miss it generates into
+     * Dart's buffer, stamps the key, and blits; on a hit it only blits.
+     * Calling the uncached generator while HAVE is zero would leave HAVE zero
+     * forever, so the cache could never reach its hot path. */
+    if (cmd->wmpage != 0) {
+      osgfx_fill_desk_cached(fb, pitch, 0, 0, ww, desk_h, seed);
     } else {
-      osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
+      osgfx_fill_desk_generative(fb, pitch, 0, 0, ww, desk_h, seed, frame);
     }
-    t1 = sess_rdtsc();
-    osgfx_phz_desk_cyc = t1 - t0;
-    t0 = t1;
-    osgfx_session_paint_windows(g, cmd);
-    osgfx_phz_win_cyc = sess_rdtsc() - t0;
+  } else if (graphite_ready != 0) {
+    osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
+  } else {
+    osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
   }
+  osgfx_phz_desk_cyc = sess_rdtsc() - osgfx_phz_desk_cyc;
+  osgfx_phz_win_cyc = sess_rdtsc();
+  osgfx_session_paint_windows(g, cmd);
+  osgfx_phz_win_cyc = sess_rdtsc() - osgfx_phz_win_cyc;
 }
 
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,

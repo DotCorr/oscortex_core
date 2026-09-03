@@ -522,16 +522,12 @@ u64 wmPopDraw() {
 @bare
 void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (wmPanelStrip() < u64(1)) {
-      /* Pop-only chrome path: blit the pop-free cache. Do not REGEN. */
-      wmGfxKick();
-      osgfx_guest_tick();
-      wmGfxChromeStamp();
-      if (wmActive() > u64(0)) {
-        wmCompose();
-      }
-      return;
-    }
+    /* HIT restores the vacated card from the chrome cache. Do not
+     * wmCompose a 1280×720 restamp to hide a 168×80 menu. */
+    wmGfxKick();
+    osgfx_guest_tick();
+    wmGfxChromeStamp();
+    return;
   }
   final u64 unused = wmRepaintRect(x, y, w, h);
 }
@@ -542,14 +538,10 @@ void wmPopPaintCard() {
   final u64 ox = packed >> u64(32);
   final u64 oy = packed & u64(0xFFFFFFFF);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (wmPanelStrip() < u64(1)) {
-      wmGfxKick();
-      osgfx_guest_tick();
-      wmGfxChromeStamp();
-      if (wmActive() > u64(0)) {
-        wmCompose();
-      }
-    }
+    /* Prewarmed card is a HIT overlay. Hover labels stay CPU-side. */
+    wmGfxKick();
+    osgfx_guest_tick();
+    wmGfxChromeStamp();
   }
   wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
   if (wmDeOn() > u64(0)) {
@@ -756,11 +748,11 @@ void wmContextFocus(u64 hit) {
   }
   final u64 oldFocus = wmFocusLive();
   final u64 oldTop = wmMeta(u64(wmMetaTop));
-  wmFocusTo(hit);
   if (oldTop != hit) {
     wmSetMeta(u64(wmMetaTop), hit);
     wmBumpMeta(u64(wmMetaRaises));
   }
+  wmFocusTo(hit);
   u64 chromeChanged = u64(0);
   if (oldFocus != hit + u64(1)) {
     chromeChanged = u64(1);
@@ -776,9 +768,7 @@ void wmContextFocus(u64 hit) {
       if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
         wmGfxKick();
         osgfx_guest_tick();
-        if (wmActive() > u64(0)) {
-          wmCompose();
-        }
+        wmGfxChromeStamp();
       } else {
         if (oldTop != hit) {
           u64 px = wmRepaintWindow(oldTop);
