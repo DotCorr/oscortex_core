@@ -140,6 +140,12 @@ static u64 files_cap_h = WIN_H;
  * before the host saw PRES). Keep the name so de-desk / de-skia-own
  * still see the reclaim door; do not call it on restore. */
 static u64 files_retain_body;
+/* Last size that was fully published (full-height COMMIT). Title-only
+ * CSD is valid only at this size. A grow/restore that has not yet
+ * published the new rect must COMMIT the whole page, or 800×600
+ * (idle prep skipped) leaves the grown body as wallpaper. */
+static u64 files_pub_w;
+static u64 files_pub_h;
 /* Configure-side operation id. Printed on REST / PHZ / COMMIT so the
  * host pairs by id, not the next PRES. */
 static u64 files_op;
@@ -613,6 +619,10 @@ static void commit_files_rect(u64 y, u64 h) {
   desc[WM_DESC_STRIDE] = files_seq;
   desc[WM_DESC_OFFSET] = 0;
   (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
+  if (h >= files_height && y == 0) {
+    files_pub_w = files_w;
+    files_pub_h = files_height;
+  }
   if (files_note_commit > 0) {
     files_note_commit = 0;
     emit_files_commit();
@@ -621,14 +631,20 @@ static void commit_files_rect(u64 y, u64 h) {
 
 #if FILES_NO_ICON == 0
 static void files_paint_csd_only(void) {
+  u64 commit_h;
   if (files_h == 0) {
     return;
   }
   osxui_app_csd(files_h, files_w, cap_files, 5);
   files_note_commit = 1;
-  /* Title band only. A full-height commit forced a 1274×666 compose
-   * with IF clear and delayed the next click's OPID by 200ms+. */
-  commit_files_rect(0, TITLE_H);
+  /* Same-size CSD stays title-only so a leftover 1274×666 compose
+   * cannot sit on the next click. First publish at a new size must
+   * expose the whole page — idle prep is skipped below 1200 px. */
+  commit_h = TITLE_H;
+  if (files_w != files_pub_w || files_height != files_pub_h) {
+    commit_h = files_height;
+  }
+  commit_files_rect(0, commit_h);
 }
 #endif
 
@@ -1382,6 +1398,8 @@ static void try_strip(u64 names, u32 swatch) {
   files_seq = 1;
   files_op = 0;
   files_retain_body = 0;
+  files_pub_w = 0;
+  files_pub_h = 0;
   paint_all(h, va, names, swatch);
 
   desc[WM_DESC_OP] = WM_OP_COMMIT;
@@ -1396,6 +1414,8 @@ static void try_strip(u64 names, u32 swatch) {
   if (frames >= WM_RET_FLOOR) {
     return;
   }
+  files_pub_w = WIN_W;
+  files_pub_h = WIN_H;
   /* Let DESK restripe before the hidden 1274×666 paint. Syscalls are
    * not preemptable; without this yield the dock cannot pop SET. */
   sys1(SYS_YIELD, 0);
