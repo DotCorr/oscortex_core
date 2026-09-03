@@ -18,6 +18,7 @@ REPO_DIR="$(cd "$CORE_DIR/.." && pwd)"
 PIN_FILE="$REPO_DIR/DCDART_PIN.txt"
 QMP_HELPER="$SCRIPT_DIR/de-qmp-evidence.py"
 SITIN="$SCRIPT_DIR/sit-in-view.sh"
+COMPAT_PROBE="$SCRIPT_DIR/verify-dcdart-compat.sh"
 
 usage() {
   cat <<'EOF'
@@ -62,6 +63,7 @@ esac
 need_paths=(
   "$PIN_FILE"
   "$CORE_DIR/scripts/build-kernel.sh"
+  "$COMPAT_PROBE"
   "$SITIN"
   "$QMP_HELPER"
   "$CORE_DIR/tests/conformance/m2-console/pick-port.py"
@@ -89,6 +91,8 @@ if [[ "$CHECK_ONLY" == 1 ]]; then
   python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' \
     "$QMP_HELPER" \
     || { echo "verify-de-mac: FAIL — QMP helper does not parse" >&2; exit 1; }
+  bash -n "$COMPAT_PROBE" \
+    || { echo "verify-de-mac: FAIL — DCDart compatibility probe does not parse" >&2; exit 1; }
   echo "verify-de-mac: CHECK PASS"
   exit 0
 fi
@@ -114,7 +118,7 @@ PIN_WANT="$(awk '{print $1; exit}' "$PIN_FILE")"
 }
 
 find_dcdart() {
-  local candidate full
+  local candidate full compatible=""
   if [[ -n "${DCDART_HOME:-}" ]]; then
     candidate="$DCDART_HOME"
     [[ -d "$candidate" ]] || {
@@ -132,14 +136,24 @@ find_dcdart() {
   do
     [[ -d "$candidate" ]] || continue
     full="$(git -C "$candidate" rev-parse HEAD 2>/dev/null || true)"
-    if [[ -n "$full" && "$full" == "$PIN_WANT"* ]]; then
+    if [[ -n "$full" && "$full" == "$PIN_WANT"* &&
+          -z "$(git -C "$candidate" status --porcelain 2>/dev/null)" ]]; then
       printf '%s\n' "$candidate"
       return 0
     fi
-    echo "verify-de-mac: rejected candidate $candidate @ ${full:-not-git}" >&2
+    echo "verify-de-mac: probing candidate $candidate @ ${full:-not-git}" >&2
+    if bash "$COMPAT_PROBE" "$candidate" >&2; then
+      [[ -n "$compatible" ]] || compatible="$candidate"
+    else
+      echo "verify-de-mac: rejected incompatible candidate $candidate" >&2
+    fi
   done
-  echo "verify-de-mac: FAIL — no DCDart checkout at pinned $PIN_WANT was found" >&2
-  echo "               set DCDART_HOME to the existing pinned Mac checkout" >&2
+  if [[ -n "$compatible" ]]; then
+    printf '%s\n' "$compatible"
+    return 0
+  fi
+  echo "verify-de-mac: FAIL — no exact or probe-compatible DCDart checkout was found" >&2
+  echo "               set DCDART_HOME to a checkout with Volatile/@rodata/no-FP support" >&2
   return 1
 }
 
@@ -157,14 +171,11 @@ DCDART_SHORT="$(git -C "$DCDART_HOME" rev-parse --short HEAD 2>/dev/null || true
 echo "verify-de-mac: DCDART_HOME=$DCDART_HOME"
 echo "verify-de-mac: toolchain=${DCDART_FULL:-not-a-git-checkout}"
 echo "verify-de-mac: required-pin=$PIN_WANT"
-if [[ -z "$DCDART_FULL" || "$DCDART_FULL" != "$PIN_WANT"* ]]; then
-  echo "verify-de-mac: FAIL — toolchain ${DCDART_SHORT:-unknown} does not match required pin $PIN_WANT" >&2
+echo "verify-de-mac: running semantic compiler probe"
+bash "$COMPAT_PROBE" "$DCDART_HOME" || {
+  echo "verify-de-mac: FAIL — toolchain failed the required semantic compatibility probe" >&2
   exit 2
-fi
-if [[ -n "$(git -C "$DCDART_HOME" status --porcelain 2>/dev/null)" ]]; then
-  echo "verify-de-mac: FAIL — pinned DCDart checkout is dirty; its SHA does not identify compiler contents" >&2
-  exit 2
-fi
+}
 
 for tool in bash python3 git clang qemu-system-x86_64; do
   command -v "$tool" >/dev/null 2>&1 || {

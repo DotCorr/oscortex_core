@@ -20,6 +20,11 @@ if [[ ! -d "$SRC/.git" ]]; then
     https://github.com/google/skia.git "$SRC"
 fi
 
+if [[ "${SKIA_FETCH_ONLY:-0}" == 1 ]]; then
+  echo "skia: source $SRC"
+  exit 0
+fi
+
 if [[ ! -x "$SRC/bin/gn" ]]; then
   ( cd "$SRC" && python3 bin/fetch-gn )
 fi
@@ -60,7 +65,7 @@ skia_enable_precompile=false
 skia_use_xps=false
 skia_enable_tools=false
 '
-"$SRC/bin/gn" gen "$OUT" --args="$ARGS"
+( cd "$SRC" && "$SRC/bin/gn" gen "$OUT" --args="$ARGS" )
 ninja -C "$OUT" skia
 [[ -f "$LIB" ]] || { echo "build-skia-graphite: no $LIB" >&2; exit 1; }
 echo "skia: $LIB"

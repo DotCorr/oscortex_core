@@ -13,7 +13,7 @@ AR="$(command -v x86_64-elf-ar)"
 
 if [[ ! -d "$SRC/.git" ]]; then
   echo "build-skia-guest: fetching Skia source (host Graphite tree)" >&2
-  bash "$CORE/scripts/build-skia-graphite.sh"
+  SKIA_FETCH_ONLY=1 bash "$CORE/scripts/build-skia-graphite.sh"
 fi
 [[ -d "$SRC/.git" ]] || { echo "build-skia-guest: no Skia source" >&2; exit 1; }
 [[ -x "$AR" ]] || { echo "build-skia-guest: need x86_64-elf-ar" >&2; exit 1; }
