@@ -968,7 +968,7 @@ u64 shmEnsureTable(u64 s) {
         return u64(shmRetNoTable);
       }
     }
-    i = i + 1;
+    i = i + u64(1);
   }
   procSet(s, u64(procSlotShmPt), vmShmTable());
   return u64(0);
