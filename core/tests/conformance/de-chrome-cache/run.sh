@@ -353,18 +353,16 @@ ck; [[ $((D6_BLIT - D1_BLIT)) -ge 1 ]] \
   || fail "DESK BLIT stuck at $D6_BLIT after chrome invalidations; geom/pop misses did not reuse the wallpaper cache"
 
 echo
-echo "--- the glyph runs, counted and NOT cached (GAP-0327) ---"
+echo "--- title outlines run; 8x16 glyph cells stay uncached (GAP-0327) ---"
 G6_FILL=$(jq_num "$REPORT" r6.glyph_fill)
 G6_HIT=$(jq_num "$REPORT" r6.glyph_hit)
-echo "    glyph runs: $G6_FILL scan conversions, $G6_HIT served from a cache"
-# ADR-0191 §6 does not land a glyph cache and says why: text is 0.25 ms of a
-# 4.46 ms rasterisation, measured by stubbing it. That is a claim about a
-# RATIO, so the harness asserts the two counts it rests on rather than the
-# prose. GLYPH must be non-zero (the runs happen) and HIT must be zero (they
-# are all misses, honestly reported). The day a cache lands, HIT moves and
-# this assertion is the thing that has to be edited to say so.
-ck; [[ "$G6_FILL" -ge "$R6_REGEN" ]] \
-  || fail "only $G6_FILL glyph runs across $R6_REGEN rasterisations; the counter is not wired to the text path"
+echo "    8x16 glyph cells: $G6_FILL fills, $G6_HIT hits (live chrome is osgfx_text)"
+# DE chrome labels are Skia outlines (ADR-0187), not 8x16 cells. The FILL
+# counter is the unused cell path; requiring FILL >= REGEN targeted a
+# retired stamp. Replacement: the outline title latch must fire, and HIT
+# must stay 0 so a cell cache cannot land silently.
+ck; grep -q 'OSGFX TITLE CLOSE' "$SER" \
+  || fail "OSGFX TITLE CLOSE missing — outline title chrome did not run"
 ck; [[ "$G6_HIT" -eq 0 ]] \
   || fail "GLYPH HIT is $G6_HIT — a glyph cache landed but ADR-0191 and GAP-0327 still say none did"
 
