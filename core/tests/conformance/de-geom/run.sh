@@ -44,8 +44,8 @@ ck; grep -q 'const int wmPopW = 168' "$POP" \
   || fail "menu geometry is still the primitive 96x64 card"
 ck; grep -q 'files_show_empty' "$FILES" \
   || fail "FILES has no empty-folder sit-in"
-ck; grep -q 'EMPTY=:dir' "$DISK" \
-  || fail "sit-in FAT does not plant EMPTY"
+ck; grep -q 'VOID=:dir' "$DISK" \
+  || fail "sit-in FAT does not plant VOID"
 ck; grep -q 'MISS.DAT=:miss' "$DISK" \
   || fail "sit-in FAT does not plant MISS.DAT"
 

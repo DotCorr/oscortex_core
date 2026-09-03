@@ -252,7 +252,7 @@ ck; grep -q 'files_show_error' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES has no unavailable-path sit-in"
 ck; grep -q 'GONE.DAT' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES has no recovery plant name"
-ck; grep -q 'EMPTY=:dir' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
+ck; grep -q 'VOID=:dir' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
   || fail "sit-in FAT does not plant an empty folder"
 ck; grep -q 'MISS.DAT=:miss' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
   || fail "sit-in FAT does not plant an unavailable path"
@@ -864,14 +864,15 @@ marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
 if not wait_new("FILES BACK", marked):
     raise SystemExit("Escape did not reset FILES list")
-# EMPTY is the first directory after the launch/app plants (row 11).
+# VOID is the empty-folder plant (first V*).
 marked = read()
-for _ in range(11):
-    q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
-    time.sleep(0.05)
+q.cmd("send-key", keys=[{"type": "qcode", "data": "v"}])
+if not wait_new("FILES KEY V", marked):
+    raise SystemExit("typing V did not type-select VOID")
+marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
 if not wait_new("FILES EMPTY", marked, timeout=2.0):
-    raise SystemExit("Enter on EMPTY did not show the empty-folder state")
+    raise SystemExit("Enter on VOID did not show the empty-folder state")
 marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
 if not wait_new("FILES BACK", marked):
@@ -1080,7 +1081,7 @@ ck; grep -q 'FILES SEL' "$SER" \
 ck; grep -q 'FILES BACK' "$SER" \
   || fail "Escape did not reset FILES navigation"
 ck; grep -q 'FILES EMPTY' "$SER" \
-  || fail "EMPTY folder did not reach the live empty state"
+  || fail "VOID folder did not reach the live empty state"
 ck; grep -q 'FILES ERR' "$SER" \
   || fail "MISS.DAT did not reach the live error state"
 ck; grep -q 'FILES RETRY' "$SER" \

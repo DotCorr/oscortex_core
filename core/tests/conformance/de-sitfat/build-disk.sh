@@ -114,7 +114,7 @@ if [[ "$WANT_SURF" == 1 ]]; then
   PAIRS+=("SURF.ELF=$OUT/frame2/surf.elf")
 fi
 # After every launch/app plant so de-desk row 4 stays STUDIO.ELF.
-PAIRS+=("EMPTY=:dir" "GONE.DAT=:gone" "MISS.DAT=:miss")
+PAIRS+=("VOID=:dir" "GONE.DAT=:gone" "MISS.DAT=:miss")
 
 python3 "$SCRIPT_DIR/make-image.py" "$OUT/disk.img" --json \
   "${PAIRS[@]}" >"$OUT/layout.json" \
@@ -133,13 +133,13 @@ import json, sys
 lay = json.load(open(sys.argv[1]))
 need = ['BROWSE.ELF', 'PLAY.ELF', 'TAP.ELF', 'FILES.ELF', 'SET.ELF',
         'PING.ELF', 'STUDIO.ELF', 'APP1.ELF', 'DESK.ELF',
-        'EMPTY', 'GONE.DAT', 'MISS.DAT']
+        'VOID', 'GONE.DAT', 'MISS.DAT']
 miss = [n for n in need if n not in lay['order']]
 if miss:
     raise SystemExit('layout missing %s' % miss)
 kinds = lay.get('kinds') or {}
-if kinds.get('EMPTY') != 'dir':
-    raise SystemExit('EMPTY is not a directory plant')
+if kinds.get('VOID') != 'dir':
+    raise SystemExit('VOID is not a directory plant')
 if kinds.get('GONE.DAT') != 'gone':
     raise SystemExit('GONE.DAT is not a zero-byte recovery plant')
 if kinds.get('MISS.DAT') != 'miss':
