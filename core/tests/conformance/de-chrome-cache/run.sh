@@ -411,9 +411,8 @@ ck; python3 "$DERIVE" variety "$FB_BIN" "$PITCH" 800 600 48 \
 ck; python3 "$DERIVE" title_gradient "$FB_BIN" "$PITCH" 200 120 32 \
   0x00F4F0E8 0x00E8E0D0 \
   || fail "title band is not a Skia vertical gradient through the cache"
-ck; if python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile"; then
-  fail "retired Start fallback survived through the chrome cache"
-fi
+ck; python3 "$PROBE" --absent "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile" \
+  || fail "retired Start fallback survived through the chrome cache"
 ck; python3 "$DERIVE" close_rrect "$FB_BIN" "$PITCH" 314 127 18 9 0x00D45050 \
   || fail "close button is not an rrect through the cache"
 # THE AA FRINGE, THROUGH THE CACHE. A blit is exact, so this is the assertion

@@ -367,9 +367,8 @@ if len(shades) < 6:
 print("session corner AA: pearl %06X shades %d" % (ink, len(shades)))
 PY
 # The retired Start pill colour must not appear at its old centre.
-ck; if python3 "$PROBE" "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile"; then
-  fail "legacy Start fallback is still visible before DESK"
-fi
+ck; python3 "$PROBE" --absent "$FB_BIN" "$PITCH" 22 580 0x00C87840 "start_tile" \
+  || fail "legacy Start fallback is still visible before DESK"
 # Window A at (100,120) w=240: close at (314,127) size 18 — mid + AABB corner
 ck; python3 "$DERIVE" close_rrect "$FB_BIN" "$PITCH" 314 127 18 9 0x00D45050 \
   || fail "close button is a flat pixel blob, not an osgfx rrect"
