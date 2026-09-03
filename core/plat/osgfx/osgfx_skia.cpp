@@ -1280,19 +1280,23 @@ __attribute__((noinline)) static void tick_body(void) {
   if (m->gen == last_gen) {
     return;
   }
+  skia_release_client();
   if (m->fb == 0 || m->w < 8 || m->h < 8) {
     return;
   }
   if (m->pitch < m->w * 4) {
     return;
   }
-  /* HIT first: a blit must not rewind the Skia arena or drop g_one. */
+  /* HIT first: a blit must not rewind the Skia arena or drop g_one.
+   * Drop the client wrapper so a live unique_ptr cannot outlive the
+   * FILES shm page FRAME is about to walk (PF CR2 in client va). */
   if (osgfx_chrome_fresh(m) != 0) {
     static unsigned chrome_hit_n;
     chrome_hit_n = chrome_hit_n + 1;
     if (chrome_hit_n <= 2u || (chrome_hit_n & 63u) == 0u) {
       com1_puts("OSGFX CHROME HIT\n");
     }
+    skia_release_client();
     (void)osgfx_chrome_present(m);
     last_gen = m->gen;
     return;
