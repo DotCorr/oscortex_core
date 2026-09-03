@@ -1585,10 +1585,9 @@ void userSyscall(u64 frame) {
       }
     }
   }
-  /* Long syscall work runs with IF on: input can enqueue while compose
-   * holds wmMetaBusy. iretq restores the user RFLAGS. */
-  wmIfSysOpen();
-  /* Drain IRQ-enqueued WM geometry off the input path. Syscall CR3. */
+  /* Drain deferred WM ops in syscall context. IF stays clear except
+   * inside drain/commit compose (wmIfHold*), which take wmMetaBusy
+   * first. iretq restores the user RFLAGS. */
   if (wmActive() > u64(0)) {
     wmDefDrain();
   }

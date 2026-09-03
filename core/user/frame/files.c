@@ -1396,6 +1396,9 @@ static void try_strip(u64 names, u32 swatch) {
   if (frames >= WM_RET_FLOOR) {
     return;
   }
+  /* Let DESK restripe before the hidden 1274×666 paint. Syscalls are
+   * not preemptable; without this yield the dock cannot pop SET. */
+  sys1(SYS_YIELD, 0);
   /* Hidden native-max body, off the click path. Restore/max then
    * reuse this backing instead of a cream fill that blocked UART. */
   files_prefill_cap();

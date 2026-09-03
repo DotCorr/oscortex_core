@@ -1325,6 +1325,7 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
       }
     }
   }
+  wmSetMeta(u64(wmMetaBusy), u64(1));
   wmIfHoldBegin(u64(wmIfReasonCompose));
   /* Under `wm gfx`, honour damage when chrome is fresh; else full compose. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
@@ -3110,6 +3111,8 @@ void wmGrab(u64 x, u64 y) {
       wmPopHide();
       return;
     }
+    /* Dismiss, then honour the click (dock / client). A leftover
+     * card must not swallow the next press. */
     wmPopHide();
   }
   if (wmChromeHit(x, y) > u64(0)) {

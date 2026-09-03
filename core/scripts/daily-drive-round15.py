@@ -611,9 +611,9 @@ def press(q, ser, x, y, btn, token, timeout=4.0):
     place(q, ser, x, y)
     time.sleep(0.12)
     button(q, x, y, btn, True)
-    got = wait_mark(ser, token, marked, timeout)
-    time.sleep(0.08)
+    time.sleep(0.05)
     button(q, x, y, btn, False)
+    got = wait_mark(ser, token, marked, timeout)
     time.sleep(0.25)
     return bool(got)
 

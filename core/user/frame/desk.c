@@ -852,8 +852,9 @@ void desk_main(u64 sp) {
     }
     {
       u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
-      if (ev != WMEVENT_EMPTY) {
+      while (ev != WMEVENT_EMPTY) {
         handle_press(ev);
+        ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
       }
     }
     tasks = osxui_app_tasks();

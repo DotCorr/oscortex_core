@@ -1600,6 +1600,11 @@ u64 wmDefMaxGeom(u64 wI) {
 
 @bare
 void wmIfHoldBegin(u64 reason) {
+  /* Compose/drain/prep only. Caller holds wmMetaBusy first so a pointer
+   * IRQ is enqueue-only. osxui/SHM/UART syscalls stay IF-clear: STI on
+   * every syscall nested pointer Skia inside FILES prefill and starved
+   * DESK (no SET dock PRESS). */
+  interrupts_enable();
   if (wmPageAddr() < u64(1)) {
     return;
   }
@@ -1608,6 +1613,7 @@ void wmIfHoldBegin(u64 reason) {
 
 @bare
 void wmIfHoldEnd() {
+  interrupts_disable();
   if (wmPageAddr() < u64(1)) {
     return;
   }
@@ -1630,6 +1636,11 @@ void wmIfHoldEnd() {
 @bare
 void wmIfSysOpen() {
   interrupts_enable();
+}
+
+@bare
+void wmIfSysClose() {
+  interrupts_disable();
 }
 
 @bare
@@ -1835,8 +1846,8 @@ void wmIdlePrep(u64 fromSlot) {
     wmPageSet(u64(wmPageWPrepHave), have | u64(16));
     return;
   }
-  wmIfHoldBegin(u64(wmIfReasonPrep));
   wmSetMeta(u64(wmMetaBusy), u64(1));
+  wmIfHoldBegin(u64(wmIfReasonPrep));
   if ((have & u64(2)) < u64(1)) {
     final u64 rest = osgfx_chrome_prep_rest();
   }
@@ -1871,11 +1882,11 @@ void wmDefDrain() {
   final u64 slot = (packed >> u64(8)) & u64(0xFF);
   final u64 oldG = wmPage(u64(wmPageWDefOld));
   final u64 nextG = wmPage(u64(wmPageWDefNext));
+  wmSetMeta(u64(wmMetaBusy), u64(1));
   wmIfHoldBegin(u64(wmIfReasonDrain));
   uartWrite(Rodata.addressOf(wmStrDefBegin), u64(14));
   uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
   uartNewline();
-  wmSetMeta(u64(wmMetaBusy), u64(1));
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     wmPointerRestore();
   }
