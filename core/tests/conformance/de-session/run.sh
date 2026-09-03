@@ -44,7 +44,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-KERNEL_ELF="$CORE_DIR/build/kernel.elf"
+BUILD_DIR="${BUILD_DIR:-$CORE_DIR/build}"
+KERNEL_ELF="$BUILD_DIR/kernel.elf"
 SIT="$CORE_DIR/tests/conformance/d3-session"
 PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"
 DERIVE="$SCRIPT_DIR/derive.py"
@@ -132,15 +133,15 @@ ck; [[ -f "$GRAPHITE_LIB" ]] || {
   bash "$CORE_DIR/scripts/build-skia-guest-graphite.sh" \
     || fail "build-skia-guest-graphite.sh failed"
 }
-capture_sh BUILD_OUT BUILD_STATUS -- "OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+capture_sh BUILD_OUT BUILD_STATUS -- "BUILD_DIR='$BUILD_DIR' OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
 echo "$BUILD_OUT"
 # Never reuse a stale/raced kernel — that ships empty guest_tick (paper stamps).
 ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
 ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
 # Restore durable Skia image if a concurrent OSGFX_SKIA=0 harness stomped.
 if ! nm "$KERNEL_ELF" | grep -E -q '[[:space:]]T[[:space:]]+osgfx_fill_rrect$'; then
-  if [[ -f "$CORE_DIR/build/kernel-skia.elf" ]]; then
-    cp -f "$CORE_DIR/build/kernel-skia.elf" "$KERNEL_ELF"
+  if [[ -f "$BUILD_DIR/kernel-skia.elf" ]]; then
+    cp -f "$BUILD_DIR/kernel-skia.elf" "$KERNEL_ELF"
   fi
 fi
 elf_has() { python3 -c "import sys; sys.exit(0 if open(sys.argv[1],'rb').read().find(sys.argv[2].encode())>=0 else 1)" "$1" "$2"; }
@@ -158,14 +159,14 @@ ck; elf_has "$KERNEL_ELF" "skia-draw" \
   || fail "kernel.elf lost skia-draw (soft rrect path not linked)"
 ck; elf_has "$KERNEL_ELF" "skia-drawpath-outline" \
   || fail "kernel.elf lost skia-drawpath-outline (outline text not linked)"
-ck; grep -q 'osgfx_text$' "$CORE_DIR/build/kernel.map" \
-  || grep -q ' osgfx_text' "$CORE_DIR/build/kernel.map" \
+ck; grep -q 'osgfx_text$' "$BUILD_DIR/kernel.map" \
+  || grep -q ' osgfx_text' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no osgfx_text — outline text not linked"
-ck; grep -q 'osgfx_face_regular' "$CORE_DIR/build/kernel.map" \
+ck; grep -q 'osgfx_face_regular' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no osgfx_face_regular — no outline table in image"
-ck; grep -q 'osgfx_fill_rrect' "$CORE_DIR/build/kernel.map" \
+ck; grep -q 'osgfx_fill_rrect' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no osgfx_fill_rrect — Skia not linked"
-ck; grep -q 'osgfx_guest_tick' "$CORE_DIR/build/kernel.map" \
+ck; grep -q 'osgfx_guest_tick' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no osgfx_guest_tick — session tick missing"
 echo "BUILD: pass  session + desk linked"
 
