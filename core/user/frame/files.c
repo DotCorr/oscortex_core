@@ -1312,35 +1312,6 @@ static void files_on_key(u64 ev) {
   files_type_sel(scan_letter(scan));
 }
 
-static void files_drain_events(void) {
-  u64 ev;
-  u64 n = 0;
-  ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
-  while (ev != 0) {
-    files_on_event(ev);
-    n = n + 1;
-    if (n > 12UL) {
-      return;
-    }
-    ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
-  }
-}
-
-/* Finish the WM attach warmup (max then restore) before CSD so the
- * first user click is not the TCG-cold toggle. */
-static void files_warm_geom(void) {
-  u64 spins = 0;
-  files_drain_events();
-  while (files_w != WIN_W) {
-    files_drain_events();
-    spins = spins + 1;
-    if (spins > 4UL) {
-      return;
-    }
-    sys1(SYS_YIELD, 0);
-  }
-}
-
 static void try_strip(u64 names, u32 swatch) {
   u64 h;
   u64 va;
@@ -1426,7 +1397,6 @@ static void try_strip(u64 names, u32 swatch) {
   /* Hidden native-max body, off the click path. Restore/max then
    * reuse this backing instead of a cream fill that blocked UART. */
   files_prefill_cap();
-  files_warm_geom();
   wr(msg_strip, sizeof(msg_strip) - 1);
 #if FILES_NO_ICON == 0
   if (names > 0) {
