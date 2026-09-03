@@ -756,6 +756,12 @@ def serial_fatal(path, live_text=""):
         raise SystemExit("OSGFX OOM — bump heap exhausted")
     if "OSGFX ABORT" in blob:
         raise SystemExit("OSGFX ABORT — Skia aborted")
+    if "FAULT 0E" in blob:
+        raise SystemExit("FAULT 0E — page-fault reaped the desktop")
+    if "FAULT 0D" in blob and "FAULT RECOVERED" in blob:
+        raise SystemExit("FAULT 0D — #GP recovered; clients may be dead")
+    if blob.count("WM REAP W ") >= 3:
+        raise SystemExit("WM REAP — DESK/FILES/SET were killed")
     return blob
 
 
