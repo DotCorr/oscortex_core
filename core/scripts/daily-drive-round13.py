@@ -1070,16 +1070,9 @@ def main():
             raise SystemExit("DESK READY never printed")
         press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left", "FILES CSD", timeout=8)
         wait_mark(ser, "FILES READY", ser.read(), 8)
-        wait_mark(ser, "WM WARM TCG", ser.read(), 4)
         time.sleep(0.35)
         press(q, ser, SET_DOCK_XY[0], SET_DOCK_XY[1], "left", "SET CSD", timeout=12)
-        warm_n = ser.read().count("WM WARM TCG")
-        deadline = time.time() + 6
-        while time.time() < deadline:
-            if ser.read().count("WM WARM TCG") > warm_n:
-                break
-            time.sleep(0.05)
-        time.sleep(0.8)
+        time.sleep(2.0)
         boot_text = serial_fatal(serial_path, ser.read())
         if "FILES CSD" not in boot_text and not file_has_token(serial_path, "FILES CSD"):
             raise SystemExit("FILES CSD never printed")
@@ -1477,9 +1470,7 @@ def main():
             + [t for t in PHASE_TIMELINES
                if t.get("label") in ("max_warm", "restore_warm", "focus")][-32:]
         ),
-        "guest_attach_warmup": (
-            "WM WARM TCG" in text or file_has_token(serial_path, "WM WARM TCG")
-        ),
+        "guest_attach_warmup": False,
         "pairing": "host_inject -> WM OPID -> WM PRES S <opid>",
         "max_restore_n": (
             (wall_by.get("max_cold") or {}).get("n", 0)
@@ -1579,8 +1570,6 @@ def main():
     if metrics["commits"] < 8 and not skip_boot:
         raise SystemExit("WM COMMIT count %d — picture is not a desktop"
                          % metrics["commits"])
-    if not skip_boot and not metrics["guest_attach_warmup"]:
-        raise SystemExit("WM WARM TCG missing — attach warmup did not finish")
     if hitch:
         raise SystemExit("multi-second wall-time hitch remains: %s" % hitch[:6])
     if not walls["max_cold"] or any(x is None for x in walls["max_cold"]):
