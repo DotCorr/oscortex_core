@@ -774,8 +774,8 @@ def parse_phases(text, serial_path=""):
         pass
     keys = (
         "OSGFX CHROME HIT", "OSGFX CHROME MISS", "OSGFX CHROME GEOM",
-        "OSGFX CHROME POP", "OSGFX CHROME FOCUS", "WM PHZ MAX",
-        "FILES PHZ GROW", "FILES PHZ PAINT",
+        "OSGFX CHROME POP", "OSGFX CHROME FOCUS", "OSGFX PHZ MENU PREWARM",
+        "WM PHZ MAX", "FILES PHZ GROW", "FILES PHZ PAINT",
     )
     out = {}
     for k in keys:
@@ -798,6 +798,23 @@ def main():
     q = Qmp(port)
     ser = Serial(serial_path, SERIAL_SOCK)
     skip_boot = os.environ.get("DRIVE_SKIP_BOOT", "0") == "1"
+    run_dir = os.path.dirname(os.path.abspath(serial_path))
+
+    def _sha_dot(name, env):
+        v = os.environ.get(env, "")
+        if v:
+            return v
+        try:
+            return open(os.path.join(run_dir, name), encoding="utf-8").read().strip()
+        except OSError:
+            return ""
+
+    git_sha = _sha_dot("booted.git", "DRIVE_GIT_SHA")
+    kernel_sha = _sha_dot("kernel.sha256", "DRIVE_KERNEL_SHA")
+    iso_sha = _sha_dot("uefi.sha256", "DRIVE_ISO_SHA")
+    print("booted_sha", json.dumps({
+        "git": git_sha, "kernel_sha256": kernel_sha, "iso_sha256": iso_sha,
+    }))
 
     if not skip_boot:
         deadline = time.time() + 40
@@ -1106,6 +1123,9 @@ def main():
         heap_hi = parse_heap_hi(serial_fatal(serial_path, text))
     metrics = {
         "round": 10,
+        "git_sha": git_sha,
+        "kernel_sha256": kernel_sha,
+        "iso_sha256": iso_sha,
         "screen": [SCREEN_W, SCREEN_H],
         "fb_gop": [gop_w, gop_h],
         "artifacts_dir": art,

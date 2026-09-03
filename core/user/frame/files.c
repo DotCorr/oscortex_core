@@ -178,6 +178,8 @@ static const char msg_move_none[] = "FILES MOVE NONE";
 static const char msg_csd[] = "FILES CSD";
 static const char cap_files[] = "FILES";
 #endif
+static const char msg_phz_grow[] = "FILES PHZ GROW\n";
+static const char msg_phz_paint[] = "FILES PHZ PAINT\n";
 static const char msg_menu[] = "FILES MENU";
 static const char msg_menu_esc[] = "FILES MENU ESC";
 static const char msg_menu_sel[] = "FILES MENU SEL ";
@@ -984,6 +986,7 @@ static void files_on_event(u64 ev) {
         files_stride = stride;
         files_cap_w = nw;
         files_cap_h = nh;
+        wr(msg_phz_grow, sizeof(msg_phz_grow) - 1);
         at = put(0, "FILES GROW ");
         at = putdec(at, pages);
         at = put(at, " W ");
@@ -1002,6 +1005,7 @@ static void files_on_event(u64 ev) {
         }
         files_w = nw;
         files_height = nh;
+        wr(msg_phz_paint, sizeof(msg_phz_paint) - 1);
         files_repaint();
       }
     }

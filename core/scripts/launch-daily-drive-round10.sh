@@ -27,6 +27,13 @@ elif [[ ! -f "$ISO" ]]; then
 elif [[ "$KERNEL_UEFI" -nt "$ISO" ]]; then
   need_iso=1
 fi
+GIT_SHA="${DRIVE_GIT_SHA:-$(git -C "$CORE_DIR/.." rev-parse HEAD 2>/dev/null || true)}"
+if [[ -z "$GIT_SHA" ]]; then
+  GIT_SHA="$(git -C "$CORE_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+fi
+KERNEL_SHA="$(sha256sum "$KERNEL_UEFI" | awk '{print $1}')"
+echo "$GIT_SHA" >"$RUN/booted.git"
+echo "$KERNEL_SHA" >"$RUN/kernel.sha256"
 if [[ "$need_iso" == "1" ]]; then
   if ! eval "$(bash "$CORE_DIR/scripts/find-limine.sh")"; then
     echo "launch-daily-drive-round10: limine not found" >&2
@@ -45,6 +52,9 @@ EOF
   LIMINE_CONF="$RUN/limine.conf" \
     bash "$CORE_DIR/scripts/build-uefi-image.sh" "$KERNEL_UEFI" "$ISO"
 fi
+ISO_SHA="$(sha256sum "$ISO" | awk '{print $1}')"
+echo "$ISO_SHA" >"$RUN/uefi.sha256"
+echo "git=$GIT_SHA kernel_sha256=$KERNEL_SHA iso_sha256=$ISO_SHA"
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
 OVMF_VARS_SRC="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 [[ -f "$OVMF_CODE" ]] || { echo "no OVMF CODE" >&2; exit 2; }

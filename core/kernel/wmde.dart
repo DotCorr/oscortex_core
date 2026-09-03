@@ -1562,6 +1562,11 @@ void wmToggleMaxWindow(u64 wI) {
     wmPageSet(at, u64(0));
   }
   if (next == old) {
+    /* Stamp already took a seq. Close it so wait_present is not a 3s
+     * timeout on a clamped no-op max (same 400×280 backing). */
+    wmLatNotePresent();
+    uartWrite(Rodata.addressOf(wmStrPhzMax), u64(10));
+    uartNewline();
     return;
   }
   wmSetWin(wI, u64(wmWinGeom), next);
