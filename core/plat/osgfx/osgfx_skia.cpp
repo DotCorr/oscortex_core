@@ -146,6 +146,10 @@ static void drop_skia_before_rewind(void) {
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
+  g_one_bound_px = 0;
+  g_one_bound_pitch = 0;
+  g_one_bound_w = 0;
+  g_one_bound_h = 0;
   /*
    * Do not traverse the process-global cache here. Per-frame shadows avoid
    * cached mask filters below, and the zero-byte budget keeps other
@@ -1232,13 +1236,16 @@ __attribute__((noinline)) static void tick_body(void) {
     focus_only = (target != 0 && osgfx_chrome_is_focus_only(m) != 0);
     geom_only = (target != 0 && focus_only == 0 &&
                  osgfx_chrome_is_geom_only(m) != 0);
-    /* Rewind only on a full miss. Focus/geom keep g_one; a tight-heap
-     * drop here was the 1.8s TCG hitch on every raise/max. */
+    /* Rewind only on a full miss after client scratch is gone. Dropping
+     * g_one here is a ~1.8s TCG re-bind and was the 3.4s max hitch. */
     if (focus_only == 0 && geom_only == 0 && heap_needs_rewind() != 0) {
-      drop_skia_before_rewind();
-      g = osgfx_create(ww, hh);
-      if (g == 0) {
-        return;
+      osgfx_heap_client_begin();
+      if (heap_needs_rewind() != 0) {
+        drop_skia_before_rewind();
+        g = osgfx_create(ww, hh);
+        if (g == 0) {
+          return;
+        }
       }
     }
     /* Focus/raise flips only TOP. Patch the 2px rings; do not zero the
@@ -1321,13 +1328,16 @@ static void client_reclaim_if_tight(void) {
 }
 
 static void client_body(uint32_t *px, int pitch, int w, int h, int kind) {
-  /* Never drop g_one. Pointer raster and WM_OP_PAINT share client_g
-   * only; destroying the chrome canvas made every later miss pay
-   * SkCanvas::MakeRasterDirect under TCG (~1.8s). */
+  /* Never drop g_one. Reuse client_g when the backing is unchanged so
+   * SET/FILES paints do not grow the bump heap until a 3.4s rewind. */
   client_arg.kind = kind;
-  client_g.owned.reset();
-  client_g.canvas = 0;
   if (kind != CLIENT_POINTER) {
+    if (client_g.canvas != 0 && client_g.px == px && client_g.pitch == pitch &&
+        client_g.w == w && client_g.h == h) {
+      return;
+    }
+    client_g.owned.reset();
+    client_g.canvas = 0;
     osgfx_heap_client_begin();
     client_reclaim_if_tight();
   }

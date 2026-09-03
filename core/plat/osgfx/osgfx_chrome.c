@@ -214,6 +214,8 @@ static uint64_t g_stamp_launch3;
 static uint64_t g_stamp_cap_mail;
 
 #define OSGFX_CHROME_TOP_MASK (3ULL << OSGFX_GUEST_TOP_SHIFT)
+#define OSGFX_CHROME_GEOM_MASK \
+  (OSGFX_CHROME_TOP_MASK | OSGFX_GUEST_HELD0 | OSGFX_GUEST_HELD1)
 
 static void chrome_note_mailbox(const struct OsGfxGuestCmd *m) {
   uint64_t *pg;
@@ -277,8 +279,8 @@ int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m) {
   if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
     return 0;
   }
-  if ((m->flags & ~OSGFX_CHROME_TOP_MASK) !=
-      (g_stamp_flags & ~OSGFX_CHROME_TOP_MASK)) {
+  if ((m->flags & ~OSGFX_CHROME_GEOM_MASK) !=
+      (g_stamp_flags & ~OSGFX_CHROME_GEOM_MASK)) {
     return 0;
   }
   if ((m->flags & OSGFX_CHROME_TOP_MASK) ==
@@ -347,8 +349,8 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
   if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
     return 0;
   }
-  if ((m->flags & ~OSGFX_CHROME_TOP_MASK) !=
-      (g_stamp_flags & ~OSGFX_CHROME_TOP_MASK)) {
+  if ((m->flags & ~OSGFX_CHROME_GEOM_MASK) !=
+      (g_stamp_flags & ~OSGFX_CHROME_GEOM_MASK)) {
     return 0;
   }
   if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
@@ -364,9 +366,6 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
     return 0;
   }
   if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_CAP_MAIL] != g_stamp_cap_mail) {
     return 0;
   }
   return 1;
