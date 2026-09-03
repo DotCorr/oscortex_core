@@ -71,7 +71,7 @@ A_BLOCK = (A_X + 40, A_Y + 40, 120, 60)
 B_BLOCK = (B_X + 40, B_Y + 40, 160, 80)
 
 # Bare desktop: right of both windows, above the 48-row taskbar, and clear of
-# the 96x64 popover this parks at (+8, +8) from the click.
+# the 168x80 popover this parks at (+8, +8) from the click.
 POINT_X, POINT_Y = 620, 460
 MENU_CYCLES = 10
 SETTLE_SECS = 30.0
@@ -283,6 +283,20 @@ def main():
     if not wait_marker(serial, "USER WRITE D3S COMMIT\n", timeout=60, at_least=2):
         raise SystemExit("client B never committed")
     time.sleep(3.0)
+
+    text = read_serial(serial)
+    atts = re.findall(
+        r"^WM ATTACH W [0-9A-Fa-f]+ R [0-9A-Fa-f]+ GEN [0-9A-Fa-f]+ "
+        r"X ([0-9A-Fa-f]+) Y ([0-9A-Fa-f]+) W ([0-9A-Fa-f]+) H ([0-9A-Fa-f]+)",
+        text, re.M)
+    if len(atts) < 2:
+        raise SystemExit("need two WM ATTACH lines, got %d" % len(atts))
+    ax, ay = int(atts[0][0], 16), int(atts[0][1], 16)
+    bx, by = int(atts[1][0], 16), int(atts[1][1], 16)
+    A_BLOCK = (ax + 40, ay + 40, 120, 60)
+    B_BLOCK = (bx + 40, by + 40, 160, 80)
+    print("DE-retain: A at %d,%d  B at %d,%d (tiled if they would overlap)"
+          % (ax, ay, bx, by))
 
     stages = []
     t_zero = time.time()

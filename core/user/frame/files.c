@@ -1534,6 +1534,7 @@ void files_main(u64 sp) {
     wr(msg_none, sizeof(msg_none) - 1);
   }
 
+  files_names = names;
   copy_i = CAT_MAX;
   move_i = CAT_MAX;
   for (i = 0; i < (unsigned)names; i++) {
