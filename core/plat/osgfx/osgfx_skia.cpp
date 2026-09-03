@@ -167,38 +167,10 @@ static void skia_release_client(void) {
 
 static SkCanvas *canvas_of(OsGfx *g);
 
-alignas(16) static uint32_t menu_prewarm_px[OSGFX_POP_W * OSGFX_POP_H];
-static int menu_ops_prewarmed;
-
-static void prewarm_menu_ops(void) {
-  OsGfx *g;
-  if (menu_ops_prewarmed != 0) {
-    return;
-  }
-  menu_ops_prewarmed = 1;
-  skia_release_client();
-  client_g.px = menu_prewarm_px;
-  client_g.pitch = OSGFX_POP_W * 4;
-  client_g.w = OSGFX_POP_W;
-  client_g.h = OSGFX_POP_H;
-  g = &client_g;
-  if (canvas_of(g) != 0) {
-    osgfx_shadow(g, OSGFX_POP_SHADOW_OX, OSGFX_POP_SHADOW_OY, OSGFX_POP_W,
-                 OSGFX_POP_H, OSGFX_RADIUS, OSGFX_POP_SHADOW_BLUR, 0x000C2030u);
-    osgfx_fill_rrect(g, 0, 0, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS,
-                     0x00F4F6FAu);
-    (void)osgfx_text(g, 8, 10, "Regen", 5, OSGFX_TEXT_LABEL_PX,
-                     OSGFX_TEXT_REGULAR, 0x00202830u);
-    (void)osgfx_text(g, 8, 38, "Image", 5, OSGFX_TEXT_LABEL_PX,
-                     OSGFX_TEXT_REGULAR, 0x00202830u);
-    (void)osgfx_text(g, 8, 10, "Close", 5, OSGFX_TEXT_LABEL_PX,
-                     OSGFX_TEXT_REGULAR, 0x00202830u);
-    (void)osgfx_text(g, 8, 38, "Raise", 5, OSGFX_TEXT_LABEL_PX,
-                     OSGFX_TEXT_REGULAR, 0x00202830u);
-    (void)osgfx_flush(g);
-  }
-  com1_puts("OSGFX PHZ MENU PREWARM\n");
-}
+/* Menu prewarm was removed after the ownership fix. Sealing premul
+ * prewarm under g_one made the next FILES chrome miss #GP
+ * (drawRRect +0x7). de-pace PASS 71 and UEFI wall/win/dock menus
+ * survive without OSGFX PHZ MENU PREWARM. */
 
 static void chrome_heap_after_paint(void) {
   /* Raise the seal once so first-paint Skia records stay under a live
@@ -230,7 +202,6 @@ static void drop_skia_before_rewind(void) {
   g_one_bound_w = 0;
   g_one_bound_h = 0;
   g_one_paint_sealed = 0;
-  menu_ops_prewarmed = 0;
   /*
    * Do not traverse the process-global cache here. Per-frame shadows avoid
    * cached mask filters below, and the zero-byte budget keeps other

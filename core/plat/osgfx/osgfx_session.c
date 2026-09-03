@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 extern void com1_puts(const char *s);
+extern struct OsGfxGuestCmd osgfx_guest_cmd;
 
 /* DE geometry — keep in lockstep with wmde.dart / osxui.h / wmchrome.dart. */
 enum {
@@ -674,6 +675,16 @@ void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
   }
   uncover_geom(fb, pitch, old0, ww, hh, seed);
   uncover_geom(fb, pitch, old1, ww, hh, seed);
+  /* chrome_present leaves hole pixels on the scanout unchanged. If the
+   * mailbox still names the pre-restore max rect, those leftover FILES
+   * pixels stay visible. Stamp wallpaper onto the GOP old rect too;
+   * the new holes are refilled by wmBlitRow. */
+  if (osgfx_guest_cmd.fb != 0 && osgfx_guest_cmd.fb != cmd->fb) {
+    uncover_geom((uint32_t *)(uintptr_t)osgfx_guest_cmd.fb,
+                 (int)osgfx_guest_cmd.pitch, old0, ww, hh, seed);
+    uncover_geom((uint32_t *)(uintptr_t)osgfx_guest_cmd.fb,
+                 (int)osgfx_guest_cmd.pitch, old1, ww, hh, seed);
+  }
   osgfx_session_paint_windows(g, cmd);
 }
 
