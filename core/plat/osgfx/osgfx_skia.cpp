@@ -115,6 +115,10 @@ struct OsGfx {
 
 static OsGfx g_one;
 static OsGfx client_g;
+static uint32_t *g_one_bound_px;
+static int g_one_bound_pitch;
+static int g_one_bound_w;
+static int g_one_bound_h;
 static int resource_cache_disabled;
 
 static int heap_needs_rewind(void) {
@@ -185,6 +189,10 @@ static void bind(OsGfx *g) {
   g->owned = SkCanvas::MakeRasterDirect(info, g->px, (size_t)g->pitch);
   g->canvas = g->owned.get();
   if (g == &g_one && g->canvas != 0) {
+    g_one_bound_px = g->px;
+    g_one_bound_pitch = g->pitch;
+    g_one_bound_w = g->w;
+    g_one_bound_h = g->h;
     osgfx_heap_chrome_seal();
   }
 }
@@ -192,6 +200,14 @@ static void bind(OsGfx *g) {
 static SkCanvas *canvas_of(OsGfx *g) {
   if (g == 0) {
     return nullptr;
+  }
+  if (g == &g_one && g->canvas != 0) {
+    if (g->px != g_one_bound_px || g->pitch != g_one_bound_pitch ||
+        g->w != g_one_bound_w || g->h != g_one_bound_h) {
+      /* Same canvas object, new backing. Re-wrap; do not rewind. */
+      g->owned.reset();
+      g->canvas = 0;
+    }
   }
   if (g->canvas == 0) {
     bind(g);
