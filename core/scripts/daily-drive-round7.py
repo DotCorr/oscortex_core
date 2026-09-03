@@ -102,6 +102,10 @@ class Serial:
         self.buf = ""
         self.archive = ""
         self.off = 0
+        try:
+            self.off = os.path.getsize(path)
+        except OSError:
+            self.off = 0
         self.sock = None
         self.yield_dropped = 0
         self.shm_dropped = 0
@@ -183,8 +187,9 @@ class Serial:
 
     def read(self):
         self._drain_sock()
-        if self.sock is None:
-            self._ingest_file()
+        # File is the durable UART copy. Incremental from the attach
+        # offset catches ABS/LAT the socket dropped; YIELD is filtered.
+        self._ingest_file()
         return (getattr(self, "archive", "") + "\n" + self.buf)
 
     def _ingest_file(self):
@@ -259,6 +264,8 @@ def place_announce(q, ser, x, y, slop=8, timeout=2.5):
     """Drive (x,y) and force a button-edge ABS announce (not last-menu coords)."""
     place(q, ser, x, y)
     time.sleep(0.08)
+    button(q, x, y, "left", False)
+    time.sleep(0.06)
     n = ser.abs_n
     button(q, x, y, "left", True)
     deadline = time.time() + timeout
