@@ -3391,14 +3391,13 @@ void wmGrab(u64 x, u64 y) {
   }
   // RAISING CHANGES BOTH WINDOWS: the one coming up, and the one whose border
   // just went from bright to dim. Under gfx the overlay owns the rings;
-  // drain only blits the raised client body.
+  // drain blits the raised client body BEFORE the first drag step so
+  // that blit is not folded into first-move latency.
   u64 px = u64(0);
   if (wmPageAddr() > u64(0)) {
-    if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
-      wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
-          wmWin(hit, u64(wmWinGeom)));
-      wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
-    }
+    wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
+        wmWin(hit, u64(wmWinGeom)));
+    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
   } else {
     px = wmRepaintWindow(was);
     px = px + wmRepaintWindow(hit);

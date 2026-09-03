@@ -1014,15 +1014,17 @@ uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
  * Not a synthetic drag: no drag_step, no visible geom change. */
 static void chrome_idle_prep(const struct OsGfxGuestCmd *m) {
   static int ready;
+  static int win_ready;
   uint64_t *pg;
   uint32_t *buf;
   int w;
   int h;
+  int wx;
+  int wy;
+  int ww;
+  int wh;
   uint32_t seed;
 
-  if (ready != 0) {
-    return;
-  }
   pg = chrome_page();
   buf = chrome_buf(m, pg);
   if (pg == 0 || buf == 0 || m == 0 || m->fb == 0) {
@@ -1037,12 +1039,30 @@ static void chrome_idle_prep(const struct OsGfxGuestCmd *m) {
   if (m->desk != 0) {
     seed = (uint32_t)m->desk;
   }
-  chrome_move_rect(buf, w, w, h, 0, 0, 1, 0, 4, 4);
-  chrome_move_rect(buf, w, w, h, 1, 0, 0, 0, 4, 4);
-  chrome_vacate(buf, w, w, h, 2, 2, 2, 2, 2, 2, 2, 2, seed);
-  chrome_desk_rect(buf, w, 0, 0, 1, 1, seed);
-  (void)chrome_present_clip(m, 0, 0, 8, 8);
-  ready = 1;
+  if (ready == 0) {
+    chrome_move_rect(buf, w, w, h, 0, 0, 1, 0, 4, 4);
+    chrome_move_rect(buf, w, w, h, 1, 0, 0, 0, 4, 4);
+    chrome_vacate(buf, w, w, h, 2, 2, 2, 2, 2, 2, 2, 2, seed);
+    chrome_desk_rect(buf, w, 0, 0, 1, 1, seed);
+    (void)chrome_present_clip(m, 0, 0, 8, 8);
+    ready = 1;
+  }
+  if (win_ready != 0) {
+    return;
+  }
+  if (m->win0 == 0) {
+    return;
+  }
+  chrome_unpack_geom(m->win0, &wx, &wy, &ww, &wh);
+  if (ww < 16 || wh < 16) {
+    return;
+  }
+  chrome_move_rect(buf, w, w, h, wx, wy, wx + 1, wy, 16, 16);
+  chrome_move_rect(buf, w, w, h, wx + 1, wy, wx, wy, 16, 16);
+  chrome_vacate(buf, w, w, h, wx, wy, ww, wh, wx, wy, ww, wh, seed);
+  (void)chrome_present_clip(m, wx, wy, ww, OSGFX_TITLE_H + 4);
+  (void)chrome_present_clip(m, wx, wy, 24, wh);
+  win_ready = 1;
 }
 
 /* Called BEFORE the paint. Clears the key, so a #GP or a reset half way
