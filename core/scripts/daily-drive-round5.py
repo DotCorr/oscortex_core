@@ -88,12 +88,14 @@ class Qmp:
 
 
 class Serial:
-    """File is the source of truth. An optional socket is drained with a
-    cap so a PROC YIELD storm cannot livelock wait_mark."""
+    """Incrementally ingest the logfile. PROC YIELD / SHM PAGE lines are
+    dropped so a storm cannot wash SET CSD, WM LAT, or COMMIT out of the
+    window wait_mark and the final metrics read."""
 
     def __init__(self, path, sock_port=0):
         self.path = path
         self.buf = ""
+        self.off = 0
         self.sock = None
         if sock_port:
             deadline = time.time() + 8
@@ -110,6 +112,21 @@ class Serial:
             if self.sock is None:
                 print("WARN: serial socket failed (%s); using file" % last)
 
+    def _keep_line(self, line):
+        if line.startswith("PROC YIELD"):
+            return False
+        if line.startswith("SHM PAGE"):
+            return False
+        return True
+
+    def _ingest(self, text):
+        if not text:
+            return
+        kept = [ln for ln in text.splitlines() if self._keep_line(ln)]
+        if not kept:
+            return
+        self.buf = (self.buf + "\n" + "\n".join(kept))[-1048576:]
+
     def _drain_sock(self):
         if self.sock is None:
             return
@@ -119,27 +136,24 @@ class Serial:
                 chunk = self.sock.recv(4096)
                 if not chunk:
                     break
-                self.buf += chunk.decode("utf-8", "replace")
+                self._ingest(chunk.decode("utf-8", "replace"))
                 got += len(chunk)
         except (socket.timeout, BlockingIOError):
             pass
-        if len(self.buf) > 1048576:
-            self.buf = self.buf[-524288:]
 
     def read(self):
         self._drain_sock()
         try:
-            # Tail the logfile. A full 88MiB reread on every wait_mark
-            # livelocks the driver under a PROC YIELD storm.
             size = os.path.getsize(self.path)
-            if size > 1048576:
-                with open(self.path, encoding="utf-8", errors="replace") as f:
-                    f.seek(size - 1048576)
-                    text = f.read()
-            else:
-                text = open(self.path, encoding="utf-8", errors="replace").read()
-            if text:
-                return text
+            if size > self.off:
+                with open(self.path, "rb") as f:
+                    f.seek(self.off)
+                    while self.off < size:
+                        chunk = f.read(min(size - self.off, 1048576))
+                        if not chunk:
+                            break
+                        self.off += len(chunk)
+                        self._ingest(chunk.decode("utf-8", "replace"))
         except OSError:
             pass
         return self.buf
@@ -426,9 +440,10 @@ def main():
         "dock_menu": "WM DOCK MENU" in text,
         "attach_caption": bool(re.search(r"WM ATTACH .* C [12]", text)),
     }
-    open(os.path.join(outdir, "metrics.json"), "w").write(
-        json.dumps(metrics, indent=2) + "\n")
-    print(json.dumps(metrics, indent=2))
+    payload = json.dumps(metrics, indent=2) + "\n"
+    open(os.path.join(outdir, "metrics.json"), "w").write(payload)
+    open(os.path.join(art, "oscortex-round5-timing.json"), "w").write(payload)
+    print(payload)
     if refuse:
         raise SystemExit("COMMIT bad-geom refusals: %d" % refuse)
     if commits < 1:
