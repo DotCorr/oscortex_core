@@ -526,6 +526,7 @@ void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
       /* Pop-only chrome path: blit the pop-free cache. Do not REGEN. */
       wmGfxKick();
       osgfx_guest_tick();
+      wmGfxChromeStamp();
       if (wmActive() > u64(0)) {
         wmCompose();
       }
@@ -544,6 +545,7 @@ void wmPopPaintCard() {
     if (wmPanelStrip() < u64(1)) {
       wmGfxKick();
       osgfx_guest_tick();
+      wmGfxChromeStamp();
       if (wmActive() > u64(0)) {
         wmCompose();
       }

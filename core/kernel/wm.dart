@@ -778,9 +778,10 @@ void wmFocusTo(u64 wI) {
     wmFocusChromeDamage(old);
     wmFocusChromeDamage(wI);
     wmGfxKick();
-    if (wmGfxChromeFresh() > u64(0)) {
-      wmLatNotePresent();
-    }
+    /* TOP is an overlay. Stamp so a later commit does not wmCompose a
+     * 1280×720 restamp after a click-to-focus. */
+    wmGfxChromeStamp();
+    wmLatNotePresent();
   }
 }
 
