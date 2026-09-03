@@ -720,9 +720,10 @@ def picture_sentinels(path, screen_w, screen_h, expect_windows=True):
                          % (path, dock_distinct))
 
     title = []
-    for x in (120, 200, 360, 500, 640):
-        if 0 <= x < w:
-            title.append(px_at(rgb, w, x, 55))
+    for y in (40, 48, 55, 64, 72, 80, 88):
+        for x in (120, 200, 360, 500, 640, 720):
+            if 0 <= x < w and 0 <= y < h:
+                title.append(px_at(rgb, w, x, y))
     title_pearl = sum(1 for c in title if is_title_pearl(*c))
     title_teal = sum(1 for c in title if is_wallpaper_teal(*c))
     if expect_windows:

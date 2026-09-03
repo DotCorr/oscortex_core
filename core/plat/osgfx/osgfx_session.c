@@ -185,6 +185,17 @@ static void title_capture_slices(uint32_t *fb, int pitch, int x, int y, int w,
     }
     yy = yy + 1;
   }
+  {
+    uint32_t mid = title_m[(th / 2) * TITLE_SLICE_MID + (TITLE_SLICE_MID / 2)];
+    unsigned mr = (unsigned)((mid >> 16) & 0xffu);
+    unsigned mg = (unsigned)((mid >> 8) & 0xffu);
+    /* Pearl title is warm grey. Wallpaper teal in the 9-patch would
+     * stamp a hole on every later width. */
+    if (mr < 160u || mg < 150u) {
+      title_slices_ready = 0;
+      return;
+    }
+  }
   title_slices_ready = 1;
   title_slice_th = th;
   title_slice_r = r;
