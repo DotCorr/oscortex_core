@@ -53,7 +53,7 @@ setup_error() { echo "DE-retain: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=37
+ASSERTIONS_REQUIRED=39
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -212,12 +212,36 @@ echo "$HOLE_OUT"
 echo "STRUCTURAL: pass  restore fallback on trampoline, cached blit preserves both body holes"
 
 echo
-echo "=== BUILD ==="
-capture_sh BUILD_OUT BUILD_STATUS -- "OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+echo "=== BUILD (isolated BUILD_DIR) ==="
+LIVE_KERNEL="$CORE_DIR/build/kernel.elf"
+LIVE_UEFI="$CORE_DIR/build/kernel-uefi.elf"
+LIVE_SHA=""
+LIVE_UEFI_SHA=""
+if [[ -f "$LIVE_KERNEL" ]]; then
+  LIVE_SHA=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+fi
+if [[ -f "$LIVE_UEFI" ]]; then
+  LIVE_UEFI_SHA=$(sha256sum "$LIVE_UEFI" | awk '{print $1}')
+fi
+export BUILD_DIR="$WORKDIR/kbuild"
+mkdir -p "$BUILD_DIR"
+if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+  ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+fi
+capture_sh BUILD_OUT BUILD_STATUS -- "BUILD_DIR='$BUILD_DIR' OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
 echo "$BUILD_OUT" | tail -3
 ck; [[ $BUILD_STATUS -eq 0 ]] || { echo "$BUILD_OUT" >&2; fail "build-kernel.sh exited $BUILD_STATUS"; }
-ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
-ck; grep -q 'wmSessionRestore' "$CORE_DIR/build/kernel.map" \
+KERNEL_ELF="$BUILD_DIR/kernel.elf"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "no isolated kernel.elf after a successful build"
+if [[ -n "$LIVE_SHA" ]]; then
+  ck; [[ "$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')" == "$LIVE_SHA" ]] \
+    || fail "live kernel.elf changed across isolated de-retain"
+fi
+if [[ -n "$LIVE_UEFI_SHA" ]]; then
+  ck; [[ "$(sha256sum "$LIVE_UEFI" | awk '{print $1}')" == "$LIVE_UEFI_SHA" ]] \
+    || fail "live kernel-uefi.elf changed across isolated de-retain"
+fi
+ck; grep -q 'wmSessionRestore' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no wmSessionRestore — the trampoline would call a symbol that is not there"
 # The counters below are read out of guest physical memory rather than off the
 # serial line, because two resident clients ping-pong through procTick and the

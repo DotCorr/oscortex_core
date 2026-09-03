@@ -38,7 +38,7 @@ setup_error() { echo "DE-chrome-cache: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=57
+ASSERTIONS_REQUIRED=59
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -209,21 +209,45 @@ PY
 echo "STRUCTURAL: pass  key covers the paint, begin<paint<done, frames not bss"
 
 echo
-echo "=== BUILD ==="
+echo "=== BUILD (isolated BUILD_DIR) ==="
 ck; [[ -f "$GRAPHITE_LIB" ]] || {
   bash "$CORE_DIR/scripts/build-skia-guest-graphite.sh" \
     || fail "build-skia-guest-graphite.sh failed"
 }
-capture_sh BUILD_OUT BUILD_STATUS -- "OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+LIVE_KERNEL="$CORE_DIR/build/kernel.elf"
+LIVE_UEFI="$CORE_DIR/build/kernel-uefi.elf"
+LIVE_SHA=""
+LIVE_UEFI_SHA=""
+if [[ -f "$LIVE_KERNEL" ]]; then
+  LIVE_SHA=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+fi
+if [[ -f "$LIVE_UEFI" ]]; then
+  LIVE_UEFI_SHA=$(sha256sum "$LIVE_UEFI" | awk '{print $1}')
+fi
+export BUILD_DIR="$WORKDIR/kbuild"
+mkdir -p "$BUILD_DIR"
+if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+  ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+fi
+capture_sh BUILD_OUT BUILD_STATUS -- "BUILD_DIR='$BUILD_DIR' OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
 echo "$BUILD_OUT"
 ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
-ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
+KERNEL_ELF="$BUILD_DIR/kernel.elf"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "no isolated kernel.elf after a successful build"
+if [[ -n "$LIVE_SHA" ]]; then
+  ck; [[ "$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')" == "$LIVE_SHA" ]] \
+    || fail "live kernel.elf changed across isolated de-chrome-cache"
+fi
+if [[ -n "$LIVE_UEFI_SHA" ]]; then
+  ck; [[ "$(sha256sum "$LIVE_UEFI" | awk '{print $1}')" == "$LIVE_UEFI_SHA" ]] \
+    || fail "live kernel-uefi.elf changed across isolated de-chrome-cache"
+fi
 elf_has() { python3 -c "import sys; sys.exit(0 if open(sys.argv[1],'rb').read().find(sys.argv[2].encode())>=0 else 1)" "$1" "$2"; }
 ck; elf_has "$KERNEL_ELF" "osgfx-chrome-cache" \
   || fail "kernel.elf lost osgfx-chrome-cache — the cache is not linked"
-ck; grep -q 'osgfx_chrome_target' "$CORE_DIR/build/kernel.map" \
+ck; grep -q 'osgfx_chrome_target' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no osgfx_chrome_target"
-ck; grep -q 'osgfx_chrome_band' "$CORE_DIR/build/kernel.map" \
+ck; grep -q 'osgfx_chrome_band' "$BUILD_DIR/kernel.map" \
   || fail "kernel.map has no osgfx_chrome_band"
 # ADR-0187/0188 must still be linked: this rung is not allowed to trade their
 # proofs for speed.
