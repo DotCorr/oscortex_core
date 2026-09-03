@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=69
+ASSERTIONS_REQUIRED=71
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -340,6 +340,10 @@ await QEMU_STATUS "$QEMU_PID"
 
 jget() { python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])" "$WORKDIR/report.json" "$1"; }
 
+ck; ! sed -n '/^M1 END/,$p' "$SER" | grep -qE 'FAULT 0[DE]' \
+  || fail "post-M1 PF/GP under de-pace sit-in — recovered faults are still faults"
+ck; ! grep -q 'WM REAP W ' "$SER" \
+  || fail "WM REAP under de-pace sit-in"
 ck; grep -q 'WM GFX ON' "$SER" || fail "WM GFX ON missing"
 ck; grep -q 'WM DE ON' "$SER" || fail "WM DE ON missing"
 ck; grep -q 'OSGFX DESK GEN' "$SER" || fail "OSGFX DESK GEN missing"

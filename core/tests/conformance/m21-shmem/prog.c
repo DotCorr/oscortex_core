@@ -97,7 +97,7 @@ typedef unsigned char u8;
 
 #define PORT 0
 #define PAGES 4UL
-#define SHM_MAX_PAGES 510UL
+#define SHM_MAX_PAGES 1021UL
 #define PAGEB 4096UL
 #define MSGMAX 64
 #define SPINMAX 4096

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the Round 10 daily-drive QEMU: hitch gate + phase profile.
+"""Drive the Round 11 daily-drive QEMU: hitch gate + phase profile.
 
 Latency is accepted only after DESK READY, dock launch, FILES+SET CSD/READY,
 expected WM COMMIT count, and screenshot pixel sentinels. Live UART is
@@ -792,7 +792,7 @@ def parse_phases(text, serial_path=""):
 
 def main():
     if len(sys.argv) < 4:
-        raise SystemExit("usage: daily-drive-round10.py <qmp-port> <serial> <outdir>")
+        raise SystemExit("usage: daily-drive-round11.py <qmp-port> <serial> <outdir>")
     port, serial_path, outdir = int(sys.argv[1]), sys.argv[2], sys.argv[3]
     art, art_warn = resolve_artifacts()
     if art_warn:
@@ -839,12 +839,12 @@ def main():
         time.sleep(0.15)
         q.key("esc")
         time.sleep(0.2)
-        shot(q, os.path.join(art, "oscortex-round10-tip-full-desktop.png"),
-             os.path.join(fallback, "oscortex-round10-tip-full-desktop.png"))
+        shot(q, os.path.join(art, "oscortex-round11-tip-full-desktop.png"),
+             os.path.join(fallback, "oscortex-round11-tip-full-desktop.png"))
         shot(q, os.path.join(outdir, "full-desktop.png"))
         picture = picture_sentinels(
-            os.path.join(art, "oscortex-round10-tip-full-desktop.png")
-            if os.path.isfile(os.path.join(art, "oscortex-round10-tip-full-desktop.png"))
+            os.path.join(art, "oscortex-round11-tip-full-desktop.png")
+            if os.path.isfile(os.path.join(art, "oscortex-round11-tip-full-desktop.png"))
             else os.path.join(outdir, "full-desktop.png"),
             SCREEN_W, SCREEN_H, expect_windows=True)
         print("picture_sentinels", json.dumps(picture))
@@ -913,12 +913,12 @@ def main():
         if commits < 8:
             raise SystemExit("WM COMMIT count %d — desktop did not compose"
                              % commits)
-        shot(q, os.path.join(art, "oscortex-round10-tip-full-desktop.png"),
-             os.path.join(fallback, "oscortex-round10-tip-full-desktop.png"))
+        shot(q, os.path.join(art, "oscortex-round11-tip-full-desktop.png"),
+             os.path.join(fallback, "oscortex-round11-tip-full-desktop.png"))
         shot(q, os.path.join(outdir, "full-desktop.png"))
         picture = picture_sentinels(
-            os.path.join(art, "oscortex-round10-tip-full-desktop.png")
-            if os.path.isfile(os.path.join(art, "oscortex-round10-tip-full-desktop.png"))
+            os.path.join(art, "oscortex-round11-tip-full-desktop.png")
+            if os.path.isfile(os.path.join(art, "oscortex-round11-tip-full-desktop.png"))
             else os.path.join(outdir, "full-desktop.png"),
             SCREEN_W, SCREEN_H, expect_windows=True)
         print("picture_sentinels", json.dumps(picture))
@@ -931,16 +931,32 @@ def main():
 
     press(q, ser, FILES_BODY_XY[0], FILES_BODY_XY[1], "left", "FILES SEL", timeout=3)
     walls["focus"].append(timed_click(q, ser, SET_TITLE_XY[0], SET_TITLE_XY[1]))
-    walls["menu"].append(timed_click(q, ser, WALL_XY[0], WALL_XY[1], "right"))
-    time.sleep(0.2)
-    q.key("esc")
-    time.sleep(0.15)
-    walls["menu"].append(timed_click(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "right"))
-    q.key("esc")
-    time.sleep(0.12)
-    walls["menu"].append(timed_click(q, ser, DOCK_MENU_XY[0], DOCK_MENU_XY[1], "right"))
-    q.key("esc")
-    time.sleep(0.12)
+    for _ in range(3):
+        walls["menu"].append(timed_click(q, ser, WALL_XY[0], WALL_XY[1], "right"))
+        time.sleep(0.15)
+        q.key("esc")
+        time.sleep(0.1)
+        walls["menu"].append(timed_click(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "right"))
+        q.key("esc")
+        time.sleep(0.1)
+        walls["menu"].append(timed_click(q, ser, DOCK_MENU_XY[0], DOCK_MENU_XY[1], "right"))
+        q.key("esc")
+        time.sleep(0.1)
+        walls["menu"].append(timed_click(q, ser, FILES_BODY_XY[0], FILES_BODY_XY[1], "right"))
+        q.key("esc")
+        time.sleep(0.1)
+        serial_fatal(serial_path, ser.read())
+    menu_text = serial_fatal(serial_path, ser.read())
+    for tok in ("WM WALL MENU", "WM WIN MENU", "WM DOCK MENU"):
+        if tok not in menu_text and not file_has_token(serial_path, tok):
+            raise SystemExit("%s missing after FILES SEL menu cluster" % tok)
+    shot(q, os.path.join(art, "oscortex-round11-menu-survives.png"),
+         os.path.join(fallback, "oscortex-round11-menu-survives.png"))
+    picture_sentinels(
+        os.path.join(art, "oscortex-round11-menu-survives.png")
+        if os.path.isfile(os.path.join(art, "oscortex-round11-menu-survives.png"))
+        else os.path.join(outdir, "full-desktop.png"),
+        SCREEN_W, SCREEN_H, expect_windows=True)
 
     probe_abs = assert_probe(q, ser, PROBE_XY[0], PROBE_XY[1])
 
@@ -948,7 +964,10 @@ def main():
     press(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "left", "WM FOCUS", timeout=2)
     walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                          timeout=4.0))
-    time.sleep(0.25)
+    time.sleep(0.35)
+    serial_fatal(serial_path, ser.read())
+    shot(q, os.path.join(art, "oscortex-round11-full-max.png"),
+         os.path.join(fallback, "oscortex-round11-full-max.png"))
     walls["restore_cold"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
                                              FILES_MAX_MAXED_XY[1],
                                              timeout=4.0))
@@ -1013,12 +1032,12 @@ def main():
     button(q, FILES_TITLE_XY[0] + 240, FILES_TITLE_XY[1] + 20, "left", False)
     time.sleep(0.15)
 
-    shot(q, os.path.join(art, "oscortex-round10-no-hitch.png"),
-         os.path.join(fallback, "oscortex-round10-no-hitch.png"))
+    shot(q, os.path.join(art, "oscortex-round11-no-hitch.png"),
+         os.path.join(fallback, "oscortex-round11-no-hitch.png"))
     shot(q, os.path.join(outdir, "real-picture-latency.png"))
     picture_sentinels(
-        os.path.join(art, "oscortex-round10-no-hitch.png")
-        if os.path.isfile(os.path.join(art, "oscortex-round10-no-hitch.png"))
+        os.path.join(art, "oscortex-round11-no-hitch.png")
+        if os.path.isfile(os.path.join(art, "oscortex-round11-no-hitch.png"))
         else os.path.join(outdir, "real-picture-latency.png"),
         SCREEN_W, SCREEN_H, expect_windows=True)
     serial_fatal(serial_path, ser.read())
@@ -1084,11 +1103,11 @@ def main():
     button(q, 400, 400, "left", False)
     time.sleep(0.12)
     probe_abs = assert_probe(q, ser, PROBE_XY[0], PROBE_XY[1])
-    shot(q, os.path.join(art, "oscortex-round10-no-hitch.png"),
-         os.path.join(fallback, "oscortex-round10-no-hitch.png"))
+    shot(q, os.path.join(art, "oscortex-round11-no-hitch.png"),
+         os.path.join(fallback, "oscortex-round11-no-hitch.png"))
     picture_sentinels(
-        os.path.join(art, "oscortex-round10-no-hitch.png")
-        if os.path.isfile(os.path.join(art, "oscortex-round10-no-hitch.png"))
+        os.path.join(art, "oscortex-round11-no-hitch.png")
+        if os.path.isfile(os.path.join(art, "oscortex-round11-no-hitch.png"))
         else os.path.join(outdir, "real-picture-latency.png"),
         SCREEN_W, SCREEN_H, expect_windows=True)
     serial_fatal(serial_path, ser.read())
@@ -1215,20 +1234,20 @@ def main():
     }, indent=2) + "\n"
     open(os.path.join(outdir, "memory.json"), "w").write(mem_payload)
     try:
-        open(os.path.join(art, "oscortex-round10-memory.json"), "w").write(mem_payload)
+        open(os.path.join(art, "oscortex-round11-memory.json"), "w").write(mem_payload)
     except OSError:
-        open(os.path.join(fallback, "oscortex-round10-memory.json"), "w").write(mem_payload)
-    lat_path = os.path.join(art, "oscortex-round10-latency.json")
+        open(os.path.join(fallback, "oscortex-round11-memory.json"), "w").write(mem_payload)
+    lat_path = os.path.join(art, "oscortex-round11-latency.json")
     try:
         open(lat_path, "w").write(payload)
     except OSError:
-        open(os.path.join(fallback, "oscortex-round10-latency.json"), "w").write(payload)
+        open(os.path.join(fallback, "oscortex-round11-latency.json"), "w").write(payload)
         print("WARN: latency JSON written to fallback")
     phase_payload = json.dumps(metrics["phase"], indent=2) + "\n"
     try:
-        open(os.path.join(art, "oscortex-round10-phase.json"), "w").write(phase_payload)
+        open(os.path.join(art, "oscortex-round11-phase.json"), "w").write(phase_payload)
     except OSError:
-        open(os.path.join(fallback, "oscortex-round10-phase.json"), "w").write(phase_payload)
+        open(os.path.join(fallback, "oscortex-round11-phase.json"), "w").write(phase_payload)
     print(payload)
 
     if not metrics["desk_launch_set"] and not skip_boot:

@@ -104,10 +104,21 @@ def read_serial(path):
     return open(path, "r", encoding="latin-1", errors="replace").read()
 
 
+def serial_fatal(path):
+    text = read_serial(path)
+    post = text.split("M1 END", 1)[-1] if "M1 END" in text else text
+    if "FAULT 0E" in post or "FAULT 0D" in post:
+        raise SystemExit("post-M1 PF/GP under de-pace sit-in")
+    if "WM REAP W " in post:
+        raise SystemExit("WM REAP under de-pace sit-in")
+    return text
+
+
 def wait_marker(path, marker, timeout=60, at_least=1):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if read_serial(path).count(marker) >= at_least:
+        blob = serial_fatal(path)
+        if blob.count(marker) >= at_least:
             return True
         time.sleep(0.1)
     return False

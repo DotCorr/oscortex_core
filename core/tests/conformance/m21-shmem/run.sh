@@ -213,10 +213,9 @@ ck; [[ $(( S_PLANEB * 8 )) -eq "$S_PLANEF" ]] || fail "shmPlaneBytes*8 != shmPla
 # `shmFrameShared` returns 0 -- "not shared" -- for a frame past its end.
 ck; [[ "$S_PLANEF" -eq "$(dartconst pmmMaxFrames pmm.dart)" ]] \
   || fail "the shared bit-plane describes $S_PLANEF frames and the allocator manages $(dartconst pmmMaxFrames pmm.dart) — every frame the allocator can hand out must be describable, or a shared frame above the plane's end would be silently freed"
-# THE REGION SLOTS MUST TILE THE WINDOW, and a region must not be able to run
-# out of its slot into the next one's address space.
-ck; [[ $(( S_MAX * S_SLOTPAGES )) -eq "$VM_SHM_PAGES" ]] \
-  || fail "$S_MAX slots of $S_SLOTPAGES pages do not tile the window's $VM_SHM_PAGES pages"
+# First-fit places regions in the 1024-page window; slots no longer tile it.
+ck; [[ $(( S_MAX * S_SLOTPAGES )) -le "$VM_SHM_PAGES" ]] \
+  || fail "$S_MAX slots of $S_SLOTPAGES pages exceed the window's $VM_SHM_PAGES pages"
 ck; [[ "$S_MAXPAGES" -le "$VM_SHM_PAGES" ]] \
   || fail "shmMaxPages ($S_MAXPAGES) exceeds the shared window ($VM_SHM_PAGES)"
 ck; [[ "$S_MAX" -le "$S_CAPS" ]] \

@@ -85,16 +85,16 @@ const int shmMax = 4;
 /// would then have to agree about.
 const int shmSlotPages = 128;
 
-/// The largest region this kernel will create, in pages: one slot's worth.
-/// 128 pages is 524,288 bytes.
+/// The largest region this kernel will create, in pages.
 ///
-/// **An 800x600x32 frame is 469 pages and now fits beside its neighbors.**
-/// The window ([vmShmPages], 1024) holds dock + SET + native-max FILES
-/// (583 pages). [shmMaxPages] stays 510 because two vector words are
-/// file metadata. ADR-0109 still takes four regions, not one big slot.
-/* A region may use the shared window's free extent. The two final vector
- * words are file metadata, leaving 510 physical-page entries. */
-const int shmMaxPages = 510;
+/// A native 1280×720 FILES body is 1274×666 (border + dock) plus the
+/// 1024-byte surface header: 829 pages. One vector frame only holds 510
+/// page PAs (two trailer words are file metadata). The vector is now two
+/// frames so [shmMaxPages] can cover that body. ADR-0109 still takes
+/// four regions; first-fit places them in the 1024-page window.
+const int shmVecPage0Entries = 511;
+const int shmVecLinkOff = 4088;
+const int shmMaxPages = 1021;
 const int shmMapsMask = 0xFFFFFFFF;
 const int shmBaseShift = 32;
 
@@ -170,17 +170,18 @@ const int shmRegOwner = 1;
 const int shmRegPages = 2;
 const int shmRegGen = 3;
 
-/// Physical address of this region's FRAME VECTOR page -- one frame holding the
-/// physical address of each of the region's pages, one `u64` each.
+/// Physical address of this region's first FRAME VECTOR page. A second
+/// vector frame is linked from word 511 of the first so a region can
+/// name 1021 data pages (native 1280 FILES) without colliding with the
+/// file-metadata trailer on the second frame.
 ///
 /// **The frames are remembered here rather than recovered from a page table,
 /// and the difference is a leak.** `procSpaceFree` recovers a program's pages
 /// from its own tables because the tables are what the CPU obeys. A region,
 /// though, can legitimately be mapped by NO address space -- its creator has
 /// exited and its grantee has not called `shmmap` yet -- and at that instant a
-/// table-recovered teardown would find nothing to free. One frame per live
-/// region, holding up to 512 addresses, is the cheapest honest answer and is
-/// the "page-vector accessor" `docs/design/memory.md` §3.1(2) recommends.
+/// table-recovered teardown would find nothing to free. Two frames per live
+/// region is the cheapest honest answer that covers native maximize.
 const int shmRegVec = 4;
 
 /// Live capabilities naming this region. **This, not the map count, is what
@@ -678,36 +679,104 @@ void shmFrameUnmark(u64 addr) {
 // The frame vector.
 // ---------------------------------------------------------------------------
 
+/// Physical address of the second vector frame, stored in word 511 of [vec].
+@bare
+u64 shmVec1(u64 vec) {
+  return Pointer<u64>.fromAddress(vec + u64(shmVecLinkOff)).value;
+}
+
+@bare
+void shmSetVec1(u64 vec, u64 v) {
+  Pointer<u64>.fromAddress(vec + u64(shmVecLinkOff)).value = v;
+}
+
+/// Two vector frames, linked. File metadata lives on the second frame
+/// so page-0 words 0..510 can hold data-page PAs.
+@bare
+u64 shmVecAlloc() {
+  final u64 vec0 = allocFrame();
+  if (vec0 < u64(1)) {
+    return u64(0);
+  }
+  final u64 vec1 = allocFrame();
+  if (vec1 < u64(1)) {
+    final u64 b = freeFrame(vec0);
+    if (b != u64(pmmFreeOk)) {
+      shmBumpMeta(u64(shmMetaRefusals));
+    }
+    return u64(0);
+  }
+  vmZeroFrame(vec0);
+  vmZeroFrame(vec1);
+  shmSetVec1(vec0, vec1);
+  return vec0;
+}
+
+@bare
+void shmVecFree(u64 vec0) {
+  if (vec0 < u64(1)) {
+    return;
+  }
+  final u64 vec1 = shmVec1(vec0);
+  if (vec1 > u64(0)) {
+    final u64 b1 = freeFrame(vec1);
+    if (b1 != u64(pmmFreeOk)) {
+      shmBumpMeta(u64(shmMetaRefusals));
+    }
+  }
+  final u64 b0 = freeFrame(vec0);
+  if (b0 != u64(pmmFreeOk)) {
+    shmBumpMeta(u64(shmMetaRefusals));
+  }
+}
+
 /// Physical address of page [i] of the region whose vector page is at [vec].
 @bare
 u64 shmVec(u64 vec, u64 i) {
-  return Pointer<u64>.fromAddress(vec + (i << u64(3))).value;
+  if (i < u64(shmVecPage0Entries)) {
+    return Pointer<u64>.fromAddress(vec + (i << u64(3))).value;
+  }
+  final u64 tail = shmVec1(vec);
+  return Pointer<u64>.fromAddress(
+          tail + ((i - u64(shmVecPage0Entries)) << u64(3)))
+      .value;
 }
 
 @bare
 void shmSetVec(u64 vec, u64 i, u64 v) {
-  Pointer<u64>.fromAddress(vec + (i << u64(3))).value = v;
+  if (i < u64(shmVecPage0Entries)) {
+    Pointer<u64>.fromAddress(vec + (i << u64(3))).value = v;
+    return;
+  }
+  final u64 tail = shmVec1(vec);
+  Pointer<u64>.fromAddress(
+          tail + ((i - u64(shmVecPage0Entries)) << u64(3)))
+      .value = v;
 }
 
 @bare
 u64 shmVecFileSize(u64 vec) {
-  return Pointer<u64>.fromAddress(vec + u64(shmVecFileSizeOff)).value;
+  final u64 tail = shmVec1(vec);
+  return Pointer<u64>.fromAddress(tail + u64(shmVecFileSizeOff)).value;
 }
 
 @bare
 void shmSetVecFileSize(u64 vec, u64 sz) {
-  Pointer<u64>.fromAddress(vec + u64(shmVecFileSizeOff)).value = sz;
+  final u64 tail = shmVec1(vec);
+  Pointer<u64>.fromAddress(tail + u64(shmVecFileSizeOff)).value = sz;
 }
 
 /// Packed `(row << 8) | (fd + 1)`. Zero = no file.
 @bare
 u64 shmVecFilePack(u64 vec) {
-  return Pointer<u64>.fromAddress(vec + u64(shmVecFilePackOff)).value;
+  final u64 tail = shmVec1(vec);
+  return Pointer<u64>.fromAddress(tail + u64(shmVecFilePackOff)).value;
 }
 
 @bare
 void shmSetVecFilePack(u64 vec, u64 pack) {
-  Pointer<u64>.fromAddress(vec + u64(shmVecFilePackOff)).value = pack;
+  final u64 tail = shmVec1(vec);
+  Pointer<u64>.fromAddress(tail + u64(shmVecFilePackOff)).value = pack;
 }
 
 // ---------------------------------------------------------------------------
@@ -745,20 +814,23 @@ u64 shmRegionVa(u64 r) {
 }
 
 /// First-fit contiguous extent in the 1024-page shared window.
+/// [skip] is a live region whose current pages may be reused (grow reloc).
 @bare
-u64 shmVaFind(u64 pages) {
+u64 shmVaFindSkip(u64 pages, u64 skip) {
   u64 at = u64(0);
   while ((at + pages) <= u64(vmShmPages)) {
     u64 moved = u64(0);
     u64 r = u64(0);
     while (r < u64(shmMax)) {
-      if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
-        final u64 lo = shmRegionBasePage(r);
-        final u64 hi = lo + shmReg(r, u64(shmRegPages));
-        if (at < hi) {
-          if ((at + pages) > lo) {
-            at = hi;
-            moved = u64(1);
+      if (r != skip) {
+        if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
+          final u64 lo = shmRegionBasePage(r);
+          final u64 hi = lo + shmReg(r, u64(shmRegPages));
+          if (at < hi) {
+            if ((at + pages) > lo) {
+              at = hi;
+              moved = u64(1);
+            }
           }
         }
       }
@@ -769,6 +841,11 @@ u64 shmVaFind(u64 pages) {
     }
   }
   return u64(vmShmPages);
+}
+
+@bare
+u64 shmVaFind(u64 pages) {
+  return shmVaFindSkip(pages, u64(shmMax));
 }
 
 @bare
@@ -1048,10 +1125,7 @@ void shmCreateRollback(u64 vec, u64 n) {
     }
     i = i + u64(1);
   }
-  final u64 bv = freeFrame(vec);
-  if (bv != u64(pmmFreeOk)) {
-    shmBumpMeta(u64(shmMetaRefusals));
-  }
+  shmVecFree(vec);
 }
 
 /// Frees every frame region [r] owns and returns the record to [shmRegFree].
@@ -1076,7 +1150,11 @@ void shmRegionDestroy(u64 r) {
     i = i + u64(1);
   }
   if (vec > u64(0)) {
-    if (freeFrame(vec) == u64(pmmFreeOk)) {
+    final u64 tail = shmVec1(vec);
+    shmVecFree(vec);
+    if (tail > u64(0)) {
+      freed = freed + u64(2);
+    } else {
       freed = freed + u64(1);
     }
   }
@@ -1479,12 +1557,11 @@ void shmSysCreate(u64 frame) {
     shmRefuse(frame, u64(shmSysCreateNo), pages, te);
     return;
   }
-  final u64 vec = allocFrame();
+  final u64 vec = shmVecAlloc();
   if (vec < u64(1)) {
     shmRefuse(frame, u64(shmSysCreateNo), pages, u64(shmRetNoMem));
     return;
   }
-  vmZeroFrame(vec);
   u64 i = u64(0);
   while (i < pages) {
     final u64 pa = allocFrame();
@@ -1931,7 +2008,7 @@ void shmSysGrow(u64 frame) {
   u64 newBase = shmRegionBasePage(r);
   u64 moved = u64(0);
   if (shmVaCanGrow(r, want) < u64(1)) {
-    newBase = shmVaFind(want);
+    newBase = shmVaFindSkip(want, r);
     if ((newBase + want) > u64(vmShmPages)) {
       shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetNoSpace));
       return;
@@ -2425,12 +2502,11 @@ void shmSysFile(u64 frame) {
     shmRefuse(frame, u64(shmSysFileNo), fd, te);
     return;
   }
-  final u64 vec = allocFrame();
+  final u64 vec = shmVecAlloc();
   if (vec < u64(1)) {
     shmRefuse(frame, u64(shmSysFileNo), fd, u64(shmRetNoMem));
     return;
   }
-  vmZeroFrame(vec);
   shmSetVecFileSize(vec, fileSize);
   shmSetVecFilePack(vec, (row << u64(8)) | (fd + u64(1)));
   shmSetReg(r, u64(shmRegVec), vec);

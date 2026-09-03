@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=190
+ASSERTIONS_REQUIRED=196
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -182,12 +182,22 @@ ck; ! grep -q 'WM_SURFACE_VIEWPORT' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES still requests raster viewport scaling"
 ck; grep -q 'u64 shmVaFind' "$SHM" \
   || fail "SHM still strands large native surfaces in fixed 128-page slots"
+ck; grep -q 'const int shmVecPage0Entries = 511;' "$SHM" \
+  || fail "SHM page vector is still one frame — native 1280 FILES cannot be named"
+ck; grep -q 'u64 shmVecAlloc' "$SHM" \
+  || fail "SHM has no two-frame vector allocator"
+ck; grep -q 'u64 shmVaFindSkip' "$SHM" \
+  || fail "SHM grow reloc still treats a region's own pages as occupied"
+ck; grep -q 'MAX_W 1274UL' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not reserve native 1280 maximize capacity"
+ck; grep -q 'need > bytes' "$CORE_DIR/kernel/wmext.dart" \
+  || fail "WM backing update has no OOB page-commit refusal"
 ck; python3 - "$SHM" <<'PY' \
   || fail "SHM native-surface bound is unsafe or too small"
 import re, sys
 s = open(sys.argv[1]).read()
 n = int(re.search(r"const int shmMaxPages = (\d+);", s).group(1))
-sys.exit(0 if 424 <= n <= 510 else 1)
+sys.exit(0 if 829 <= n <= 1021 else 1)
 PY
 ck; grep -q 'const int vmShmPages = 1024;' "$CORE_DIR/kernel/vm.dart" \
   || fail "SHM window is still one PDE — native-max FILES cannot grow"
@@ -1143,6 +1153,18 @@ ck; grep -q 'FILES GROW' "$SER" \
   || fail "FILES did not complete SHMGROW for native maximize"
 ck; ! grep -q 'FILES GROW REFUSE' "$SER" \
   || fail "FILES SHMGROW refused — native maximize did not fill"
+ck; python3 - "$SER" <<'PY' \
+  || fail "FILES GROW did not commit a native 1280 body (vacuous clamp)"
+import re, sys
+text = open(sys.argv[1], errors="replace").read()
+ok = False
+for m in re.finditer(r"FILES GROW (\d+) W (\d+) H (\d+)", text):
+    pages, w, h = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if pages >= 800 and w >= 1200 and h >= 600:
+        ok = True
+if not ok:
+    raise SystemExit("no FILES GROW with pages>=800 w>=1200 h>=600")
+PY
 ck; grep -q 'FILES REST' "$SER" \
   || fail "FILES did not restore prior geometry after maximize"
 ck; ! grep -q 'OSGFX OOM' "$SER" \

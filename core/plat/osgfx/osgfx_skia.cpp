@@ -127,6 +127,32 @@ static int g_one_bound_w;
 static int g_one_bound_h;
 static int g_one_paint_sealed;
 static int resource_cache_disabled;
+/* WM_OP_PAINT binds MakeRasterDirect to a user SHM VA (FILES 0x1024A000
+ * class). Chrome ticks run in DESK/IRQ CR3; those pages are NOTPRES
+ * there. Round 10 wall-menu CHROME MISS #PF was RIP memcpy+0x80 /
+ * CR2 0x10259EC0 — Skia still held the FILES wrapper and memcpy'd it
+ * from the wrong CR3. Never keep a user-VA unique_ptr past paint. */
+static int client_in_paint;
+enum { SHM_VA_LO = 0x10200000u, SHM_VA_HI = 0x10600000u };
+
+static int ptr_in_user_shm(const void *p) {
+  uintptr_t a = (uintptr_t)p;
+  if (a < (uintptr_t)SHM_VA_LO) {
+    return 0;
+  }
+  if (a >= (uintptr_t)SHM_VA_HI) {
+    return 0;
+  }
+  return 1;
+}
+
+static void disable_skia_resource_cache(void) {
+  if (resource_cache_disabled != 0) {
+    return;
+  }
+  SkGraphics::SetResourceCacheTotalByteLimit(0);
+  resource_cache_disabled = 1;
+}
 
 static int heap_needs_rewind(void) {
   if (osgfx_heap_ready() > 0) {
@@ -140,9 +166,14 @@ static int heap_needs_rewind(void) {
 
 static void skia_release_client(void) {
   /* Destruct the client canvas first. Then rewind the bump to the
-   * chrome seal. Never rewind while this unique_ptr is live. */
+   * chrome seal. Never rewind while this unique_ptr is live.
+   * Null px so chrome cannot retain a guest VA after mapping/grow. */
   client_g.owned.reset();
   client_g.canvas = 0;
+  client_g.px = 0;
+  client_g.pitch = 0;
+  client_g.w = 0;
+  client_g.h = 0;
   osgfx_heap_client_begin();
 }
 
@@ -197,20 +228,15 @@ static void chrome_heap_after_paint(void) {
 }
 
 static void drop_skia_before_rewind(void) {
-  if (!resource_cache_disabled) {
-    /*
-     * The freestanding CRT's free() is a no-op and frame reclamation rewinds
-     * its bump arena. Keep Skia from retaining resource records across a
-     * rewind; otherwise a later cache traversal can dereference overwritten
-     * records.
-     */
-    SkGraphics::SetResourceCacheTotalByteLimit(0);
-    resource_cache_disabled = 1;
-  }
+  disable_skia_resource_cache();
   g_one.owned.reset();
   client_g.owned.reset();
   g_one.canvas = 0;
   client_g.canvas = 0;
+  client_g.px = 0;
+  client_g.pitch = 0;
+  client_g.w = 0;
+  client_g.h = 0;
   g_one_bound_px = 0;
   g_one_bound_pitch = 0;
   g_one_bound_w = 0;
@@ -244,6 +270,13 @@ static void bind(OsGfx *g) {
   if (g == 0 || g->px == 0 || g->w < 1 || g->h < 1 || g->pitch < g->w * 4) {
     return;
   }
+  disable_skia_resource_cache();
+  /* g_one is chrome cache / GOP only. Binding it to a user SHM VA
+   * leaves a kernel-side pixel pointer that outlives the client's CR3. */
+  if (g == &g_one && ptr_in_user_shm(g->px) != 0) {
+    com1_puts("OSGFX CHROME SHM REFUSE\n");
+    return;
+  }
   /* kOpaque, NOT kUnpremul. The scanout stores 0x00RRGGBB, i.e. the alpha
    * byte is always 0. Under kUnpremul every antialiased edge would blend
    * against a "fully transparent" destination and the fringe would come
@@ -275,13 +308,16 @@ static SkCanvas *canvas_of(OsGfx *g) {
   if (g == &g_one && g->canvas != 0) {
     if (g->px != g_one_bound_px || g->pitch != g_one_bound_pitch ||
         g->w != g_one_bound_w || g->h != g_one_bound_h) {
-      /* Same logical owner, new backing. Drop wrappers first.
-       * Do not unseal: raising the chrome mark on every target
-       * switch ratcheted the no-op free() bump to OSGFX OOM. */
+      /* Same logical owner, new backing. Drop chrome wrappers only.
+       * Do not destroy client_g here: that unique_ptr may wrap a
+       * user SHM VA, and this path runs in DESK/IRQ CR3 (wall-menu
+       * memcpy #PF). Do not unseal: raising the chrome mark on every
+       * target switch ratcheted the no-op free() bump to OSGFX OOM. */
+      if (client_in_paint != 0) {
+        return g->canvas;
+      }
       g->owned.reset();
       g->canvas = 0;
-      client_g.owned.reset();
-      client_g.canvas = 0;
       if (g_one_paint_sealed != 0) {
         osgfx_heap_client_begin();
       }
@@ -1275,6 +1311,14 @@ __attribute__((noinline)) static void tick_body(void) {
   if ((m->flags & OSGFX_GUEST_ON) == 0) {
     return;
   }
+  /* IRQ chrome must not destroy or draw through a live user-VA wrapper.
+   * Present a fresh cache if we have one; never session_paint. */
+  if (client_in_paint != 0) {
+    if (osgfx_chrome_fresh(m) != 0) {
+      (void)osgfx_chrome_present(m);
+    }
+    return;
+  }
   /* MakeVulkan. Graphite .init_array #GPs on this image — not walked. */
   (void)osgfx_graphite_try();
   if (m->gen == last_gen) {
@@ -1414,11 +1458,12 @@ static void client_reclaim_if_tight(void) {
 
 static void client_body(uint32_t *px, int pitch, int w, int h, int kind) {
   /* Never drop g_one. Reset the previous client canvas before any
-   * client rewind so unique_ptrs do not outlive the bump. */
+   * client rewind so unique_ptrs do not outlive the bump. Rebind when
+   * VA/pitch/size change; never keep a wrapper across a grow/reloc. */
   client_arg.kind = kind;
   if (kind != CLIENT_POINTER) {
-    /* Always reset. Keeping the wrapper across FILES SEL + FRAME
-     * #PF'd at CR2 in the client va (NOTPRES READ SUPER). */
+    /* Always reset. A wrapper that outlives this syscall is what
+     * wall-menu CHROME MISS memcpy'd from FILES VA (CR2 0x10259EC0). */
     skia_release_client();
     client_reclaim_if_tight();
   }
@@ -1488,6 +1533,7 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
   rw = (int)(shape >> 32);
   rh = (int)((shape >> 16) & 0xffffu);
   rad = (int)(shape & 0xffffu);
+  client_in_paint = 1;
   client_body((uint32_t *)(uintptr_t)px, (int)pitch, (int)w, (int)h, (int)kind);
   g = &client_g;
   if (kind == 1) {
@@ -1497,11 +1543,15 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
       com1_puts("OSGFX CLIENT SHAPE SKIA RRECT\n");
     }
     (void)osgfx_flush(g);
+    skia_release_client();
+    client_in_paint = 0;
     return 0;
   }
   if (kind == 2) {
     osgfx_fill_rrect_vgrad(g, x, y, rw, rh, rad, (uint32_t)c0, (uint32_t)c1);
     (void)osgfx_flush(g);
+    skia_release_client();
+    client_in_paint = 0;
     return 0;
   }
   if (kind == 3) {
@@ -1509,6 +1559,8 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
     int weight = (int)(shape & 0xffffu);
     text = (const char *)(uintptr_t)c1;
     if (text == 0 || nrun == 0 || size_px < 1) {
+      skia_release_client();
+      client_in_paint = 0;
       return 0;
     }
     adv = osgfx_text(g, x, y, text, (int)nrun, size_px, weight, (uint32_t)c0);
@@ -1517,18 +1569,26 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
       com1_puts("OSGFX CLIENT TEXT OUTLINE\n");
     }
     (void)osgfx_flush(g);
+    skia_release_client();
+    client_in_paint = 0;
     return (uint64_t)(unsigned)adv;
   }
   if (kind == 4) {
     osgfx_shadow(g, x, y, rw, rh, rad, 12, (uint32_t)c0);
     (void)osgfx_flush(g);
+    skia_release_client();
+    client_in_paint = 0;
     return 0;
   }
   if (kind == 5) {
     osgfx_glass_frost((uint32_t *)(uintptr_t)px, (int)pitch / 4, (int)w, (int)h,
                       x, y, rw, rh, rad, (int)scr_x, (int)scr_y, (uint32_t)c0);
+    skia_release_client();
+    client_in_paint = 0;
     return 0;
   }
+  skia_release_client();
+  client_in_paint = 0;
   return WM_RET_SMALL;
 }
 

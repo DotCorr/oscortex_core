@@ -2323,10 +2323,10 @@ u64 vmProgUnmap(u64 va) {
 // and the 47 golden occurrences of `101FE000`/`101FF000`/`10200000` across nine
 // `expected*.txt` files do not move.
 //
-// TWO PAGE-DIRECTORY ENTRIES ARE 4 MiB IS 1024 PAGES. One 800x600x32
-// frame is 469 pages and fits in a single PDE; dock + SET + a native-max
-// FILES body is 38 + 121 + 424 = 583 pages and does not. The second PDE
-// is the grow room native maximize needs, not a second load region.
+// TWO PAGE-DIRECTORY ENTRIES ARE 4 MiB IS 1024 PAGES. Dock + SET + a
+// native 1280 FILES body is 60 + 110 + 829 = 999 pages. The two-frame
+// page vector (shmMaxPages 1021) is what lets that body exist; the
+// second PDE is the grow room, not a second load region.
 //
 // A SHARED PAGE IS NEVER EXECUTABLE. [vmShmMap] has no `exec` parameter at all
 // -- not a parameter that is checked, ABSENT -- and unconditionally sets the NX

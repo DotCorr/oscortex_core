@@ -42,6 +42,11 @@ typedef unsigned int u32;
 #define CAT_MAX 16U
 #define WIN_W 400UL
 #define WIN_H 280UL
+/* Native 1280×720 maximize: origin (border,border), dock 48, border 3.
+ * Commit this many pages at attach so grow is in-place before SET lands
+ * in the hole that would otherwise split the 1024-page window. */
+#define MAX_W 1274UL
+#define MAX_H 666UL
 #define SURF_X 48UL
 #define SURF_Y 40UL
 /* In lockstep with wmTitleH / SESS_TITLE_BAND. The compositor skips the
@@ -1219,6 +1224,35 @@ static void try_strip(u64 names, u32 swatch) {
     return;
   }
   va = va + SURF_OFFSET;
+  /* Grow to native-max capacity now, while SET has not yet taken the
+   * hole above this region. In-place SHMGROW keeps the attach VA. */
+  {
+    u64 want = (SURF_OFFSET + (MAX_W * 4UL) * MAX_H + 4095UL) / 4096UL;
+    u64 grown = sys2(SYS_SHMGROW, h, want);
+    if (grown < WM_RET_FLOOR) {
+      if (grown > 0) {
+        va = grown + SURF_OFFSET;
+      }
+      desc[WM_DESC_OP] = WM_OP_BACKING;
+      desc[WM_DESC_HANDLE] = h;
+      desc[WM_DESC_STRIDE] = MAX_W * 4UL;
+      if (sys1(SYS_WMSURFACE, (u64)&desc[0]) < WM_RET_FLOOR) {
+        files_stride = MAX_W * 4UL;
+        files_cap_w = MAX_W;
+        files_cap_h = MAX_H;
+        {
+          unsigned at = put(0, "FILES GROW ");
+          at = putdec(at, want);
+          at = put(at, " W ");
+          at = putdec(at, MAX_W);
+          at = put(at, " H ");
+          at = putdec(at, MAX_H);
+          emit(at);
+        }
+        wr(msg_phz_grow, sizeof(msg_phz_grow) - 1);
+      }
+    }
+  }
 
   files_h = h;
   files_va = va;

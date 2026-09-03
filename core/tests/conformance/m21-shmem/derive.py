@@ -39,7 +39,7 @@ PAGE_BYTES = 4096
 # `shm.dart`'s geometry.
 SHM_MAX = 4
 SLOT_PAGES = 128
-MAX_PAGES = 510
+MAX_PAGES = 1021
 
 # The test's own protocol. prog.c carries the same numbers.
 PAGES = 4
