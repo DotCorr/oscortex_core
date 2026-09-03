@@ -90,6 +90,50 @@ static void unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *h = (int)(g & 0xffffu);
 }
 
+/* Erase a vacated window from the chrome cache. paint_geom used to
+ * stamp the live title on top of the previous one; each drag step
+ * then accumulated corner ghosts. */
+static void geom_uncover_cache(uint32_t *fb, int pitch, int ww, int hh,
+                               uint64_t old, uint32_t seed) {
+  int x;
+  int y;
+  int w;
+  int h;
+  int pad;
+
+  if (fb == 0 || old == 0) {
+    return;
+  }
+  unpack_geom(old, &x, &y, &w, &h);
+  pad = 18;
+  if (x < pad) {
+    w = w + x;
+    x = 0;
+  } else {
+    x = x - pad;
+    w = w + pad;
+  }
+  if (y < pad) {
+    h = h + y;
+    y = 0;
+  } else {
+    y = y - pad;
+    h = h + pad;
+  }
+  w = w + pad;
+  h = h + pad;
+  if (x + w > ww) {
+    w = ww - x;
+  }
+  if (y + h > hh) {
+    h = hh - y;
+  }
+  if (w < 1 || h < 1) {
+    return;
+  }
+  osgfx_fill_desk_cached(fb, pitch, x, y, w, h, seed);
+}
+
 /* Soft drop shadow — osgfx_shadow alpha-blends expanding rings.
  * A maximized 1280×672 ring at blur 18 is the 583-tick TCG stall. Skip
  * when the window is large enough that the shadow falls off-screen or
@@ -1022,6 +1066,12 @@ void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
   }
   top = (int)((cmd->flags >> 8) & 3u);
   g_geom_no_shadow = 1;
+  if (old0 != 0 && old0 != keep0) {
+    geom_uncover_cache(fb, pitch, ww, hh, old0, seed);
+  }
+  if (old1 != 0 && old1 != keep1) {
+    geom_uncover_cache(fb, pitch, ww, hh, old1, seed);
+  }
   if (keep0 != 0 && keep0 != old0) {
     paint_window_chrome(g, fb, pitch, keep0,
                         top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS, OSGFX_WIN_FILL,
