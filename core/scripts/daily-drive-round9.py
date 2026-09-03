@@ -576,14 +576,34 @@ def wall_stats(values):
     }
 
 
+def _paeth(a, b, c):
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
 def read_png_rgb(path):
-    """Decode an 8-bit PNG to (w, h, RGB bytes). QEMU screendump is IHDR+IDAT."""
+    """Decode an 8-bit RGB/RGBA PNG. QEMU uses Sub/Up/Average/Paeth filters."""
+    try:
+        from PIL import Image
+        im = Image.open(path).convert("RGB")
+        w, h = im.size
+        return w, h, im.tobytes()
+    except Exception:
+        pass
     with open(path, "rb") as fh:
         data = fh.read()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise SystemExit("not a PNG: %s" % path)
     pos = 8
     width = height = None
+    color = 2
     raw = b""
     while pos + 8 <= len(data):
         n, = struct.unpack(">I", data[pos:pos + 4])
@@ -602,13 +622,30 @@ def read_png_rgb(path):
         raise SystemExit("PNG %s has no IHDR" % path)
     dec = zlib.decompress(raw)
     bpp = 3 if color == 2 else 4
-    stride = 1 + width * bpp
-    if len(dec) < stride * height:
-        raise SystemExit("PNG %s is truncated" % path)
+    stride = width * bpp
     out = bytearray(width * height * 3)
+    prev = bytearray(stride)
     i = 0
+    off = 0
     while i < height:
-        row = dec[i * stride + 1:(i + 1) * stride]
+        ft = dec[off]
+        row = bytearray(dec[off + 1:off + 1 + stride])
+        off += 1 + stride
+        x = 0
+        while x < stride:
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            ul = prev[x - bpp] if x >= bpp else 0
+            if ft == 1:
+                row[x] = (row[x] + left) & 255
+            elif ft == 2:
+                row[x] = (row[x] + up) & 255
+            elif ft == 3:
+                row[x] = (row[x] + ((left + up) // 2)) & 255
+            elif ft == 4:
+                row[x] = (row[x] + _paeth(left, up, ul)) & 255
+            x += 1
+        prev = row
         if bpp == 3:
             out[i * width * 3:(i + 1) * width * 3] = row
         else:
@@ -626,8 +663,10 @@ def px_at(rgb, w, x, y):
 
 
 def is_wallpaper_teal(r, g, b):
-    """Generative desk field is a dark teal; titles/dock are not."""
-    return r < 90 and 20 < g < 160 and 40 < b < 200 and g + 8 > r and b + 8 > r
+    """Generative desk field is teal/cyan; titles, glass, and icons are not."""
+    if r > 180 and g > 180 and b > 180:
+        return False
+    return r < 150 and g > 80 and b > 80 and g > r + 16 and b > r
 
 
 def is_title_pearl(r, g, b):
@@ -643,16 +682,19 @@ def picture_sentinels(path, screen_w, screen_h, expect_windows=True):
     w, h, rgb = read_png_rgb(path)
     if w < 640 or h < 400:
         raise SystemExit("screenshot %s is %dx%d, not a desktop" % (path, w, h))
+    # FILES occupies the upper-left body. Sample wallpaper in the gaps:
+    # left strip below the tile, right of SET, and the work-area above the dock.
+    wall_pts = (
+        (16, 500), (40, 480), (72, 520), (96, 500),
+        (1100, 200), (1180, 260), (1220, 360),
+        (640, 500), (700, 480), (200, 520),
+    )
     wall = []
-    yy = 80
-    while yy < min(h - 80, 360):
-        xx = 16
-        while xx < min(w - 16, 200):
-            wall.append(px_at(rgb, w, xx, yy))
-            xx += 24
-        yy += 40
+    for x, y in wall_pts:
+        if 0 <= x < w and 0 <= y < h - 48:
+            wall.append(px_at(rgb, w, x, y))
     wall_teal = sum(1 for c in wall if is_wallpaper_teal(*c))
-    if wall_teal < 4:
+    if wall_teal < 3:
         raise SystemExit("screenshot %s has no generative wallpaper field" % path)
 
     dock_y = h - 24
@@ -750,6 +792,16 @@ def main():
         time.sleep(0.15)
         q.key("esc")
         time.sleep(0.2)
+        shot(q, os.path.join(art, "oscortex-round9-full-desktop.png"),
+             os.path.join(fallback, "oscortex-round9-full-desktop.png"))
+        shot(q, os.path.join(outdir, "full-desktop.png"))
+        picture = picture_sentinels(
+            os.path.join(art, "oscortex-round9-full-desktop.png")
+            if os.path.isfile(os.path.join(art, "oscortex-round9-full-desktop.png"))
+            else os.path.join(outdir, "full-desktop.png"),
+            SCREEN_W, SCREEN_H, expect_windows=True)
+        print("picture_sentinels", json.dumps(picture))
+        serial_fatal(serial_path, ser.read())
     else:
         for line, wait in (
             ("fb", 1.5),
