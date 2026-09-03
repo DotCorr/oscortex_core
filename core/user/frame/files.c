@@ -135,7 +135,10 @@ static u64 files_stride = WIN_W * 4UL;
 static u64 files_cap_w = WIN_W;
 static u64 files_cap_h = WIN_H;
 /* 1 after the native-max body is painted into hidden backing. Restore
- * and later maximize reuse it; do not shrink the cap (SHM allows it). */
+ * and later maximize reuse it; do not shrink the cap (SHM allows it).
+ * SYS_SHMSHRINK on this path was the 1.3s TCG hitch (719-page unmap
+ * before the host saw PRES). Keep the name so de-desk / de-skia-own
+ * still see the reclaim door; do not call it on restore. */
 static u64 files_retain_body;
 /* Configure-side operation id. Printed on REST / PHZ / COMMIT so the
  * host pairs by id, not the next PRES. */
