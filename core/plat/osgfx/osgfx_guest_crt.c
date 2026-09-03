@@ -48,6 +48,14 @@ void osgfx_heap_client_begin(void) {
   }
 }
 
+int osgfx_heap_oom_reclaim(void) {
+  if (heap_chrome_mark > 0 && heap_used > heap_chrome_mark) {
+    heap_used = heap_chrome_mark;
+    return 1;
+  }
+  return 0;
+}
+
 /* Frame scratch reclaim. Graphite MakeVulkan + init proofs stay
  * below the watermark; per-tick surfaces are bump-allocated and
  * discarded here because free() is a no-op. A full rewind also
@@ -244,8 +252,10 @@ void *malloc(size_t n) {
   }
   aligned = (n + 15u) & ~15u;
   if (heap_used + aligned > CRT_HEAP) {
-    com1_puts("OSGFX OOM\n");
-    return 0;
+    if (osgfx_heap_oom_reclaim() == 0 || heap_used + aligned > CRT_HEAP) {
+      com1_puts("OSGFX OOM\n");
+      return 0;
+    }
   }
   p = heap + heap_used;
   heap_used = heap_used + aligned;

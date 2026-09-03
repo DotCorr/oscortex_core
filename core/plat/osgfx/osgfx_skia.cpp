@@ -53,6 +53,7 @@ void osgfx_graphite_desk_note(void);
 void osgfx_heap_frame_begin(void);
 void osgfx_heap_chrome_seal(void);
 void osgfx_heap_client_begin(void);
+int osgfx_heap_oom_reclaim(void);
 int osgfx_heap_ready(void);
 size_t osgfx_heap_used(void);
 size_t osgfx_heap_cap(void);
@@ -98,6 +99,7 @@ extern "C" __attribute__((weak)) void osgfx_graphite_desk_note(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_frame_begin(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_chrome_seal(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_client_begin(void) {}
+extern "C" __attribute__((weak)) int osgfx_heap_oom_reclaim(void) { return 0; }
 extern "C" __attribute__((weak)) int osgfx_heap_ready(void) { return 0; }
 extern "C" __attribute__((weak)) size_t osgfx_heap_used(void) { return 0; }
 extern "C" __attribute__((weak)) size_t osgfx_heap_cap(void) { return 0; }
@@ -119,6 +121,7 @@ static uint32_t *g_one_bound_px;
 static int g_one_bound_pitch;
 static int g_one_bound_w;
 static int g_one_bound_h;
+static int g_one_paint_sealed;
 static int resource_cache_disabled;
 
 static int heap_needs_rewind(void) {
@@ -129,6 +132,18 @@ static int heap_needs_rewind(void) {
     }
   }
   return 0;
+}
+
+static void chrome_heap_after_paint(void) {
+  if (g_one.canvas == 0) {
+    return;
+  }
+  if (g_one_paint_sealed == 0) {
+    osgfx_heap_chrome_seal();
+    g_one_paint_sealed = 1;
+    return;
+  }
+  osgfx_heap_client_begin();
 }
 
 static void drop_skia_before_rewind(void) {
@@ -150,6 +165,7 @@ static void drop_skia_before_rewind(void) {
   g_one_bound_pitch = 0;
   g_one_bound_w = 0;
   g_one_bound_h = 0;
+  g_one_paint_sealed = 0;
   /*
    * Do not traverse the process-global cache here. Per-frame shadows avoid
    * cached mask filters below, and the zero-byte budget keeps other
@@ -1257,6 +1273,7 @@ __attribute__((noinline)) static void tick_body(void) {
       (void)canvas_of(g);
       osgfx_session_patch_focus(g, &local);
       osgfx_flush(g);
+      chrome_heap_after_paint();
     } else {
       osgfx_chrome_begin(m);
       g->px = (uint32_t *)(uintptr_t)local.fb;
@@ -1271,6 +1288,7 @@ __attribute__((noinline)) static void tick_body(void) {
         osgfx_session_paint(g, &local, osgfx_graphite_ready());
       }
       osgfx_flush(g);
+      chrome_heap_after_paint();
     }
     osgfx_chrome_done(m);
   }

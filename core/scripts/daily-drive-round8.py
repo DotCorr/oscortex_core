@@ -770,6 +770,15 @@ def main():
                                              timeout=2.0))
             q.key("esc")
 
+    for _ in range(3):
+        q.key("esc")
+        time.sleep(0.08)
+    place(q, ser, 400, 400)
+    time.sleep(0.1)
+    button(q, 400, 400, "left", True)
+    time.sleep(0.05)
+    button(q, 400, 400, "left", False)
+    time.sleep(0.12)
     probe_abs = assert_probe(q, ser, PROBE_XY[0], PROBE_XY[1])
     shot(q, os.path.join(art, "oscortex-round8-no-hitch.png"),
          os.path.join(fallback, "oscortex-round8-no-hitch.png"))
