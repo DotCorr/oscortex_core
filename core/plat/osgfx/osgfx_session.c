@@ -79,6 +79,9 @@ const char osgfx_session_chrome_door[] = "osgfx-session-chrome";
 static int chrome_noted;
 static int title_noted;
 static int held0_noted;
+/* Geom-only max/restore: skip the 18px CPU shadow ring. Title slices
+ * plus a 2px border patch the new rect; unchanged windows stay in cache. */
+static int g_geom_no_shadow;
 
 static void unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *x = (int)((g >> 48) & 0xffffu);
@@ -94,6 +97,9 @@ static void unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
 static int skip_soft_shadow(int x, int y, int w, int h, int fb_w, int fb_h) {
   long area;
 
+  if (g_geom_no_shadow != 0) {
+    return 1;
+  }
   if (w < 1 || h < 1) {
     return 1;
   }
@@ -612,12 +618,122 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   osgfx_session_paint_windows(g, cmd);
 }
 
-static void uncover_geom(uint32_t *fb, int pitch, uint64_t geom, int fb_w,
-                         int fb_h, uint32_t seed) {
+static void clip_rect(int *x, int *y, int *w, int *h, int fb_w, int fb_h) {
+  if (*x < 0) {
+    *w = *w + *x;
+    *x = 0;
+  }
+  if (*y < 0) {
+    *h = *h + *y;
+    *y = 0;
+  }
+  if (*x + *w > fb_w) {
+    *w = fb_w - *x;
+  }
+  if (*y + *h > fb_h) {
+    *h = fb_h - *y;
+  }
+  if (fb_h > OSGFX_CHROME_H && *y + *h > fb_h - OSGFX_CHROME_H) {
+    *h = (fb_h - OSGFX_CHROME_H) - *y;
+  }
+}
+
+static void emit_rect(int *xs, int *ys, int *ws, int *hs, int *n, int x, int y,
+                      int w, int h) {
+  if (w < 1 || h < 1) {
+    return;
+  }
+  xs[*n] = x;
+  ys[*n] = y;
+  ws[*n] = w;
+  hs[*n] = h;
+  *n = *n + 1;
+}
+
+/* src minus keep → at most 4 axis-aligned leftovers. */
+static void rect_minus(int x, int y, int w, int h, int kx, int ky, int kw,
+                       int kh, int *xs, int *ys, int *ws, int *hs, int *n) {
+  int x1;
+  int y1;
+  int kx1;
+  int ky1;
+  int ix0;
+  int iy0;
+  int ix1;
+  int iy1;
+
+  x1 = x + w;
+  y1 = y + h;
+  if (kw < 1 || kh < 1) {
+    emit_rect(xs, ys, ws, hs, n, x, y, w, h);
+    return;
+  }
+  kx1 = kx + kw;
+  ky1 = ky + kh;
+  if (kx1 <= x || ky1 <= y || kx >= x1 || ky >= y1) {
+    emit_rect(xs, ys, ws, hs, n, x, y, w, h);
+    return;
+  }
+  ix0 = kx;
+  if (ix0 < x) {
+    ix0 = x;
+  }
+  iy0 = ky;
+  if (iy0 < y) {
+    iy0 = y;
+  }
+  ix1 = kx1;
+  if (ix1 > x1) {
+    ix1 = x1;
+  }
+  iy1 = ky1;
+  if (iy1 > y1) {
+    iy1 = y1;
+  }
+  emit_rect(xs, ys, ws, hs, n, x, y, w, iy0 - y);
+  emit_rect(xs, ys, ws, hs, n, x, iy1, w, y1 - iy1);
+  emit_rect(xs, ys, ws, hs, n, x, iy0, ix0 - x, iy1 - iy0);
+  emit_rect(xs, ys, ws, hs, n, ix1, iy0, x1 - ix1, iy1 - iy0);
+}
+
+static void keep_pad(uint64_t geom, int *x, int *y, int *w, int *h) {
+  unpack_geom(geom, x, y, w, h);
+  if (*w < 1 || *h < 1) {
+    *w = 0;
+    *h = 0;
+    return;
+  }
+  *x = *x - 16;
+  *y = *y - 16;
+  *w = *w + 32;
+  *h = *h + 32;
+}
+
+/* Wallpaper the old rect minus windows we are keeping or about to paint.
+ * A native-max uncover used to stamp over SET and force a second Skia
+ * card; restore then paid ~1s on TCG. */
+static void uncover_geom_except(uint32_t *fb, int pitch, uint64_t geom,
+                                uint64_t keep0, uint64_t keep1, int fb_w,
+                                int fb_h, uint32_t seed) {
   int x;
   int y;
   int w;
   int h;
+  int n;
+  int m;
+  int i;
+  int xs[16];
+  int ys[16];
+  int ws[16];
+  int hs[16];
+  int txs[16];
+  int tys[16];
+  int tws[16];
+  int ths[16];
+  int kx;
+  int ky;
+  int kw;
+  int kh;
 
   if (geom == 0 || fb == 0 || fb_w < 8 || fb_h < 8) {
     return;
@@ -626,32 +742,59 @@ static void uncover_geom(uint32_t *fb, int pitch, uint64_t geom, int fb_w,
   if (w < 1 || h < 1) {
     return;
   }
-  x = x - 24;
-  y = y - 24;
-  w = w + 48;
-  h = h + 48;
-  if (x < 0) {
-    w = w + x;
-    x = 0;
-  }
-  if (y < 0) {
-    h = h + y;
-    y = 0;
-  }
-  if (x + w > fb_w) {
-    w = fb_w - x;
-  }
-  if (y + h > fb_h) {
-    h = fb_h - y;
-  }
-  /* DESK owns the bottom strip. A max/restore uncover must not wallpaper it. */
-  if (fb_h > OSGFX_CHROME_H && y + h > fb_h - OSGFX_CHROME_H) {
-    h = (fb_h - OSGFX_CHROME_H) - y;
-  }
+  x = x - 8;
+  y = y - 8;
+  w = w + 16;
+  h = h + 16;
+  clip_rect(&x, &y, &w, &h, fb_w, fb_h);
   if (w < 1 || h < 1) {
     return;
   }
-  osgfx_fill_desk_cached(fb, pitch, x, y, w, h, seed);
+  n = 0;
+  emit_rect(xs, ys, ws, hs, &n, x, y, w, h);
+  if (keep0 != 0 && keep0 != geom) {
+    keep_pad(keep0, &kx, &ky, &kw, &kh);
+    m = 0;
+    i = 0;
+    while (i < n) {
+      rect_minus(xs[i], ys[i], ws[i], hs[i], kx, ky, kw, kh, txs, tys, tws, ths,
+                 &m);
+      i = i + 1;
+    }
+    i = 0;
+    while (i < m) {
+      xs[i] = txs[i];
+      ys[i] = tys[i];
+      ws[i] = tws[i];
+      hs[i] = ths[i];
+      i = i + 1;
+    }
+    n = m;
+  }
+  if (keep1 != 0 && keep1 != geom) {
+    keep_pad(keep1, &kx, &ky, &kw, &kh);
+    m = 0;
+    i = 0;
+    while (i < n) {
+      rect_minus(xs[i], ys[i], ws[i], hs[i], kx, ky, kw, kh, txs, tys, tws, ths,
+                 &m);
+      i = i + 1;
+    }
+    i = 0;
+    while (i < m) {
+      xs[i] = txs[i];
+      ys[i] = tys[i];
+      ws[i] = tws[i];
+      hs[i] = ths[i];
+      i = i + 1;
+    }
+    n = m;
+  }
+  i = 0;
+  while (i < n) {
+    osgfx_fill_desk_cached(fb, pitch, xs[i], ys[i], ws[i], hs[i], seed);
+    i = i + 1;
+  }
 }
 
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
@@ -661,6 +804,11 @@ void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
   int pitch;
   int ww;
   int hh;
+  int top;
+  unsigned cap0;
+  unsigned cap1;
+  uint64_t keep0;
+  uint64_t keep1;
 
   if (g == 0 || cmd == 0 || cmd->fb == 0) {
     return;
@@ -673,19 +821,54 @@ void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
   if (cmd->desk != 0) {
     seed = (uint32_t)cmd->desk;
   }
-  uncover_geom(fb, pitch, old0, ww, hh, seed);
-  uncover_geom(fb, pitch, old1, ww, hh, seed);
-  /* chrome_present leaves hole pixels on the scanout unchanged. If the
-   * mailbox still names the pre-restore max rect, those leftover FILES
-   * pixels stay visible. Stamp wallpaper onto the GOP old rect too;
-   * the new holes are refilled by wmBlitRow. */
-  if (osgfx_guest_cmd.fb != 0 && osgfx_guest_cmd.fb != cmd->fb) {
-    uncover_geom((uint32_t *)(uintptr_t)osgfx_guest_cmd.fb,
-                 (int)osgfx_guest_cmd.pitch, old0, ww, hh, seed);
-    uncover_geom((uint32_t *)(uintptr_t)osgfx_guest_cmd.fb,
-                 (int)osgfx_guest_cmd.pitch, old1, ww, hh, seed);
+  keep0 = cmd->win0;
+  keep1 = cmd->win1;
+  /* Patch only leftover wallpaper. Unchanged neighbours stay in the
+   * chrome cache so restore does not re-Skia SET after a FILES max. */
+  if (old0 != 0 && old0 != keep0) {
+    uncover_geom_except(fb, pitch, old0, keep0, keep1, ww, hh, seed);
   }
-  osgfx_session_paint_windows(g, cmd);
+  if (old1 != 0 && old1 != keep1) {
+    uncover_geom_except(fb, pitch, old1, keep0, keep1, ww, hh, seed);
+  }
+  cap0 = 1;
+  cap1 = 1;
+  if (cmd->wmpage != 0) {
+    const uint64_t *page = (const uint64_t *)(uintptr_t)cmd->wmpage;
+    uint64_t mail = page[OSGFX_WMPAGE_W_CAP_MAIL];
+    if ((mail & 0xffu) != 0) {
+      cap0 = (unsigned)(mail & 0xffu);
+    }
+    if (((mail >> 8) & 0xffu) != 0) {
+      cap1 = (unsigned)((mail >> 8) & 0xffu);
+    }
+  }
+  top = (int)((cmd->flags >> 8) & 3u);
+  g_geom_no_shadow = 1;
+  if (keep0 != 0 && keep0 != old0) {
+    paint_window_chrome(g, fb, pitch, keep0,
+                        top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS, OSGFX_WIN_FILL,
+                        ww, hh);
+    if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+      paint_de_title_controls(g, fb, pitch, ww, hh, keep0, (int)cap0);
+    }
+  }
+  if (keep1 != 0 && keep1 != old1) {
+    paint_window_chrome(g, fb, pitch, keep1,
+                        top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS, OSGFX_WIN2_FILL,
+                        ww, hh);
+    if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+      paint_de_title_controls(g, fb, pitch, ww, hh, keep1, (int)cap1);
+    }
+  }
+  /* TOP can flip with geom. Patch the 2px ring on the window we kept. */
+  if (keep0 != 0 && keep0 == old0) {
+    paint_window_borders(g, keep0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS);
+  }
+  if (keep1 != 0 && keep1 == old1) {
+    paint_window_borders(g, keep1, top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS);
+  }
+  g_geom_no_shadow = 0;
 }
 
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {

@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 extern void com1_puts(const char *s);
+extern void *memcpy(void *dst, const void *src, unsigned long n);
 
 extern struct OsGfxGuestCmd osgfx_guest_cmd;
 
@@ -210,7 +211,6 @@ static void desk_blit(uint32_t *dst, int dpitch, const uint32_t *src, int w, int
 static void desk_blit_rect(uint32_t *dst, int dpitch, const uint32_t *src,
                            int sw, int sh, int x0, int y0, int w, int h) {
   int yy;
-  int xx;
   uint32_t *drow;
   const uint32_t *srow;
 
@@ -238,11 +238,7 @@ static void desk_blit_rect(uint32_t *dst, int dpitch, const uint32_t *src,
   while (yy < h) {
     drow = (uint32_t *)((uint8_t *)dst + (unsigned)(y0 + yy) * (unsigned)dpitch);
     srow = src + (unsigned)(y0 + yy) * (unsigned)sw + (unsigned)x0;
-    xx = 0;
-    while (xx < w) {
-      drow[x0 + xx] = srow[xx];
-      xx = xx + 1;
-    }
+    memcpy(drow + x0, srow, (unsigned)w * 4u);
     yy = yy + 1;
   }
 }
