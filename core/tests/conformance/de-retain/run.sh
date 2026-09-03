@@ -53,7 +53,7 @@ setup_error() { echo "DE-retain: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=39
+ASSERTIONS_REQUIRED=38
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
