@@ -12,7 +12,22 @@
 #include <stdint.h>
 
 extern void com1_puts(const char *s);
-extern void *memcpy(void *dst, const void *src, unsigned long n);
+
+/* Guest CRT memcpy is a byte loop. TCG turns `rep movsl` into a host
+ * copy, which is what a 1274×666 uncover must use or restore stays ≥1s. */
+static void desk_movs(uint32_t *dst, const uint32_t *src, unsigned n) {
+  uint32_t *d;
+  const uint32_t *s;
+  unsigned c;
+
+  if (n == 0u || dst == 0 || src == 0) {
+    return;
+  }
+  d = dst;
+  s = src;
+  c = n;
+  asm volatile("rep movsl" : "+D"(d), "+S"(s), "+c"(c) : : "memory");
+}
 
 extern struct OsGfxGuestCmd osgfx_guest_cmd;
 
@@ -238,7 +253,7 @@ static void desk_blit_rect(uint32_t *dst, int dpitch, const uint32_t *src,
   while (yy < h) {
     drow = (uint32_t *)((uint8_t *)dst + (unsigned)(y0 + yy) * (unsigned)dpitch);
     srow = src + (unsigned)(y0 + yy) * (unsigned)sw + (unsigned)x0;
-    memcpy(drow + x0, srow, (unsigned)w * 4u);
+    desk_movs(drow + x0, srow, (unsigned)w);
     yy = yy + 1;
   }
 }
