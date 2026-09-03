@@ -52,7 +52,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-KERNEL_ELF="$CORE_DIR/build/kernel.elf"
+BUILD_DIR="${BUILD_DIR:-$CORE_DIR/build}"
+KERNEL_ELF="$BUILD_DIR/kernel.elf"
 DRIVER="$CORE_DIR/tests/conformance/d2-compositor/comp-drive.py"
 PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
@@ -63,7 +64,7 @@ ck; [[ -f "$SET_C" ]] || setup_error "no set.c at $SET_C"
 ck; [[ -f "$FRAME_H" ]] || setup_error "no osframe.h at $FRAME_H"
 
 echo "=== BUILD ==="
-capture_sh BUILD_OUT BUILD_STATUS -- "bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+capture_sh BUILD_OUT BUILD_STATUS -- "BUILD_DIR='$BUILD_DIR' bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
 echo "$BUILD_OUT"
 ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build-kernel.sh exited $BUILD_STATUS"
 ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
