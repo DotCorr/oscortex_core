@@ -54,8 +54,8 @@ ck; grep -q 'wmStrP' "$WM" \
   || fail "attach no longer prints owner id"
 ck; grep -q 'wmStrC' "$WM" \
   || fail "attach no longer prints caption code"
-ck; grep -q 'reqW == u64(440)' "$WM" \
-  || fail "SET caption is not bound to requested 440"
+ck; grep -q 'reqW > u64(400)' "$WM" \
+  || fail "SET caption is not bound to requested width > 400"
 ck; grep -q 'files_slot' "$FILES" \
   || fail "FILES does not filter configure by slot"
 ck; grep -q 'set_slot' "$CORE_DIR/user/frame/set.c" \

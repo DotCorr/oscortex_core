@@ -23,6 +23,7 @@ RIGHT_W = ICON_PAD + ICON_N * ICON_S + (ICON_N - 1) * ICON_GAP + ICON_PAD
 RIGHT_X = SCREEN_W - 16 - RIGHT_W
 PANEL_Y = SCREEN_H - 48 + 20
 START_XY = (262, PANEL_Y)
+SET_DOCK_XY = (RIGHT_X + ICON_PAD + ICON_S // 2, PANEL_Y)
 FILES_DOCK_XY = (RIGHT_X + ICON_PAD + (ICON_S + ICON_GAP) + ICON_S // 2, PANEL_Y)
 DOCK_MENU_XY = (RIGHT_X + ICON_PAD + 2 * (ICON_S + ICON_GAP) + ICON_S // 2, PANEL_Y)
 # Below the tiled pair (y=40+280=320) so the 168×80 card sits on wallpaper.
@@ -39,11 +40,12 @@ class Qmp:
         last = None
         while time.time() < deadline:
             try:
-                self.s = socket.create_connection(("127.0.0.1", port), timeout=2)
-                self.f = self.s.makefile("rw", encoding="utf-8")
-                json.loads(self.f.readline())
-                self.cmd("qmp_capabilities")
-                return
+        self.s = socket.create_connection(("127.0.0.1", port), timeout=2)
+        self.s.settimeout(90)
+        self.f = self.s.makefile("rw", encoding="utf-8")
+        json.loads(self.f.readline())
+        self.cmd("qmp_capabilities")
+        return
             except OSError as e:
                 last = e
                 time.sleep(0.2)
@@ -196,8 +198,17 @@ def press(q, ser, x, y, btn, token, timeout=4.0):
 
 def shot(q, path):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    q.cmd("screendump", filename=os.path.abspath(path), format="png")
-    print("shot", path, "bytes", os.path.getsize(path) if os.path.exists(path) else 0)
+    last = None
+    for _ in range(3):
+        try:
+            q.cmd("screendump", filename=os.path.abspath(path), format="png")
+            print("shot", path, "bytes",
+                  os.path.getsize(path) if os.path.exists(path) else 0)
+            return
+        except (OSError, SystemExit) as e:
+            last = e
+            time.sleep(0.4)
+    raise SystemExit("screendump failed: %s" % last)
 
 
 def count_refuse_commit(text):
@@ -259,14 +270,12 @@ def main():
     if "DESK READY" not in ser.read():
         wait_mark(ser, "DESK READY", "", 12)
 
-    print("layout start", START_XY, "files_dock", FILES_DOCK_XY,
-          "wall", WALL_XY, "panel_y", PANEL_Y)
+    print("layout start", START_XY, "set_dock", SET_DOCK_XY,
+          "files_dock", FILES_DOCK_XY, "wall", WALL_XY, "panel_y", PANEL_Y)
 
     press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left", "FILES CSD", timeout=8)
     time.sleep(0.8)
-    press(q, ser, START_XY[0], START_XY[1], "left", "WM DE START", timeout=4)
-    time.sleep(0.35)
-    press(q, ser, START_ROW1_XY[0], START_ROW1_XY[1], "left", "SET CSD", timeout=10)
+    press(q, ser, SET_DOCK_XY[0], SET_DOCK_XY[1], "left", "SET CSD", timeout=12)
     time.sleep(2.0)
 
     shot(q, os.path.join(art, "oscortex-round5-%dx%d.png" % (SCREEN_W, SCREEN_H)))
@@ -407,6 +416,9 @@ def main():
         "files_empty": "FILES EMPTY" in text,
         "files_err": "FILES ERR" in text,
         "set_csd": "SET CSD" in text,
+        "set_ready": "SET READY" in text,
+        "set_slot": "SET SLOT" in text,
+        "desk_launch_set": "DESK LAUNCH SET.ELF" in text,
         "osgfx_title_set": "OSGFX TITLE SET" in text,
         "wm_lat": "WM LAT " in text,
         "win_menu": "WM WIN MENU" in text,
@@ -421,6 +433,10 @@ def main():
         raise SystemExit("COMMIT bad-geom refusals: %d" % refuse)
     if commits < 1:
         raise SystemExit("no commits — refuse gate would be vacuous")
+    if not metrics["desk_launch_set"]:
+        raise SystemExit("dock never launched SET.ELF")
+    if not metrics["set_csd"]:
+        raise SystemExit("SET CSD never printed")
     return 0
 
 

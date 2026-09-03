@@ -225,6 +225,12 @@ final List<u8> wmStrC = const [
   u8(0x20), u8(0x43), u8(0x20),
 ];
 
+/// `' Q '` -- 3 bytes. Requested attach width (before tile shrink).
+@rodata
+final List<u8> wmStrQ = const [
+  u8(0x20), u8(0x51), u8(0x20),
+];
+
 ///
 /// `' R '` -- 3 bytes.
 @rodata
@@ -1754,7 +1760,9 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   u64 cap = u64(0);
   if (reqH > (u64(wmChromeH) + u64(4))) {
     cap = u64(1);
-    if (reqW == u64(440)) {
+    // SET asks for 440. FILES asks for 400. Granted width after
+    // tile shrink is 333 and is not a discriminator.
+    if (reqW > u64(400)) {
       cap = u64(2);
     }
   }
@@ -1775,6 +1783,8 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   uartPutHex(id, u64(2));
   uartWrite(Rodata.addressOf(wmStrC), u64(3));
   uartPutHex(cap, u64(1));
+  uartWrite(Rodata.addressOf(wmStrQ), u64(3));
+  uartPutHex(reqW, u64(4));
   uartWrite(Rodata.addressOf(wmStrR), u64(3));
   uartPutHex(r, u64(1));
   uartWrite(Rodata.addressOf(wmStrGen), u64(5));

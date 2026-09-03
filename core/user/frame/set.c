@@ -352,6 +352,12 @@ static void set_apply_configure(u64 ev) {
   u64 nh = (ev >> 52) & 0xFFFUL;
   if (set_slot == 0xFFUL) {
     set_slot = slot;
+    {
+      unsigned at = put(0, "SET SLOT ");
+      at = puthex(at, slot, 2);
+      line[at++] = '\n';
+      emit(at);
+    }
   }
   if (slot != set_slot) {
     return;

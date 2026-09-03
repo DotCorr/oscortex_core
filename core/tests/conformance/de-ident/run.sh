@@ -18,7 +18,7 @@ setup_error() { echo "DE-ident: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=18
+ASSERTIONS_REQUIRED=25
 
 WM="$CORE_DIR/kernel/wm.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
@@ -29,12 +29,14 @@ CHROME="$CORE_DIR/plat/osgfx/osgfx_chrome.c"
 GUEST_H="$CORE_DIR/plat/osgfx/osgfx_guest.h"
 FILES="$CORE_DIR/user/frame/files.c"
 SET="$CORE_DIR/user/frame/set.c"
+DRIVE="$CORE_DIR/scripts/daily-drive-round5.py"
 
 ck; [[ -f "$WM" ]] || fail "no wm.dart"
 ck; grep -q 'wmStrP' "$WM" || fail "attach dropped owner-id probe"
 ck; grep -q 'wmStrC' "$WM" || fail "attach dropped caption-code probe"
-ck; grep -q 'reqW == u64(440)' "$WM" \
-  || fail "SET caption is not keyed off requested 440"
+ck; grep -q 'wmStrQ' "$WM" || fail "attach dropped requested-width probe"
+ck; grep -q 'reqW > u64(400)' "$WM" \
+  || fail "SET caption is not keyed off requested width > 400"
 ck; grep -q 'wmPageWLaunch0' "$WM" \
   || fail "attach does not store caption on the launch words"
 ck; grep -q 'wmPageWCapMail' "$GFX" \
@@ -43,8 +45,14 @@ ck; grep -q 'ordinary FRAME clients' "$GFX" \
   || fail "win0/win1 still include the DESK panel"
 ck; grep -q 'files_slot' "$FILES" \
   || fail "FILES configure is not slot-filtered"
+ck; grep -q 'FILES SLOT' "$FILES" \
+  || fail "FILES does not print its locked slot"
+ck; grep -q 'nw < WIN_W' "$FILES" \
+  || fail "FILES still adopts SET-sized configure before lock"
 ck; grep -q 'set_slot' "$SET" \
   || fail "SET configure is not slot-filtered"
+ck; grep -q 'SET SLOT' "$SET" \
+  || fail "SET does not print its locked slot"
 ck; grep -q 'SET CSD' "$SET" || fail "SET lost the CSD identity token"
 ck; grep -q 'csd_noted = 1' "$SET" \
   || fail "SET CSD is no longer emitted before the first fill"
@@ -52,6 +60,10 @@ ck; grep -q 'OSGFX TITLE SET' "$SESS" \
   || fail "session never paints a SET caption"
 ck; grep -q 'OSGFX_WMPAGE_W_CAP_MAIL' "$SESS" \
   || fail "session titles ignore mailbox captions"
+ck; ! grep -q 'held0 != 0 && panel == 0' "$SESS" \
+  || fail "session still skips win0 chrome when the dock panel is up"
+ck; ! grep -q 'panel != 0 ? 0 : (int)cap1' "$SESS" \
+  || fail "session still forces SET caption to FILES when the panel is up"
 ck; grep -q 'chrome_span_hit' "$CHROME" \
   || fail "chrome_blit still unions client holes"
 ck; grep -q 'OSGFX_WMPAGE_W_CAP_MAIL' "$GUEST_H" \
@@ -62,6 +74,8 @@ ck; grep -q 'u64 wmPopClientHit' "$POP" \
   || fail "menu placement does not test client overlap"
 ck; grep -q 'u64 wmPopFits' "$POP" \
   || fail "menu placement does not refuse an occluded card"
+ck; grep -q 'SET_DOCK_XY' "$DRIVE" \
+  || fail "driver launches SET from Start instead of the dock gear"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-ident: PASS ($ASSERTIONS_REQUIRED checks) — FILES/SET captions, slots, disjoint holes"

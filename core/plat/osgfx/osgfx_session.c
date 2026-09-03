@@ -457,7 +457,10 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
         cap1 = (unsigned)((mail >> 8) & 0xffu);
       }
     }
-    if (held0 != 0 && panel == 0) {
+    /* PANEL means the dock strip exists. win0/win1 are ordinary FRAME
+     * clients (wmgfx skips the strip). Gating their chrome on panel
+     * left FILES untitled and forced SET's caption to FILES. */
+    if (held0 != 0) {
       paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
                           OSGFX_WIN_FILL);
     }
@@ -467,17 +470,16 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
     }
     if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
       if (session_csd == 0) {
-        if (held0 != 0 && panel == 0) {
+        if (held0 != 0) {
           paint_de_title_controls(g, fb, pitch, ww, hh, held0, (int)cap0);
         } else {
-          if (held0_noted == 0 && panel == 0) {
+          if (held0_noted == 0) {
             held0_noted = 1;
             com1_puts("OSGFX TITLE HELD0 0\n");
           }
         }
         if (held1 != 0) {
-          paint_de_title_controls(g, fb, pitch, ww, hh, held1,
-                                  panel != 0 ? 0 : (int)cap1);
+          paint_de_title_controls(g, fb, pitch, ww, hh, held1, (int)cap1);
         }
       }
     } else {

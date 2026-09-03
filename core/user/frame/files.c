@@ -943,7 +943,19 @@ static void files_on_event(u64 ev) {
     u64 nw = (ev >> 40) & 0xFFFUL;
     u64 nh = (ev >> 52) & 0xFFFUL;
     if (files_slot == 0xFFUL) {
+      /* Own attach is 400×280; maximize is wider. SET's tiled 333
+       * must not steal this process's slot or body size. */
+      if (nw < WIN_W) {
+        if (nh <= WIN_H) {
+          return;
+        }
+      }
       files_slot = slot;
+      {
+        unsigned at = put(0, "FILES SLOT ");
+        at = putdec(at, slot);
+        emit(at);
+      }
     }
     if (slot != files_slot) {
       return;
