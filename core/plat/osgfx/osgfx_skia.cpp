@@ -135,15 +135,16 @@ static int heap_needs_rewind(void) {
 }
 
 static void chrome_heap_after_paint(void) {
+  /* Raise the seal once so first-paint Skia records stay. Do not rewind
+   * after later flushes — that UAF'd the canvas and left a wallpaper-only
+   * scanout (vacuous 30ms "hits"). */
   if (g_one.canvas == 0) {
     return;
   }
   if (g_one_paint_sealed == 0) {
     osgfx_heap_chrome_seal();
     g_one_paint_sealed = 1;
-    return;
   }
-  osgfx_heap_client_begin();
 }
 
 static void drop_skia_before_rewind(void) {

@@ -137,8 +137,8 @@ static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
     return;
   }
   b = OSGFX_BORDER;
-  osgfx_fill_rrect(g, x - b, y - b, w + b + b, b + 1, 0, border);
-  osgfx_fill_rrect(g, x - b, y + h - 1, w + b + b, b + 1, 0, border);
+  osgfx_fill_rect(g, x - b, y - b, w + b + b, b + 1, border);
+  osgfx_fill_rect(g, x - b, y + h - 1, w + b + b, b + 1, border);
   osgfx_fill_rect(g, x - b, y, b, h, border);
   osgfx_fill_rect(g, x + w, y, b, h, border);
 }
@@ -612,6 +612,10 @@ static void uncover_geom(uint32_t *fb, int pitch, uint64_t geom, int fb_w,
   }
   if (y + h > fb_h) {
     h = fb_h - y;
+  }
+  /* DESK owns the bottom strip. A max/restore uncover must not wallpaper it. */
+  if (fb_h > OSGFX_CHROME_H && y + h > fb_h - OSGFX_CHROME_H) {
+    h = (fb_h - OSGFX_CHROME_H) - y;
   }
   if (w < 1 || h < 1) {
     return;
