@@ -687,9 +687,6 @@ static void sync_menu(u64 pop) {
     return;
   }
   osxui_app_move(menu_h, px, py);
-  if (menu_on == kind) {
-    return;
-  }
   paint_desk_menu(kind);
   commit_menu();
   if (menu_on != kind) {

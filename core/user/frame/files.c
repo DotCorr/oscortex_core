@@ -191,8 +191,6 @@ static const char msg_key[] = "FILES KEY ";
 static const char lab_empty[] = "This folder is empty";
 static const char lab_error[] = "This path is unavailable";
 static const char msg_error[] = "FILES ERROR";
-static const char msg_phz_grow[] = "FILES PHZ GROW";
-static const char msg_phz_paint[] = "FILES PHZ PAINT";
 static const char ext_cpy[] = "CPY";
 static const char ext_mov[] = "MOV";
 static const char ext_ren[] = "REN";
@@ -1001,29 +999,10 @@ static void files_on_event(u64 ev) {
           at = put(at, " ");
           at = putdec(at, nh);
           emit(at);
-          files_w = nw;
-          files_height = nh;
-          return;
-        }
-        at = put(0, msg_phz_paint);
-        at = put(at, " ");
-        at = putdec(at, nw);
-        at = put(at, " ");
-        at = putdec(at, nh);
-        emit(at);
-        if (files_h != 0) {
-          if (nw > files_w) {
-            osxui_app_rrect(files_h, files_w, 0, nw - files_w, nh, 0UL,
-                            SURF_FILL);
-          }
-          if (nh > files_height) {
-            osxui_app_rrect(files_h, 0, files_height, files_w,
-                            nh - files_height, 0UL, SURF_FILL);
-          }
         }
         files_w = nw;
         files_height = nh;
-        commit_files_rect(0, files_height);
+        files_repaint();
       }
     }
     return;
