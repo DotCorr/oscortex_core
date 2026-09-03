@@ -134,6 +134,9 @@ static u64 files_height = WIN_H;
 static u64 files_stride = WIN_W * 4UL;
 static u64 files_cap_w = WIN_W;
 static u64 files_cap_h = WIN_H;
+/* Pages to keep after a restore. Applied after YIELD so the COMMIT
+ * present can leave the UART before a 719-page unmap pegs TCG. */
+static u64 files_shrink_keep;
 static u64 files_slot = 0xFFUL;
 static u64 menu_on;
 static u64 menu_row;
@@ -1014,23 +1017,13 @@ static void files_on_event(u64 ev) {
         files_height = nh;
         wr(msg_phz_paint, sizeof(msg_phz_paint) - 1);
         files_repaint();
-        /* Reclaim after COMMIT so the restore present is not charged
-         * the 719-page unmap (cold restore was 1.3s TCG). */
+        /* Reclaim after the next YIELD. Same-syscall shrink after
+         * COMMIT still pegged TCG before the host saw WM PRES
+         * (cold restore 1.3s). */
         if (shrinking > 0) {
           u64 keep = (SURF_OFFSET + nw * 4UL * nh + 4095UL) / 4096UL;
           if (keep >= 1UL) {
-            if (sys2(SYS_SHMSHRINK, files_h, keep) < WM_RET_FLOOR) {
-              files_stride = nw * 4UL;
-              files_cap_w = nw;
-              files_cap_h = nh;
-              desc[WM_DESC_OP] = WM_OP_BACKING;
-              desc[WM_DESC_HANDLE] = files_h;
-              desc[WM_DESC_STRIDE] = files_stride;
-              (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
-              at = put(0, "FILES SHRINK ");
-              at = putdec(at, keep);
-              emit(at);
-            }
+            files_shrink_keep = keep;
           }
         }
       }
@@ -1661,6 +1654,24 @@ void files_main(u64 sp) {
     u64 key;
     u64 got;
     got = 0;
+    if (files_shrink_keep >= 1UL) {
+      u64 keep = files_shrink_keep;
+      files_shrink_keep = 0;
+      if (sys2(SYS_SHMSHRINK, files_h, keep) < WM_RET_FLOOR) {
+        files_stride = files_w * 4UL;
+        files_cap_w = files_w;
+        files_cap_h = files_height;
+        desc[WM_DESC_OP] = WM_OP_BACKING;
+        desc[WM_DESC_HANDLE] = files_h;
+        desc[WM_DESC_STRIDE] = files_stride;
+        (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
+        {
+          unsigned at = put(0, "FILES SHRINK ");
+          at = putdec(at, keep);
+          emit(at);
+        }
+      }
+    }
     ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
     while (ev != 0) {
       files_on_event(ev);
