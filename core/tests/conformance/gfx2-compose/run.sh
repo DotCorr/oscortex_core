@@ -29,7 +29,7 @@ setup_error() { echo "GFX2-compose: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=66
+ASSERTIONS_REQUIRED=78
 
 for tool in clang++ python3 file nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -46,6 +46,8 @@ DERIVE="$SCRIPT_DIR/derive.py"
 HDR="$CORE_DIR/plat/osgfx/osgfx.h"
 SCENE="$CORE_DIR/plat/osgfx/osgfx_scene.c"
 GRAPHITE_MM="$CORE_DIR/plat/osgfx/osgfx_graphite.mm"
+GRAPHITE_LINUX="$CORE_DIR/plat/osgfx/osgfx_graphite_linux.cpp"
+HOST="$(uname -s)"
 WM="$CORE_DIR/kernel/wm.dart"
 CHROME="$CORE_DIR/kernel/wmchrome.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
@@ -56,6 +58,7 @@ ck; [[ -f "$HDR" ]] || fail "no osgfx.h"
 ck; [[ -f "$SCENE" ]] || fail "no osgfx_scene.c"
 ck; [[ -f "$DERIVE" ]] || fail "no derive.py"
 ck; [[ -f "$GRAPHITE_MM" ]] || fail "no osgfx_graphite.mm"
+ck; [[ -f "$GRAPHITE_LINUX" ]] || fail "no osgfx_graphite_linux.cpp"
 ck; [[ -f "$WM" ]] || fail "no wm.dart"
 ck; [[ -f "$CHROME" ]] || fail "no wmchrome.dart"
 ck; [[ -f "$POP" ]] || fail "no wmpop.dart"
@@ -171,8 +174,15 @@ ck; grep -A30 'void osgfx_scene_compose' "$SCENE" | grep -q 'osgfx_shadow' \
 if grep -A40 'void osgfx_scene_compose' "$SCENE" | grep -qE 'cpu\[|pixels\[|memset'; then
   fail "compose scene has a CPU pixel blit"
 fi
-ck; grep -q 'canvas->drawRRect' "$GRAPHITE_MM" \
-  || fail "osgfx_graphite.mm does not drawRRect"
+ck; grep -q 'ContextFactory::MakeVulkan' "$GRAPHITE_LINUX" \
+  || fail "linux Graphite host does not MakeVulkan"
+if [[ "$HOST" == "Darwin" ]]; then
+  ck; grep -q 'canvas->drawRRect' "$GRAPHITE_MM" \
+    || fail "osgfx_graphite.mm does not drawRRect"
+else
+  ck; grep -q 'canvas->drawRRect' "$GRAPHITE_LINUX" \
+    || fail "osgfx_graphite_linux.cpp does not drawRRect"
+fi
 
 echo "=== BUILD (platform clang++ + Skia Graphite) ==="
 capture_sh BUILD_OUT BUILD_STATUS -- "bash '$BUILD' --headless 2>&1"
@@ -184,11 +194,19 @@ ck; [[ -f "$SKIA_LIB" ]] || fail "no libskia.a — Graphite was not built"
 capture_sh FILE_OUT FILE_STATUS -- "file '$HEADLESS'"
 echo "$FILE_OUT"
 ck; [[ $FILE_STATUS -eq 0 ]] || fail "file(1) failed"
-ck; echo "$FILE_OUT" | grep -q 'Mach-O' || fail "headless is not Mach-O"
-if echo "$FILE_OUT" | grep -qi 'ELF'; then
-  fail "headless is ELF — wrong toolchain"
+if [[ "$HOST" == "Darwin" ]]; then
+  ck; echo "$FILE_OUT" | grep -q 'Mach-O' || fail "headless is not Mach-O"
+  if echo "$FILE_OUT" | grep -qi 'ELF'; then
+    fail "headless is ELF — wrong toolchain"
+  fi
+  ck; echo "$FILE_OUT" | grep -q 'arm64' || fail "headless is not arm64"
+else
+  ck; echo "$FILE_OUT" | grep -qi 'ELF' || fail "headless is not ELF"
+  if echo "$FILE_OUT" | grep -q 'Mach-O'; then
+    fail "headless is Mach-O — wrong toolchain"
+  fi
+  ck; echo "$FILE_OUT" | grep -qE 'x86-64|x86_64' || fail "headless is not x86-64"
 fi
-ck; echo "$FILE_OUT" | grep -q 'arm64' || fail "headless is not arm64"
 
 NM_FILE="$WORKDIR/nm.txt"
 capture_sh NM_OUT NM_STATUS -- "nm '$HEADLESS'"
@@ -197,11 +215,22 @@ printf '%s\n' "$NM_OUT" > "$NM_FILE"
 ck; grep -q 'osgfx_fill_rrect' "$NM_FILE" || fail "osgfx_fill_rrect not in the binary"
 ck; grep -q 'osgfx_shadow' "$NM_FILE" || fail "osgfx_shadow not in the binary"
 ck; grep -q 'osgfx_scene_compose' "$NM_FILE" || fail "osgfx_scene_compose not in the binary"
-ck; grep -qE 'skgpu.*graphite|graphite.*MakeMetal|ContextFactory' "$NM_FILE" \
-  || fail "no skgpu::graphite symbol — a Metal-only stub is not this PASS"
+if [[ "$HOST" == "Darwin" ]]; then
+  ck; grep -qE 'skgpu.*graphite|graphite.*MakeMetal|ContextFactory' "$NM_FILE" \
+    || fail "no skgpu::graphite symbol — a Metal-only stub is not this PASS"
+else
+  ck; grep -qE 'skgpu.*graphite|MakeVulkan|ContextFactory' "$NM_FILE" \
+    || fail "no skgpu::graphite Vulkan symbol — a CPU stub is not this PASS"
+fi
 
 echo "=== HEADLESS compose (Graphite) ==="
 unset OSGFX_FORCE_METAL
+if [[ "$HOST" != "Darwin" ]]; then
+  # Prefer lavapipe so a cloud VM without a KMS GPU still MakeVulkan.
+  if [[ -z "${VK_ICD_FILENAMES:-}" && -f /usr/share/vulkan/icd.d/lvp_icd.json ]]; then
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+  fi
+fi
 capture_sh COMP_OUT COMP_STATUS -- "'$HEADLESS' --compose -o '$WORKDIR/compose.ppm'"
 echo "$COMP_OUT"
 ck; [[ $COMP_STATUS -eq 0 ]] || fail "headless compose exited $COMP_STATUS"
@@ -236,20 +265,36 @@ raise SystemExit(0 if a!=b else 1)
 \""
 ck; [[ $DIFF_STATUS -eq 0 ]] || fail "compose and square PPMs are identical"
 
-echo "=== FORCE METAL (negative: must not count as Graphite PASS) ==="
-capture_sh METAL_OUT METAL_STATUS -- "OSGFX_FORCE_METAL=1 '$HEADLESS' --compose -o '$WORKDIR/metal.ppm'"
-echo "$METAL_OUT"
-ck; [[ $METAL_STATUS -eq 0 ]] || fail "force-metal compose exited $METAL_STATUS"
-ck; echo "$METAL_OUT" | grep -q 'BACKEND metal' || fail "OSGFX_FORCE_METAL did not select metal"
-if echo "$METAL_OUT" | grep -q 'BACKEND graphite'; then
-  fail "force-metal still says graphite"
+if [[ "$HOST" == "Darwin" ]]; then
+  echo "=== FORCE METAL (negative: must not count as Graphite PASS) ==="
+  capture_sh METAL_OUT METAL_STATUS -- "OSGFX_FORCE_METAL=1 '$HEADLESS' --compose -o '$WORKDIR/metal.ppm'"
+  echo "$METAL_OUT"
+  ck; [[ $METAL_STATUS -eq 0 ]] || fail "force-metal compose exited $METAL_STATUS"
+  ck; echo "$METAL_OUT" | grep -q 'BACKEND metal' || fail "OSGFX_FORCE_METAL did not select metal"
+  if echo "$METAL_OUT" | grep -q 'BACKEND graphite'; then
+    fail "force-metal still says graphite"
+  fi
+  capture_sh NM2_OUT NM2_STATUS -- "nm '$HEADLESS'"
+  ck; [[ $NM2_STATUS -eq 0 ]] || fail "nm after metal path failed"
+  printf '%s\n' "$NM2_OUT" > "$WORKDIR/nm2.txt"
+  ck; grep -qE 'skgpu.*graphite|graphite.*MakeMetal|ContextFactory' "$WORKDIR/nm2.txt" \
+    || fail "Graphite symbols gone after metal fallback"
+else
+  echo "=== LINUX: no Metal fallback; Graphite must stay Graphite ==="
+  capture_sh METAL_OUT METAL_STATUS -- "OSGFX_FORCE_METAL=1 '$HEADLESS' --compose -o '$WORKDIR/metal.ppm'"
+  echo "$METAL_OUT"
+  ck; [[ $METAL_STATUS -eq 0 ]] || fail "compose under OSGFX_FORCE_METAL exited $METAL_STATUS"
+  ck; echo "$METAL_OUT" | grep -q 'BACKEND graphite' \
+    || fail "Linux host left Graphite when Metal was requested — a CPU box is not this PASS"
+  if echo "$METAL_OUT" | grep -q 'BACKEND metal'; then
+    fail "Linux host claimed Metal"
+  fi
+  capture_sh NM2_OUT NM2_STATUS -- "nm '$HEADLESS'"
+  ck; [[ $NM2_STATUS -eq 0 ]] || fail "nm after force-metal env failed"
+  printf '%s\n' "$NM2_OUT" > "$WORKDIR/nm2.txt"
+  ck; grep -qE 'skgpu.*graphite|MakeVulkan|ContextFactory' "$WORKDIR/nm2.txt" \
+    || fail "Graphite Vulkan symbols gone"
 fi
-# Metal may still rrect; it is not this PASS. Graphite must remain linked.
-capture_sh NM2_OUT NM2_STATUS -- "nm '$HEADLESS'"
-ck; [[ $NM2_STATUS -eq 0 ]] || fail "nm after metal path failed"
-printf '%s\n' "$NM2_OUT" > "$WORKDIR/nm2.txt"
-ck; grep -qE 'skgpu.*graphite|graphite.*MakeMetal|ContextFactory' "$WORKDIR/nm2.txt" \
-  || fail "Graphite symbols gone after metal fallback"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "GFX2-compose: PASS — session chrome through osgfx/Graphite; rrects+shadow; policy pixels; metal is negative ($ASSERTIONS checks)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Host osgfx module + DCDart @extern link (gfx0/gfx1/gfx2/cmod-ffi).
-# Rasterizer is Skia Graphite; Metal is fallback only (OSGFX_FORCE_METAL=1).
-# Not a Cocoa window. Not sit-in.
+# Rasterizer is Skia Graphite. Darwin: Metal fallback (OSGFX_FORCE_METAL=1).
+# Linux: Vulkan Graphite (lavapipe). Not a Cocoa window. Not sit-in.
 set -euo pipefail
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="$(cd "$CORE/.." && pwd)"
@@ -9,27 +9,42 @@ SRC="$CORE/plat/osgfx"
 OUT="$CORE/build"
 mkdir -p "$OUT"
 
+# shellcheck source=skia-host-cxx-flags.sh
+source "$CORE/scripts/skia-host-cxx-flags.sh"
+skia_host_cxx_flags
+
 bash "$CORE/scripts/build-skia-graphite.sh"
 SKIA_SRC="$OUT/skia/src"
 SKIA_LIB="$OUT/skia/out/graphite/libskia.a"
 [[ -f "$SKIA_LIB" ]] || { echo "build-preview-ui: no libskia.a" >&2; exit 2; }
 
-FW=(
-  -framework Metal -framework Foundation -framework QuartzCore
-  -framework CoreFoundation -framework CoreGraphics -framework CoreText
-  -framework CoreServices -framework ImageIO
-)
+HOST="$(uname -s)"
 
 # Host objects MUST NOT share names with build-kernel.sh's guest-elf
-# outputs (osgfx_scene.o, osgfx_graphite.o). A sibling kernel build
-# racing the second link used to leave an ELF64 .o here and gfx0-host
-# failed with "unknown file type" — GAP-0348's other face.
-clang++ -fobjc-arc -std=c++17 -O2 -Wall -Wextra \
-  -I "$SRC" -I "$SKIA_SRC" \
-  -c -o "$OUT/osgfx_graphite_host.o" "$SRC/osgfx_graphite.mm"
-clang -fobjc-arc -O2 -Wall -Wextra \
-  -I "$SRC" \
-  -c -o "$OUT/osgfx_metal_host.o" "$SRC/osgfx_metal.m"
+# outputs (osgfx_scene.o, osgfx_graphite.o).
+if [[ "$HOST" == "Darwin" ]]; then
+  FW=(
+    -framework Metal -framework Foundation -framework QuartzCore
+    -framework CoreFoundation -framework CoreGraphics -framework CoreText
+    -framework CoreServices -framework ImageIO
+  )
+  clang++ -fobjc-arc -std=c++17 -O2 -Wall -Wextra \
+    -I "$SRC" -I "$SKIA_SRC" \
+    -c -o "$OUT/osgfx_graphite_host.o" "$SRC/osgfx_graphite.mm"
+  clang -fobjc-arc -O2 -Wall -Wextra \
+    -I "$SRC" \
+    -c -o "$OUT/osgfx_metal_host.o" "$SRC/osgfx_metal.m"
+  HOST_OBJS=("$OUT/osgfx_graphite_host.o" "$OUT/osgfx_metal_host.o")
+  HOST_LIBS=("${FW[@]}" -lc++)
+else
+  clang++ -std=c++17 -O2 -Wall -Wextra \
+    "${SKIA_HOST_CXX_FLAGS[@]}" \
+    -I "$SRC" -I "$SKIA_SRC" \
+    -c -o "$OUT/osgfx_graphite_host.o" "$SRC/osgfx_graphite_linux.cpp"
+  HOST_OBJS=("$OUT/osgfx_graphite_host.o")
+  HOST_LIBS=("${SKIA_HOST_CXX_FLAGS[@]}" -lvulkan -lc++)
+fi
+
 clang -O2 -Wall -Wextra \
   -I "$SRC" \
   -c -o "$OUT/osgfx_scene_host.o" "$SRC/osgfx_scene.c"
@@ -37,12 +52,12 @@ clang -O2 -Wall -Wextra \
   -I "$SRC" \
   -c -o "$OUT/headless_main.o" "$SRC/headless_main.c"
 
-clang++ -fobjc-arc -O2 \
-  "${FW[@]}" \
+clang++ -O2 \
   -o "$OUT/osgfx-headless" \
-  "$OUT/osgfx_graphite_host.o" "$OUT/osgfx_metal_host.o" \
+  "${HOST_OBJS[@]}" \
   "$OUT/osgfx_scene_host.o" \
-  "$OUT/headless_main.o" "$SKIA_LIB" -lc++
+  "$OUT/headless_main.o" "$SKIA_LIB" \
+  "${HOST_LIBS[@]}"
 echo "built $OUT/osgfx-headless"
 
 if [[ "${1:-}" == "--headless" ]]; then
@@ -90,11 +105,11 @@ if ! ( cd "$SRC" && "$DART" "$DCDART_HOME/core/dcc/bin/dcc.dart" build --mode ba
 fi
 clang -O2 -Wall -Wextra -I "$SRC" -c -o "$OUT/osgfx_ffi_abi.o" "$SRC/osgfx_ffi.c"
 clang -O2 -Wall -Wextra -I "$SRC" -c -o "$OUT/ffi_main.o" "$SRC/ffi_main.c"
-clang++ -fobjc-arc -O2 \
-  "${FW[@]}" \
+clang++ -O2 \
   -o "$OUT/osgfx-ffi" \
-  "$OUT/osgfx_graphite_host.o" "$OUT/osgfx_metal_host.o" \
+  "${HOST_OBJS[@]}" \
   "$OUT/osgfx_scene_host.o" \
   "$OUT/osgfx_ffi_abi.o" "$OUT/ffi_main.o" "$OUT/osgfx_ffi.o" \
-  "$SKIA_LIB" -lc++
+  "$SKIA_LIB" \
+  "${HOST_LIBS[@]}"
 echo "built $OUT/osgfx-ffi"

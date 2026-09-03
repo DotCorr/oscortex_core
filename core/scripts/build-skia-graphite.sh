@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Fetch and build Skia Graphite + Metal for this arm64 Mac.
-# Not brew graphite2 (font shaper). Not Flutter.
+# Fetch and build host Skia Graphite.
+# Darwin: Metal + arm64. Linux: Vulkan + x64, compiler sysroot for <cstdarg>.
+# Not brew graphite2 (font shaper). Not Flutter. Does not vendor host headers.
 set -euo pipefail
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$CORE/build/skia"
 SRC="$ROOT/src"
 OUT="$ROOT/out/graphite"
 LIB="$OUT/libskia.a"
+# shellcheck source=skia-host-cxx-flags.sh
+source "$CORE/scripts/skia-host-cxx-flags.sh"
+skia_host_cxx_flags
 
 if [[ -f "$LIB" ]]; then
   echo "skia: $LIB"
@@ -29,17 +33,33 @@ if [[ ! -x "$SRC/bin/gn" ]]; then
   ( cd "$SRC" && python3 bin/fetch-gn )
 fi
 
-# No git-sync-deps: Graphite+Metal with codecs/fonts/Vulkan/Dawn off
+HOST="$(uname -s)"
+if [[ "$HOST" == "Darwin" ]]; then
+  CPU=arm64
+  METAL=true
+  VULKAN=false
+else
+  CPU=x64
+  METAL=false
+  VULKAN=true
+  # A leftover Mac ninja tree cannot compile on Linux.
+  if [[ -f "$OUT/args.gn" ]] && ! grep -q 'target_cpu = "x64"' "$OUT/args.gn"; then
+    rm -rf "$OUT"
+  fi
+fi
+
+# No git-sync-deps: Graphite with codecs/fonts/Dawn off
 # does not need third_party/externals.
-ARGS='
+ARGS="
 is_official_build=true
 is_debug=false
-target_cpu="arm64"
-skia_use_metal=true
+target_cpu=\"${CPU}\"
+skia_use_metal=${METAL}
 skia_enable_graphite=true
 skia_enable_ganesh=false
 skia_use_gl=false
-skia_use_vulkan=false
+skia_use_vulkan=${VULKAN}
+skia_use_vma=false
 skia_use_dawn=false
 skia_use_angle=false
 skia_enable_pdf=false
@@ -64,7 +84,14 @@ skia_enable_fontmgr_empty=true
 skia_enable_precompile=false
 skia_use_xps=false
 skia_enable_tools=false
-'
+extra_cflags=${SKIA_HOST_GN_CFLAGS}
+extra_cflags_cc=${SKIA_HOST_GN_CFLAGS}
+"
+if [[ "$HOST" != "Darwin" ]]; then
+  ARGS="$ARGS
+extra_ldflags=${SKIA_HOST_GN_CFLAGS}
+"
+fi
 ( cd "$SRC" && "$SRC/bin/gn" gen "$OUT" --args="$ARGS" )
 ninja -C "$OUT" skia
 [[ -f "$LIB" ]] || { echo "build-skia-graphite: no $LIB" >&2; exit 1; }
