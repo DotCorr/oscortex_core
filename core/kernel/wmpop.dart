@@ -364,7 +364,12 @@ void wmPopRaise(u64 wI) {
   uartWrite(Rodata.addressOf(wmStrRaise), u64(11));
   uartPutHex(wI, u64(1));
   uartNewline();
-  final u64 unused = wmRepaintWindow(wI);
+  if (wmPageAddr() > u64(0)) {
+    wmDefEnqueue(u64(wmDefKindFocus), wI, wmWin(wI, u64(wmWinGeom)),
+        wmWin(wI, u64(wmWinGeom)));
+  } else {
+    final u64 unused = wmRepaintWindow(wI);
+  }
 }
 
 /// 1 if the popover is showing and ([x], [y]) is inside it.
@@ -531,13 +536,51 @@ void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
 }
 
 @bare
+void wmPopPaintCard() {
+  final u64 packed = wmMeta(u64(wmMetaPopXY));
+  final u64 ox = packed >> u64(32);
+  final u64 oy = packed & u64(0xFFFFFFFF);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmPanelStrip() < u64(1)) {
+      wmGfxKick();
+      osgfx_guest_tick();
+      if (wmActive() > u64(0)) {
+        wmCompose();
+      }
+    }
+  }
+  wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
+  if (wmDeOn() > u64(0)) {
+    wmPopMenuDraw(ox, oy);
+  }
+}
+
+@bare
+void wmPopDrainPaint(u64 oldG, u64 nextG) {
+  if (nextG < u64(1)) {
+    wmPopDamageRestore(wmGeomX(oldG), wmGeomY(oldG), u64(wmPopW), u64(wmPopH));
+    return;
+  }
+  if (wmPopIsCard(wmPopKind()) > u64(0)) {
+    wmPopPaintCard();
+  } else {
+    wmPopDamageRestore(wmGeomX(oldG), wmGeomY(oldG), u64(wmPopW), u64(wmPopH));
+  }
+}
+
+@bare
 void wmPopHide() {
   if (wmPopIsCard(wmPopKind()) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
     wmSetMeta(u64(wmMetaPop), u64(0));
-    wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
+    if (wmPageAddr() > u64(0)) {
+      final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
+      wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, u64(0));
+    } else {
+      wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
+    }
   }
 }
 
@@ -677,30 +720,24 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
   wmSetMeta(u64(wmMetaPop), kind | (u64(0xFF) << u64(8)));
   wmSetMeta(u64(wmMetaPopXY), (ox << u64(32)) | oy);
   wmPopWritePage();
-  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (wmPanelStrip() < u64(1)) {
-      wmGfxKick();
-      osgfx_guest_tick();
-      if (wmActive() > u64(0)) {
-        wmCompose();
-      }
-    }
-  }
-  wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
-  if (wmDeOn() > u64(0)) {
-    wmPopMenuDraw(ox, oy);
-    if (kind == u64(wmPopWin)) {
-      uartWrite(Rodata.addressOf(wmStrWinMenu), u64(11));
+  if (kind == u64(wmPopWin)) {
+    uartWrite(Rodata.addressOf(wmStrWinMenu), u64(11));
+    uartNewline();
+  } else {
+    if (kind == u64(wmPopDock)) {
+      uartWrite(Rodata.addressOf(wmStrDockMenu), u64(12));
       uartNewline();
     } else {
-      if (kind == u64(wmPopDock)) {
-        uartWrite(Rodata.addressOf(wmStrDockMenu), u64(12));
-        uartNewline();
-      } else {
-        uartWrite(Rodata.addressOf(wmStrWallMenu), u64(12));
-        uartNewline();
-      }
+      uartWrite(Rodata.addressOf(wmStrWallMenu), u64(12));
+      uartNewline();
     }
+  }
+  /* IRQ: state + enqueue. Paint in drain (syscall/tick). */
+  if (wmPageAddr() > u64(0)) {
+    final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
+    wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+  } else {
+    wmPopPaintCard();
   }
 }
 
@@ -729,21 +766,26 @@ void wmContextFocus(u64 hit) {
   if (oldTop != hit) {
     chromeChanged = u64(1);
   }
-  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (chromeChanged > u64(0)) {
-      wmGfxKick();
-      osgfx_guest_tick();
-      if (wmActive() > u64(0)) {
-        wmCompose();
+  if (chromeChanged > u64(0)) {
+    if (wmPageAddr() > u64(0)) {
+      wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
+          wmWin(hit, u64(wmWinGeom)));
+    } else {
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        wmGfxKick();
+        osgfx_guest_tick();
+        if (wmActive() > u64(0)) {
+          wmCompose();
+        }
+      } else {
+        if (oldTop != hit) {
+          u64 px = wmRepaintWindow(oldTop);
+          px = px + wmRepaintWindow(hit);
+          wmSetMeta(
+              u64(wmMetaRectPixels), wmMeta(u64(wmMetaRectPixels)) + px);
+        }
       }
     }
-    return;
-  }
-  if (oldTop != hit) {
-    u64 px = wmRepaintWindow(oldTop);
-    px = px + wmRepaintWindow(hit);
-    wmSetMeta(
-        u64(wmMetaRectPixels), wmMeta(u64(wmMetaRectPixels)) + px);
   }
 }
 
@@ -1028,14 +1070,15 @@ u64 wmPopHoverTick(u64 x, u64 y) {
   }
   wmPopSetHover(row);
   wmPopWritePage();
-  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (wmPanelStrip() < u64(1)) {
-      wmGfxKick();
-      osgfx_guest_tick();
-    }
+  if (wmPageAddr() > u64(0)) {
+    final u64 packed = wmMeta(u64(wmMetaPopXY));
+    final u64 g = wmPackGeom(packed >> u64(32), packed & u64(0xFFFFFFFF),
+        u64(wmPopW), u64(wmPopH));
+    wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+  } else {
+    wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
+        wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
   }
-  wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
-      wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
   return u64(1);
 }
 
@@ -1118,14 +1161,15 @@ u64 wmPopKey(u64 ev) {
       }
       wmPopSetHover(row);
       wmPopWritePage();
-      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        if (wmPanelStrip() < u64(1)) {
-          wmGfxKick();
-          osgfx_guest_tick();
-        }
+      if (wmPageAddr() > u64(0)) {
+        final u64 packed = wmMeta(u64(wmMetaPopXY));
+        final u64 g = wmPackGeom(packed >> u64(32), packed & u64(0xFFFFFFFF),
+            u64(wmPopW), u64(wmPopH));
+        wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+      } else {
+        wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
+            wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
       }
-      wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
-          wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
       return u64(1);
     }
     if (scan == u64(0x50)) {
@@ -1134,14 +1178,15 @@ u64 wmPopKey(u64 ev) {
       }
       wmPopSetHover(row);
       wmPopWritePage();
-      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        if (wmPanelStrip() < u64(1)) {
-          wmGfxKick();
-          osgfx_guest_tick();
-        }
+      if (wmPageAddr() > u64(0)) {
+        final u64 packed = wmMeta(u64(wmMetaPopXY));
+        final u64 g = wmPackGeom(packed >> u64(32), packed & u64(0xFFFFFFFF),
+            u64(wmPopW), u64(wmPopH));
+        wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+      } else {
+        wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
+            wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
       }
-      wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
-          wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
       return u64(1);
     }
   }

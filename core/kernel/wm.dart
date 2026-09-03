@@ -1315,13 +1315,26 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return;
   }
+  if (wmPageAddr() > u64(0)) {
+    if (wmPage(u64(wmPageWDefPres)) == (slot + u64(1))) {
+      /* Deferred drain already presented this slot from prep. Title-only
+       * client commits still paint; a full-surface echo does not. */
+      if (full > u64(0)) {
+        wmPageSet(u64(wmPageWDefPres), u64(0));
+        return;
+      }
+    }
+  }
+  wmIfHoldBegin(u64(wmIfReasonCompose));
   /* Under `wm gfx`, honour damage when chrome is fresh; else full compose. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     if (wmGfxChromeFresh() > u64(0)) {
       wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
+      wmIfHoldEnd();
       return;
     }
     wmCompose();
+    wmIfHoldEnd();
     return;
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
@@ -1370,6 +1383,7 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     }
   }
   wmPublishFrame(px);
+  wmIfHoldEnd();
 }
 
 // ---------------------------------------------------------------------------
@@ -3209,9 +3223,16 @@ void wmGrab(u64 x, u64 y) {
   // just went from bright to dim. Repainting both decorated rectangles is the
   // smallest correct answer with two windows and it is what `wmMaxWindows`
   // being 2 buys.
-  u64 px = wmRepaintWindow(was);
-  px = px + wmRepaintWindow(hit);
-  wmSetMeta(u64(wmMetaRectPixels), px);
+  u64 px = u64(0);
+  if (wmPageAddr() > u64(0)) {
+    wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
+        wmWin(hit, u64(wmWinGeom)));
+    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+  } else {
+    px = wmRepaintWindow(was);
+    px = px + wmRepaintWindow(hit);
+    wmSetMeta(u64(wmMetaRectPixels), px);
+  }
   uartWrite(Rodata.addressOf(wmStrRaise), u64(11));
   uartPutHex(hit, u64(1));
   uartWrite(Rodata.addressOf(wmStrFrom), u64(6));
@@ -3325,10 +3346,18 @@ void wmResizeStep(u64 x, u64 y) {
   wmeventEnqueueConfigure(wI);
   /* Compose old∪new once. Two independent repaints exposed an intermediate
    * frame and reused the damage scratch with two different extents. */
-  final u64 px = wmRepaintUnion2(
-      rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
-  wmSetMeta(
-      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  u64 px = u64(0);
+  if (wmPageAddr() > u64(0)) {
+    wmDefEnqueue(u64(wmDefKindDrag), wI,
+        wmPackGeom(rx, ry, rw, rh),
+        wmPackGeom(ox - b, oy - b, nw + b + b, nh + b + b));
+    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+  } else {
+    px = wmRepaintUnion2(
+        rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
+    wmSetMeta(
+        u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  }
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
   uartWrite(Rodata.addressOf(wmStrW), u64(3));
@@ -3397,9 +3426,17 @@ void wmDragStep(u64 x, u64 y) {
   final u64 oh = h + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
   wmeventEnqueueConfigure(wI);
-  u64 px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
-  wmSetMeta(
-      u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  u64 px = u64(0);
+  if (wmPageAddr() > u64(0)) {
+    wmDefEnqueue(u64(wmDefKindDrag), wI,
+        wmPackGeom(ox, oy, ow, oh),
+        wmPackGeom(cx - b, cy - b, ow, oh));
+    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+  } else {
+    px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+    wmSetMeta(
+        u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+  }
   wmBumpMeta(u64(wmMetaMoves));
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
   uartPutHex(wI, u64(1));
@@ -3439,6 +3476,27 @@ void wmPointerTick() {
     wmSetMeta(u64(wmMetaDropped),
         ((dropped + u64(1)) & u64(wmPointerDropMask)) |
             u64(wmPointerPending));
+    /* Capture button edges while a syscall compose holds the FB.
+     * Enqueue only — never paint — so OPID is not delayed on IF. */
+    final u64 bits = mouseState(u64(mouseWordButtons));
+    final u64 left = bits & u64(1);
+    final u64 right = (bits >> u64(1)) & u64(1);
+    final u64 was = wmMeta(u64(wmMetaButtons));
+    final u64 wasLeft = was & u64(1);
+    final u64 wasRight = (was >> u64(1)) & u64(1);
+    final u64 x = mouseState(u64(mouseWordX));
+    final u64 y = mouseState(u64(mouseWordY));
+    if (right > u64(0)) {
+      if (wasRight < u64(1)) {
+        wmContextShow(x, y);
+      }
+    }
+    if (left > u64(0)) {
+      if (wasLeft < u64(1)) {
+        wmGrab(x, y);
+      }
+    }
+    wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);
     return;
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));

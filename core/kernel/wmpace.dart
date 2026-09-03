@@ -276,12 +276,32 @@ const int wmPageWPrepFrames = 396;
 const int wmPageWPrepHave = 397;
 const int wmPageWPrepWin0 = 398;
 const int wmPageWPrepWin1 = 399;
+/// Coalesced deferred damage union (x, y, w, h).
+const int wmPageWDefUx = 400;
+const int wmPageWDefUy = 401;
+const int wmPageWDefUw = 402;
+const int wmPageWDefUh = 403;
+/// IF-hold: reason:8 | start tick in the rest.
+const int wmPageWIfHold = 404;
+/// Queue: enq:16 | coal:16 | depth:8.
+const int wmPageWDefQ = 405;
+/// Slot+1 last presented by deferred drain (skip redundant compose).
+const int wmPageWDefPres = 406;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
 const int wmDefKindFocus = 2;
+const int wmDefKindMenu = 3;
+const int wmDefKindDrag = 4;
 const int wmDefFlagPending = 1;
 const int wmDefFlagSeq0 = 2;
+const int wmDefFlagGeomHold = 4;
+const int wmDefSlotMenu = 0xFE;
+
+const int wmIfReasonDrain = 1;
+const int wmIfReasonCompose = 2;
+const int wmIfReasonPrep = 3;
+const int wmIfReasonSys = 4;
 
 const int wmLatKindPtr = 1;
 const int wmLatKindWheel = 2;
@@ -1566,6 +1586,12 @@ void wmPacePresent() {
 /// `wm pace` must not touch the state page at all.
 @bare
 void wmFrameTick() {
+  /* Tick context, not the input IRQ: drain coalesced menu/drag/max. */
+  if (wmActive() > u64(0)) {
+    if (wmMeta(u64(wmMetaBusy)) < u64(1)) {
+      wmDefDrain();
+    }
+  }
   if (wmPaced() < u64(1)) {
     return;
   }

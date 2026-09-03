@@ -288,6 +288,20 @@ final List<u8> wmStrPrepMax = const [
   u8(0x20), u8(0x4D), u8(0x41), u8(0x58),
 ];
 
+/// `'WM IFHOLD '` -- 10 bytes. reason + PIT ticks of a long IF-clear.
+@rodata
+final List<u8> wmStrIfHold = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x49), u8(0x46), u8(0x48), u8(0x4F),
+  u8(0x4C), u8(0x44), u8(0x20),
+];
+
+/// `'WM IFSTI '` -- 9 bytes. Syscall opened interrupts for long work.
+@rodata
+final List<u8> wmStrIfSti = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x49), u8(0x46), u8(0x53), u8(0x54),
+  u8(0x49), u8(0x20),
+];
+
 /// `'WM FOCUS '` -- 9 bytes.
 @rodata
 final List<u8> wmStrFocus = const [
@@ -1585,20 +1599,124 @@ u64 wmDefMaxGeom(u64 wI) {
 }
 
 @bare
+void wmIfHoldBegin(u64 reason) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWIfHold), reason | (tick_count() << u64(8)));
+}
+
+@bare
+void wmIfHoldEnd() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 packed = wmPage(u64(wmPageWIfHold));
+  if (packed < u64(1)) {
+    return;
+  }
+  final u64 dt = tick_count() - (packed >> u64(8));
+  wmPageSet(u64(wmPageWIfHold), u64(0));
+  if (dt < u64(1)) {
+    return;
+  }
+  uartWrite(Rodata.addressOf(wmStrIfHold), u64(10));
+  uartPutHex(packed & u64(0xFF), u64(2));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(dt, u64(4));
+  uartNewline();
+}
+
+@bare
+void wmIfSysOpen() {
+  interrupts_enable();
+}
+
+@bare
+void wmDefUnionExpand(u64 g) {
+  final u64 b = u64(wmBorder);
+  u64 x = wmGeomX(g);
+  u64 y = wmGeomY(g);
+  u64 w = wmGeomW(g);
+  u64 h = wmGeomH(g);
+  if (x >= b) {
+    x = x - b;
+  } else {
+    x = u64(0);
+  }
+  if (y >= b) {
+    y = y - b;
+  } else {
+    y = u64(0);
+  }
+  w = w + b + b;
+  h = h + b + b;
+  final u64 ux = wmPage(u64(wmPageWDefUx));
+  final u64 uy = wmPage(u64(wmPageWDefUy));
+  final u64 uw = wmPage(u64(wmPageWDefUw));
+  final u64 uh = wmPage(u64(wmPageWDefUh));
+  if (uw < u64(1)) {
+    wmPageSet(u64(wmPageWDefUx), x);
+    wmPageSet(u64(wmPageWDefUy), y);
+    wmPageSet(u64(wmPageWDefUw), w);
+    wmPageSet(u64(wmPageWDefUh), h);
+    return;
+  }
+  u64 nx = ux;
+  u64 ny = uy;
+  if (x < ux) {
+    nx = x;
+  }
+  if (y < uy) {
+    ny = y;
+  }
+  u64 x1 = ux + uw;
+  u64 y1 = uy + uh;
+  if ((x + w) > x1) {
+    x1 = x + w;
+  }
+  if ((y + h) > y1) {
+    y1 = y + h;
+  }
+  wmPageSet(u64(wmPageWDefUx), nx);
+  wmPageSet(u64(wmPageWDefUy), ny);
+  wmPageSet(u64(wmPageWDefUw), x1 - nx);
+  wmPageSet(u64(wmPageWDefUh), y1 - ny);
+}
+
+@bare
 void wmDefEnqueue(u64 kind, u64 slot, u64 oldG, u64 nextG) {
   final u64 t0 = tick_count();
   u64 flags = u64(wmDefFlagPending);
   final u64 prev = wmPage(u64(wmPageWDefOp));
+  final u64 q = wmPage(u64(wmPageWDefQ));
+  u64 enq = q & u64(0xFFFF);
+  u64 coal = (q >> u64(16)) & u64(0xFFFF);
+  u64 depth = (q >> u64(32)) & u64(0xFF);
   if (((prev >> u64(16)) & u64(wmDefFlagPending)) > u64(0)) {
-    /* Last-wins on the same slot. A max then restore keeps final geom. */
+    /* Last-wins on the same slot. Keep first vacated rect; expand union. */
     if (((prev >> u64(8)) & u64(0xFF)) == slot) {
       oldG = wmPage(u64(wmPageWDefOld));
+      coal = coal + u64(1);
+      if (depth > u64(0)) {
+        depth = depth - u64(1);
+      }
+    } else {
+      flags = flags | ((prev >> u64(16)) & u64(wmDefFlagGeomHold));
     }
   }
+  wmDefUnionExpand(oldG);
+  wmDefUnionExpand(nextG);
   wmPageSet(u64(wmPageWDefOp), kind | (slot << u64(8)) | (flags << u64(16)));
   wmPageSet(u64(wmPageWDefOld), oldG);
   wmPageSet(u64(wmPageWDefNext), nextG);
   wmPageSet(u64(wmPageWDefEnqTick), t0);
+  enq = enq + u64(1);
+  depth = depth + u64(1);
+  if (depth > u64(1)) {
+    depth = u64(1);
+  }
+  wmPageSet(u64(wmPageWDefQ), enq | (coal << u64(16)) | (depth << u64(32)));
   final u64 dt = tick_count() - t0;
   wmPageSet(u64(wmPageWIrqDt), dt);
   uartWrite(Rodata.addressOf(wmStrDefEnq), u64(12));
@@ -1624,8 +1742,10 @@ void wmDefClear(u64 slot) {
   final u64 op = wmPage(u64(wmPageWDefOp));
   if (((op >> u64(8)) & u64(0xFF)) == slot) {
     wmPageSet(u64(wmPageWDefOp), u64(0));
+    wmPageSet(u64(wmPageWDefUw), u64(0));
   }
   wmPageSet(u64(wmPageWPrepHave), u64(0));
+  wmPageSet(u64(wmPageWDefPres), u64(0));
 }
 
 @bare
@@ -1715,15 +1835,18 @@ void wmIdlePrep(u64 fromSlot) {
     wmPageSet(u64(wmPageWPrepHave), have | u64(16));
     return;
   }
+  wmIfHoldBegin(u64(wmIfReasonPrep));
   if ((have & u64(2)) < u64(1)) {
     final u64 rest = osgfx_chrome_prep_rest();
   }
   if (osgfx_chrome_prep(win0, win1) < u64(1)) {
+    wmIfHoldEnd();
     return;
   }
   wmPageSet(u64(wmPageWPrepHave), wmPage(u64(wmPageWPrepHave)) | u64(16));
   uartWrite(Rodata.addressOf(wmStrPrepMax), u64(11));
   uartNewline();
+  wmIfHoldEnd();
 }
 
 @bare
@@ -1745,12 +1868,21 @@ void wmDefDrain() {
   final u64 slot = (packed >> u64(8)) & u64(0xFF);
   final u64 oldG = wmPage(u64(wmPageWDefOld));
   final u64 nextG = wmPage(u64(wmPageWDefNext));
+  wmIfHoldBegin(u64(wmIfReasonDrain));
   uartWrite(Rodata.addressOf(wmStrDefBegin), u64(14));
   uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
   uartNewline();
   wmSetMeta(u64(wmMetaBusy), u64(1));
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     wmPointerRestore();
+  }
+  if (((packed >> u64(16)) & u64(wmDefFlagGeomHold)) > u64(0)) {
+    if (slot < u64(wmMaxWindows)) {
+      wmSetWin(slot, u64(wmWinGeom), nextG);
+      wmSetWin(slot, u64(wmWinSeq), u64(0));
+      wmSetMeta(u64(wmMetaTop), slot);
+      wmeventEnqueueConfigure(slot);
+    }
   }
   if (kind == u64(wmDefKindMax)) {
     final u64 b = u64(wmBorder);
@@ -1809,9 +1941,11 @@ void wmDefDrain() {
             mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
       }
       wmSetMeta(u64(wmMetaBusy), u64(0));
+      wmPageSet(u64(wmPageWDefUw), u64(0));
       uartWrite(Rodata.addressOf(wmStrDefCommit), u64(15));
       uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
       uartNewline();
+      wmIfHoldEnd();
       return;
     }
   } else {
@@ -1819,9 +1953,34 @@ void wmDefDrain() {
       if (slot < u64(wmMaxWindows)) {
         final u64 unused = wmRepaintWindow(slot);
       }
+    } else {
+      if (kind == u64(wmDefKindMenu)) {
+        wmPopDrainPaint(oldG, nextG);
+      } else {
+        if (kind == u64(wmDefKindDrag)) {
+          u64 ux = wmPage(u64(wmPageWDefUx));
+          u64 uy = wmPage(u64(wmPageWDefUy));
+          u64 uw = wmPage(u64(wmPageWDefUw));
+          u64 uh = wmPage(u64(wmPageWDefUh));
+          if (uw < u64(1)) {
+            final u64 px = wmRepaintUnion2(
+                wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
+                wmGeomX(nextG), wmGeomY(nextG), wmGeomW(nextG),
+                wmGeomH(nextG));
+          } else {
+            final u64 px = wmRepaintRect(ux, uy, uw, uh);
+          }
+        }
+      }
     }
   }
+  if (slot < u64(wmMaxWindows)) {
+    wmPageSet(u64(wmPageWDefPres), slot + u64(1));
+  }
   wmPageSet(u64(wmPageWDefOp), u64(0));
+  wmPageSet(u64(wmPageWDefUw), u64(0));
+  wmPageSet(
+      u64(wmPageWDefQ), wmPage(u64(wmPageWDefQ)) & u64(0xFFFFFFFF));
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     wmPointerPlace(
         mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
@@ -1831,6 +1990,7 @@ void wmDefDrain() {
   uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
   uartNewline();
   wmLatNotePresent();
+  wmIfHoldEnd();
 }
 
 @bare
@@ -1866,10 +2026,14 @@ void wmToggleMaxWindow(u64 wI) {
     uartNewline();
     return;
   }
-  wmSetWin(wI, u64(wmWinGeom), next);
-  wmSetWin(wI, u64(wmWinSeq), u64(0));
-  wmSetMeta(u64(wmMetaTop), wI);
-  wmeventEnqueueConfigure(wI);
+  /* A live compose holds the framebuffer. Publish geom only when idle
+   * so the in-flight painter does not tear against the new size. */
+  if (wmMeta(u64(wmMetaBusy)) < u64(1)) {
+    wmSetWin(wI, u64(wmWinGeom), next);
+    wmSetWin(wI, u64(wmWinSeq), u64(0));
+    wmSetMeta(u64(wmMetaTop), wI);
+    wmeventEnqueueConfigure(wI);
+  }
   uartWrite(Rodata.addressOf(wmStrHold), u64(10));
   uartPutHex(wI, u64(1));
   uartNewline();
@@ -1877,6 +2041,11 @@ void wmToggleMaxWindow(u64 wI) {
   uartNewline();
   /* IRQ captures final geom only. Compose waits for a syscall drain. */
   wmDefEnqueue(u64(wmDefKindMax), wI, old, next);
+  if (wmMeta(u64(wmMetaBusy)) > u64(0)) {
+    final u64 op = wmPage(u64(wmPageWDefOp));
+    wmPageSet(u64(wmPageWDefOp),
+        op | (u64(wmDefFlagGeomHold) << u64(16)));
+  }
   wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
   uartWrite(Rodata.addressOf(wmStrMax), u64(9));
   uartPutHex(wI, u64(1));
@@ -1990,7 +2159,12 @@ void wmFocusCycle(u64 back) {
           uartWrite(Rodata.addressOf(wmStrFocus), u64(9));
           uartPutHex(cand, u64(1));
           uartNewline();
-          final u64 unused = wmRepaintWindow(cand);
+          if (wmPageAddr() > u64(0)) {
+            wmDefEnqueue(u64(wmDefKindFocus), cand,
+                wmWin(cand, u64(wmWinGeom)), wmWin(cand, u64(wmWinGeom)));
+          } else {
+            final u64 unused = wmRepaintWindow(cand);
+          }
           return;
         }
       }

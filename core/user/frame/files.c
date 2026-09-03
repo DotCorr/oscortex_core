@@ -626,7 +626,9 @@ static void files_paint_csd_only(void) {
   }
   osxui_app_csd(files_h, files_w, cap_files, 5);
   files_note_commit = 1;
-  commit_files_rect(0, files_height);
+  /* Title band only. A full-height commit forced a 1274×666 compose
+   * with IF clear and delayed the next click's OPID by 200ms+. */
+  commit_files_rect(0, TITLE_H);
 }
 #endif
 
