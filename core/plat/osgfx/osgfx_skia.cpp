@@ -1185,14 +1185,14 @@ __attribute__((noinline)) static void tick_body(void) {
       local.pitch = m->w * 4;
     }
     /* Focus/raise flips only TOP. Patch the 2px rings; do not zero the
-     * cache or re-run wallpaper + title + 18px shadow (583 PIT ticks). */
+     * cache or re-run wallpaper + title + 18px shadow (583 PIT ticks).
+     * begin < paint < done must stay in that source order (de-chrome-cache). */
     if (target != 0 && osgfx_chrome_is_focus_only(m) != 0) {
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
       osgfx_session_patch_focus(g, &local);
       osgfx_flush(g);
-      osgfx_chrome_done(m);
     } else {
       osgfx_chrome_begin(m);
       g->px = (uint32_t *)(uintptr_t)local.fb;
@@ -1200,8 +1200,8 @@ __attribute__((noinline)) static void tick_body(void) {
       (void)canvas_of(g);
       osgfx_session_paint(g, &local, osgfx_graphite_ready());
       osgfx_flush(g);
-      osgfx_chrome_done(m);
     }
+    osgfx_chrome_done(m);
   }
   /* ADR-0153 proof stamp — never on live DE chrome. Under wm de the
    * (64,48) Graphite ICD rrect landed on FILES title (binary coverage =
