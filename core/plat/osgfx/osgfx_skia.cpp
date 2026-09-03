@@ -1280,7 +1280,6 @@ __attribute__((noinline)) static void tick_body(void) {
   if (m->gen == last_gen) {
     return;
   }
-  skia_release_client();
   if (m->fb == 0 || m->w < 8 || m->h < 8) {
     return;
   }
@@ -1296,7 +1295,6 @@ __attribute__((noinline)) static void tick_body(void) {
     if (chrome_hit_n <= 2u || (chrome_hit_n & 63u) == 0u) {
       com1_puts("OSGFX CHROME HIT\n");
     }
-    skia_release_client();
     (void)osgfx_chrome_present(m);
     last_gen = m->gen;
     return;
@@ -1419,10 +1417,8 @@ static void client_body(uint32_t *px, int pitch, int w, int h, int kind) {
    * client rewind so unique_ptrs do not outlive the bump. */
   client_arg.kind = kind;
   if (kind != CLIENT_POINTER) {
-    if (client_g.canvas != 0 && client_g.px == px && client_g.pitch == pitch &&
-        client_g.w == w && client_g.h == h) {
-      return;
-    }
+    /* Always reset. Keeping the wrapper across FILES SEL + FRAME
+     * #PF'd at CR2 in the client va (NOTPRES READ SUPER). */
     skia_release_client();
     client_reclaim_if_tight();
   }
