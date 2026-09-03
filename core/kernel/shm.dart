@@ -453,6 +453,13 @@ final List<u8> shmStrGrow = const [
   u8(0x52), u8(0x20),
 ];
 
+/// `'SHM RELOC R '` -- 12 bytes.
+@rodata
+final List<u8> shmStrReloc = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x52), u8(0x45), u8(0x4C), u8(0x4F),
+  u8(0x43), u8(0x20), u8(0x52), u8(0x20),
+];
+
 /// `'SHM SHRINK R '` -- 13 bytes.
 @rodata
 final List<u8> shmStrShrink = const [
@@ -723,6 +730,12 @@ void shmSetRegionMaps(u64 r, u64 maps) {
   shmSetReg(r, u64(shmRegMaps),
       (shmRegionBasePage(r) << u64(shmBaseShift)) |
           (maps & u64(shmMapsMask)));
+}
+
+@bare
+void shmSetRegionBase(u64 r, u64 base) {
+  shmSetReg(r, u64(shmRegMaps),
+      (base << u64(shmBaseShift)) | shmRegionMaps(r));
 }
 
 /// The stable virtual address allocated to region [r].
@@ -1915,9 +1928,15 @@ void shmSysGrow(u64 frame) {
     shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetBadLen));
     return;
   }
+  u64 newBase = shmRegionBasePage(r);
+  u64 moved = u64(0);
   if (shmVaCanGrow(r, want) < u64(1)) {
-    shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetNoSpace));
-    return;
+    newBase = shmVaFind(want);
+    if ((newBase + want) > u64(vmShmPages)) {
+      shmRefuse(frame, u64(shmSysGrowNo), want, u64(shmRetNoSpace));
+      return;
+    }
+    moved = u64(1);
   }
   // Caller must already have this region mapped. Other mappers are
   // updated in place via [shmMapRangeAll] (ADR-0158).
@@ -1951,8 +1970,15 @@ void shmSysGrow(u64 frame) {
     shmSetVec(vec, i, pa);
     i = i + u64(1);
   }
+  u64 mapLo = old;
+  u64 mapHi = want;
+  if (moved > u64(0)) {
+    shmUnmapRangeAll(r, u64(0), old);
+    shmSetRegionBase(r, newBase);
+    mapLo = u64(0);
+  }
   final u64 va = shmRegionVa(r);
-  final u64 me = shmMapRangeAll(r, old, want);
+  final u64 me = shmMapRangeAll(r, mapLo, mapHi);
   if (me > u64(0)) {
     u64 k = old;
     while (k < want) {
@@ -1971,6 +1997,13 @@ void shmSysGrow(u64 frame) {
     return;
   }
   shmSetReg(r, u64(shmRegPages), want);
+  if (moved > u64(0)) {
+    uartWrite(Rodata.addressOf(shmStrReloc), u64(12));
+    uartPutHex(r, u64(1));
+    uartWrite(Rodata.addressOf(shmStrVa), u64(4));
+    uartPutHex(va, u64(16));
+    uartNewline();
+  }
   uartWrite(Rodata.addressOf(shmStrGrow), u64(11));
   uartPutHex(r, u64(1));
   uartWrite(Rodata.addressOf(shmStrPages), u64(7));
@@ -1980,7 +2013,11 @@ void shmSysGrow(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
   uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
-  userSetFrame(frame, u64(userFrameRax), u64(0));
+  if (moved > u64(0)) {
+    userSetFrame(frame, u64(userFrameRax), va);
+  } else {
+    userSetFrame(frame, u64(userFrameRax), u64(0));
+  }
 }
 
 // ---------------------------------------------------------------------------

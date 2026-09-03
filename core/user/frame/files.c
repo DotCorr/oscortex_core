@@ -804,6 +804,9 @@ static void files_on_event(u64 ev) {
           emit(at);
           return;
         }
+        if (grown > 0) {
+          files_va = grown + SURF_OFFSET;
+        }
         desc[WM_DESC_OP] = WM_OP_BACKING;
         desc[WM_DESC_HANDLE] = files_h;
         desc[WM_DESC_STRIDE] = stride;
