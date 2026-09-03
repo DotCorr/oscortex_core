@@ -51,6 +51,8 @@ uint32_t osgfx_graphite_desk_rgb(void);
 void osgfx_graphite_rrect_note(void);
 void osgfx_graphite_desk_note(void);
 void osgfx_heap_frame_begin(void);
+void osgfx_heap_chrome_seal(void);
+void osgfx_heap_client_begin(void);
 int osgfx_heap_ready(void);
 size_t osgfx_heap_used(void);
 size_t osgfx_heap_cap(void);
@@ -63,11 +65,14 @@ uint32_t *osgfx_chrome_target(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_fresh(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m);
+void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1);
 int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
+void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
+                              uint64_t old0, uint64_t old1);
 void osgfx_chrome_glyph_count(int hit);
 uint32_t *osgfx_chrome_band(int w, int h);
 int osgfx_chrome_band_fresh(int w, int h, uint32_t top, uint32_t bot);
@@ -91,6 +96,8 @@ extern "C" __attribute__((weak)) uint32_t osgfx_graphite_desk_rgb(void) { return
 extern "C" __attribute__((weak)) void osgfx_graphite_rrect_note(void) {}
 extern "C" __attribute__((weak)) void osgfx_graphite_desk_note(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_frame_begin(void) {}
+extern "C" __attribute__((weak)) void osgfx_heap_chrome_seal(void) {}
+extern "C" __attribute__((weak)) void osgfx_heap_client_begin(void) {}
 extern "C" __attribute__((weak)) int osgfx_heap_ready(void) { return 0; }
 extern "C" __attribute__((weak)) size_t osgfx_heap_used(void) { return 0; }
 extern "C" __attribute__((weak)) size_t osgfx_heap_cap(void) { return 0; }
@@ -177,6 +184,9 @@ static void bind(OsGfx *g) {
   info = SkImageInfo::Make(g->w, g->h, kBGRA_8888_SkColorType, alpha_type);
   g->owned = SkCanvas::MakeRasterDirect(info, g->px, (size_t)g->pitch);
   g->canvas = g->owned.get();
+  if (g == &g_one && g->canvas != 0) {
+    osgfx_heap_chrome_seal();
+  }
 }
 
 static SkCanvas *canvas_of(OsGfx *g) {
@@ -1197,7 +1207,6 @@ __attribute__((noinline)) static void tick_body(void) {
   {
     struct OsGfxGuestCmd local = *m;
     uint32_t *target = osgfx_chrome_target(m);
-    uint32_t seed;
     int focus_only;
     int geom_only;
     if (target != 0) {
@@ -1231,12 +1240,10 @@ __attribute__((noinline)) static void tick_body(void) {
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
       if (geom_only != 0) {
-        seed = 0xD074A17u;
-        if (local.desk != 0) {
-          seed = (uint32_t)local.desk;
-        }
-        osgfx_fill_desk_cached(g->px, g->pitch, 0, 0, ww, hh, seed);
-        osgfx_session_paint_windows(g, &local);
+        uint64_t old0;
+        uint64_t old1;
+        osgfx_chrome_stamp_wins(&old0, &old1);
+        osgfx_session_paint_geom(g, &local, old0, old1);
       } else {
         osgfx_session_paint(g, &local, osgfx_graphite_ready());
       }
@@ -1289,18 +1296,25 @@ static void client_reclaim_if_tight(void) {
     if (osgfx_heap_ready() > 0) {
       size_t cap = osgfx_heap_cap();
       if (cap > 0 && osgfx_heap_used() + (384u * 1024u) > cap) {
-        osgfx_heap_frame_begin();
+        /* Keep g_one. A full frame rewind here was the 1.8s TCG
+         * re-bind on the next focus/max. */
+        osgfx_heap_client_begin();
       }
     }
   }
 }
 
 static void client_body(uint32_t *px, int pitch, int w, int h, int kind) {
-  drop_skia_before_rewind();
+  /* Never drop g_one. Pointer raster and WM_OP_PAINT share client_g
+   * only; destroying the chrome canvas made every later miss pay
+   * SkCanvas::MakeRasterDirect under TCG (~1.8s). */
   client_arg.kind = kind;
-  client_reclaim_if_tight();
   client_g.owned.reset();
   client_g.canvas = 0;
+  if (kind != CLIENT_POINTER) {
+    osgfx_heap_client_begin();
+    client_reclaim_if_tight();
+  }
   client_g.px = px;
   client_g.pitch = pitch;
   client_g.w = w;
@@ -1417,7 +1431,7 @@ extern "C" int osgfx_pointer_raster(uint32_t *out, int w, int h) {
   if (out == 0 || w < 1 || h < 1) {
     return 1;
   }
-  client_body(out, w * 4, w, h, CLIENT_POINTER);
+  /* Software sprite. Do not touch g_one or the chrome heap. */
   yy = 0;
   while (yy < h) {
     xx = 0;

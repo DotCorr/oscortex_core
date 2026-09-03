@@ -26,13 +26,34 @@ size_t osgfx_heap_used(void) { return heap_used; }
 size_t osgfx_heap_cap(void) { return (size_t)CRT_HEAP; }
 
 static size_t heap_watermark;
+static size_t heap_chrome_mark;
 
 int osgfx_heap_ready(void) { return heap_watermark > 0 ? 1 : 0; }
 
+/* After bind(g_one): client paint may reclaim above this mark without
+ * discarding the live chrome Skia records. */
+void osgfx_heap_chrome_seal(void) {
+  heap_chrome_mark = heap_used;
+}
+
+void osgfx_heap_client_begin(void) {
+  size_t mark;
+
+  mark = heap_chrome_mark;
+  if (mark == 0) {
+    mark = heap_watermark;
+  }
+  if (mark > 0 && heap_used > mark) {
+    heap_used = mark;
+  }
+}
+
 /* Frame scratch reclaim. Graphite MakeVulkan + init proofs stay
  * below the watermark; per-tick surfaces are bump-allocated and
- * discarded here because free() is a no-op. */
+ * discarded here because free() is a no-op. A full rewind also
+ * drops the chrome seal so the next bind(g_one) reseals. */
 void osgfx_heap_frame_begin(void) {
+  heap_chrome_mark = 0;
   if (heap_watermark == 0) {
     if (heap_used > 0) {
       heap_watermark = heap_used;

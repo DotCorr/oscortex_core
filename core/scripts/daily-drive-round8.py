@@ -141,6 +141,7 @@ class Serial:
         self.last_pres_seq = None
         self.abs_n = 0
         self.last_abs = (None, None)
+        self._partial = ""
         if sock_port:
             deadline = time.time() + 8
             last = None
@@ -183,13 +184,25 @@ class Serial:
         return False
 
     def _note_seq(self, n):
+        # PRES is the single present seq. LAT shares the number but is
+        # not ingested here — mixing invented wrap/gap counts.
         if self.last_pres_seq is None or seq_after(self.last_pres_seq, n):
             self.last_pres_seq = n
+        if self.pres_seq and self.pres_seq[-1] == n:
+            return
         self.pres_seq.append(n)
 
     def _ingest(self, text, into_seq=True):
         if not text:
             return
+        text = self._partial + text
+        if "\n" not in text and "\r" not in text:
+            self._partial = text
+            return
+        if text.endswith("\n") or text.endswith("\r"):
+            self._partial = ""
+        else:
+            text, self._partial = text.rsplit("\n", 1)
         kept = []
         arch = []
         for ln in text.splitlines():
@@ -202,9 +215,7 @@ class Serial:
                 if ln.startswith("WM LAT "):
                     m = SEQ_RE.search(ln)
                     if m:
-                        n = int(m.group(1), 16)
-                        self.lat_seq.append(n)
-                        self._note_seq(n)
+                        self.lat_seq.append(int(m.group(1), 16))
                 pm = PRES_RE.match(ln)
                 if pm:
                     self._note_seq(int(pm.group(1), 16))

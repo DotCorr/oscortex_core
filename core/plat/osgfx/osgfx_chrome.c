@@ -306,6 +306,15 @@ int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m) {
   return 1;
 }
 
+void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1) {
+  if (win0 != 0) {
+    *win0 = g_stamp_have != 0 ? g_stamp_win0 : 0;
+  }
+  if (win1 != 0) {
+    *win1 = g_stamp_have != 0 ? g_stamp_win1 : 0;
+  }
+}
+
 /* 1 when the cached frame is still the right picture except window
  * geometry (maximize / restore / resize). Desk, pop, wall, tones, page
  * and flags-minus-TOP stay. Title/borders are recomposed from slices;

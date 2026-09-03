@@ -581,6 +581,68 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   osgfx_session_paint_windows(g, cmd);
 }
 
+static void uncover_geom(uint32_t *fb, int pitch, uint64_t geom, int fb_w,
+                         int fb_h, uint32_t seed) {
+  int x;
+  int y;
+  int w;
+  int h;
+
+  if (geom == 0 || fb == 0 || fb_w < 8 || fb_h < 8) {
+    return;
+  }
+  unpack_geom(geom, &x, &y, &w, &h);
+  if (w < 1 || h < 1) {
+    return;
+  }
+  x = x - 24;
+  y = y - 24;
+  w = w + 48;
+  h = h + 48;
+  if (x < 0) {
+    w = w + x;
+    x = 0;
+  }
+  if (y < 0) {
+    h = h + y;
+    y = 0;
+  }
+  if (x + w > fb_w) {
+    w = fb_w - x;
+  }
+  if (y + h > fb_h) {
+    h = fb_h - y;
+  }
+  if (w < 1 || h < 1) {
+    return;
+  }
+  osgfx_fill_desk_cached(fb, pitch, x, y, w, h, seed);
+}
+
+void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
+                              uint64_t old0, uint64_t old1) {
+  uint32_t seed;
+  uint32_t *fb;
+  int pitch;
+  int ww;
+  int hh;
+
+  if (g == 0 || cmd == 0 || cmd->fb == 0) {
+    return;
+  }
+  ww = (int)cmd->w;
+  hh = (int)cmd->h;
+  pitch = (int)cmd->pitch;
+  fb = (uint32_t *)(uintptr_t)cmd->fb;
+  seed = 0xD074A17u;
+  if (cmd->desk != 0) {
+    seed = (uint32_t)cmd->desk;
+  }
+  uncover_geom(fb, pitch, old0, ww, hh, seed);
+  uncover_geom(fb, pitch, old1, ww, hh, seed);
+  osgfx_session_paint_windows(g, cmd);
+}
+
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
   int ww;
   int hh;
