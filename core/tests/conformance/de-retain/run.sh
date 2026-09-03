@@ -149,26 +149,23 @@ ck; grep -q 'wmSessionOwe();' "$GFX_DART" \
 ck; grep -q 'wmSessionOwedClear();' "$WM_DART" \
   || fail "wmCompose does not settle the debt its own blit already paid"
 
-# 1d. AND THE POINTER NO LONGER KICKS FOR NOTHING. This is the other half:
-# with the restore in place a pointer move would be CORRECT but would still
-# hand the whole screen to Skia for an arrow that moved twelve pixels, which
-# is the exact opposite of ADR-0188's policy.
+# 1d. THE POINTER NEVER KICKS. Sprite restore+place plus dirty old+new
+# cursor bounds. A kick from IRQ12 was a full session tick on every
+# packet — the R18 2.3 fps cost-bound. Chrome-stale geom still composes
+# in task context (drag/max), not from the pointer IRQ.
 capture_sh PTR_OUT PTR_STATUS -- "python3 - '$WM_DART' <<'PY'
 import sys
 src = open(sys.argv[1]).read()
 body = src[src.index('void wmPointerTick()'):]
 body = body[:body.index('\n}\n')]
-if 'wmGfxKick();' not in body:
-    raise SystemExit('wmPointerTick never kicks — a drag would leave the '
-                     'chrome behind the window')
-if 'wmGfxChromeFresh()' not in body:
-    raise SystemExit('wmPointerTick kicks unconditionally: every pointer '
-                     'packet repaints the whole screen from Skia (GAP-0333)')
-i = body.index('wmGfxChromeFresh()')
-j = body.index('wmGfxKick();')
-if j < i:
-    raise SystemExit('the kick is not behind the signature test')
-print('    wmPointerTick kicks only when wmGfxChromeSig would move')
+if 'wmGfxKick();' in body:
+    raise SystemExit('wmPointerTick still kicks — every packet is a '
+                     'session tick (Round 19 dirty-region gate)')
+if 'wmDamageRect(ox, oy' not in body:
+    raise SystemExit('wmPointerTick does not dirty old cursor bounds')
+if 'wmLatNotePresent' not in body:
+    raise SystemExit('wmPointerTick does not same-tick note LAT')
+print('    wmPointerTick is sprite-only: no kick, old+new cursor damage')
 PY"
 ck; [[ $PTR_STATUS -eq 0 ]] || { echo "$PTR_OUT" >&2; fail "the pointer still kicks the session for a move that changes nothing"; }
 echo "$PTR_OUT"
