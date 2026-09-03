@@ -68,8 +68,10 @@ part of 'kmain.dart';
 /// **Four.** Sit-in Start lists four named ELFs; a session that already
 /// holds two resident surfaces must still be able to spawn SET or
 /// STUDIO (ADR-0109). The window is two page-directory entries
-/// ([vmShmPages] 1024) so dock + SET + a native-max FILES body can
-/// live together. Four regions still share the first-fit VA map.
+/// ([vmShmPages] 1024) so one process can hold dock + a native-max
+/// FILES body. First-fit is per address space (per-client windows):
+/// other processes may reuse the same VA. Four regions still share
+/// the slot table.
 const int shmMax = 4;
 
 /// Pages of window address space reserved per region SLOT, whatever the region
@@ -494,6 +496,13 @@ final List<u8> shmStrDead = const [
   u8(0x52), u8(0x20),
 ];
 
+/// `'SHM LIVE '` -- 9 bytes. Sum of live region pages (physical).
+@rodata
+final List<u8> shmStrLive = const [
+  u8(0x53), u8(0x48), u8(0x4D), u8(0x20), u8(0x4C), u8(0x49), u8(0x56), u8(0x45),
+  u8(0x20),
+];
+
 /// Field separator: frames actually returned. `' FREED '` -- 7 bytes.
 @rodata
 final List<u8> shmStrFreed = const [
@@ -813,10 +822,16 @@ u64 shmRegionVa(u64 r) {
   return u64(vmShmBase) + (shmRegionBasePage(r) * u64(vmPageBytes));
 }
 
-/// First-fit contiguous extent in the 1024-page shared window.
-/// [skip] is a live region whose current pages may be reused (grow reloc).
+/// First-fit contiguous extent in the caller's address space.
+///
+/// Regions in other processes may reuse the same VA (per-client
+/// windows). The 1024-page cliff was a *global* first-fit: dock +
+/// menu + FILES 829 + SET sat at 1013/1024 even though no one AS
+/// mapped all four. [skip] is a live region whose current pages may
+/// be reused (grow reloc).
 @bare
 u64 shmVaFindSkip(u64 pages, u64 skip) {
+  final u64 proc = procCurrent();
   u64 at = u64(0);
   while ((at + pages) <= u64(vmShmPages)) {
     u64 moved = u64(0);
@@ -824,12 +839,20 @@ u64 shmVaFindSkip(u64 pages, u64 skip) {
     while (r < u64(shmMax)) {
       if (r != skip) {
         if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
-          final u64 lo = shmRegionBasePage(r);
-          final u64 hi = lo + shmReg(r, u64(shmRegPages));
-          if (at < hi) {
-            if ((at + pages) > lo) {
-              at = hi;
-              moved = u64(1);
+          u64 blocks = u64(0);
+          if (skip < u64(shmMax)) {
+            blocks = shmRegsShareAs(r, skip);
+          } else {
+            blocks = shmProcMapsReg(proc, r);
+          }
+          if (blocks > u64(0)) {
+            final u64 lo = shmRegionBasePage(r);
+            final u64 hi = lo + shmReg(r, u64(shmRegPages));
+            if (at < hi) {
+              if ((at + pages) > lo) {
+                at = hi;
+                moved = u64(1);
+              }
             }
           }
         }
@@ -859,11 +882,13 @@ u64 shmVaCanGrow(u64 region, u64 pages) {
   while (r < u64(shmMax)) {
     if (r != region) {
       if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
-        final u64 otherLo = shmRegionBasePage(r);
-        final u64 otherHi = otherLo + shmReg(r, u64(shmRegPages));
-        if (lo < otherHi) {
-          if (hi > otherLo) {
-            return u64(0);
+        if (shmRegsShareAs(r, region) > u64(0)) {
+          final u64 otherLo = shmRegionBasePage(r);
+          final u64 otherHi = otherLo + shmReg(r, u64(shmRegPages));
+          if (lo < otherHi) {
+            if (hi > otherLo) {
+              return u64(0);
+            }
           }
         }
       }
@@ -1004,6 +1029,62 @@ u64 shmCapHolds(u64 s, u64 r) {
     i = i + u64(1);
   }
   return u64(0);
+}
+
+/// 1 if process [s] currently maps region [r].
+@bare
+u64 shmProcMapsReg(u64 s, u64 r) {
+  u64 i = u64(0);
+  while (i < u64(shmCapsPerProc)) {
+    final u64 c = shmCap(s, i);
+    if ((c & u64(15)) > u64(0)) {
+      if (shmCapReg(c) == r) {
+        if (shmCapMapped(c) > u64(0)) {
+          return u64(1);
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(0);
+}
+
+/// 1 if any address space maps both [a] and [b].
+@bare
+u64 shmRegsShareAs(u64 a, u64 b) {
+  u64 s = u64(0);
+  while (s < u64(procMax)) {
+    if (shmProcActive(s) > u64(0)) {
+      if (shmProcMapsReg(s, a) > u64(0)) {
+        if (shmProcMapsReg(s, b) > u64(0)) {
+          return u64(1);
+        }
+      }
+    }
+    s = s + u64(1);
+  }
+  return u64(0);
+}
+
+/// Sum of live region page counts (physical high-water input).
+@bare
+u64 shmLivePages() {
+  u64 n = u64(0);
+  u64 r = u64(0);
+  while (r < u64(shmMax)) {
+    if (shmReg(r, u64(shmRegState)) > u64(shmRegFree)) {
+      n = n + shmReg(r, u64(shmRegPages));
+    }
+    r = r + u64(1);
+  }
+  return n;
+}
+
+@bare
+void shmNoteLive() {
+  uartWrite(Rodata.addressOf(shmStrLive), u64(9));
+  uartPutHex(shmLivePages(), u64(4));
+  uartNewline();
 }
 
 // ---------------------------------------------------------------------------
@@ -1607,6 +1688,7 @@ void shmSysCreate(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrVa), u64(4));
   uartPutHex(shmRegionVa(r), u64(16));
   uartNewline();
+  shmNoteLive();
   shmPageReport(r);
   userSetFrame(frame, u64(userFrameRax), shmHandle(ci, gen));
 }
@@ -2090,6 +2172,7 @@ void shmSysGrow(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
   uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
+  shmNoteLive();
   if (moved > u64(0)) {
     userSetFrame(frame, u64(userFrameRax), va);
   } else {
@@ -2189,6 +2272,7 @@ void shmSysShrink(u64 frame) {
   uartWrite(Rodata.addressOf(shmStrMaps), u64(6));
   uartPutHex(shmRegionMaps(r), u64(4));
   uartNewline();
+  shmNoteLive();
   userSetFrame(frame, u64(userFrameRax), u64(0));
 }
 

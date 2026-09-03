@@ -134,6 +134,24 @@ static int resource_cache_disabled;
  * from the wrong CR3. Never keep a user-VA unique_ptr past paint. */
 static int client_in_paint;
 
+/* bind → paint → flush → drop in the owning CR3. A unique_ptr must
+ * not survive rewind or be destroyed under the wrong CR3/IRQ.
+ * BIOS de-desk first DESK COMMIT #GP was SkCanvas::internalRestore
+ * (OP 488B) walking a clip stack that client_begin had already
+ * rewound while g_one stayed live. */
+enum {
+  SKIA_OWN_EMPTY = 0,
+  SKIA_OWN_BOUND = 1,
+  SKIA_OWN_PAINT = 2,
+  SKIA_OWN_FLUSH = 3
+};
+static int g_one_own;
+static int client_own;
+static unsigned heap_rewind_gen;
+static unsigned g_one_bind_gen;
+static unsigned client_bind_gen;
+static unsigned own_log_n;
+
 static void disable_skia_resource_cache(void) {
   if (resource_cache_disabled != 0) {
     return;
@@ -152,17 +170,57 @@ static int heap_needs_rewind(void) {
   return 0;
 }
 
+static void own_log(const char *s) {
+  if (own_log_n >= 12u) {
+    return;
+  }
+  own_log_n = own_log_n + 1u;
+  com1_puts(s);
+}
+
+static void skia_drop_owned(OsGfx *g, int *own, unsigned *bind_gen) {
+  if (g == 0) {
+    return;
+  }
+  if (g->owned) {
+    if (*bind_gen != heap_rewind_gen) {
+      /* Arena already rewound under this wrapper. Leak rather than
+       * SkCanvas::~SkCanvas → internalRestore on junk (OP 488B). */
+      (void)g->owned.release();
+      com1_puts("OSGFX SKIA LEAK\n");
+    } else {
+      g->owned.reset();
+    }
+  }
+  g->canvas = 0;
+  *own = SKIA_OWN_EMPTY;
+}
+
+static void heap_rewind_clients(void) {
+  heap_rewind_gen = heap_rewind_gen + 1u;
+  osgfx_heap_client_begin();
+  own_log("OSGFX SKIA REWIND\n");
+}
+
+static void skia_drop_chrome(void) {
+  skia_drop_owned(&g_one, &g_one_own, &g_one_bind_gen);
+  g_one_bound_px = 0;
+  g_one_bound_pitch = 0;
+  g_one_bound_w = 0;
+  g_one_bound_h = 0;
+  own_log("OSGFX SKIA DROP\n");
+}
+
 static void skia_release_client(void) {
   /* Destruct the client canvas first. Then rewind the bump to the
    * chrome seal. Never rewind while this unique_ptr is live.
    * Null px so chrome cannot retain a guest VA after mapping/grow. */
-  client_g.owned.reset();
-  client_g.canvas = 0;
+  skia_drop_owned(&client_g, &client_own, &client_bind_gen);
   client_g.px = 0;
   client_g.pitch = 0;
   client_g.w = 0;
   client_g.h = 0;
-  osgfx_heap_client_begin();
+  heap_rewind_clients();
 }
 
 static SkCanvas *canvas_of(OsGfx *g);
@@ -173,16 +231,19 @@ static SkCanvas *canvas_of(OsGfx *g);
  * survive without OSGFX PHZ MENU PREWARM. */
 
 static void chrome_heap_after_paint(void) {
-  /* Raise the seal once so first-paint Skia records stay under a live
-   * g_one. Reclaim only client scratch above that mark. */
-  if (g_one.canvas == 0) {
-    return;
-  }
-  if (g_one_paint_sealed == 0) {
-    /* Premul menu prewarm under this seal caused #GP on the next
-     * FILES chrome miss. Seal the first chrome paint only. */
-    osgfx_heap_chrome_seal();
-    g_one_paint_sealed = 1;
+  /* bind → paint → flush → drop. Drop chrome before any rewind so
+   * unique_ptr cannot outlive the bump. Seal once after the first
+   * chrome drop so typefaces stay; later ticks rebind above that
+   * mark and rewind back to it (no ratchet). */
+  if (g_one.canvas != 0 || g_one_own != SKIA_OWN_EMPTY) {
+    if (g_one_own == SKIA_OWN_PAINT || g_one_own == SKIA_OWN_BOUND) {
+      g_one_own = SKIA_OWN_FLUSH;
+    }
+    skia_drop_chrome();
+    if (g_one_paint_sealed == 0) {
+      osgfx_heap_chrome_seal();
+      g_one_paint_sealed = 1;
+    }
   }
   skia_release_client();
 }
@@ -202,6 +263,9 @@ static void drop_skia_before_rewind(void) {
   g_one_bound_w = 0;
   g_one_bound_h = 0;
   g_one_paint_sealed = 0;
+  g_one_own = SKIA_OWN_EMPTY;
+  client_own = SKIA_OWN_EMPTY;
+  heap_rewind_gen = heap_rewind_gen + 1u;
   /*
    * Do not traverse the process-global cache here. Per-frame shadows avoid
    * cached mask filters below, and the zero-byte budget keeps other
@@ -255,14 +319,16 @@ static void bind(OsGfx *g) {
     g_one_bound_pitch = g->pitch;
     g_one_bound_w = g->w;
     g_one_bound_h = g->h;
-    /* Raise the seal to this wrapper. client_begin must not rewind a
-     * canvas that bind() just allocated above the previous mark —
-     * that left unique_ptr holding a dead object and the next
-     * drawRRect/internalRestore #GP/#PF'd (de-pace OP 488B, UEFI
-     * CR2 FFFFFFFFFFFFFF48). Do not set g_one_paint_sealed here:
-     * chrome_heap_after_paint still has to raise the seal again so
-     * first-paint Skia records stay with the live canvas. */
-    osgfx_heap_chrome_seal();
+    g_one_bind_gen = heap_rewind_gen;
+    g_one_own = SKIA_OWN_BOUND;
+    /* Do not seal here. Sealing the wrapper then painting above it
+     * and rewinding (client_begin) while unique_ptr lived was the
+     * BIOS de-desk first-COMMIT internalRestore #GP. Durable seal
+     * is raised once in chrome_heap_after_paint after drop. */
+    own_log("OSGFX SKIA BIND\n");
+  } else if (g == &client_g && g->canvas != 0) {
+    client_bind_gen = heap_rewind_gen;
+    client_own = SKIA_OWN_BOUND;
   }
 }
 
@@ -281,14 +347,12 @@ static SkCanvas *canvas_of(OsGfx *g) {
       if (client_in_paint != 0) {
         return g->canvas;
       }
-      g->owned.reset();
-      g->canvas = 0;
+      /* Drop while the bump still holds the object. Then rewind to
+       * the durable seal so a new bind does not ratchet. */
+      skia_drop_chrome();
       if (g_one_paint_sealed != 0) {
-        osgfx_heap_client_begin();
+        heap_rewind_clients();
       }
-      /* Next chrome_heap_after_paint must reseal: this wrapper and
-       * its first-paint records sit above the previous mark. */
-      g_one_paint_sealed = 0;
     }
   }
   if (g->canvas == 0) {
@@ -301,13 +365,12 @@ OsGfx *osgfx_create(int w, int h) {
   if (w < 1 || h < 1) {
     return 0;
   }
-  if (g_one.w == w && g_one.h == h && g_one.canvas != 0) {
+  if (g_one.w == w && g_one.h == h) {
     return &g_one;
   }
+  skia_drop_chrome();
   g_one.w = w;
   g_one.h = h;
-  g_one.canvas = 0;
-  g_one.owned.reset();
   return &g_one;
 }
 
@@ -315,8 +378,11 @@ void osgfx_destroy(OsGfx *g) {
   if (g == 0) {
     return;
   }
-  g->canvas = 0;
-  g->owned.reset();
+  if (g == &g_one) {
+    skia_drop_chrome();
+    return;
+  }
+  skia_drop_owned(g, &client_own, &client_bind_gen);
 }
 
 static void put_px(OsGfx *g, int x, int y, uint32_t rgb) {
@@ -1349,6 +1415,7 @@ __attribute__((noinline)) static void tick_body(void) {
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
+      g_one_own = SKIA_OWN_PAINT;
       osgfx_session_patch_focus(g, &local);
       osgfx_flush(g);
       chrome_heap_after_paint();
@@ -1357,6 +1424,7 @@ __attribute__((noinline)) static void tick_body(void) {
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
+      g_one_own = SKIA_OWN_PAINT;
       if (geom_only != 0) {
         uint64_t old0;
         uint64_t old1;

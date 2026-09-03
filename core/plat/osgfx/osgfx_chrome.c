@@ -287,24 +287,15 @@ int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m) {
       (g_stamp_flags & OSGFX_CHROME_TOP_MASK)) {
     return 0;
   }
-  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 0] != g_stamp_launch0) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 1] != g_stamp_launch1) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 2] != g_stamp_launch2) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_CAP_MAIL] != g_stamp_cap_mail) {
-    return 0;
-  }
+  /* desk_have / launch / cap_mail change on uncover and dock hits.
+   * Treating them as a full miss was the 1.6s TCG focus hitch. */
+  (void)pg;
+  (void)g_stamp_desk_have;
+  (void)g_stamp_launch0;
+  (void)g_stamp_launch1;
+  (void)g_stamp_launch2;
+  (void)g_stamp_launch3;
+  (void)g_stamp_cap_mail;
   return 1;
 }
 
@@ -353,21 +344,13 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
       (g_stamp_flags & ~OSGFX_CHROME_GEOM_MASK)) {
     return 0;
   }
-  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 0] != g_stamp_launch0) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 1] != g_stamp_launch1) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 2] != g_stamp_launch2) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
-    return 0;
-  }
+  /* Same as focus_only: uncover must not force a wallpaper miss. */
+  (void)pg;
+  (void)g_stamp_desk_have;
+  (void)g_stamp_launch0;
+  (void)g_stamp_launch1;
+  (void)g_stamp_launch2;
+  (void)g_stamp_launch3;
   return 1;
 }
 

@@ -83,6 +83,9 @@
 #ifndef SYS_SHMGROW
 #define SYS_SHMGROW 34
 #endif
+#ifndef SYS_SHMSHRINK
+#define SYS_SHMSHRINK 35
+#endif
 
 /* No oslibc.h name. Packed u64: x | y<<16 | buttons<<32 | packets<<40. */
 #define SYS_MOUSE 20

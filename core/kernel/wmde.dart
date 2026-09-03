@@ -231,6 +231,14 @@ final List<u8> wmStrMax = const [
   u8(0x57), u8(0x20),
 ];
 
+/// `'WM HOLD W '` -- 10 bytes. Geom published; body blit suppressed
+/// until the client's next COMMIT (atomic max/restore).
+@rodata
+final List<u8> wmStrHold = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x48), u8(0x4F), u8(0x4C), u8(0x44),
+  u8(0x20), u8(0x57), u8(0x20),
+];
+
 /// `'WM PHZ MAX'` -- 10 bytes.
 @rodata
 final List<u8> wmStrPhzMax = const [
@@ -1570,8 +1578,12 @@ void wmToggleMaxWindow(u64 wI) {
     return;
   }
   wmSetWin(wI, u64(wmWinGeom), next);
+  wmSetWin(wI, u64(wmWinSeq), u64(0));
   wmSetMeta(u64(wmMetaTop), wI);
   wmeventEnqueueConfigure(wI);
+  uartWrite(Rodata.addressOf(wmStrHold), u64(10));
+  uartPutHex(wI, u64(1));
+  uartNewline();
   uartWrite(Rodata.addressOf(wmStrPhzMax), u64(10));
   uartNewline();
   final u64 px = wmRepaintUnion2(

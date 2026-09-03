@@ -1002,11 +1002,26 @@ static void files_on_event(u64 ev) {
       }
       if (nw != files_w || nh != files_height) {
         if (nw < files_w || nh < files_height) {
+          u64 keep = (SURF_OFFSET + nw * 4UL * nh + 4095UL) / 4096UL;
           at = put(0, "FILES REST ");
           at = putdec(at, nw);
           at = put(at, " ");
           at = putdec(at, nh);
           emit(at);
+          if (keep >= 1UL) {
+            if (sys2(SYS_SHMSHRINK, files_h, keep) < WM_RET_FLOOR) {
+              files_stride = nw * 4UL;
+              files_cap_w = nw;
+              files_cap_h = nh;
+              desc[WM_DESC_OP] = WM_OP_BACKING;
+              desc[WM_DESC_HANDLE] = files_h;
+              desc[WM_DESC_STRIDE] = files_stride;
+              (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
+              at = put(0, "FILES SHRINK ");
+              at = putdec(at, keep);
+              emit(at);
+            }
+          }
         }
         files_w = nw;
         files_height = nh;

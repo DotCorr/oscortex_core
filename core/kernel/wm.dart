@@ -886,6 +886,13 @@ void wmBlitRow(u64 wI, u64 py) {
   if ((rowOff + u64(4)) > bytes) {
     return;
   }
+  /* seq==0 means geom changed and the client has not COMMITed the
+   * new size. IRQ compose must not blit a mid-row FILES fill
+   * (848k-store black lower body). Chrome still paints the frame;
+   * the hole stays wallpaper until the completion token. */
+  if (wmWin(wI, u64(wmWinSeq)) < u64(1)) {
+    return;
+  }
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
@@ -3303,6 +3310,7 @@ void wmResizeStep(u64 x, u64 y) {
   final u64 rw = ow + b + b;
   final u64 rh = oh + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
+  wmSetWin(wI, u64(wmWinSeq), u64(0));
   wmeventEnqueueConfigure(wI);
   /* Compose old∪new once. Two independent repaints exposed an intermediate
    * frame and reused the damage scratch with two different extents. */

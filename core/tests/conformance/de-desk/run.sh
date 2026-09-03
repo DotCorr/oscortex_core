@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=196
+ASSERTIONS_REQUIRED=209
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -432,6 +432,25 @@ ck; grep -q 'osgfx_heap_ready() > 0' \
 ck; grep -qF '384u * 1024u' \
      "$CORE_DIR/plat/osgfx/osgfx_skia.cpp" \
   || fail "client paint does not reclaim the bump when it is tight"
+ck; grep -q 'SKIA_OWN_EMPTY' "$CORE_DIR/plat/osgfx/osgfx_skia.cpp" \
+  || fail "no explicit Skia wrapper ownership state machine"
+ck; grep -q 'bind → paint → flush → drop' \
+     "$CORE_DIR/plat/osgfx/osgfx_skia.cpp" \
+  || fail "ownership state machine lost bind/paint/flush/drop"
+ck; grep -q 'skia_drop_chrome' "$CORE_DIR/plat/osgfx/osgfx_skia.cpp" \
+  || fail "chrome unique_ptr is not dropped before rewind"
+ck; grep -q 'u64 shmProcMapsReg' "$SHM" \
+  || fail "SHM first-fit is still global — per-client windows missing"
+ck; grep -q 'u64 shmRegsShareAs' "$SHM" \
+  || fail "SHM grow still treats other processes as occupying this AS"
+ck; grep -q 'SYS_SHMSHRINK' "$CORE_DIR/user/frame/osframe.h" \
+  || fail "no SYS_SHMSHRINK for restore reclaim"
+ck; grep -q 'SYS_SHMSHRINK' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES does not shrink backing on restore"
+ck; grep -q 'wmWin(wI, u64(wmWinSeq)) < u64(1)' "$WM" \
+  || fail "wmBlitRow still presents a mid-paint max body"
+ck; grep -q 'wmStrHold' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "maximize does not hold present until COMMIT"
 echo "STRUCTURAL: pass"
 
 echo
@@ -596,6 +615,14 @@ ck; grep -q 'OSGFX SESSION STRIP CLIENT' "$SER" \
        fail "session still owns the strip — two taskbars"; }
 ck; ! grep -q 'FAULT RECOVERED' "$SER" \
   || fail "first compose still recovered a #GP — recovered is not the product"
+ck; grep -q 'OSGFX SKIA BIND' "$SER" \
+  || fail "no chrome bind — ownership state machine did not run"
+ck; grep -q 'OSGFX SKIA DROP' "$SER" \
+  || fail "chrome unique_ptr survived rewind — first DESK COMMIT #GP path"
+ck; grep -q 'OSGFX SKIA REWIND' "$SER" \
+  || fail "no client rewind after chrome drop"
+ck; ! grep -q 'OSGFX SKIA LEAK' "$SER" \
+  || fail "a wrapper was destroyed after rewind (leak token)"
 ck; grep -q 'OSGFX CLIENT SHAPE SKIA' "$SER" \
   || fail "no client shape reached the Skia rrect path"
 
