@@ -137,6 +137,9 @@ static u64 files_cap_h = WIN_H;
 /* Pages to keep after a restore. Applied after YIELD so the COMMIT
  * present can leave the UART before a 719-page unmap pegs TCG. */
 static u64 files_shrink_keep;
+/* 1 while a configure/paint slice just ran. Shrink only after an
+ * idle YIELD so wait_present can ingest WM PRES first. */
+static u64 files_shrink_busy;
 static u64 files_slot = 0xFFUL;
 static u64 menu_on;
 static u64 menu_row;
@@ -1024,6 +1027,7 @@ static void files_on_event(u64 ev) {
           u64 keep = (SURF_OFFSET + nw * 4UL * nh + 4095UL) / 4096UL;
           if (keep >= 1UL) {
             files_shrink_keep = keep;
+            files_shrink_busy = 1;
           }
         }
       }
@@ -1654,7 +1658,7 @@ void files_main(u64 sp) {
     u64 key;
     u64 got;
     got = 0;
-    if (files_shrink_keep >= 1UL) {
+    if (files_shrink_keep >= 1UL && files_shrink_busy == 0) {
       u64 keep = files_shrink_keep;
       files_shrink_keep = 0;
       if (sys2(SYS_SHMSHRINK, files_h, keep) < WM_RET_FLOOR) {
@@ -1689,6 +1693,10 @@ void files_main(u64 sp) {
       while (spin < YIELD_SPIN) {
         spin = spin + 1;
       }
+      files_shrink_busy = 0;
+    }
+    if (got > 0) {
+      files_shrink_busy = 1;
     }
     sys1(SYS_YIELD, 0);
   }
