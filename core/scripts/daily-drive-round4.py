@@ -127,7 +127,15 @@ class Serial:
     def read(self):
         self._drain_sock()
         try:
-            text = open(self.path, encoding="utf-8", errors="replace").read()
+            # Tail the logfile. A full 88MiB reread on every wait_mark
+            # livelocks the driver under a PROC YIELD storm.
+            size = os.path.getsize(self.path)
+            if size > 1048576:
+                with open(self.path, encoding="utf-8", errors="replace") as f:
+                    f.seek(size - 1048576)
+                    text = f.read()
+            else:
+                text = open(self.path, encoding="utf-8", errors="replace").read()
             if text:
                 return text
         except OSError:
@@ -136,10 +144,13 @@ class Serial:
 
 
 def wait_mark(ser, token, marked, timeout=8.0):
+    # Count, not prefix: Serial.read() tails the last MiB so `marked`
+    # is not a prefix of later snapshots.
+    n0 = marked.count(token)
     deadline = time.time() + timeout
     while time.time() < deadline:
         now = ser.read()
-        if token in now[len(marked):]:
+        if now.count(token) > n0:
             return now
         time.sleep(0.05)
     return ""
