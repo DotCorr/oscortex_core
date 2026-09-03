@@ -133,18 +133,6 @@ static int resource_cache_disabled;
  * CR2 0x10259EC0 — Skia still held the FILES wrapper and memcpy'd it
  * from the wrong CR3. Never keep a user-VA unique_ptr past paint. */
 static int client_in_paint;
-enum { SHM_VA_LO = 0x10200000u, SHM_VA_HI = 0x10600000u };
-
-static int ptr_in_user_shm(const void *p) {
-  uintptr_t a = (uintptr_t)p;
-  if (a < (uintptr_t)SHM_VA_LO) {
-    return 0;
-  }
-  if (a >= (uintptr_t)SHM_VA_HI) {
-    return 0;
-  }
-  return 1;
-}
 
 static void disable_skia_resource_cache(void) {
   if (resource_cache_disabled != 0) {
@@ -271,12 +259,10 @@ static void bind(OsGfx *g) {
     return;
   }
   disable_skia_resource_cache();
-  /* g_one is chrome cache / GOP only. Binding it to a user SHM VA
-   * leaves a kernel-side pixel pointer that outlives the client's CR3. */
-  if (g == &g_one && ptr_in_user_shm(g->px) != 0) {
-    com1_puts("OSGFX CHROME SHM REFUSE\n");
-    return;
-  }
+  /* Do not refuse g_one just because the numeric address sits in the
+   * SHM VA hole: chrome-cache frames are identity-mapped PMM pages and
+   * their PA can land in 0x10200000..0x10600000. Client pixels go
+   * through client_g only. */
   /* kOpaque, NOT kUnpremul. The scanout stores 0x00RRGGBB, i.e. the alpha
    * byte is always 0. Under kUnpremul every antialiased edge would blend
    * against a "fully transparent" destination and the fringe would come
@@ -722,7 +708,7 @@ void osgfx_fill_rrect(OsGfx *g, int x, int y, int w, int h, int radius,
     (void)osgfx_graphite_fill_rrect;
   }
   c = canvas_of(g);
-  if (c == 0) {
+  if (c == 0 || g->owned.get() != c) {
     draw_rrect_spans(g, x, y, w, h, radius, rgb);
     return;
   }
@@ -1388,6 +1374,12 @@ __attribute__((noinline)) static void tick_body(void) {
       osgfx_chrome_begin(m);
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
+      /* Full miss: drop and rebind. Reusing a canvas whose device was
+       * allocated then overwritten by arena rewind is de-pace's first
+       * CHROME MISS #GP (SkCanvas::drawRRect +0x7, OP 488B). */
+      g->owned.reset();
+      g->canvas = 0;
+      g_one_bound_px = 0;
       (void)canvas_of(g);
       if (geom_only != 0) {
         uint64_t old0;
