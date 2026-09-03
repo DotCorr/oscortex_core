@@ -448,6 +448,8 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
     qmp_ms = round((time.perf_counter() - t0) * 1000.0, 1)
     opid = None
     ok = False
+    t_pres = None
+    need_files = label.startswith("max_") or label.startswith("restore_")
     deadline = t0 + timeout
     while time.perf_counter() < deadline:
         ser.read()
@@ -457,9 +459,20 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
             for seq, _ts in ser.pres_at[pres_mark:]:
                 if seq == opid:
                     ok = True
+                    if t_pres is None:
+                        t_pres = time.perf_counter()
                     break
             if ok:
-                break
+                evs = ser.phase_events[ev_mark:]
+                has_cfg = any(e.get("token") == "FILES CFG" for e in evs)
+                has_e = any(e.get("token") == "FILES PHZ PAINT E" for e in evs)
+                if has_e:
+                    break
+                if has_cfg:
+                    continue
+                if (not need_files) or (t_pres is not None
+                                        and (time.perf_counter() - t_pres) > 0.12):
+                    break
         elif not want_opid:
             cur = ser.last_pres_seq
             if cur is not None and (last is None or seq_after(last, cur)):
@@ -1056,9 +1069,17 @@ def main():
         if "DESK READY" not in ser.read() and not file_has_token(serial_path, "DESK READY"):
             raise SystemExit("DESK READY never printed")
         press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left", "FILES CSD", timeout=8)
-        time.sleep(0.8)
+        wait_mark(ser, "FILES READY", ser.read(), 8)
+        wait_mark(ser, "WM WARM TCG", ser.read(), 4)
+        time.sleep(0.35)
         press(q, ser, SET_DOCK_XY[0], SET_DOCK_XY[1], "left", "SET CSD", timeout=12)
-        time.sleep(2.0)
+        warm_n = ser.read().count("WM WARM TCG")
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            if ser.read().count("WM WARM TCG") > warm_n:
+                break
+            time.sleep(0.05)
+        time.sleep(0.8)
         boot_text = serial_fatal(serial_path, ser.read())
         if "FILES CSD" not in boot_text and not file_has_token(serial_path, "FILES CSD"):
             raise SystemExit("FILES CSD never printed")
@@ -1178,7 +1199,8 @@ def main():
         time.sleep(0.35)
         press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left",
               "FILES CSD", timeout=8)
-        time.sleep(0.8)
+        wait_mark(ser, "FILES READY", ser.read(), 8)
+        time.sleep(0.25)
         serial_fatal(serial_path, ser.read())
         walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0],
                                              FILES_MAX_XY[1], timeout=4.0,
@@ -1318,7 +1340,8 @@ def main():
             time.sleep(0.30)
             press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left",
                   "FILES CSD", timeout=8)
-            time.sleep(0.45)
+            wait_mark(ser, "FILES READY", ser.read(), 8)
+            time.sleep(0.25)
             serial_fatal(serial_path, ser.read())
             walls["max_cold"].append(timed_click(
                 q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1], timeout=4.0,

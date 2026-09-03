@@ -1636,6 +1636,27 @@ void wmWarmupAfterCommit(u64 slot) {
     return;
   }
   final u64 cap = wmPage(u64(wmPageWLaunch0) + slot);
+  /* After SET lands, walk FILES max/restore once more so chrome GEOM
+   * with both clients live is translated before the first user click. */
+  if (cap == u64(2)) {
+    if (wmPage(u64(wmPageWDeskWarm)) > u64(0)) {
+      return;
+    }
+    wmPageSet(u64(wmPageWDeskWarm), u64(1));
+    u64 i = u64(0);
+    while (i < u64(wmMaxWindows)) {
+      if (wmPage(u64(wmPageWLaunch0) + i) == u64(1)) {
+        final u64 mask = u64(1) << i;
+        final u64 done = wmPage(u64(wmPageWWarmDone));
+        wmPageSet(u64(wmPageWWarmDone), done - (done & mask));
+        wmPageSet(u64(wmPageWWarm), u64(0));
+        wmWarmupAfterCommit(i);
+        return;
+      }
+      i = i + u64(1);
+    }
+    return;
+  }
   if (cap != u64(1)) {
     return;
   }

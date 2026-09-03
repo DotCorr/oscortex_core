@@ -265,6 +265,8 @@ const int wmPageWCapMail = 387;
 /// [wmPageWWarmDone]: bit per slot, sticky until close/reattach.
 const int wmPageWWarm = 388;
 const int wmPageWWarmDone = 389;
+/// 1 after SET's first commit triggered a FILES re-walk with both clients live.
+const int wmPageWDeskWarm = 390;
 
 const int wmLatKindPtr = 1;
 const int wmLatKindWheel = 2;
