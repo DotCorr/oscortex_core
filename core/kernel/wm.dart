@@ -763,6 +763,7 @@ void wmFocusChromeDamage(u64 wI) {
   }
 }
 
+@bare
 void wmFocusTo(u64 wI) {
   final u64 oldRaw = wmFocusLive();
   u64 old = u64(wmMaxWindows);
