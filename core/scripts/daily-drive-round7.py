@@ -109,6 +109,8 @@ class Serial:
         self.recv_bytes = 0
         self.archive_truncated = 0
         self.lat_seq = []
+        self.abs_n = 0
+        self.last_abs = (None, None)
         if sock_port:
             deadline = time.time() + 8
             last = None
@@ -165,6 +167,11 @@ class Serial:
                     m = re.search(r" S ([0-9A-F]+)", ln)
                     if m:
                         self.lat_seq.append(int(m.group(1), 16))
+                if ln.startswith("MOUSE ABS"):
+                    self.abs_n += 1
+                    m = re.search(r"X ([0-9A-F]+) Y ([0-9A-F]+)", ln)
+                    if m:
+                        self.last_abs = (int(m.group(1), 16), int(m.group(2), 16))
         if kept:
             self.buf = (self.buf + "\n" + "\n".join(kept))[-262144:]
         if arch:
@@ -237,18 +244,24 @@ def abs_xy(x, y):
     return x * 32767 // max(1, SCREEN_W - 1), y * 32767 // max(1, SCREEN_H - 1)
 
 
-def place(q, ser, x, y):
+def place(q, ser, x, y, slop=12):
     ax, ay = abs_xy(x, y)
-    for _ in range(8):
-        n = ser.read().count("MOUSE ABS")
+    for _ in range(12):
+        n = ser.abs_n
         q.cmd("input-send-event", events=[
             {"type": "abs", "data": {"axis": "x", "value": ax}},
             {"type": "abs", "data": {"axis": "y", "value": ay}}])
         t = time.time() + 1.2
         while time.time() < t:
-            if ser.read().count("MOUSE ABS") > n:
-                return
+            ser.read()
+            if ser.abs_n > n:
+                px, py = ser.last_abs
+                if px is not None and abs(px - x) <= slop and abs(py - y) <= slop:
+                    return True
+                break
             time.sleep(0.04)
+    print("WARN: place(%s,%s) last ABS %s" % (x, y, ser.last_abs))
+    return False
 
 
 def button(q, x, y, btn, down):
@@ -382,17 +395,11 @@ def last_abs_xy(text):
 def assert_probe(q, ser, x, y, slop=8):
     """Drive (x,y) AFTER menus and assert the last ABS is that probe."""
     marked = ser.read()
-    n_abs = marked.count("MOUSE ABS")
     n_frame = marked.count("WM FRAME")
-    place(q, ser, x, y)
-    deadline = time.time() + 2.0
-    text = marked
-    while time.time() < deadline:
-        text = ser.read()
-        if text.count("MOUSE ABS") > n_abs:
-            break
-        time.sleep(0.04)
-    ax, ay = last_abs_xy(text)
+    if not place(q, ser, x, y, slop=slop):
+        raise SystemExit("probe (%d,%d): place did not land (last ABS %s)"
+                         % (x, y, ser.last_abs))
+    ax, ay = ser.last_abs
     if ax is None:
         raise SystemExit("probe (%d,%d): no MOUSE ABS after place" % (x, y))
     if abs(ax - x) > slop or abs(ay - y) > slop:
@@ -453,6 +460,10 @@ def main():
 
     if skip_boot:
         print("skip boot; desk already up")
+        q.key("esc")
+        time.sleep(0.15)
+        q.key("esc")
+        time.sleep(0.2)
     else:
         for line, wait in (
             ("fb", 1.5),
