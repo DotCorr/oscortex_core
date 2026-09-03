@@ -156,6 +156,15 @@ class Serial:
 
     def read(self):
         self._drain_sock()
+        # Live socket is the UART. The logfile is the same stream plus a
+        # YIELD storm that can grow to hundreds of megabytes; catching it
+        # up on every poll livelocks the driver (40% CPU on a 300 MiB
+        # serial.txt) and never reaches metrics.
+        if self.sock is None:
+            self._ingest_file()
+        return (getattr(self, "archive", "") + "\n" + self.buf)
+
+    def _ingest_file(self):
         try:
             size = os.path.getsize(self.path)
             if size > self.off:
@@ -169,15 +178,14 @@ class Serial:
                         self._ingest(chunk.decode("utf-8", "replace"))
         except OSError:
             pass
-        return (getattr(self, "archive", "") + "\n" + self.buf)
 
     def _drain_sock(self):
         if self.sock is None:
             return
         got = 0
         try:
-            while got < 65536:
-                chunk = self.sock.recv(4096)
+            while got < 262144:
+                chunk = self.sock.recv(8192)
                 if not chunk:
                     break
                 self._ingest(chunk.decode("utf-8", "replace"))
@@ -280,6 +288,45 @@ def pct(values, p):
     return s[max(0, min(idx, len(s) - 1))]
 
 
+def harvest_lat(path):
+    """Scan the logfile for WM LAT lines only. Does not ingest YIELD."""
+    lines = []
+    try:
+        with open(path, "rb") as f:
+            buf = b""
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    break
+                buf += chunk
+                parts = buf.split(b"\n")
+                buf = parts[-1]
+                for ln in parts[:-1]:
+                    if ln.startswith(b"WM LAT "):
+                        lines.append(ln.decode("utf-8", "replace"))
+            if buf.startswith(b"WM LAT "):
+                lines.append(buf.decode("utf-8", "replace"))
+    except OSError:
+        return []
+    return parse_lat("\n".join(lines))
+
+
+def file_has_token(path, token):
+    needle = token.encode("utf-8")
+    try:
+        with open(path, "rb") as f:
+            prev = b""
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    return False
+                if needle in prev[-len(needle):] + chunk:
+                    return True
+                prev = chunk[-64:]
+    except OSError:
+        return False
+
+
 def last_pointer_xy(text):
     matches = re.findall(
         r"^WM FRAME [0-9A-F]+ PX [0-9A-F]+ TOP [0-9A-F]+ CUR X ([0-9A-F]+) Y ([0-9A-F]+)",
@@ -299,60 +346,75 @@ def main():
     os.makedirs(art, exist_ok=True)
     q = Qmp(port)
     ser = Serial(serial_path, SERIAL_SOCK)
+    skip_boot = os.environ.get("DRIVE_SKIP_BOOT", "0") == "1"
 
-    deadline = time.time() + 40
-    while time.time() < deadline and "M1 END" not in ser.read():
-        time.sleep(0.2)
-    if "M1 END" not in ser.read():
-        raise SystemExit("no M1 END")
-    time.sleep(1.5)
+    if not skip_boot:
+        deadline = time.time() + 40
+        while time.time() < deadline and "M1 END" not in ser.read():
+            time.sleep(0.2)
+        if "M1 END" not in ser.read():
+            raise SystemExit("no M1 END")
+        time.sleep(1.5)
 
-    for line, wait in (
-        ("fb", 1.5),
-        ("wm on", 2.5),
-        ("wm gfx", 1.0),
-        ("wm de", 1.0),
-        ("wm pace", 0.5),
-        ("vtab", 0.4),
-        ("proc spawn desk.elf", 2.0),
-    ):
-        q.type_line(line)
-        time.sleep(wait)
-        if line == "vtab":
-            time.sleep(0.3)
-            vtab = ser.read()
-            if "VTAB OK" not in vtab:
-                raise SystemExit("vtab did not arm (need VTAB OK): %s"
-                                 % [ln for ln in vtab.splitlines()
-                                    if "VTAB" in ln][-6:])
+    if skip_boot:
+        print("skip boot; desk already up")
+    else:
+        for line, wait in (
+            ("fb", 1.5),
+            ("wm on", 2.5),
+            ("wm gfx", 1.0),
+            ("wm de", 1.0),
+            ("wm pace", 0.5),
+            ("vtab", 0.4),
+            ("proc spawn desk.elf", 2.0),
+        ):
+            q.type_line(line)
+            time.sleep(wait)
+            if line == "vtab":
+                time.sleep(0.3)
+                vtab = ser.read()
+                if "VTAB OK" not in vtab:
+                    raise SystemExit("vtab did not arm (need VTAB OK): %s"
+                                     % [ln for ln in vtab.splitlines()
+                                        if "VTAB" in ln][-6:])
+        if "DESK READY" not in ser.read():
+            wait_mark(ser, "DESK READY", "", 12)
 
-    if "DESK READY" not in ser.read():
-        wait_mark(ser, "DESK READY", "", 12)
-
+    # GOP is printed once at `fb`; live sock may have missed it. Fall back
+    # to a single logfile scan (not a YIELD catch-up loop).
     boot = ser.read()
     gop = re.search(r"FB GOP ([0-9A-Fa-f]+)x([0-9A-Fa-f]+)", boot)
+    if gop is None:
+        try:
+            with open(serial_path, "rb") as fh:
+                head = fh.read(65536).decode("utf-8", "replace")
+            gop = re.search(r"FB GOP ([0-9A-Fa-f]+)x([0-9A-Fa-f]+)", head)
+        except OSError:
+            gop = None
     gop_w = int(gop.group(1), 16) if gop else None
     gop_h = int(gop.group(2), 16) if gop else None
     print("layout start", START_XY, "set_dock", SET_DOCK_XY,
           "files_dock", FILES_DOCK_XY, "wall", WALL_XY, "panel_y", PANEL_Y,
           "gop", gop_w, gop_h)
 
-    # FILES first so SET focus cannot steal later send-key. Dock gear is
-    # SET; never use Start row 1. Absolute tablet after VTAB OK.
-    press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left", "FILES CSD", timeout=8)
-    time.sleep(0.8)
-    press(q, ser, SET_DOCK_XY[0], SET_DOCK_XY[1], "left", "SET CSD", timeout=12)
-    time.sleep(2.0)
+    if not skip_boot:
+        # FILES first so SET focus cannot steal later send-key. Dock gear is
+        # SET; never use Start row 1. Absolute tablet after VTAB OK.
+        press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left", "FILES CSD", timeout=8)
+        time.sleep(0.8)
+        press(q, ser, SET_DOCK_XY[0], SET_DOCK_XY[1], "left", "SET CSD", timeout=12)
+        time.sleep(2.0)
 
     hd_png = os.path.join(art, "oscortex-round6-%dx%d.png" % (SCREEN_W, SCREEN_H))
-    if SCREEN_W == 1280 and SCREEN_H == 720:
-        if gop_w == 1280 and gop_h == 720:
-            shot(q, os.path.join(art, "oscortex-round6-1280x720.png"))
+    if not skip_boot:
+        if SCREEN_W == 1280 and SCREEN_H == 720:
+            if gop_w == 1280 and gop_h == 720:
+                shot(q, os.path.join(art, "oscortex-round6-1280x720.png"))
+            else:
+                print("WARN: skip 1280x720 artifact — FB GOP is %s×%s" % (gop_w, gop_h))
         else:
-            print("WARN: skip 1280x720 artifact — FB GOP is %s×%s" % (gop_w, gop_h))
-    else:
-        shot(q, hd_png)
-    shot(q, os.path.join(outdir, "%dx%d.png" % (SCREEN_W, SCREEN_H)))
+            shot(q, hd_png)
+        shot(q, os.path.join(outdir, "%dx%d.png" % (SCREEN_W, SCREEN_H)))
 
     press(q, ser, FILES_BODY_XY[0], FILES_BODY_XY[1], "left", "FILES SEL", timeout=3)
     press(q, ser, SET_TITLE_XY[0], SET_TITLE_XY[1], "left", "WM FOCUS", timeout=3)
@@ -435,6 +497,14 @@ def main():
 
     text = ser.read()
     guest_lat = parse_lat(text)
+    # Full-file harvest: sock archive can miss LAT lines during a YIELD storm.
+    file_lat = harvest_lat(serial_path)
+    if len(file_lat) > len(guest_lat):
+        guest_lat = file_lat
+    for tok in ("SET CSD", "SET READY", "DESK LAUNCH SET.ELF", "FILES EMPTY",
+                "WM LAT ", "WM WALL MENU", "WM WIN MENU", "WM DOCK MENU"):
+        if tok not in text and file_has_token(serial_path, tok):
+            text = text + "\n" + tok
     ticks = [x["ticks"] for x in guest_lat]
     kinds = {}
     for rec in guest_lat:
