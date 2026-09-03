@@ -53,7 +53,7 @@ setup_error() { echo "DE-retain: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=38
+ASSERTIONS_REQUIRED=40
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -173,6 +173,10 @@ ck; grep -q 'osgfx_pointer_raster' "$CORE_DIR/plat/osgfx/osgfx.h" \
   || fail "pointer sprite is not a Skia ABI"
 ck; grep -q 'wmPtrW' "$PACE_DART" \
   || fail "save-under is not sized to the Skia sprite"
+ck; grep -q 'wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH)' "$WM_DART" \
+  || fail "pointer present is not 640 px (2*16*20)"
+ck; grep -q 'dx < 24 && dy < 24' "$CHROME_C" \
+  || fail "drag_step lost the strip-reduction path"
 
 # 1e. NO NEW `@bss`. Eleven harnesses assert the kernel's mutable static total
 # to the byte; ADR-0188 put the pacer's state in a page from the frame

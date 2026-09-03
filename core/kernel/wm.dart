@@ -3341,7 +3341,11 @@ void wmGrab(u64 x, u64 y) {
     wmSetMeta(u64(wmMetaTop), hit);
     wmBumpMeta(u64(wmMetaRaises));
   }
-  wmFocusTo(hit);
+  /* Already-focused title-down must not stamp a focus op or kick a
+   * chrome overlay. That folded first-drag into a 200 ms focus drain. */
+  if (wmFocusLive() != (hit + u64(1))) {
+    wmFocusTo(hit);
+  }
   u64 drag = u64(1);
   if (de > u64(0)) {
     drag = u64(0);
@@ -3718,10 +3722,12 @@ void wmPointerTick() {
     /* Sprite-only: old+new cursor already restored/placed. Never kick a
      * full session tick from pointer motion — that was the idle
      * full-frame restamp. Drag/max still compose in task context. */
+    /* Sprite-only LAT. Never close a pending drag/menu/focus from
+     * pointer IRQ — that stole those ops and invented 100+ ms samples. */
     if (wmPage(u64(wmPageWEvKind)) < u64(1)) {
       wmLatStamp(u64(wmLatKindPtr));
+      wmLatNotePresent();
     }
-    wmLatNotePresent();
     if (wmPaced() > u64(0)) {
       if (ox != x) {
         wmDamagePtr(ox, oy, u64(wmPtrW), u64(wmPtrH));
@@ -3737,6 +3743,10 @@ void wmPointerTick() {
       if ((wmPage(u64(wmPageWFlags)) & u64(wmPageFlagPtrDmg)) > u64(0)) {
         wmPageSet(u64(wmPageWPtrPx),
             u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
+        wmDmgAcc(u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
+            u64(2),
+            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
+            u64(1));
         final u64 pf = wmPage(u64(wmPageWFlags));
         wmPageSet(u64(wmPageWFlags), pf - (pf & u64(wmPageFlagPtrDmg)));
       }

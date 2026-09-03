@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=209
+ASSERTIONS_REQUIRED=211
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -866,7 +866,15 @@ if "FILES MENU" not in read():
     raise SystemExit("file-row right-click did not open FILES menu")
 if read().count("WM WALL MENU") != 1:
     raise SystemExit("a non-desk right-click opened set-background")
-press(316, 192, "left", "FILES OPEN")
+# FILES (48,40,400,280). Context @ (300,180) → client (252,140),
+# clamped origin (232,140). Open row centre is screen (364,196).
+press(364, 196, "left", "FILES OPEN")
+if "FILES CAT " not in read():
+    raise SystemExit("FILES OPEN did not cat a file (vacuous action)")
+if "FILES CAT NONE" in read():
+    raise SystemExit("FILES OPEN cat produced NONE")
+if "FILES OPEN REFUSED" in read():
+    raise SystemExit("FILES OPEN was refused")
 # Right-click focuses FILES, so its popup owns Escape and arrow/Enter.
 press(300, 180, "right", "WM CTX FILE")
 marked = read()
@@ -1138,6 +1146,10 @@ ck; grep -q 'FILES MENU SEL 1' "$SER" \
   || fail "keyboard navigation did not select the second context row"
 ck; grep -q 'FILES OPEN' "$SER" \
   || fail "FILES Open menu item did not run"
+ck; grep -q 'FILES CAT ' "$SER" \
+  || fail "FILES Open did not prove a resulting file/state"
+ck; ! grep -q 'FILES OPEN REFUSED' "$SER" \
+  || fail "FILES Open was refused"
 ck; grep -q 'FILES RENAME' "$SER" \
   || fail "FILES Rename menu item did not run"
 ck; grep -q 'SET CSD' "$SER" \

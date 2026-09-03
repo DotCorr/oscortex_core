@@ -1989,6 +1989,7 @@ void wmDefDrain() {
               final u64 body = wmDrawWindow(slot, u64(1));
             }
             wmPageSet(u64(wmPageWDmgPx), dpx);
+            wmDmgAcc(dpx, u64(2), u64(0), u64(1));
             wmGfxChromeStamp();
           } else {
             u64 ux = wmPage(u64(wmPageWDefUx));

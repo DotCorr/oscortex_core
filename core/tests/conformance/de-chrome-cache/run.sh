@@ -38,7 +38,7 @@ setup_error() { echo "DE-chrome-cache: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=59
+ASSERTIONS_REQUIRED=62
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -508,6 +508,12 @@ echo "PICTURE: pass  wallpaper + no Start + close AA + outline caption through t
 
 echo
 echo "    PNG: $PNG"
+ck; ! grep -q 'drag_warm' "$CHROME_C" \
+  || fail "synthetic drag warmup still in osgfx_chrome.c"
+ck; grep -q 'chrome_idle_prep' "$CHROME_C" \
+  || fail "osgfx_chrome.c has no idle-safe drag primitive prep"
+ck; grep -q 'OSGFX_WMPAGE_W_DMG_CUM_PX' "$GUEST_H" \
+  || fail "guest header has no cumulative damage words"
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-chrome-cache: PASS — chrome cached, invalidated and faithful ($ASSERTIONS checks)"
 exit 0

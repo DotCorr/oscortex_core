@@ -478,10 +478,10 @@ static void chrome_copy_span(uint32_t *drow, const uint32_t *srow, int x0,
   while (xx < x1) {
     from_desk = 0;
     if (desk != 0 && (g_uncover0 != 0 || g_uncover1 != 0)) {
-      if (geom_contains(g_uncover0, xx, yy, 8) != 0 ||
-          geom_contains(g_uncover1, xx, yy, 8) != 0) {
-        if (geom_contains(keep0, xx, yy, 16) == 0 &&
-            geom_contains(keep1, xx, yy, 16) == 0) {
+      if (geom_contains(g_uncover0, xx, yy, OSGFX_RADIUS) != 0 ||
+          geom_contains(g_uncover1, xx, yy, OSGFX_RADIUS) != 0) {
+        if (geom_contains(keep0, xx, yy, OSGFX_RADIUS) == 0 &&
+            geom_contains(keep1, xx, yy, OSGFX_RADIUS) == 0) {
           from_desk = 1;
         }
       }
@@ -952,7 +952,11 @@ uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
     seed = (uint32_t)m->desk;
   }
   chrome_move_rect(buf, ww, ww, hh, ox, oy, nx, ny, ow, oh);
-  chrome_vacate(buf, ww, ww, hh, ox, oy, ow, oh, nx, ny, nw, nh, seed);
+  /* Radius fringe lives outside the strict window AABB. Filling only
+   * x,y,w,h left AA/shadow chips on the vacated side. */
+  chrome_vacate(buf, ww, ww, hh, ox - OSGFX_RADIUS, oy - OSGFX_RADIUS,
+                ow + OSGFX_RADIUS + OSGFX_RADIUS,
+                oh + OSGFX_RADIUS + OSGFX_RADIUS, nx, ny, nw, nh, seed);
   g_uncover0 = old_g;
   g_uncover1 = 0;
   dx = nx - ox;
@@ -983,9 +987,19 @@ uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
         px = px + chrome_present_clip(m, nx, ny, nw, oy - ny);
       }
     }
+    px = px + chrome_present_clip(m, ox - OSGFX_RADIUS, oy - OSGFX_RADIUS,
+                                  ow + OSGFX_RADIUS + OSGFX_RADIUS,
+                                  OSGFX_RADIUS);
+    px = px + chrome_present_clip(m, ox - OSGFX_RADIUS, oy + oh,
+                                  ow + OSGFX_RADIUS + OSGFX_RADIUS,
+                                  OSGFX_RADIUS);
+    px = px + chrome_present_clip(m, ox - OSGFX_RADIUS, oy, OSGFX_RADIUS, oh);
+    px = px + chrome_present_clip(m, ox + ow, oy, OSGFX_RADIUS, oh);
     px = px + chrome_present_clip(m, nx, ny, nw, OSGFX_TITLE_H + 4);
   } else {
-    px = px + chrome_present_clip(m, ox, oy, ow, oh);
+    px = px + chrome_present_clip(m, ox - OSGFX_RADIUS, oy - OSGFX_RADIUS,
+                                  ow + OSGFX_RADIUS + OSGFX_RADIUS,
+                                  oh + OSGFX_RADIUS + OSGFX_RADIUS);
     px = px + chrome_present_clip(m, nx, ny, nw, nh);
   }
   g_uncover0 = 0;
@@ -994,6 +1008,41 @@ uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
   pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);
   chrome_note_mailbox(m);
   return px;
+}
+
+/* Translate drag leaf primitives once on an already-presented frame.
+ * Not a synthetic drag: no drag_step, no visible geom change. */
+static void chrome_idle_prep(const struct OsGfxGuestCmd *m) {
+  static int ready;
+  uint64_t *pg;
+  uint32_t *buf;
+  int w;
+  int h;
+  uint32_t seed;
+
+  if (ready != 0) {
+    return;
+  }
+  pg = chrome_page();
+  buf = chrome_buf(m, pg);
+  if (pg == 0 || buf == 0 || m == 0 || m->fb == 0) {
+    return;
+  }
+  w = (int)m->w;
+  h = (int)m->h;
+  if (w < 16 || h < 16) {
+    return;
+  }
+  seed = 0xD074A17u;
+  if (m->desk != 0) {
+    seed = (uint32_t)m->desk;
+  }
+  chrome_move_rect(buf, w, w, h, 0, 0, 1, 0, 4, 4);
+  chrome_move_rect(buf, w, w, h, 1, 0, 0, 0, 4, 4);
+  chrome_vacate(buf, w, w, h, 2, 2, 2, 2, 2, 2, 2, 2, seed);
+  chrome_desk_rect(buf, w, 0, 0, 1, 1, seed);
+  (void)chrome_present_clip(m, 0, 0, 8, 8);
+  ready = 1;
 }
 
 /* Called BEFORE the paint. Clears the key, so a #GP or a reset half way
@@ -1038,15 +1087,7 @@ void osgfx_chrome_done(const struct OsGfxGuestCmd *m) {
     com1_puts("OSGFX CHROME REGEN\n");
   }
   (void)osgfx_chrome_present(m);
-  /* TCG-translate the discrete drag path once so the first real
-   * title-bar step is not a 500 ms code-cache fill. */
-  if (m->win0 != 0) {
-    static int drag_warm;
-    if (drag_warm == 0) {
-      drag_warm = 1;
-      (void)osgfx_chrome_drag_step(m->win0, m->win0);
-    }
-  }
+  chrome_idle_prep(m);
 }
 
 /* The glyph run cache's counters. Kept here rather than in osgfx_skia.cpp so

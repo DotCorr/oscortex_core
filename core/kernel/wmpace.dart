@@ -306,6 +306,11 @@ const int wmPageWPtrDmgY2 = 432;
 const int wmPageWPtrDmgX3 = 433;
 const int wmPageWPtrDmgY3 = 434;
 const int wmPageWPtrPx = 435;
+const int wmPageWDmgCumPx = 436;
+const int wmPageWDmgCumRegs = 437;
+const int wmPageWDmgCumFull = 438;
+const int wmPageWDmgCumPtr = 439;
+const int wmPageWDmgCumCons = 440;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
@@ -461,8 +466,8 @@ final List<u8> wmPresStrLine = const [
   u8(0x20), u8(0x53), u8(0x20),
 ];
 
-/// `'WM OPID '` -- 8 bytes. Stamped on kind-5 (focus/max/restore) so the
-/// host pairs by this id, not the next PRES on a busy UART.
+/// `'WM OPID '` -- 8 bytes. Stamped on every LAT kind so the host pairs
+/// this id, not the next PRES on a busy UART.
 @rodata
 final List<u8> wmOpidStrLine = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x4F), u8(0x50), u8(0x49), u8(0x44),
@@ -511,6 +516,36 @@ final List<u8> wmDmgStrRg = const [
 @rodata
 final List<u8> wmDmgStrFl = const [
   u8(0x20), u8(0x46), u8(0x4C), u8(0x20),
+];
+
+/// `' CUM '` -- 5 bytes.
+@rodata
+final List<u8> wmDmgStrCum = const [
+  u8(0x20), u8(0x43), u8(0x55), u8(0x4D), u8(0x20),
+];
+
+/// `' CRG '` -- 5 bytes.
+@rodata
+final List<u8> wmDmgStrCrg = const [
+  u8(0x20), u8(0x43), u8(0x52), u8(0x47), u8(0x20),
+];
+
+/// `' CFL '` -- 5 bytes.
+@rodata
+final List<u8> wmDmgStrCfl = const [
+  u8(0x20), u8(0x43), u8(0x46), u8(0x4C), u8(0x20),
+];
+
+/// `' CPTR '` -- 6 bytes.
+@rodata
+final List<u8> wmDmgStrCptr = const [
+  u8(0x20), u8(0x43), u8(0x50), u8(0x54), u8(0x52), u8(0x20),
+];
+
+/// `' CONS '` -- 6 bytes.
+@rodata
+final List<u8> wmDmgStrCons = const [
+  u8(0x20), u8(0x43), u8(0x4F), u8(0x4E), u8(0x53), u8(0x20),
 ];
 
 /// `'WM DESK '` -- 8 bytes.
@@ -665,21 +700,17 @@ void wmLatStamp(u64 kind) {
   if (wmPage(u64(wmPageWEvKind)) > u64(0)) {
     wmPageSet(u64(wmPageWEvTick), tick_count());
     wmPageSet(u64(wmPageWEvKind), kind);
-    if (kind == u64(wmLatKindFocus)) {
-      uartWrite(Rodata.addressOf(wmOpidStrLine), u64(8));
-      uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
-      uartNewline();
-    }
+    uartWrite(Rodata.addressOf(wmOpidStrLine), u64(8));
+    uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+    uartNewline();
     return;
   }
   wmPageSet(u64(wmPageWEvTick), tick_count());
   wmPageSet(u64(wmPageWEvKind), kind);
   wmPageSet(u64(wmPageWEvSeq), wmPage(u64(wmPageWEvSeq)) + u64(1));
-  if (kind == u64(wmLatKindFocus)) {
-    uartWrite(Rodata.addressOf(wmOpidStrLine), u64(8));
-    uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
-    uartNewline();
-  }
+  uartWrite(Rodata.addressOf(wmOpidStrLine), u64(8));
+  uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+  uartNewline();
 }
 
 /// Records present-tick minus event-tick. One UART line per pending event.
@@ -1815,6 +1846,15 @@ u64 wmDamagePending() {
 // The pacer
 // ---------------------------------------------------------------------------
 
+/// Monotonic accumulate. Pending words may go to zero after consume.
+@bare
+void wmDmgAcc(u64 px, u64 regs, u64 ptrPx, u64 consumed) {
+  wmPageSet(u64(wmPageWDmgCumPx), wmPage(u64(wmPageWDmgCumPx)) + px);
+  wmPageSet(u64(wmPageWDmgCumRegs), wmPage(u64(wmPageWDmgCumRegs)) + regs);
+  wmPageSet(u64(wmPageWDmgCumPtr), wmPage(u64(wmPageWDmgCumPtr)) + ptrPx);
+  wmPageSet(u64(wmPageWDmgCumCons), wmPage(u64(wmPageWDmgCumCons)) + consumed);
+}
+
 /// Presents pending dirty region(s) and clears them. Dart only.
 /// Snapshot the discrete list before [wmDamageClear] zeros N.
 @bare
@@ -1827,6 +1867,16 @@ void wmDmgLine() {
   uartPutHex(wmPage(u64(wmPageWDmgFull)), u64(8));
   uartWrite(Rodata.addressOf(wmDmgStrPtr), u64(5));
   uartPutHex(wmPage(u64(wmPageWPtrPx)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrCum), u64(5));
+  uartPutHex(wmPage(u64(wmPageWDmgCumPx)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrCrg), u64(5));
+  uartPutHex(wmPage(u64(wmPageWDmgCumRegs)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrCfl), u64(5));
+  uartPutHex(wmPage(u64(wmPageWDmgCumFull)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrCptr), u64(6));
+  uartPutHex(wmPage(u64(wmPageWDmgCumPtr)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrCons), u64(6));
+  uartPutHex(wmPage(u64(wmPageWDmgCumCons)), u64(8));
   uartNewline();
 }
 
@@ -1871,6 +1921,7 @@ void wmPacePresent() {
     wmPageSet(u64(wmPageWPtrPx), ptrPx);
     wmPageSet(u64(wmPageWDmgPx), ptrPx);
     wmPageSet(u64(wmPageWDmgRegs), u64(2));
+    wmDmgAcc(ptrPx, u64(2), ptrPx, u64(1));
     wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
     wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
     wmLatNotePresent();
@@ -1946,6 +1997,7 @@ void wmPacePresent() {
     px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
     regs = u64(1);
     wmPageSet(u64(wmPageWDmgFull), wmPage(u64(wmPageWDmgFull)) + u64(1));
+    wmPageSet(u64(wmPageWDmgCumFull), wmPage(u64(wmPageWDmgCumFull)) + u64(1));
   } else {
     if (regs < u64(1)) {
       px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
@@ -1981,14 +2033,9 @@ void wmPacePresent() {
   }
   wmPageSet(u64(wmPageWDmgPx), px);
   wmPageSet(u64(wmPageWDmgRegs), regs);
+  wmDmgAcc(px, regs, u64(0), u64(1));
   if (wmPaceLogging() > u64(0)) {
-    uartWrite(Rodata.addressOf(wmDmgStrLine), u64(7));
-    uartPutHex(px, u64(8));
-    uartWrite(Rodata.addressOf(wmDmgStrRg), u64(4));
-    uartPutHex(regs, u64(2));
-    uartWrite(Rodata.addressOf(wmDmgStrFl), u64(4));
-    uartPutHex(wmPage(u64(wmPageWDmgFull)), u64(8));
-    uartNewline();
+    wmDmgLine();
   }
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));

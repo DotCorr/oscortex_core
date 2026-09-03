@@ -18,7 +18,7 @@ setup_error() { echo "DE-lat: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=32
+ASSERTIONS_REQUIRED=40
 
 PACE="$CORE_DIR/kernel/wmpace.dart"
 WM="$CORE_DIR/kernel/wm.dart"
@@ -84,6 +84,22 @@ ck; grep -q 'sock-only' "$DRIVE" \
   || fail "driver does not document sock-only live ingest"
 ck; grep -q 'wmPaceLogging' "$PROC" \
   || fail "procYield is not opt-in under wm pace log"
+ck; ! grep -q 'drag_warm' "$CHROME_C" \
+  || fail "synthetic first-drag warmup is still in chrome_done"
+ck; grep -q 'chrome_idle_prep' "$CHROME_C" \
+  || fail "no idle-safe drag primitive prep"
+ck; ! grep -q 'osgfx_chrome_drag_step(m->win0, m->win0)' "$CHROME_C" \
+  || fail "chrome_done still calls a dummy drag_step"
+ck; grep -q 'void wmDmgAcc' "$PACE" \
+  || fail "no cumulative damage accumulator"
+ck; grep -q 'wmPageWDmgCumPx' "$PACE" \
+  || fail "no cumulative damage page words"
+ck; grep -q 'OSGFX_WMPAGE_W_DMG_CUM_PX' "$GUEST_H" \
+  || fail "guest header missing cumulative damage words"
+ck; grep -q 'wmLatNotePresent' "$POP" \
+  || fail "menu path does not note present after overlay"
+ck; grep -q 'Never close a pending' "$WM" \
+  || fail "pointer IRQ still closes leftover LAT kinds"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick + host wall-time pairing"

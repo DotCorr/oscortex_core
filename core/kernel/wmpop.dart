@@ -568,6 +568,7 @@ void wmPopHide() {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
+    wmLatStamp(u64(wmLatKindMenu));
     wmSetMeta(u64(wmMetaPop), u64(0));
     if (wmPageAddr() > u64(0)) {
       final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
@@ -577,6 +578,7 @@ void wmPopHide() {
       wmGfxKick();
       osgfx_guest_tick();
       wmGfxChromeStamp();
+      wmLatNotePresent();
     } else {
       if (wmPageAddr() < u64(1)) {
         wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
@@ -743,6 +745,7 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
     wmGfxKick();
     osgfx_guest_tick();
     wmGfxChromeStamp();
+    wmLatNotePresent();
   } else {
     if (wmPageAddr() < u64(1)) {
       wmPopPaintCard();

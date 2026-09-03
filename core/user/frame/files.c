@@ -1198,6 +1198,12 @@ static void files_on_event(u64 ev) {
     menu_row = row_at_y(ry, files_names);
     menu_x = rx;
     menu_y = ry;
+    if (menu_x + FILE_MENU_W > files_w) {
+      menu_x = files_w - FILE_MENU_W;
+    }
+    if (menu_y + FILE_MENU_H > files_height) {
+      menu_y = files_height - FILE_MENU_H;
+    }
     menu_sel = 0;
     menu_on = 1;
     wr(msg_menu, sizeof(msg_menu) - 1);
@@ -1224,7 +1230,10 @@ static void files_on_event(u64 ev) {
       }
       if (rx >= mx && rx < (mx + FILE_MENU_W) && ry >= my &&
           ry < (my + FILE_MENU_H)) {
-        u64 row = (ry - my - OSXUI_MENU_PAD) / OSXUI_MENU_ROW_H;
+        u64 row = 0;
+        if (ry >= (my + OSXUI_MENU_PAD)) {
+          row = (ry - my - OSXUI_MENU_PAD) / OSXUI_MENU_ROW_H;
+        }
         menu_on = 0;
         menu_sel = row;
         if (in_folder > 0) {
@@ -1251,10 +1260,8 @@ static void files_on_event(u64 ev) {
     return;
   }
   if (typ == WMEVENT_TYPE_LEAVE) {
-    if (menu_on > 0) {
-      menu_on = 0;
-      files_repaint_body();
-    }
+    /* Keep an open context menu. Focus/hover leave used to clear it
+     * before the Open row click arrived (SEL 04 at the same coords). */
   }
 }
 
