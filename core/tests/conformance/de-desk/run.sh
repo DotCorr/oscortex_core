@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=188
+ASSERTIONS_REQUIRED=190
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -432,16 +432,51 @@ ck; [[ $BP_ST -eq 0 ]] || fail "build-progs exited $BP_ST"
 ck; [[ -f "$WORKDIR/desk/desk.elf" ]] || fail "no desk.elf"
 
 echo
-echo "=== BUILD KERNEL + FAT ==="
-if [[ "${SITIN_SKIP_BUILD:-}" == 1 && -f "$CORE_DIR/build/kernel.elf" ]]; then
+echo "=== BUILD KERNEL + FAT (isolated BUILD_DIR) ==="
+LIVE_KERNEL="$CORE_DIR/build/kernel.elf"
+LIVE_UEFI="$CORE_DIR/build/kernel-uefi.elf"
+LIVE_SHA=""
+LIVE_UEFI_SHA=""
+if [[ -f "$LIVE_KERNEL" ]]; then
+  LIVE_SHA=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+fi
+if [[ -f "$LIVE_UEFI" ]]; then
+  LIVE_UEFI_SHA=$(sha256sum "$LIVE_UEFI" | awk '{print $1}')
+fi
+if [[ "${SITIN_SKIP_BUILD:-}" == 1 && -f "$LIVE_KERNEL" ]]; then
   echo "skipping build-kernel (SITIN_SKIP_BUILD=1)"
+  KERNEL_ELF="$LIVE_KERNEL"
+  ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf"
+  ck; [[ -n "$LIVE_SHA" ]] || fail "skip-build has no live kernel hash"
+  ck; [[ -f "$KERNEL_ELF" ]] || fail "skip-build kernel vanished"
+  ck; [[ "$LIVE_SHA" == "$(sha256sum "$KERNEL_ELF" | awk '{print $1}')" ]] \
+    || fail "skip-build kernel hash moved"
 else
-  capture_sh BK_OUT BK_ST -- "bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+  export BUILD_DIR="$WORKDIR/kbuild"
+  mkdir -p "$BUILD_DIR"
+  if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+    ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+  fi
+  capture_sh BK_OUT BK_ST -- "BUILD_DIR='$BUILD_DIR' bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
   echo "$BK_OUT"
   ck; [[ $BK_ST -eq 0 ]] || fail "build-kernel exited $BK_ST"
+  KERNEL_ELF="$BUILD_DIR/kernel.elf"
+  ck; [[ -f "$KERNEL_ELF" ]] || fail "no isolated kernel.elf"
+  if [[ -n "$LIVE_SHA" ]]; then
+    END_LIVE=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+    ck; [[ "$END_LIVE" == "$LIVE_SHA" ]] \
+      || fail "live kernel.elf changed across isolated de-desk"
+  else
+    ck; [[ ! -f "$LIVE_KERNEL" ]] || fail "de-desk created a live kernel.elf"
+  fi
+  if [[ -n "$LIVE_UEFI_SHA" ]]; then
+    END_UEFI=$(sha256sum "$LIVE_UEFI" | awk '{print $1}')
+    ck; [[ "$END_UEFI" == "$LIVE_UEFI_SHA" ]] \
+      || fail "live kernel-uefi.elf changed across isolated de-desk"
+  else
+    ck; [[ ! -f "$LIVE_UEFI" ]] || fail "de-desk created a live kernel-uefi.elf"
+  fi
 fi
-KERNEL_ELF="$CORE_DIR/build/kernel.elf"
-ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf"
 capture_sh BD_OUT BD_ST -- "bash '$SITFAT/build-disk.sh' '$WORKDIR/fat' 2>&1"
 echo "$BD_OUT"
 ck; [[ $BD_ST -eq 0 ]] || fail "build-disk exited $BD_ST"

@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=65
+ASSERTIONS_REQUIRED=69
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -63,7 +63,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-KERNEL_ELF="$CORE_DIR/build/kernel.elf"
+LIVE_KERNEL="$CORE_DIR/build/kernel.elf"
+LIVE_UEFI="$CORE_DIR/build/kernel-uefi.elf"
 SIT="$CORE_DIR/tests/conformance/d3-session"
 PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"
 SESS_DERIVE="$CORE_DIR/tests/conformance/de-session/derive.py"
@@ -125,6 +126,10 @@ echo "$STRUCT_OUT"
 ck; grep -q 'osgfx-desk-gen' "$DESK_C" || fail "osgfx-desk-gen token missing"
 ck; grep -q 'desk_blit' "$DESK_C" \
   || fail "osgfx_desk.c has no blit — the field is still generated per frame"
+ck; grep -q 'desk_blit_rect' "$DESK_C" \
+  || fail "osgfx_desk.c has no sub-rect blit — uncover would rekey the cache"
+ck; grep -q 'x == 0 && y == 0' "$DESK_C" \
+  || fail "osgfx_fill_desk_cached still regenerates from a sub-rect"
 ck; grep -q 'desk_nx\[' "$DESK_C" \
   || fail "osgfx_desk.c has no column table — the /w divide is still per pixel"
 ck; grep -q 'OSGFX_WMPAGE_W_DESK_HAVE' "$DESK_C" \
@@ -252,15 +257,43 @@ echo "$LOG_OUT"
 echo "STRUCTURAL: pass  no @bss, page-backed state, cached field, damage-limited gfx arm, PIT clock"
 
 echo
-echo "=== BUILD ==="
-capture_sh BUILD_OUT BUILD_STATUS -- "OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
+echo "=== BUILD (isolated BUILD_DIR) ==="
+LIVE_SHA=""
+LIVE_UEFI_SHA=""
+if [[ -f "$LIVE_KERNEL" ]]; then
+  LIVE_SHA=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+fi
+if [[ -f "$LIVE_UEFI" ]]; then
+  LIVE_UEFI_SHA=$(sha256sum "$LIVE_UEFI" | awk '{print $1}')
+fi
+export BUILD_DIR="$WORKDIR/kbuild"
+mkdir -p "$BUILD_DIR"
+if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+  ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+fi
+capture_sh BUILD_OUT BUILD_STATUS -- "BUILD_DIR='$BUILD_DIR' OSMEDIA_FFMPEG=0 OSGFX_SKIA=1 bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"
 echo "$BUILD_OUT" | tail -4
 ck; [[ $BUILD_STATUS -eq 0 ]] || { echo "$BUILD_OUT" >&2; fail "build-kernel.sh exited $BUILD_STATUS"; }
-ck; [[ -f "$KERNEL_ELF" ]] || fail "no kernel.elf after a successful build"
+KERNEL_ELF="$BUILD_DIR/kernel.elf"
+ck; [[ -f "$KERNEL_ELF" ]] || fail "no isolated kernel.elf after a successful build"
+if [[ -n "$LIVE_SHA" ]]; then
+  END_LIVE=$(sha256sum "$LIVE_KERNEL" | awk '{print $1}')
+  ck; [[ "$END_LIVE" == "$LIVE_SHA" ]] \
+    || fail "live kernel.elf changed across isolated de-pace"
+else
+  ck; [[ ! -f "$LIVE_KERNEL" ]] || fail "de-pace created a live kernel.elf"
+fi
+if [[ -n "$LIVE_UEFI_SHA" ]]; then
+  END_UEFI=$(sha256sum "$LIVE_UEFI" | awk '{print $1}')
+  ck; [[ "$END_UEFI" == "$LIVE_UEFI_SHA" ]] \
+    || fail "live kernel-uefi.elf changed across isolated de-pace"
+else
+  ck; [[ ! -f "$LIVE_UEFI" ]] || fail "de-pace created a live kernel-uefi.elf"
+fi
 elf_has() { python3 -c "import sys; sys.exit(0 if open(sys.argv[1],'rb').read().find(sys.argv[2].encode())>=0 else 1)" "$1" "$2"; }
 ck; elf_has "$KERNEL_ELF" "osgfx-desk-gen" || fail "kernel.elf lost osgfx-desk-gen"
-ck; grep -q 'osgfx_fill_desk_generative' "$CORE_DIR/build/kernel.map" \
-  || fail "kernel.map has no osgfx_fill_desk_generative"
+ck; grep -q 'osgfx_fill_desk_generative' "$BUILD_DIR/kernel.map" \
+  || fail "isolated kernel.map has no osgfx_fill_desk_generative"
 # The wallpaper cache is a RUNNING-OS thing, not a host module: the symbol the
 # C generator reads its buffer address out of must be the kernel's own mailbox.
 capture_sh NM_OUT NM_STATUS -- "x86_64-elf-nm '$KERNEL_ELF'"

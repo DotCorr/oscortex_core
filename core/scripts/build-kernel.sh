@@ -307,6 +307,19 @@ if [[ "${OSGFX_SKIA:-1}" == 1 ]]; then
   bash "$CORE_DIR/scripts/build-skia-guest.sh" || fail "build-skia-guest.sh failed"
   bash "$CORE_DIR/scripts/build-skia-guest-graphite.sh" \
     || echo "build-kernel: Graphite guest lib not ready — CPU Skia stays linked"
+  # Isolated BUILD_DIR still compiles into $BUILD_DIR, but the durable
+  # Skia tree and skia-guest objects live under core/build. Reuse them
+  # so a harness worktree does not rebuild Skia or miss osgfx_skia.o.
+  if [[ "$BUILD_DIR" != "$CORE_DIR/build" ]]; then
+    if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+      ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+    fi
+    for obj in osgfx_skia.o osgfx_cxxrt.o osgfx_guest_crt.o; do
+      if [[ -f "$CORE_DIR/build/$obj" ]]; then
+        cp -f "$CORE_DIR/build/$obj" "$BUILD_DIR/$obj"
+      fi
+    done
+  fi
   OSGFX_CFLAGS=(
     -c
     -target x86_64-unknown-none-elf

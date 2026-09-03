@@ -25,30 +25,83 @@ static size_t heap_used;
 size_t osgfx_heap_used(void) { return heap_used; }
 size_t osgfx_heap_cap(void) { return (size_t)CRT_HEAP; }
 
+void com1_puts(const char *s);
+
 static size_t heap_watermark;
 static size_t heap_chrome_mark;
+static size_t heap_high_water;
+static int heap_reclaim_armed;
 
 int osgfx_heap_ready(void) { return heap_watermark > 0 ? 1 : 0; }
 
-/* After bind(g_one): client paint may reclaim above this mark without
- * discarding the live chrome Skia records. */
+size_t osgfx_heap_high_water(void) { return heap_high_water; }
+
+static void com1_put_uhex(size_t v) {
+  char buf[17];
+  int i;
+  unsigned d;
+
+  i = 16;
+  buf[16] = 0;
+  if (v == 0) {
+    com1_puts("0");
+    return;
+  }
+  while (v != 0 && i > 0) {
+    i = i - 1;
+    d = (unsigned)(v & 15u);
+    if (d < 10u) {
+      buf[i] = (char)('0' + d);
+    } else {
+      buf[i] = (char)('A' + (d - 10u));
+    }
+    v = v >> 4;
+  }
+  com1_puts(buf + i);
+}
+
+static void heap_note_hi(void) {
+  size_t prev;
+
+  if (heap_used <= heap_high_water) {
+    return;
+  }
+  prev = heap_high_water;
+  heap_high_water = heap_used;
+  if ((prev >> 16) != (heap_high_water >> 16)) {
+    com1_puts("OSGFX HEAP HI ");
+    com1_put_uhex(heap_high_water);
+    com1_puts("\n");
+  }
+}
+
+/* After the first chrome flush: durable mark includes g_one + shaders.
+ * Client paint may reclaim above this mark only after those unique_ptrs
+ * have been reset. Do not fall back to the Graphite watermark — that
+ * rewinds through a live chrome canvas. */
 void osgfx_heap_chrome_seal(void) {
   heap_chrome_mark = heap_used;
+  heap_reclaim_armed = 0;
 }
 
 void osgfx_heap_client_begin(void) {
-  size_t mark;
+  if (heap_chrome_mark == 0) {
+    return;
+  }
+  if (heap_used > heap_chrome_mark) {
+    heap_used = heap_chrome_mark;
+  }
+  heap_reclaim_armed = 1;
+}
 
-  mark = heap_chrome_mark;
-  if (mark == 0) {
-    mark = heap_watermark;
-  }
-  if (mark > 0 && heap_used > mark) {
-    heap_used = mark;
-  }
+void osgfx_heap_scratch_live(void) {
+  heap_reclaim_armed = 0;
 }
 
 int osgfx_heap_oom_reclaim(void) {
+  if (heap_reclaim_armed == 0) {
+    return 0;
+  }
   if (heap_chrome_mark > 0 && heap_used > heap_chrome_mark) {
     heap_used = heap_chrome_mark;
     return 1;
@@ -58,10 +111,12 @@ int osgfx_heap_oom_reclaim(void) {
 
 /* Frame scratch reclaim. Graphite MakeVulkan + init proofs stay
  * below the watermark; per-tick surfaces are bump-allocated and
- * discarded here because free() is a no-op. A full rewind also
- * drops the chrome seal so the next bind(g_one) reseals. */
+ * discarded here because free() is a no-op. Callers must reset
+ * every unique_ptr before this rewind. A full rewind also drops
+ * the chrome seal so the next bind(g_one) reseals. */
 void osgfx_heap_frame_begin(void) {
   heap_chrome_mark = 0;
+  heap_reclaim_armed = 0;
   if (heap_watermark == 0) {
     if (heap_used > 0) {
       heap_watermark = heap_used;
@@ -72,8 +127,6 @@ void osgfx_heap_frame_begin(void) {
     heap_used = heap_watermark;
   }
 }
-
-void com1_puts(const char *s);
 
 void *memcpy(void *dst, const void *src, size_t n) {
   unsigned char *d = (unsigned char *)dst;
@@ -259,6 +312,7 @@ void *malloc(size_t n) {
   }
   p = heap + heap_used;
   heap_used = heap_used + aligned;
+  heap_note_hi();
   return p;
 }
 

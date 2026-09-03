@@ -205,6 +205,48 @@ static void desk_blit(uint32_t *dst, int dpitch, const uint32_t *src, int w, int
   }
 }
 
+/* Sub-rect copy from an existing full-field cache. Identity is (sw, sh);
+ * (x0, y0, w, h) is the screen hole. Never divides. */
+static void desk_blit_rect(uint32_t *dst, int dpitch, const uint32_t *src,
+                           int sw, int sh, int x0, int y0, int w, int h) {
+  int yy;
+  int xx;
+  uint32_t *drow;
+  const uint32_t *srow;
+
+  if (src == 0 || dst == 0 || sw < 1 || sh < 1 || w < 1 || h < 1) {
+    return;
+  }
+  if (x0 < 0) {
+    w = w + x0;
+    x0 = 0;
+  }
+  if (y0 < 0) {
+    h = h + y0;
+    y0 = 0;
+  }
+  if (x0 + w > sw) {
+    w = sw - x0;
+  }
+  if (y0 + h > sh) {
+    h = sh - y0;
+  }
+  if (w < 1 || h < 1) {
+    return;
+  }
+  yy = 0;
+  while (yy < h) {
+    drow = (uint32_t *)((uint8_t *)dst + (unsigned)(y0 + yy) * (unsigned)dpitch);
+    srow = src + (unsigned)(y0 + yy) * (unsigned)sw + (unsigned)x0;
+    xx = 0;
+    while (xx < w) {
+      drow[x0 + xx] = srow[xx];
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+}
+
 static uint32_t desk_sample_field(int sx, int sy, int sw, int sh, uint32_t seed) {
   int nx;
   int ny;
@@ -251,8 +293,9 @@ void osgfx_fill_desk_cached(uint32_t *fb, int pitch, int x, int y, int w, int h,
                             uint32_t seed) {
   uint64_t *pg;
   uint32_t *buf;
-  uint64_t key;
   uint64_t need;
+  int have_w;
+  int have_h;
 
   if (fb == 0 || pitch < 4 || w < 1 || h < 1) {
     return;
@@ -261,25 +304,30 @@ void osgfx_fill_desk_cached(uint32_t *fb, int pitch, int x, int y, int w, int h,
     return;
   }
   pg = desk_page();
-  key = desk_key(seed, w, h);
   if (pg != 0) {
-    need = (uint64_t)(unsigned)w * (uint64_t)(unsigned)h;
-    if (need <= pg[OSGFX_WMPAGE_W_DESK_PX]) {
-      buf = (uint32_t *)(uintptr_t)pg[OSGFX_WMPAGE_W_DESK_BUF];
-      if (buf != 0 && pg[OSGFX_WMPAGE_W_DESK_HAVE] == key &&
-          pg[OSGFX_WMPAGE_W_DESK_W] == (uint64_t)(unsigned)w &&
-          pg[OSGFX_WMPAGE_W_DESK_H] == (uint64_t)(unsigned)h) {
-        desk_blit(fb, pitch, buf, w, h, x, y);
-        pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
-        return;
-      }
-      if (buf != 0) {
+    buf = (uint32_t *)(uintptr_t)pg[OSGFX_WMPAGE_W_DESK_BUF];
+    have_w = (int)pg[OSGFX_WMPAGE_W_DESK_W];
+    have_h = (int)pg[OSGFX_WMPAGE_W_DESK_H];
+    /* Hit: any rect inside the sealed full-field cache. Uncover holes
+     * must not rekey the cache to the hole size — that regenerated a
+     * small field, restamped HAVE, and blitted wallpaper from (0,0). */
+    if (buf != 0 && have_w > 0 && have_h > 0 &&
+        pg[OSGFX_WMPAGE_W_DESK_HAVE] == desk_key(seed, have_w, have_h) &&
+        x >= 0 && y >= 0 && x + w <= have_w && y + h <= have_h) {
+      desk_blit_rect(fb, pitch, buf, have_w, have_h, x, y, w, h);
+      pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
+      return;
+    }
+    /* Full generate only at the origin for a new identity. */
+    if (buf != 0 && x == 0 && y == 0) {
+      need = (uint64_t)(unsigned)w * (uint64_t)(unsigned)h;
+      if (need <= pg[OSGFX_WMPAGE_W_DESK_PX]) {
         desk_gen_rect(buf, w, h, seed);
-        pg[OSGFX_WMPAGE_W_DESK_HAVE] = key;
+        pg[OSGFX_WMPAGE_W_DESK_HAVE] = desk_key(seed, w, h);
         pg[OSGFX_WMPAGE_W_DESK_W] = (uint64_t)(unsigned)w;
         pg[OSGFX_WMPAGE_W_DESK_H] = (uint64_t)(unsigned)h;
         pg[OSGFX_WMPAGE_W_DESK_REGEN] = pg[OSGFX_WMPAGE_W_DESK_REGEN] + 1;
-        desk_blit(fb, pitch, buf, w, h, x, y);
+        desk_blit(fb, pitch, buf, w, h, 0, 0);
         pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
         desk_gen_noted_once();
         return;

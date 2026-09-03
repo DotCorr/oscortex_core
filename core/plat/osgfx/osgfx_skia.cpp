@@ -53,10 +53,12 @@ void osgfx_graphite_desk_note(void);
 void osgfx_heap_frame_begin(void);
 void osgfx_heap_chrome_seal(void);
 void osgfx_heap_client_begin(void);
+void osgfx_heap_scratch_live(void);
 int osgfx_heap_oom_reclaim(void);
 int osgfx_heap_ready(void);
 size_t osgfx_heap_used(void);
 size_t osgfx_heap_cap(void);
+size_t osgfx_heap_high_water(void);
 void osgfx_fill_desk_cached(uint32_t *fb, int pitch, int x, int y, int w, int h,
                             uint32_t seed);
 void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y,
@@ -99,10 +101,12 @@ extern "C" __attribute__((weak)) void osgfx_graphite_desk_note(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_frame_begin(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_chrome_seal(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_client_begin(void) {}
+extern "C" __attribute__((weak)) void osgfx_heap_scratch_live(void) {}
 extern "C" __attribute__((weak)) int osgfx_heap_oom_reclaim(void) { return 0; }
 extern "C" __attribute__((weak)) int osgfx_heap_ready(void) { return 0; }
 extern "C" __attribute__((weak)) size_t osgfx_heap_used(void) { return 0; }
 extern "C" __attribute__((weak)) size_t osgfx_heap_cap(void) { return 0; }
+extern "C" __attribute__((weak)) size_t osgfx_heap_high_water(void) { return 0; }
 
 enum { CLIENT_POINTER = 4 };
 
@@ -134,10 +138,17 @@ static int heap_needs_rewind(void) {
   return 0;
 }
 
+static void skia_release_client(void) {
+  /* Destruct the client canvas first. Then rewind the bump to the
+   * chrome seal. Never rewind while this unique_ptr is live. */
+  client_g.owned.reset();
+  client_g.canvas = 0;
+  osgfx_heap_client_begin();
+}
+
 static void chrome_heap_after_paint(void) {
-  /* Raise the seal once so first-paint Skia records stay. Do not rewind
-   * after later flushes — that UAF'd the canvas and left a wallpaper-only
-   * scanout (vacuous 30ms "hits"). */
+  /* Raise the seal once so first-paint Skia records stay under a live
+   * g_one. Reclaim only client scratch above that mark. */
   if (g_one.canvas == 0) {
     return;
   }
@@ -145,6 +156,7 @@ static void chrome_heap_after_paint(void) {
     osgfx_heap_chrome_seal();
     g_one_paint_sealed = 1;
   }
+  skia_release_client();
 }
 
 static void drop_skia_before_rewind(void) {
@@ -209,12 +221,12 @@ static void bind(OsGfx *g) {
   info = SkImageInfo::Make(g->w, g->h, kBGRA_8888_SkColorType, alpha_type);
   g->owned = SkCanvas::MakeRasterDirect(info, g->px, (size_t)g->pitch);
   g->canvas = g->owned.get();
+  osgfx_heap_scratch_live();
   if (g == &g_one && g->canvas != 0) {
     g_one_bound_px = g->px;
     g_one_bound_pitch = g->pitch;
     g_one_bound_w = g->w;
     g_one_bound_h = g->h;
-    osgfx_heap_chrome_seal();
   }
 }
 
@@ -225,9 +237,10 @@ static SkCanvas *canvas_of(OsGfx *g) {
   if (g == &g_one && g->canvas != 0) {
     if (g->px != g_one_bound_px || g->pitch != g_one_bound_pitch ||
         g->w != g_one_bound_w || g->h != g_one_bound_h) {
-      /* Same canvas object, new backing. Re-wrap; do not rewind. */
+      /* Same logical owner, new backing. Drop the wrapper first. */
       g->owned.reset();
       g->canvas = 0;
+      g_one_paint_sealed = 0;
     }
   }
   if (g->canvas == 0) {
@@ -1253,10 +1266,10 @@ __attribute__((noinline)) static void tick_body(void) {
     focus_only = (target != 0 && osgfx_chrome_is_focus_only(m) != 0);
     geom_only = (target != 0 && focus_only == 0 &&
                  osgfx_chrome_is_geom_only(m) != 0);
-    /* Rewind only on a full miss after client scratch is gone. Dropping
-     * g_one here is a ~1.8s TCG re-bind and was the 3.4s max hitch. */
+    /* Rewind only on a full miss after client unique_ptrs are gone.
+     * Dropping g_one here is a ~1.8s TCG re-bind and was the 3.4s hitch. */
     if (focus_only == 0 && geom_only == 0 && heap_needs_rewind() != 0) {
-      osgfx_heap_client_begin();
+      skia_release_client();
       if (heap_needs_rewind() != 0) {
         drop_skia_before_rewind();
         g = osgfx_create(ww, hh);
@@ -1338,26 +1351,23 @@ static void client_reclaim_if_tight(void) {
     if (osgfx_heap_ready() > 0) {
       size_t cap = osgfx_heap_cap();
       if (cap > 0 && osgfx_heap_used() + (384u * 1024u) > cap) {
-        /* Keep g_one. A full frame rewind here was the 1.8s TCG
-         * re-bind on the next focus/max. */
-        osgfx_heap_client_begin();
+        /* Keep g_one. Reset client first, then rewind to the chrome seal. */
+        skia_release_client();
       }
     }
   }
 }
 
 static void client_body(uint32_t *px, int pitch, int w, int h, int kind) {
-  /* Never drop g_one. Reuse client_g when the backing is unchanged so
-   * SET/FILES paints do not grow the bump heap until a 3.4s rewind. */
+  /* Never drop g_one. Reset the previous client canvas before any
+   * client rewind so unique_ptrs do not outlive the bump. */
   client_arg.kind = kind;
   if (kind != CLIENT_POINTER) {
     if (client_g.canvas != 0 && client_g.px == px && client_g.pitch == pitch &&
         client_g.w == w && client_g.h == h) {
       return;
     }
-    client_g.owned.reset();
-    client_g.canvas = 0;
-    osgfx_heap_client_begin();
+    skia_release_client();
     client_reclaim_if_tight();
   }
   client_g.px = px;
@@ -1435,11 +1445,13 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
       com1_puts("OSGFX CLIENT SHAPE SKIA RRECT\n");
     }
     (void)osgfx_flush(g);
+    skia_release_client();
     return 0;
   }
   if (kind == 2) {
     osgfx_fill_rrect_vgrad(g, x, y, rw, rh, rad, (uint32_t)c0, (uint32_t)c1);
     (void)osgfx_flush(g);
+    skia_release_client();
     return 0;
   }
   if (kind == 3) {
@@ -1455,11 +1467,13 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
       com1_puts("OSGFX CLIENT TEXT OUTLINE\n");
     }
     (void)osgfx_flush(g);
+    skia_release_client();
     return (uint64_t)(unsigned)adv;
   }
   if (kind == 4) {
     osgfx_shadow(g, x, y, rw, rh, rad, 12, (uint32_t)c0);
     (void)osgfx_flush(g);
+    skia_release_client();
     return 0;
   }
   if (kind == 5) {
