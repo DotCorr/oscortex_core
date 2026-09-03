@@ -346,7 +346,11 @@ echo "    desk report 6: REGEN $D6_REGEN BLIT $D6_BLIT   after window map"
 ck; [[ "$D1_REGEN" -ge 1 ]] || fail "the DESK wallpaper cache was never filled"
 ck; [[ "$D2_REGEN" -eq "$D1_REGEN" ]] \
   || fail "DESK REGEN moved $D1_REGEN -> $D2_REGEN across unchanged composes; wallpaper was regenerated"
-ck; [[ $((D2_BLIT - D1_BLIT)) -ge 1 ]] || fail "DESK BLIT did not move; the chrome path did not reuse the wallpaper cache"
+# Chrome HIT blits the cached frame (wallpaper already in it) and must not
+# increment DESK BLIT. Invalidating misses (popover / window map) refill
+# from the desk cache — that is the DESK-owned strip path.
+ck; [[ $((D6_BLIT - D1_BLIT)) -ge 1 ]] \
+  || fail "DESK BLIT stuck at $D6_BLIT after chrome invalidations; geom/pop misses did not reuse the wallpaper cache"
 
 echo
 echo "--- the glyph runs, counted and NOT cached (GAP-0327) ---"
