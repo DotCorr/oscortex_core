@@ -1836,16 +1836,19 @@ void wmIdlePrep(u64 fromSlot) {
     return;
   }
   wmIfHoldBegin(u64(wmIfReasonPrep));
+  wmSetMeta(u64(wmMetaBusy), u64(1));
   if ((have & u64(2)) < u64(1)) {
     final u64 rest = osgfx_chrome_prep_rest();
   }
   if (osgfx_chrome_prep(win0, win1) < u64(1)) {
+    wmSetMeta(u64(wmMetaBusy), u64(0));
     wmIfHoldEnd();
     return;
   }
   wmPageSet(u64(wmPageWPrepHave), wmPage(u64(wmPageWPrepHave)) | u64(16));
   uartWrite(Rodata.addressOf(wmStrPrepMax), u64(11));
   uartNewline();
+  wmSetMeta(u64(wmMetaBusy), u64(0));
   wmIfHoldEnd();
 }
 

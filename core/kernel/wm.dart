@@ -3495,6 +3495,8 @@ void wmPointerTick() {
       if (wasLeft < u64(1)) {
         wmGrab(x, y);
       }
+    } else {
+      wmSetMeta(u64(wmMetaDrag), u64(0));
     }
     wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);
     return;
