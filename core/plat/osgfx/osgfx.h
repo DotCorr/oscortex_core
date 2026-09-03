@@ -280,6 +280,14 @@ static inline void osgfx_title_band_into(uint32_t *fb, int pitch, int x, int y,
     row = (uint32_t *)((uint8_t *)fb + (unsigned)yy * (unsigned)pitch);
     xx = x;
     while (xx < x + w) {
+      if ((yy - y) >= r && xx >= x + r && xx < x + w - r) {
+        int x1 = x + w - r;
+        while (xx < x1) {
+          row[xx] = rgb;
+          xx = xx + 1;
+        }
+        continue;
+      }
       cov = osgfx_rrect_cover(xx, yy, x, y, w, h, r);
       if (cov > 0) {
         row[xx] = osgfx_cover_blend(rgb, row[xx], cov);

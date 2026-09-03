@@ -17,7 +17,7 @@ setup_error() { echo "DE-corner-aa: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=25
+ASSERTIONS_REQUIRED=27
 
 for tool in clang python3; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -69,6 +69,10 @@ ck; grep -q 'title_build_material' "$SESS" \
   || fail "title 9-patch still captures framebuffer wallpaper"
 ck; grep -q 'title_l_cov' "$SESS" \
   || fail "title slices have no coverage channel"
+ck; grep -q 'shadow_build_material' "$SESS" \
+  || fail "window shadow is still a per-frame osgfx_shadow walk"
+ck; grep -q 'shadow_blit_slices' "$SESS" \
+  || fail "shadow 9-patch has no dest-independent blit"
 ck; grep -q 'osxui_app_card' "$CORE_DIR/user/frame/osxui_app.h" \
   || fail "osxui has no shared theme-card primitive"
 ck; grep -q 'osxui_app_card' "$CORE_DIR/user/frame/set.c" \

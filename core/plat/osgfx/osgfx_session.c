@@ -119,7 +119,238 @@ static int skip_soft_shadow(int x, int y, int w, int h, int fb_w, int fb_h) {
   return 0;
 }
 
-static void paint_soft_shadow(OsGfx *g, int x, int y, int w, int h, int r) {
+/* Shadow 9-patch: coverage×alpha of the 18px/3-layer ring, never a
+ * framebuffer sample. The CPU osgfx_shadow walk is ~1.7M cover tests per
+ * 400×280 window and dominates chrome regen on TCG. Material is
+ * independent of dest; blit is SRC_OVER of SESS_SHADOW. */
+enum {
+  SHADOW_CAP = 24,
+  SHADOW_MID = 8,
+  SHADOW_SPREAD = 3,
+  SHADOW_OX = 6,
+  SHADOW_OY = 10
+};
+static uint8_t shadow_tl[SHADOW_CAP * SHADOW_CAP];
+static uint8_t shadow_tr[SHADOW_CAP * SHADOW_CAP];
+static uint8_t shadow_bl[SHADOW_CAP * SHADOW_CAP];
+static uint8_t shadow_br[SHADOW_CAP * SHADOW_CAP];
+static uint8_t shadow_t[SHADOW_CAP * SHADOW_MID];
+static uint8_t shadow_b[SHADOW_CAP * SHADOW_MID];
+static uint8_t shadow_l[SHADOW_MID * SHADOW_CAP];
+static uint8_t shadow_r[SHADOW_MID * SHADOW_CAP];
+static int shadow_slices_ready;
+static int shadow_slice_r;
+
+static unsigned shadow_acc_over(unsigned dst, unsigned src) {
+  return src + (dst * (255u - src)) / 255u;
+}
+
+static void shadow_build_material(int r) {
+  int synth_w;
+  int synth_h;
+  int buf_w;
+  int buf_h;
+  int layer;
+  int spread;
+  int ox;
+  int oy;
+  int ow;
+  int oh;
+  int orad;
+  int alpha;
+  int xx;
+  int yy;
+  int cover;
+  int add;
+  int ix;
+  int iy;
+  static uint8_t acc[70 * 70];
+  unsigned n;
+
+  if (r != OSGFX_RADIUS) {
+    shadow_slices_ready = 0;
+    return;
+  }
+  spread = SHADOW_SPREAD;
+  synth_w = SHADOW_CAP * 2 + SHADOW_MID;
+  synth_h = SHADOW_CAP * 2 + SHADOW_MID;
+  buf_w = synth_w + spread + spread;
+  buf_h = synth_h + spread + spread;
+  n = (unsigned)buf_w * (unsigned)buf_h;
+  if (n > (unsigned)(70 * 70)) {
+    shadow_slices_ready = 0;
+    return;
+  }
+  ix = 0;
+  while (ix < (int)n) {
+    acc[ix] = 0;
+    ix = ix + 1;
+  }
+  layer = spread;
+  while (layer >= 0) {
+    ox = spread - layer;
+    oy = spread - layer;
+    ow = synth_w + layer + layer;
+    oh = synth_h + layer + layer;
+    orad = r + layer;
+    alpha = 10 + (spread - layer) * 8;
+    yy = oy;
+    while (yy < oy + oh) {
+      xx = ox;
+      while (xx < ox + ow) {
+        if (xx >= ox + orad && xx < ox + ow - orad && yy >= oy + orad &&
+            yy < oy + oh - orad) {
+          xx = ox + ow - orad;
+          continue;
+        }
+        cover = osgfx_rrect_cover(xx - spread, yy - spread, -layer, -layer, ow,
+                                  oh, orad);
+        if (cover > 0) {
+          add = (alpha * cover) / 255;
+          if (add > 0 && xx >= 0 && yy >= 0 && xx < buf_w && yy < buf_h) {
+            acc[yy * buf_w + xx] =
+                (uint8_t)shadow_acc_over((unsigned)acc[yy * buf_w + xx],
+                                         (unsigned)add);
+          }
+        }
+        xx = xx + 1;
+      }
+      yy = yy + 1;
+    }
+    layer = layer - 1;
+  }
+  yy = 0;
+  while (yy < SHADOW_CAP) {
+    xx = 0;
+    while (xx < SHADOW_CAP) {
+      shadow_tl[yy * SHADOW_CAP + xx] = acc[yy * buf_w + xx];
+      shadow_tr[yy * SHADOW_CAP + xx] =
+          acc[yy * buf_w + (buf_w - SHADOW_CAP + xx)];
+      shadow_bl[yy * SHADOW_CAP + xx] =
+          acc[(buf_h - SHADOW_CAP + yy) * buf_w + xx];
+      shadow_br[yy * SHADOW_CAP + xx] =
+          acc[(buf_h - SHADOW_CAP + yy) * buf_w + (buf_w - SHADOW_CAP + xx)];
+      xx = xx + 1;
+    }
+    xx = 0;
+    while (xx < SHADOW_MID) {
+      shadow_t[yy * SHADOW_MID + xx] = acc[yy * buf_w + SHADOW_CAP + xx];
+      shadow_b[yy * SHADOW_MID + xx] =
+          acc[(buf_h - SHADOW_CAP + yy) * buf_w + SHADOW_CAP + xx];
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  yy = 0;
+  while (yy < SHADOW_MID) {
+    xx = 0;
+    while (xx < SHADOW_CAP) {
+      shadow_l[yy * SHADOW_CAP + xx] = acc[(SHADOW_CAP + yy) * buf_w + xx];
+      shadow_r[yy * SHADOW_CAP + xx] =
+          acc[(SHADOW_CAP + yy) * buf_w + (buf_w - SHADOW_CAP + xx)];
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  shadow_slices_ready = 1;
+  shadow_slice_r = r;
+}
+
+static void shadow_blend_px(uint32_t *fb, int pitch, int xx, int yy, int fb_w,
+                            int fb_h, unsigned cov) {
+  uint32_t *row;
+
+  if (cov == 0 || fb == 0) {
+    return;
+  }
+  if (xx < 0 || yy < 0 || xx >= fb_w || yy >= fb_h) {
+    return;
+  }
+  row = (uint32_t *)((uint8_t *)fb + (unsigned)yy * (unsigned)pitch);
+  row[xx] = osgfx_cover_blend(SESS_SHADOW, row[xx], (int)cov);
+}
+
+static int shadow_blit_slices(uint32_t *fb, int pitch, int x, int y, int w,
+                              int h, int r, int fb_w, int fb_h) {
+  int dx;
+  int dy;
+  int dw;
+  int dh;
+  int xx;
+  int yy;
+  int mid_w;
+  int mid_h;
+  int cov;
+
+  if (shadow_slices_ready == 0 || fb == 0) {
+    return 0;
+  }
+  if (r != shadow_slice_r) {
+    return 0;
+  }
+  dw = w + SHADOW_SPREAD + SHADOW_SPREAD;
+  dh = h + SHADOW_SPREAD + SHADOW_SPREAD;
+  if (dw < SHADOW_CAP * 2 + SHADOW_MID || dh < SHADOW_CAP * 2 + SHADOW_MID) {
+    return 0;
+  }
+  dx = x - SHADOW_SPREAD;
+  dy = y - SHADOW_SPREAD;
+  mid_w = dw - SHADOW_CAP * 2;
+  mid_h = dh - SHADOW_CAP * 2;
+  yy = 0;
+  while (yy < SHADOW_CAP) {
+    xx = 0;
+    while (xx < SHADOW_CAP) {
+      shadow_blend_px(fb, pitch, dx + xx, dy + yy, fb_w, fb_h,
+                      (unsigned)shadow_tl[yy * SHADOW_CAP + xx]);
+      shadow_blend_px(fb, pitch, dx + dw - SHADOW_CAP + xx, dy + yy, fb_w, fb_h,
+                      (unsigned)shadow_tr[yy * SHADOW_CAP + xx]);
+      shadow_blend_px(fb, pitch, dx + xx, dy + dh - SHADOW_CAP + yy, fb_w, fb_h,
+                      (unsigned)shadow_bl[yy * SHADOW_CAP + xx]);
+      shadow_blend_px(fb, pitch, dx + dw - SHADOW_CAP + xx,
+                      dy + dh - SHADOW_CAP + yy, fb_w, fb_h,
+                      (unsigned)shadow_br[yy * SHADOW_CAP + xx]);
+      xx = xx + 1;
+    }
+    xx = 0;
+    while (xx < mid_w) {
+      /* Straight-edge mid is uniform; do not modulo per pixel. */
+      cov = (int)shadow_t[yy * SHADOW_MID];
+      shadow_blend_px(fb, pitch, dx + SHADOW_CAP + xx, dy + yy, fb_w, fb_h,
+                      (unsigned)cov);
+      cov = (int)shadow_b[yy * SHADOW_MID];
+      shadow_blend_px(fb, pitch, dx + SHADOW_CAP + xx,
+                      dy + dh - SHADOW_CAP + yy, fb_w, fb_h, (unsigned)cov);
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  yy = 0;
+  while (yy < mid_h) {
+    xx = 0;
+    while (xx < SHADOW_CAP) {
+      cov = (int)shadow_l[xx];
+      shadow_blend_px(fb, pitch, dx + xx, dy + SHADOW_CAP + yy, fb_w, fb_h,
+                      (unsigned)cov);
+      cov = (int)shadow_r[xx];
+      shadow_blend_px(fb, pitch, dx + dw - SHADOW_CAP + xx,
+                      dy + SHADOW_CAP + yy, fb_w, fb_h, (unsigned)cov);
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  return 1;
+}
+
+static void paint_soft_shadow(OsGfx *g, uint32_t *fb, int pitch, int x, int y,
+                              int w, int h, int r, int fb_w, int fb_h) {
+  if (shadow_slices_ready == 0) {
+    shadow_build_material(r);
+  }
+  if (shadow_blit_slices(fb, pitch, x + SHADOW_OX, y + SHADOW_OY, w, h, r, fb_w,
+                         fb_h) != 0) {
+    return;
+  }
   if (g == 0) {
     return;
   }
@@ -317,14 +548,11 @@ static int title_blit_slices(uint32_t *fb, int pitch, int x, int y, int w, int t
       }
       xx = xx + 1;
     }
+    /* Mid-span is interior of the window rrect (CAP=24 > r=18). Opaque SRC. */
+    px = title_m[yy * TITLE_SLICE_MID];
     xx = 0;
     while (xx < mid) {
-      px = title_m[yy * TITLE_SLICE_MID + (xx % TITLE_SLICE_MID)];
-      cov = (int)title_m_cov[yy * TITLE_SLICE_MID + (xx % TITLE_SLICE_MID)];
-      if (cov > 0) {
-        row[TITLE_SLICE_CAP + xx] =
-            osgfx_cover_blend(px, row[TITLE_SLICE_CAP + xx], cov);
-      }
+      row[TITLE_SLICE_CAP + xx] = px;
       xx = xx + 1;
     }
     yy = yy + 1;
@@ -372,7 +600,7 @@ static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom
     th = h;
   }
   if (skip_soft_shadow(x, y, w, h, fb_w, fb_h) == 0) {
-    paint_soft_shadow(g, x, y, w, h, r);
+    paint_soft_shadow(g, fb, pitch, x, y, w, h, r, fb_w, fb_h);
   }
   if (title_slices_ready == 0) {
     title_build_material(th, r, SESS_TITLE_TOP, OSGFX_TITLE);
