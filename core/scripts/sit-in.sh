@@ -185,8 +185,13 @@ if [[ "$UEFI" == 1 ]]; then
   OVMF_VARS_FILE="$(find_ovmf_vars)" || fail "OVMF VARS template not found (set OVMF_VARS)"
   cp "$OVMF_VARS_FILE" "$OVMF_VARS_COPY" || fail "could not copy OVMF VARS"
   ISO="$RUN_DIR/uefi.iso"
+  UEFI_KERNEL="$KERNEL_ELF"
+  if [[ -f "$CORE_DIR/build/kernel-uefi.elf" ]]; then
+    UEFI_KERNEL="$CORE_DIR/build/kernel-uefi.elf"
+    say "UEFI kernel $UEFI_KERNEL (9MiB, avoids OVMF 8MiB hole)"
+  fi
   say "building UEFI ISO (OVMF + Limine, GOP from limine.conf)"
-  bash "$CORE_DIR/scripts/build-uefi-image.sh" "$KERNEL_ELF" "$ISO" \
+  bash "$CORE_DIR/scripts/build-uefi-image.sh" "$UEFI_KERNEL" "$ISO" \
     || fail "build-uefi-image.sh failed"
 elif [[ "$BIOS" == 1 ]]; then
   ISO="$RUN_DIR/bios.iso"

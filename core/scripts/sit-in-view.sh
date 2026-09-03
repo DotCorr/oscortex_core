@@ -1392,9 +1392,14 @@ timeout: 0
     resolution: ${VIEW_W}x${VIEW_H}x32
 EOF
   ISO="$RUN_DIR/view-uefi.iso"
+  UEFI_KERNEL="$KERNEL_ELF"
+  if [[ -f "$CORE_DIR/build/kernel-uefi.elf" ]]; then
+    UEFI_KERNEL="$CORE_DIR/build/kernel-uefi.elf"
+    say "UEFI kernel $UEFI_KERNEL (9MiB, avoids OVMF 8MiB hole)"
+  fi
   say "building UEFI ISO (GOP ${VIEW_W}×${VIEW_H})"
   LIMINE_CONF="$RUN_DIR/limine-view.conf" \
-    bash "$CORE_DIR/scripts/build-uefi-image.sh" "$KERNEL_ELF" "$ISO" \
+    bash "$CORE_DIR/scripts/build-uefi-image.sh" "$UEFI_KERNEL" "$ISO" \
     || fail "build-uefi-image.sh failed"
 fi
 

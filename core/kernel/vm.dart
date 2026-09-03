@@ -916,6 +916,9 @@ u64 vmPageFlags(u64 a) {
   if (a < u64(vmLowBytes)) {
     return u64(vmPresent) | u64(vmWritable) | vmNxBit();
   }
+  if (a < kernel_image_start()) {
+    return u64(vmPresent) | u64(vmWritable) | vmNxBit();
+  }
   if (a < kernel_rodata_start()) {
     return u64(vmPresent); // read + execute: no W, no NX
   }
@@ -1249,12 +1252,12 @@ void vmInit() {
 
   // 2. Preconditions on the layout the linker produced. Each one is a thing
   //    `vmPageFlags` and `vmBuild` assume, made explicit.
-  if (kernel_image_start() > u64(vmLowBytes)) {
+  if (kernel_image_start() < u64(vmLowBytes)) {
     vmSetMeta(u64(vmMetaStatus), u64(vmStatusBadBase));
     return;
   }
-  if (kernel_image_start() < u64(vmLowBytes)) {
-    vmSetMeta(u64(vmMetaStatus), u64(vmStatusBadBase));
+  if ((kernel_image_start() & u64(vmPageMask)) > u64(0)) {
+    vmSetMeta(u64(vmMetaStatus), u64(vmStatusBadAlign));
     return;
   }
   if (kernel_image_end() > u64(vmFineBytes)) {

@@ -530,5 +530,21 @@ fi
 mv -f "$LINK_MAP_TMP" "$BUILD_DIR/kernel.map"
 mv -f "$LINK_TMP" "$BUILD_DIR/kernel.elf"
 
+# UEFI/GOP ISO: same objects, 9MiB base, so Limine 12's usable-memory
+# check does not span OVMF's reserved island at 8MiB.
+if [[ "${OSGFX_SKIA:-1}" == 1 && -f "$CORE_DIR/link/kernel-uefi.ld" ]]; then
+  UEFI_TMP="$BUILD_DIR/kernel-uefi.elf.$$.tmp"
+  if "$LD_CMD" -T "$CORE_DIR/link/kernel-uefi.ld" \
+      -o "$UEFI_TMP" \
+      "$BUILD_DIR/boot.o" "$BUILD_DIR/isr.o" "$BUILD_DIR/kdata.o" \
+      "$BUILD_DIR/portio.o" "$BUILD_DIR/kmain.o" "${GUEST_OBJS[@]}"; then
+    mv -f "$UEFI_TMP" "$BUILD_DIR/kernel-uefi.elf"
+    echo "build-kernel: UEFI image $BUILD_DIR/kernel-uefi.elf (9MiB base)"
+  else
+    rm -f "$UEFI_TMP"
+    echo "build-kernel: WARNING — kernel-uefi.elf link failed" >&2
+  fi
+fi
+
 echo "build-kernel: PASS — $BUILD_DIR/kernel.elf"
 exit 0
