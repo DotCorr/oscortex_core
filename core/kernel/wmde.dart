@@ -253,6 +253,13 @@ final List<u8> wmStrRest = const [
   u8(0x20), u8(0x57), u8(0x20),
 ];
 
+/// `'WM WARM TCG'` -- 11 bytes. Attach paid first-translation of max/restore.
+@rodata
+final List<u8> wmStrWarmTcg = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x57), u8(0x41), u8(0x52), u8(0x4D),
+  u8(0x20), u8(0x54), u8(0x43), u8(0x47),
+];
+
 /// `'WM FOCUS '` -- 9 bytes.
 @rodata
 final List<u8> wmStrFocus = const [
@@ -1469,6 +1476,7 @@ void wmCloseWindow(u64 wI) {
   wmeventResetSlot(wI);
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWLaunch0) + wI, u64(0));
+    wmWarmClear(wI);
   }
   wmSetWin(wI, u64(wmWinState), u64(wmWinFree));
   if (wmMeta(u64(wmMetaLive)) > u64(0)) {
@@ -1596,6 +1604,69 @@ void wmToggleMaxWindow(u64 wI) {
   uartWrite(Rodata.addressOf(wmStrMax), u64(9));
   uartPutHex(wI, u64(1));
   uartNewline();
+}
+
+/// Clears per-slot first-attach warmup so a relaunched FILES pays it again.
+@bare
+void wmWarmClear(u64 slot) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  final u64 mask = u64(1) << slot;
+  final u64 done = wmPage(u64(wmPageWWarmDone));
+  wmPageSet(u64(wmPageWWarmDone), done - (done & mask));
+  final u64 w = wmPage(u64(wmPageWWarm));
+  if ((w & u64(0xFF)) == (slot + u64(1))) {
+    wmPageSet(u64(wmPageWWarm), u64(0));
+  }
+}
+
+/// After a FILES commit, walk maximize then restore once so TCG translates
+/// toggle + configure + chrome GEOM off the first user click. Body blit
+/// stays held until the client COMMIT (atomic; no cream mid-frame).
+@bare
+void wmWarmupAfterCommit(u64 slot) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  final u64 cap = wmPage(u64(wmPageWLaunch0) + slot);
+  if (cap != u64(1)) {
+    return;
+  }
+  final u64 w = wmPage(u64(wmPageWWarm));
+  final u64 id = w & u64(0xFF);
+  final u64 phase = w >> u64(8);
+  final u64 mask = u64(1) << slot;
+  final u64 done = wmPage(u64(wmPageWWarmDone));
+  if (id == (slot + u64(1))) {
+    if (phase == u64(1)) {
+      if (wmPage(u64(wmPageWMax0) + slot) > u64(0)) {
+        wmPageSet(u64(wmPageWWarm), (slot + u64(1)) | (u64(2) << u64(8)));
+        wmToggleMaxWindow(slot);
+      }
+      return;
+    }
+    if (phase == u64(2)) {
+      if (wmPage(u64(wmPageWMax0) + slot) < u64(1)) {
+        wmPageSet(u64(wmPageWWarm), u64(0));
+        uartWrite(Rodata.addressOf(wmStrWarmTcg), u64(11));
+        uartNewline();
+      }
+      return;
+    }
+  }
+  if ((done & mask) > u64(0)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWWarmDone), done | mask);
+  wmPageSet(u64(wmPageWWarm), (slot + u64(1)) | (u64(1) << u64(8)));
+  wmToggleMaxWindow(slot);
 }
 
 /// 1 if `wm de` is on and ([x], [y]) is on window [wI]'s SE resize

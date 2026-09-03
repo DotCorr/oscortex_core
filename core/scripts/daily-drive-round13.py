@@ -61,6 +61,7 @@ SEQ_RE = re.compile(r" S ([0-9A-F]+)")
 PRES_RE = re.compile(r"^WM PRES S ([0-9A-F]+)")
 OPID_RE = re.compile(r"^WM OPID ([0-9A-F]+)")
 REST_OP_RE = re.compile(r"FILES REST .* OP ([0-9A-F]+)")
+CFG_OP_RE = re.compile(r"FILES CFG ([0-9A-F]+)")
 PHZ_OP_RE = re.compile(r"FILES PHZ PAINT ([BE]) OP ([0-9A-F]+)")
 COMMIT_OP_RE = re.compile(r"FILES COMMIT OP ([0-9A-F]+)")
 GEOM_OP_RE = re.compile(r"OSGFX CHROME GEOM(?: OP ([0-9A-F]+))?")
@@ -186,6 +187,7 @@ class Serial:
         "WM FRAME", "WM FOCUS", "MOUSE ABS", "FB GOP", "VIEW MODE", "WM RAISE",
         "OSGFX CHROME", "FILES PHZ", "WM PHZ", "FILES GROW", "FILES REST",
         "WM OPID", "FILES COMMIT", "FILES PREFILL", "WM CLOSE",
+        "FILES CFG", "WM WARM",
     )
 
     def _keep_line(self, line):
@@ -260,6 +262,13 @@ class Serial:
                     self.phase_events.append({
                         "token": "FILES REST",
                         "opid": int(rm.group(1), 16),
+                        "host_ms": t_ms,
+                    })
+                fm = CFG_OP_RE.search(ln)
+                if fm:
+                    self.phase_events.append({
+                        "token": "FILES CFG",
+                        "opid": int(fm.group(1), 16),
                         "host_ms": t_ms,
                     })
                 zm = PHZ_OP_RE.search(ln)
@@ -483,6 +492,7 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
         rec["phz_begin_ms"] = by.get("FILES PHZ PAINT B")
         rec["phz_end_ms"] = by.get("FILES PHZ PAINT E")
         rec["rest_ms"] = by.get("FILES REST")
+        rec["cfg_ms"] = by.get("FILES CFG")
         rec["commit_ms"] = by.get("FILES COMMIT")
         rec["geom_ms"] = by.get("OSGFX CHROME GEOM")
     PHASE_TIMELINES.append(rec)
@@ -937,6 +947,7 @@ def parse_phases(text, serial_path=""):
         "OSGFX SKIA DROP", "OSGFX SKIA REWIND", "OSGFX SKIA LEAK",
         "WM PHZ MAX", "WM HOLD W", "FILES PHZ GROW", "FILES PHZ PAINT",
         "FILES PREFILL", "FILES COMMIT", "WM OPID",
+        "FILES CFG", "WM WARM TCG",
         "SHM SHRINK", "SHM LIVE",
     )
     out = {}
@@ -1116,9 +1127,8 @@ def main():
 
     probe_abs = assert_probe(q, ser, PROBE_XY[0], PROBE_XY[1])
 
-    # First maximize / restore are the cold path. Pair them back-to-back
-    # before any QMP screendump: a dump between them stalled UART and
-    # invented a 1.17s restore wall while guest LAT was 2 ticks.
+    # First user-visible max/restore. Guest attach already walked the
+    # toggle (WM WARM TCG) so TCG is not paid on this click.
     press(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "left", "WM FOCUS", timeout=2)
     drain_idle(ser)
     t_max = time.perf_counter()
@@ -1300,6 +1310,24 @@ def main():
                                              DOCK_MENU_XY[1], "right",
                                              timeout=2.0))
             q.key("esc")
+        if cycles % 12 == 0:
+            # Fresh client/backing, not a warm toggle. Restore leaves
+            # FILES at the launch tile so CLOSE_XY still hits.
+            press(q, ser, FILES_CLOSE_XY[0], FILES_CLOSE_XY[1], "left",
+                  "WM CLOSE", timeout=3)
+            time.sleep(0.30)
+            press(q, ser, FILES_DOCK_XY[0], FILES_DOCK_XY[1], "left",
+                  "FILES CSD", timeout=8)
+            time.sleep(0.45)
+            serial_fatal(serial_path, ser.read())
+            walls["max_cold"].append(timed_click(
+                q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1], timeout=4.0,
+                want_opid=True, label="max_cold"))
+            time.sleep(0.12)
+            walls["restore_cold"].append(timed_click(
+                q, ser, FILES_MAX_MAXED_XY[0], FILES_MAX_MAXED_XY[1],
+                timeout=4.0, want_opid=True, label="restore_cold"))
+            time.sleep(0.12)
         if cycles % 5 == 0:
             serial_fatal(serial_path, ser.read())
 
@@ -1427,6 +1455,9 @@ def main():
             + [t for t in PHASE_TIMELINES
                if t.get("label") in ("max_warm", "restore_warm", "focus")][-32:]
         ),
+        "guest_attach_warmup": (
+            "WM WARM TCG" in text or file_has_token(serial_path, "WM WARM TCG")
+        ),
         "pairing": "host_inject -> WM OPID -> WM PRES S <opid>",
         "max_restore_n": (
             (wall_by.get("max_cold") or {}).get("n", 0)
@@ -1526,6 +1557,8 @@ def main():
     if metrics["commits"] < 8 and not skip_boot:
         raise SystemExit("WM COMMIT count %d — picture is not a desktop"
                          % metrics["commits"])
+    if not skip_boot and not metrics["guest_attach_warmup"]:
+        raise SystemExit("WM WARM TCG missing — attach warmup did not finish")
     if hitch:
         raise SystemExit("multi-second wall-time hitch remains: %s" % hitch[:6])
     if not walls["max_cold"] or any(x is None for x in walls["max_cold"]):

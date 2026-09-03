@@ -1783,6 +1783,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWMax0) + slot, u64(0));
     wmPageSet(u64(wmPageWLaunch0) + slot, cap);
+    wmWarmClear(slot);
   }
   // THE NEWEST SURFACE IS ON TOP. That is the whole of this compositor's
   // stacking policy, it is one line, and `display-protocol.md` §0.1 is explicit
@@ -1913,6 +1914,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
       if (dw == ww) {
         if (dh == hh) {
           wmComposeCommit(slot, u64(1), u64(0), u64(0), u64(0), u64(0));
+          wmWarmupAfterCommit(slot);
           userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
           return;
         }
@@ -1920,6 +1922,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     }
   }
   wmComposeCommit(slot, u64(0), dx, dy, dw, dh);
+  wmWarmupAfterCommit(slot);
   userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
 }
 

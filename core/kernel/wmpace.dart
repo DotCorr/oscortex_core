@@ -260,6 +260,12 @@ const int wmPageWEvSeq = 386;
 /// Mailbox win0/win1 caption codes (low 8 / next 8). 1 = FILES, 2 = SET.
 const int wmPageWCapMail = 387;
 
+/// First-attach TCG warmup of maximize/restore (FILES only).
+/// [wmPageWWarm]: low 8 = slot+1, next 8 = phase (1 max issued, 2 restore).
+/// [wmPageWWarmDone]: bit per slot, sticky until close/reattach.
+const int wmPageWWarm = 388;
+const int wmPageWWarmDone = 389;
+
 const int wmLatKindPtr = 1;
 const int wmLatKindWheel = 2;
 const int wmLatKindDrag = 3;
