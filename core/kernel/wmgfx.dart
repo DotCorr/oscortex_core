@@ -298,7 +298,7 @@ u64 wmRrectCover(u64 px, u64 py, u64 x, u64 y, u64 w, u64 h, u64 r) {
     }
     sy = sy + u64(1);
   }
-  return ((hits * u64(255)) + u64(8)) / u64(16);
+  return ((hits * u64(255)) + u64(8)) ~/ u64(16);
 }
 
 @bare
