@@ -290,6 +290,25 @@ static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom
     osgfx_flush(g);
     title_capture_slices(fb, pitch, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
   }
+  if (fb != 0 && w > 8 && th > 2) {
+    uint32_t probe = title_px(fb, pitch, x + (w / 2), y + (th / 2))[0];
+    if (((probe >> 16) & 0xffu) < 160u) {
+      int yy;
+      int xx;
+      /* Skia missed the cache after a bump rewind. Write pearl
+       * directly so compose does not present a wallpaper title hole. */
+      yy = 0;
+      while (yy < th) {
+        uint32_t *row = title_px(fb, pitch, x, y + yy);
+        xx = 0;
+        while (xx < w) {
+          row[xx] = SESS_TITLE_TOP;
+          xx = xx + 1;
+        }
+        yy = yy + 1;
+      }
+    }
+  }
   /* Border ring only — do not paint OSGFX_WIN_FILL over client shm. */
   paint_window_borders(g, geom, border);
 }

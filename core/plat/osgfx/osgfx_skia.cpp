@@ -188,9 +188,8 @@ static void chrome_heap_after_paint(void) {
     return;
   }
   if (g_one_paint_sealed == 0) {
-    /* Premul client pipelines (DESK 168×80 menus) must sit under the
-     * seal. Warming them on g_one (opaque) missed the first-open hitch. */
-    prewarm_menu_ops();
+    /* Premul menu prewarm under this seal caused #GP on the next
+     * FILES chrome miss. Seal the first chrome paint only. */
     osgfx_heap_chrome_seal();
     g_one_paint_sealed = 1;
   }
@@ -276,13 +275,16 @@ static SkCanvas *canvas_of(OsGfx *g) {
   if (g == &g_one && g->canvas != 0) {
     if (g->px != g_one_bound_px || g->pitch != g_one_bound_pitch ||
         g->w != g_one_bound_w || g->h != g_one_bound_h) {
-      /* Same logical owner, new backing. Drop the wrapper first.
-       * Do not unseal (that ratcheted CRT heap to OOM) and do not
-       * rewind here: a rewind under a live Skia bind made
-       * fill_rrect_vgrad miss the chrome cache, so title_capture
-       * locked wallpaper into the 9-patch. */
+      /* Same logical owner, new backing. Drop wrappers first.
+       * Do not unseal: raising the chrome mark on every target
+       * switch ratcheted the no-op free() bump to OSGFX OOM. */
       g->owned.reset();
       g->canvas = 0;
+      client_g.owned.reset();
+      client_g.canvas = 0;
+      if (g_one_paint_sealed != 0) {
+        osgfx_heap_client_begin();
+      }
     }
   }
   if (g->canvas == 0) {
