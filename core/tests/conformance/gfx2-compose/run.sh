@@ -29,7 +29,7 @@ setup_error() { echo "GFX2-compose: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=64
+ASSERTIONS_REQUIRED=66
 
 for tool in clang++ python3 file nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -70,8 +70,9 @@ UNFOCUS=0x00505860
 CHROME_H=40
 TITLE_H=28
 BORDER=2
-POP_W=96
-POP_H=64
+POP_W=$(awk -F'= *' '/^const int wmPopW /{gsub(/[^0-9]/,"",$2); print $2; exit}' "$POP")
+POP_H=$(awk -F'= *' '/^const int wmPopH /{gsub(/[^0-9]/,"",$2); print $2; exit}' "$POP")
+[[ -n "$POP_W" && -n "$POP_H" ]] || fail "could not read wmPopW/H from wmpop.dart"
 RADIUS=12
 
 ck; [[ $RADIUS -gt 0 ]] || fail "radius is zero"
@@ -132,8 +133,14 @@ ck; [[ -n "$HDR_BORDER" && -n "$PY_BORDER" ]] \
   || fail "could not read OSGFX_BORDER out of $HDR or BORDER out of $DERIVE"
 ck; [[ "$HDR_BORDER" -eq "$PY_BORDER" ]] \
   || fail "OSGFX_BORDER is $HDR_BORDER in the header but derive.py's BORDER is $PY_BORDER — the harness is measuring against a border width the module no longer paints"
-ck; grep -q 'OSGFX_POP_W = 96' "$HDR" || fail "osgfx.h POP_W moved"
-ck; grep -q 'OSGFX_POP_H = 64' "$HDR" || fail "osgfx.h POP_H moved"
+HDR_POP_W=$(awk -F'= *' '/OSGFX_POP_W *=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$HDR")
+HDR_POP_H=$(awk -F'= *' '/OSGFX_POP_H *=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$HDR")
+ck; [[ -n "$HDR_POP_W" && -n "$HDR_POP_H" ]] \
+  || fail "could not read OSGFX_POP_W/H from osgfx.h"
+ck; [[ "$HDR_POP_W" -eq "$POP_W" ]] \
+  || fail "OSGFX_POP_W is $HDR_POP_W but wmPopW is $POP_W — preview and live menu geometry must match"
+ck; [[ "$HDR_POP_H" -eq "$POP_H" ]] \
+  || fail "OSGFX_POP_H is $HDR_POP_H but wmPopH is $POP_H — preview and live menu geometry must match"
 HDR_RADIUS=$(awk -F'= *' '/OSGFX_RADIUS *=/{gsub(/[^0-9]/,"",$2); print $2; exit}' "$HDR")
 PY_RADIUS=$(awk -F'= *' '/^RADIUS = /{print $2; exit}' "$DERIVE")
 ck; [[ -n "$HDR_RADIUS" && -n "$PY_RADIUS" ]] \
@@ -148,9 +155,12 @@ ck; grep -q 'wmChromeColor = 0x00344050' "$CHROME" || fail "wmchrome colour move
 ck; grep -q 'wmChromeH = 48' "$CHROME" || fail "wmchrome H moved"
 ck; grep -q 'wmTitleColor = 0x00E8E0D0' "$CHROME" || fail "wmtitle colour moved"
 ck; grep -q 'wmTitleH = 32' "$CHROME" || fail "wmtitle H moved"
-ck; grep -q 'wmPopColor = 0x00C04088' "$POP" || fail "wmpop colour moved"
-ck; grep -q 'wmPopW = 96' "$POP" || fail "wmpop W moved"
-ck; grep -q 'wmPopH = 64' "$POP" || fail "wmpop H moved"
+ck; grep -q 'wmPopColor = 0x00F4F6FA' "$POP" || fail "wmpop live card colour moved"
+ck; grep -q 'u64 wmPopKind' "$POP" || fail "wmpop has no kind/hover model"
+ck; grep -q 'u64 wmPopHoverTick' "$POP" || fail "wmpop has no pointer hover"
+ck; grep -q 'u64 wmPopKey' "$POP" || fail "wmpop has no keyboard selection"
+ck; grep -q 'u64 wmPopRowDisabled' "$POP" || fail "wmpop has no disabled rows"
+ck; grep -q 'void wmPopWritePage' "$POP" || fail "wmpop does not publish hover to the session"
 
 # Compose scene must speak osgfx (rrect + shadow), not a CPU box loop.
 ck; grep -q 'void osgfx_scene_compose' "$SCENE" || fail "no osgfx_scene_compose"

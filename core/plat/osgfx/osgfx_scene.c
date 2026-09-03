@@ -121,7 +121,8 @@ void osgfx_scene_osxui3(OsGfx *g, int menu_open, int menu_hit, int ctl_on,
   }
   paint_chrome(g);
   if (pop_x >= 0) {
-    osgfx_shadow(g, pop_x + 4, pop_y + 6, 96, 64, 10, 12, 0x00000000);
-    osgfx_fill_rrect(g, pop_x, pop_y, 96, 64, 10, OSGFX_POP);
+    osgfx_shadow(g, pop_x + 4, pop_y + 6, OSGFX_POP_W, OSGFX_POP_H, 10, 12,
+                 0x00000000);
+    osgfx_fill_rrect(g, pop_x, pop_y, OSGFX_POP_W, OSGFX_POP_H, 10, OSGFX_POP);
   }
 }

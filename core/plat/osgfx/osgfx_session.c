@@ -42,11 +42,14 @@ enum {
   SESS_MAX = 0x0068B078,
   SESS_CLOSE_HI = 0x00F0A0A0,
   SESS_MIN_HI = 0x00F0D080,
-  SESS_POP_ROW0 = 0x00304878,
-  SESS_POP_ROW1 = 0x00283868,
-  SESS_POP_FG = 0x00F0F8FF,
-  SESS_POP_ROW_PAD = 4,
-  SESS_POP_ROW_H = 24,
+  SESS_POP_ROW0 = 0x00FFFFFF,
+  SESS_POP_ROW1 = 0x00EEF2F6,
+  SESS_POP_HOVER = 0x00D0E4F8,
+  SESS_POP_DISABLED = 0x0090A0B0,
+  SESS_POP_EDGE = 0x00C8D0D8,
+  SESS_POP_FG = 0x00202830,
+  SESS_POP_ROW_PAD = 8,
+  SESS_POP_ROW_H = 28,
   SESS_POP_LAB_X = 8,
   SESS_POP_LAB_Y = 4,
   SESS_TITLE_BAND = 32,
@@ -301,27 +304,51 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
                   OSGFX_TEXT_TITLE_PX, OSGFX_TEXT_MEDIUM, SESS_TITLE_FG);
 }
 
-static void paint_wall_menu(OsGfx *g, uint32_t *fb, int pitch, int ww, int hh,
-                            int px, int py) {
+static void paint_ctx_menu(OsGfx *g, uint32_t *fb, int pitch, int ww, int hh,
+                           int px, int py, unsigned kind, unsigned hover) {
   int rx;
   int ry;
-  const char *regen;
-  const char *image;
+  const char *lab0;
+  const char *lab1;
+  unsigned n0;
+  unsigned n1;
+  uint32_t c0;
+  uint32_t c1;
 
-  regen = "Regen";
-  image = "Image";
-  osgfx_fill_rrect(g, px + 4, py + SESS_POP_ROW_PAD, OSGFX_POP_W - 8,
-                   SESS_POP_ROW_H - 2, 6, SESS_POP_ROW0);
-  osgfx_fill_rrect(g, px + 4, py + SESS_POP_ROW_PAD + SESS_POP_ROW_H,
-                   OSGFX_POP_W - 8, SESS_POP_ROW_H - 2, 6, SESS_POP_ROW1);
-  /* Menu rows: real outline text, left aligned like every other menu. */
+  lab0 = "Regen";
+  lab1 = "Image";
+  n0 = 5;
+  n1 = 5;
+  if (kind == 4) {
+    lab0 = "Close";
+    lab1 = "Raise";
+  } else if (kind == 5) {
+    lab0 = "Raise";
+    lab1 = "Close";
+  }
+  c0 = SESS_POP_ROW0;
+  c1 = SESS_POP_ROW1;
+  if ((hover & 0xFFu) == 0) {
+    c0 = SESS_POP_HOVER;
+  }
+  if ((hover & 0xFFu) == 1) {
+    c1 = SESS_POP_HOVER;
+  }
+  osgfx_fill_rrect(g, px + 6, py + SESS_POP_ROW_PAD, OSGFX_POP_W - 12,
+                   SESS_POP_ROW_H - 2, 6, c0);
+  osgfx_fill_rect(g, px + 10, py + SESS_POP_ROW_PAD + SESS_POP_ROW_H - 1,
+                  OSGFX_POP_W - 20, 1, SESS_POP_EDGE);
+  osgfx_fill_rrect(g, px + 6, py + SESS_POP_ROW_PAD + SESS_POP_ROW_H,
+                   OSGFX_POP_W - 12, SESS_POP_ROW_H - 2, 6, c1);
   rx = px + SESS_POP_LAB_X;
   ry = py + SESS_POP_ROW_PAD;
-  paint_text_left(g, fb, pitch, ww, hh, rx, ry, SESS_POP_ROW_H - 2, regen, 5,
-                  OSGFX_TEXT_LABEL_PX, OSGFX_TEXT_REGULAR, SESS_POP_FG);
+  paint_text_left(g, fb, pitch, ww, hh, rx, ry, SESS_POP_ROW_H - 2, lab0, n0,
+                  OSGFX_TEXT_LABEL_PX, OSGFX_TEXT_REGULAR,
+                  (hover & 0x100u) != 0 ? SESS_POP_DISABLED : SESS_POP_FG);
   ry = py + SESS_POP_ROW_PAD + SESS_POP_ROW_H;
-  paint_text_left(g, fb, pitch, ww, hh, rx, ry, SESS_POP_ROW_H - 2, image, 5,
-                  OSGFX_TEXT_LABEL_PX, OSGFX_TEXT_REGULAR, SESS_POP_FG);
+  paint_text_left(g, fb, pitch, ww, hh, rx, ry, SESS_POP_ROW_H - 2, lab1, n1,
+                  OSGFX_TEXT_LABEL_PX, OSGFX_TEXT_REGULAR,
+                  (hover & 0x200u) != 0 ? SESS_POP_DISABLED : SESS_POP_FG);
   (void)SESS_POP_LAB_Y;
 }
 
@@ -440,9 +467,20 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
     pop_kind = (unsigned)((cmd->flags >> OSGFX_GUEST_POP_SHIFT) & 3u);
     osgfx_shadow(g, px + 4, py + 6, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, 14,
                  0x000C2030u);
-    osgfx_fill_rrect(g, px, py, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, OSGFX_POP);
-    if (pop_kind == 1 && (cmd->flags & OSGFX_GUEST_DE) != 0) {
-      paint_wall_menu(g, fb, pitch, ww, hh, px, py);
+    osgfx_fill_rrect(g, px, py, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS,
+                     0x00F4F6FAu);
+    if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+      unsigned hover = 0xFFu;
+      unsigned ck = pop_kind;
+      if (cmd->wmpage != 0) {
+        const uint64_t *page = (const uint64_t *)(uintptr_t)cmd->wmpage;
+        ck = (unsigned)page[OSGFX_WMPAGE_W_CTX_KIND];
+        hover = (unsigned)page[OSGFX_WMPAGE_W_CTX_SLOT];
+      }
+      if (ck == 0) {
+        ck = pop_kind;
+      }
+      paint_ctx_menu(g, fb, pitch, ww, hh, px, py, ck, hover);
     }
   }
 }

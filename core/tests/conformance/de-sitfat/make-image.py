@@ -90,6 +90,7 @@ def boot_sector():
 def parse_pairs(args):
     order = []
     blobs = {}
+    kinds = {}
     for a in args:
         if "=" not in a:
             raise SystemExit("make-image: want NAME=path, got %r" % a)
@@ -98,14 +99,25 @@ def parse_pairs(args):
         if name in blobs:
             raise SystemExit("make-image: duplicate name %s" % name)
         eightthree(name)
-        if not os.path.isfile(path):
-            raise SystemExit("make-image: no file %s" % path)
-        blob = open(path, "rb").read()
-        if name.endswith(".ELF") and blob[:4] != b"\x7fELF":
-            raise SystemExit("make-image: %s is not ELF" % name)
-        blobs[name] = blob
+        if path == ":dir":
+            kinds[name] = "dir"
+            blobs[name] = b""
+        elif path == ":gone":
+            kinds[name] = "gone"
+            blobs[name] = b""
+        elif path == ":miss":
+            kinds[name] = "miss"
+            blobs[name] = b""
+        else:
+            if not os.path.isfile(path):
+                raise SystemExit("make-image: no file %s" % path)
+            blob = open(path, "rb").read()
+            if name.endswith(".ELF") and blob[:4] != b"\x7fELF":
+                raise SystemExit("make-image: %s is not ELF" % name)
+            kinds[name] = "file"
+            blobs[name] = blob
         order.append(name)
-    return order, blobs
+    return order, blobs, kinds
 
 
 def main():
@@ -115,8 +127,8 @@ def main():
         raise SystemExit(
             "usage: make-image.py <out.img> [--json] NAME=path [NAME=path ...]")
     out = raw[0]
-    order, blobs = parse_pairs(raw[1:])
-    elves = [n for n in order if n.endswith(".ELF")]
+    order, blobs, kinds = parse_pairs(raw[1:])
+    elves = [n for n in order if n.endswith(".ELF") and kinds[n] == "file"]
     if not elves:
         raise SystemExit("make-image: need at least one .ELF")
 
@@ -124,7 +136,11 @@ def main():
     chains = {}
     c = 2
     for name in order:
-        need = max(1, (len(blobs[name]) + CLUSTER_BYTES - 1) // CLUSTER_BYTES)
+        kind = kinds[name]
+        if kind in ("gone", "miss"):
+            chains[name] = []
+            continue
+        need = 1 if kind == "dir" else max(1, (len(blobs[name]) + CLUSTER_BYTES - 1) // CLUSTER_BYTES)
         chain = []
         while len(chain) < need:
             if c >= CLUSTER_COUNT + 2:
@@ -159,7 +175,15 @@ def main():
     add("OSCORTEX", 0x08, 0, 0)
     root[-32:-21] = b"OSCORTEX   "
     for name in order:
-        add(name, 0x20, chains[name][0], len(blobs[name]))
+        kind = kinds[name]
+        if kind == "dir":
+            add(name, 0x10, chains[name][0], 0)
+        elif kind == "gone":
+            add(name, 0x20, 0, 0)
+        elif kind == "miss":
+            add(name, 0x20, 1, 32)
+        else:
+            add(name, 0x20, chains[name][0], len(blobs[name]))
     root += b"\x00" * (ROOT_ENTRIES * 32 - len(root))
     img[ROOT_START * SECTOR:(ROOT_START + ROOT_SECTORS) * SECTOR] = root
 
@@ -167,6 +191,15 @@ def main():
         return (DATA_START + (cl - 2) * SECTORS_PER_CLUSTER) * SECTOR
 
     for name, chain in chains.items():
+        if kinds[name] == "dir" and chain:
+            cl = chain[0]
+            dent = bytearray(CLUSTER_BYTES)
+            dent[0:32] = dir_entry(b".          ", 0x10, cl, 0)
+            dent[32:64] = dir_entry(b"..         ", 0x10, 0, 0)
+            img[cluster_at(cl):cluster_at(cl) + CLUSTER_BYTES] = dent
+            continue
+        if not chain:
+            continue
         blob = blobs[name]
         for i, cl in enumerate(chain):
             piece = blob[i * CLUSTER_BYTES:(i + 1) * CLUSTER_BYTES]
@@ -185,16 +218,20 @@ def main():
     if back[54:62] != b"FAT16   ":
         raise SystemExit("make-image: boot sector is not FAT16")
     for name, chain in chains.items():
+        if kinds[name] != "file":
+            continue
         joined = b"".join(back[cluster_at(cl):cluster_at(cl) + CLUSTER_BYTES]
                           for cl in chain)
         if joined[:len(blobs[name])] != blobs[name]:
             raise SystemExit("make-image: %s does not read back" % name)
 
     layout = {
-        "files": {n: {"bytes": len(blobs[n]), "clusters": len(chains[n])}
+        "files": {n: {"bytes": len(blobs[n]), "clusters": len(chains[n]),
+                      "kind": kinds[n]}
                   for n in order},
         "elves": elves,
         "order": order,
+        "kinds": kinds,
     }
     if want_json:
         print(json.dumps(layout))

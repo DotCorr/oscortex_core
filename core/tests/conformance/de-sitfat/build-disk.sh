@@ -98,6 +98,9 @@ printf 'APP1.ELF\n' >"$OUT/APPS.TXT"
 PAIRS=(
   "FILES.ELF=$OUT/files/files.elf"
   "FACTS.DAT=$OUT/FACTS.DAT"
+  "EMPTY=:dir"
+  "GONE.DAT=:gone"
+  "MISS.DAT=:miss"
   "SET.ELF=$OUT/set/set.elf"
   "PING.ELF=$OUT/chrome/ping.elf"
   "STUDIO.ELF=$OUT/studio/studio.elf"
@@ -130,10 +133,18 @@ python3 -c "
 import json, sys
 lay = json.load(open(sys.argv[1]))
 need = ['BROWSE.ELF', 'PLAY.ELF', 'TAP.ELF', 'FILES.ELF', 'SET.ELF',
-        'PING.ELF', 'STUDIO.ELF', 'APP1.ELF', 'DESK.ELF']
+        'PING.ELF', 'STUDIO.ELF', 'APP1.ELF', 'DESK.ELF',
+        'EMPTY', 'GONE.DAT', 'MISS.DAT']
 miss = [n for n in need if n not in lay['order']]
 if miss:
     raise SystemExit('layout missing %s' % miss)
+kinds = lay.get('kinds') or {}
+if kinds.get('EMPTY') != 'dir':
+    raise SystemExit('EMPTY is not a directory plant')
+if kinds.get('GONE.DAT') != 'gone':
+    raise SystemExit('GONE.DAT is not a zero-byte recovery plant')
+if kinds.get('MISS.DAT') != 'miss':
+    raise SystemExit('MISS.DAT is not an unavailable-path plant')
 elves = lay['elves']
 # First four ELF names are the Start cache (wmDeLaunchMax).
 if elves[:4] != ['FILES.ELF', 'SET.ELF', 'PING.ELF', 'STUDIO.ELF']:

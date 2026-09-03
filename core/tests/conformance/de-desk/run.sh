@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=171
+ASSERTIONS_REQUIRED=188
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -232,6 +232,30 @@ ck; grep -q 'wmPopWin' "$CORE_DIR/kernel/wmpop.dart" \
   || fail "title right-click has no window menu kind"
 ck; grep -q 'wmPopDock' "$CORE_DIR/kernel/wmpop.dart" \
   || fail "dock right-click has no dock menu kind"
+ck; grep -q 'u64 wmPlacePrev' "$WM" \
+  || fail "placement still walks overlay cards as the tile neighbour"
+ck; grep -q 'u64 wmPlaceExtent' "$WM" \
+  || fail "attach does not shrink a client that would leave the work area"
+ck; grep -q 'dw = ww - dx' "$WM" \
+  || fail "stale full-surface commits are still refused instead of clipped"
+ck; grep -q 'const int wmPopW = 168' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "compositor menu is still the primitive 96x64 card"
+ck; grep -q 'u64 wmPopHoverTick' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "menu has no pointer hover"
+ck; grep -q 'u64 wmPopKey' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "menu has no keyboard selection"
+ck; grep -q 'u64 wmPopRowDisabled' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "menu has no disabled-row state"
+ck; grep -q 'files_show_empty' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no empty-folder sit-in"
+ck; grep -q 'files_show_error' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no unavailable-path sit-in"
+ck; grep -q 'GONE.DAT' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES has no recovery plant name"
+ck; grep -q 'EMPTY=:dir' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
+  || fail "sit-in FAT does not plant an empty folder"
+ck; grep -q 'MISS.DAT=:miss' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
+  || fail "sit-in FAT does not plant an unavailable path"
 ck; python3 - "$WM" <<'PY' \
   || fail "title-band damage still falls through to wallpaper"
 import sys
@@ -840,6 +864,35 @@ marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
 if not wait_new("FILES BACK", marked):
     raise SystemExit("Escape did not reset FILES list")
+# EMPTY is the third root row (FILES, FACTS, EMPTY). Enter the folder.
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
+time.sleep(0.08)
+q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
+time.sleep(0.08)
+q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
+if not wait_new("FILES EMPTY", marked, timeout=2.0):
+    raise SystemExit("Enter on EMPTY did not show the empty-folder state")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
+if not wait_new("FILES BACK", marked):
+    raise SystemExit("Escape did not leave the empty folder")
+# MISS.DAT is the first M* name. Open is the unavailable-path sit-in.
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "m"}])
+if not wait_new("FILES KEY M", marked):
+    raise SystemExit("typing M did not type-select MISS.DAT")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
+if not wait_new("FILES ERR", marked, timeout=2.0):
+    raise SystemExit("Enter on MISS.DAT did not show the error state")
+press(100, 160, "right", "FILES MENU")
+marked = read()
+q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
+time.sleep(0.08)
+q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
+if not wait_new("FILES RETRY", marked, timeout=2.0):
+    raise SystemExit("Retry did not run from the error-state menu")
 marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "s"}])
 if not wait_new("FILES KEY S", marked):
@@ -1027,8 +1080,18 @@ ck; grep -q 'FILES SEL' "$SER" \
   || fail "FILES row was not selected"
 ck; grep -q 'FILES BACK' "$SER" \
   || fail "Escape did not reset FILES navigation"
+ck; grep -q 'FILES EMPTY' "$SER" \
+  || fail "EMPTY folder did not reach the live empty state"
+ck; grep -q 'FILES ERR' "$SER" \
+  || fail "MISS.DAT did not reach the live error state"
+ck; grep -q 'FILES RETRY' "$SER" \
+  || fail "error-state Retry did not run"
 ck; grep -q 'FILES KEY S' "$SER" \
   || fail "typing did not jump to a FILES name"
+ck; grep -q 'WM COMMIT' "$SER" \
+  || fail "max/resize stress produced no commits — refuse gate would be vacuous"
+ck; ! grep -qE 'WM REFUSE C 17 OP 0+2 .* R F+8$' "$SER" \
+  || fail "valid max/resize still generated COMMIT bad-geom refusals"
 ck; grep -q 'WM FOCUS' "$SER" \
   || fail "Tab did not publish a focus cycle"
 ck; grep -q 'WM WIN MENU' "$SER" \

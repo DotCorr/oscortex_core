@@ -26,14 +26,17 @@ part of 'kmain.dart';
 // reads them rather than inventing a second answer.
 // ---------------------------------------------------------------------------
 
-/// Width of the popover, in pixels.
-const int wmPopW = 96;
+/// Measured card width: 5-char labels at 8px plus pad, hover inset, radius.
+const int wmPopW = 168;
 
-/// Height of the popover, in pixels.
-const int wmPopH = 64;
+/// Two action rows plus pad. Variable via [wmPopRows] × [wmPopRowH].
+const int wmPopH = 80;
 
 /// Offset from the pointer to the popover origin. Positive is right and down.
 const int wmPopGap = 8;
+
+/// How many action rows the compositor cards paint.
+const int wmPopRows = 2;
 
 /// Light card fill. Distinct from desk wallpaper and the title band.
 const int wmPopColor = 0x00F4F6FA;
@@ -54,10 +57,16 @@ const int wmPopEdge = 0x00C8D0D8;
 const int wmPopShadow = 0x00687888;
 
 /// Top pad inside the popover before row 0.
-const int wmPopRowPad = 4;
+const int wmPopRowPad = 8;
 
-/// Row height for Regen / Image.
-const int wmPopRowH = 24;
+/// Row height for Regen / Image / Close / Raise.
+const int wmPopRowH = 28;
+
+/// Hover / keyboard selection fill.
+const int wmPopHover = 0x00D0E4F8;
+
+/// Disabled label ink.
+const int wmPopDisabled = 0x0090A0B0;
 
 /// Label pad inside a row.
 const int wmPopLabelPadX = 8;
@@ -211,22 +220,78 @@ final List<u8> wmStrDockMenu = const [
 // policy, not close or resize.
 // ---------------------------------------------------------------------------
 
+/// Kind in the low 8 bits of [wmMetaPop]. Hover row lives in bits 8..15.
+@bare
+u64 wmPopKind() {
+  return wmMeta(u64(wmMetaPop)) & u64(0xFF);
+}
+
+/// Hover / keyboard row, or 0xFF when none.
+@bare
+u64 wmPopHoverRow() {
+  return (wmMeta(u64(wmMetaPop)) >> u64(8)) & u64(0xFF);
+}
+
+@bare
+void wmPopSetHover(u64 row) {
+  final u64 k = wmPopKind();
+  if (wmPopIsCard(k) < u64(1)) {
+    return;
+  }
+  wmSetMeta(u64(wmMetaPop), k | ((row & u64(0xFF)) << u64(8)));
+}
+
 /// 1 if the popover is showing.
 @bare
 u64 wmPopOn() {
-  return wmMeta(u64(wmMetaPop));
+  return wmPopKind();
+}
+
+/// 1 if [row] is disabled on the showing card (no usable target).
+@bare
+u64 wmPopRowDisabled(u64 row) {
+  final u64 k = wmPopKind();
+  if (k == u64(wmPopWin)) {
+    if (wmPopTarget() >= u64(wmMaxWindows)) {
+      return u64(1);
+    }
+  }
+  if (k == u64(wmPopDock)) {
+    if (wmPopTarget() >= u64(wmMaxWindows)) {
+      return u64(1);
+    }
+  }
+  return u64(0);
+}
+
+/// Kind, hover, and disabled bits into the session mailbox.
+@bare
+void wmPopWritePage() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWCtxKind), wmPopKind());
+  u64 slot = wmPopHoverRow();
+  if (wmPopRowDisabled(u64(0)) > u64(0)) {
+    slot = slot | (u64(1) << u64(8));
+  }
+  if (wmPopRowDisabled(u64(1)) > u64(0)) {
+    slot = slot | (u64(1) << u64(9));
+  }
+  wmPageSet(u64(wmPageWCtxSlot), slot);
 }
 
 /// 1 if [k] is a compositor-owned two-row card (wall / window / dock).
 @bare
 u64 wmPopIsCard(u64 k) {
-  if (k == u64(wmPopWall)) {
+  final u64 kind = k & u64(0xFF);
+  if (kind == u64(wmPopWall)) {
     return u64(1);
   }
-  if (k == u64(wmPopWin)) {
+  if (kind == u64(wmPopWin)) {
     return u64(1);
   }
-  if (k == u64(wmPopDock)) {
+  if (kind == u64(wmPopDock)) {
     return u64(1);
   }
   return u64(0);
@@ -273,7 +338,7 @@ void wmPopRaise(u64 wI) {
 @bare
 u64 wmPopHit(u64 x, u64 y) {
   u64 hit = u64(0);
-  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
+  if (wmPopIsCard(wmPopKind()) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
@@ -302,7 +367,7 @@ u64 wmPopRowAt(u64 x, u64 y) {
     return u64(2);
   }
   final u64 row = (y - (oy + u64(wmPopRowPad))) ~/ u64(wmPopRowH);
-  if (row > u64(1)) {
+  if (row >= u64(wmPopRows)) {
     return u64(2);
   }
   return row;
@@ -318,6 +383,9 @@ u64 wmPopPixel(u64 x, u64 y) {
     return u64(wmPopColor);
   }
   final u64 row = wmPopRowAt(x, y);
+  if (row == wmPopHoverRow()) {
+    return u64(wmPopHover);
+  }
   if (row == u64(0)) {
     return u64(wmPopRow0);
   }
@@ -350,22 +418,35 @@ void wmPopLabel(u64 ox, u64 oy, u64 row, u64 text) {
 /// Paints the wallpaper menu rows + labels when `wm de` is on.
 @bare
 void wmPopMenuDraw(u64 ox, u64 oy) {
-  final u64 k = wmMeta(u64(wmMetaPop));
-  wmFillRect(ox + u64(1), oy + u64(wmPopH) - u64(1), u64(wmPopW), u64(1),
+  final u64 k = wmPopKind();
+  final u64 hover = wmPopHoverRow();
+  u64 r0 = u64(wmPopRow0);
+  u64 r1 = u64(wmPopRow1);
+  if (hover == u64(0)) {
+    r0 = u64(wmPopHover);
+  }
+  if (hover == u64(1)) {
+    r1 = u64(wmPopHover);
+  }
+  wmFillRect(ox + u64(2), oy + u64(wmPopH) - u64(1), u64(wmPopW), u64(2),
       u64(wmPopShadow));
-  wmFillRect(ox + u64(wmPopW) - u64(1), oy + u64(1), u64(1), u64(wmPopH),
+  wmFillRect(ox + u64(wmPopW) - u64(1), oy + u64(2), u64(2), u64(wmPopH),
       u64(wmPopShadow));
   wmFillRect(ox, oy, u64(wmPopW), u64(1), u64(wmPopEdge));
   wmFillRect(ox, oy, u64(1), u64(wmPopH), u64(wmPopEdge));
-  wmFillRect(ox + u64(4), oy + u64(wmPopRowPad), u64(wmPopW) - u64(8),
-      u64(wmPopRowH) - u64(2), u64(wmPopRow0));
-  wmFillRect(ox + u64(6), oy + u64(wmPopRowPad) + u64(wmPopRowH) - u64(1),
-      u64(wmPopW) - u64(12), u64(1), u64(wmPopEdge));
-  wmFillRect(ox + u64(4), oy + u64(wmPopRowPad) + u64(wmPopRowH),
-      u64(wmPopW) - u64(8), u64(wmPopRowH) - u64(2), u64(wmPopRow1));
+  wmFillRect(ox + u64(6), oy + u64(wmPopRowPad), u64(wmPopW) - u64(12),
+      u64(wmPopRowH) - u64(2), r0);
+  wmFillRect(ox + u64(10), oy + u64(wmPopRowPad) + u64(wmPopRowH) - u64(1),
+      u64(wmPopW) - u64(20), u64(1), u64(wmPopEdge));
+  wmFillRect(ox + u64(6), oy + u64(wmPopRowPad) + u64(wmPopRowH),
+      u64(wmPopW) - u64(12), u64(wmPopRowH) - u64(2), r1);
   if (k == u64(wmPopWin)) {
     wmPopLabel(ox, oy, u64(0), Rodata.addressOf(wmStrPopClose));
     wmPopLabel(ox, oy, u64(1), Rodata.addressOf(wmStrPopRaise));
+    if (wmPopRowDisabled(u64(0)) > u64(0)) {
+      wmFillRect(ox + u64(6), oy + u64(wmPopRowPad), u64(wmPopW) - u64(12),
+          u64(1), u64(wmPopDisabled));
+    }
     return;
   }
   if (k == u64(wmPopDock)) {
@@ -383,7 +464,7 @@ void wmPopMenuDraw(u64 ox, u64 oy) {
 @bare
 u64 wmPopDraw() {
   u64 px = u64(0);
-  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
+  if (wmPopIsCard(wmPopKind()) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
@@ -421,7 +502,7 @@ void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
 
 @bare
 void wmPopHide() {
-  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
+  if (wmPopIsCard(wmPopKind()) > u64(0)) {
     final u64 packed = wmMeta(u64(wmMetaPopXY));
     final u64 ox = packed >> u64(32);
     final u64 oy = packed & u64(0xFFFFFFFF);
@@ -430,29 +511,37 @@ void wmPopHide() {
   }
 }
 
-/// Places a 96x64 rectangle near ([x], [y]) and paints it. A popover that
-/// was already showing is hidden first so a second right-click moves it
-/// rather than leaving a stale fill. Under `wm de` the fill is a menu.
-/// GAP-0352: under `wm gfx` with no DESK panel, kick+tick+CPU fill the
-/// card before `WM WALL MENU` so the fb dump sees row colours.
+/// Places a measured card near ([x], [y]) and paints it. Flips to the
+/// pointer's left/above when the default gap would leave the screen.
+/// A popover that was already showing is hidden first so a second
+/// right-click moves it rather than leaving a stale fill.
 @bare
 void wmPopShowKind(u64 x, u64 y, u64 kind) {
-  if (wmPopIsCard(wmMeta(u64(wmMetaPop))) > u64(0)) {
+  if (wmPopIsCard(wmPopKind()) > u64(0)) {
     wmPopHide();
   }
-  if (wmMeta(u64(wmMetaPop)) > u64(1)) {
+  if (wmPopKind() > u64(1)) {
     wmDePopHide();
   }
   u64 ox = x + u64(wmPopGap);
   u64 oy = y + u64(wmPopGap);
-  if (ox + u64(wmPopW) > fbGeomWidth()) {
-    ox = fbGeomWidth() - u64(wmPopW);
+  if ((ox + u64(wmPopW)) > fbGeomWidth()) {
+    if (x > u64(wmPopW)) {
+      ox = x - u64(wmPopW);
+    } else {
+      ox = fbGeomWidth() - u64(wmPopW);
+    }
   }
-  if (oy + u64(wmPopH) > fbGeomHeight()) {
-    oy = fbGeomHeight() - u64(wmPopH);
+  if ((oy + u64(wmPopH)) > fbGeomHeight()) {
+    if (y > u64(wmPopH)) {
+      oy = y - u64(wmPopH);
+    } else {
+      oy = fbGeomHeight() - u64(wmPopH);
+    }
   }
-  wmSetMeta(u64(wmMetaPop), kind);
+  wmSetMeta(u64(wmMetaPop), kind | (u64(0xFF) << u64(8)));
   wmSetMeta(u64(wmMetaPopXY), (ox << u64(32)) | oy);
+  wmPopWritePage();
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     if (wmPanelStrip() < u64(1)) {
       wmGfxKick();
@@ -750,8 +839,11 @@ u64 wmPopWallClick(u64 x, u64 y) {
   if (wmPopHit(x, y) < u64(1)) {
     return u64(0);
   }
-  final u64 k = wmMeta(u64(wmMetaPop));
+  final u64 k = wmPopKind();
   final u64 row = wmPopRowAt(x, y);
+  if (wmPopRowDisabled(row) > u64(0)) {
+    return u64(1);
+  }
   wmPopHide();
   if (k == u64(wmPopWin)) {
     final u64 w = wmPopTarget();
@@ -787,4 +879,133 @@ u64 wmPopWallClick(u64 x, u64 y) {
     wmCompose();
   }
   return u64(1);
+}
+
+/// Pointer-near hover. Returns 1 if the highlight moved.
+@bare
+u64 wmPopHoverTick(u64 x, u64 y) {
+  if (wmPopIsCard(wmPopKind()) < u64(1)) {
+    return u64(0);
+  }
+  final u64 row = wmPopRowAt(x, y);
+  if (row == wmPopHoverRow()) {
+    return u64(0);
+  }
+  wmPopSetHover(row);
+  wmPopWritePage();
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmChromeBufInvalidate();
+    wmGfxKick();
+    osgfx_guest_tick();
+  }
+  wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
+      wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
+  return u64(1);
+}
+
+/// Activates [row] on the showing card. Returns 1 if handled.
+@bare
+u64 wmPopActivate(u64 row) {
+  final u64 k = wmPopKind();
+  if (wmPopIsCard(k) < u64(1)) {
+    return u64(0);
+  }
+  if (wmPopRowDisabled(row) > u64(0)) {
+    return u64(1);
+  }
+  wmPopHide();
+  if (k == u64(wmPopWin)) {
+    final u64 w = wmPopTarget();
+    if (w < u64(wmMaxWindows)) {
+      if (row == u64(0)) {
+        wmCloseWindow(w);
+      }
+      if (row == u64(1)) {
+        wmPopRaise(w);
+      }
+    }
+  } else {
+    if (k == u64(wmPopDock)) {
+      final u64 w = wmPopTarget();
+      if (w < u64(wmMaxWindows)) {
+        if (row == u64(0)) {
+          wmPopRaise(w);
+        }
+        if (row == u64(1)) {
+          wmCloseWindow(w);
+        }
+      }
+    } else {
+      if (row == u64(0)) {
+        wmWallRegen();
+      }
+      if (row == u64(1)) {
+        wmWallImage();
+      }
+    }
+  }
+  if (wmActive() > u64(0)) {
+    wmCompose();
+  }
+  return u64(1);
+}
+
+/// Keyboard on a showing compositor card. Returns 1 if consumed.
+@bare
+u64 wmPopKey(u64 ev) {
+  if (wmPopIsCard(wmPopKind()) < u64(1)) {
+    return u64(0);
+  }
+  if ((ev & u64(kbdqBitBreak)) > u64(0)) {
+    return u64(0);
+  }
+  final u64 scan = ev & u64(0x7F);
+  if (scan == u64(0x01)) {
+    wmPopHide();
+    return u64(1);
+  }
+  if (scan == u64(0x1C)) {
+    u64 row = wmPopHoverRow();
+    if (row > u64(1)) {
+      row = u64(0);
+    }
+    return wmPopActivate(row);
+  }
+  if ((ev & u64(kbdqBitExt)) > u64(0)) {
+    u64 row = wmPopHoverRow();
+    if (row > u64(1)) {
+      row = u64(0);
+    }
+    if (scan == u64(0x48)) {
+      if (row > u64(0)) {
+        row = row - u64(1);
+      }
+      wmPopSetHover(row);
+      wmPopWritePage();
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        wmChromeBufInvalidate();
+        wmGfxKick();
+        osgfx_guest_tick();
+      }
+      wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
+          wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
+      return u64(1);
+    }
+    if (scan == u64(0x50)) {
+      if (row < u64(1)) {
+        row = u64(1);
+      }
+      wmPopSetHover(row);
+      wmPopWritePage();
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        wmChromeBufInvalidate();
+        wmGfxKick();
+        osgfx_guest_tick();
+      }
+      wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
+          wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
+      return u64(1);
+    }
+  }
+  return u64(0);
 }

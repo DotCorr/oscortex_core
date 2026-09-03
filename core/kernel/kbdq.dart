@@ -229,7 +229,12 @@ void kbdqSys(u64 frame) {
       userSetFrame(frame, u64(userFrameRax), u64(kbdqEmpty));
       return;
     }
-    userSetFrame(frame, u64(userFrameRax), kbdqPop());
+    final u64 ev = kbdqPop();
+    if (wmPopKey(ev) > u64(0)) {
+      userSetFrame(frame, u64(userFrameRax), u64(kbdqEmpty));
+      return;
+    }
+    userSetFrame(frame, u64(userFrameRax), ev);
     return;
   }
   if (op == u64(kbdqOpDropped)) {

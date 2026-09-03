@@ -1346,8 +1346,8 @@ void wmDeNameCopy(u64 src) {
 @bare
 void wmDeStartShow() {
   wmOverlayRestore();
-  if (wmMeta(u64(wmMetaPop)) > u64(0)) {
-    if (wmMeta(u64(wmMetaPop)) == u64(1)) {
+  if (wmPopKind() > u64(0)) {
+    if (wmPopIsCard(wmPopKind()) > u64(0)) {
       wmPopHide();
     } else {
       wmDePopHide();
@@ -1368,8 +1368,8 @@ void wmDeStartShow() {
 /// Opens the reflection panel and prints the live list.
 @bare
 void wmDePanelShow() {
-  if (wmMeta(u64(wmMetaPop)) > u64(0)) {
-    if (wmMeta(u64(wmMetaPop)) == u64(1)) {
+  if (wmPopKind() > u64(0)) {
+    if (wmPopIsCard(wmPopKind()) > u64(0)) {
       wmPopHide();
     } else {
       wmDePopHide();

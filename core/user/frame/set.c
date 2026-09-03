@@ -46,7 +46,7 @@ typedef unsigned int u32;
 #define FACTS_NEED 26UL
 #define CHUNK 512UL
 
-#define YIELD_SPIN 40000UL
+#define YIELD_SPIN 8000UL
 #define O_WRITE 1UL
 #define PREF_BYTES 1UL
 #define FILE_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
@@ -77,6 +77,8 @@ static volatile u64 marker = 0x005E70000000005EUL;
 
 static u64 shm_h;
 static u64 pix_va;
+static u64 set_w = WIN_W;
+static u64 set_h = WIN_H;
 static volatile u64 armed = 0;
 static u64 scratch[8];
 static unsigned char buf[512];
@@ -193,9 +195,9 @@ static void fill_cpu(u64 va, u64 x, u64 y, u64 w, u64 h, u32 rgb) {
   while (py < (y + h)) {
     u64 px = x;
     while (px < (x + w)) {
-      if (px < WIN_W) {
-        if (py < WIN_H) {
-          p[py * WIN_W + px] = rgb;
+      if (px < set_w) {
+        if (py < set_h) {
+          p[py * set_w + px] = rgb;
         }
       }
       px = px + 1;
@@ -256,7 +258,9 @@ static void paint_devices_chrome(void) {
 }
 
 static void paint_sidebar(void) {
-  fill_cpu(pix_va, 0, OSXUI_CSD_H, SIDE_W, WIN_H - OSXUI_CSD_H, SIDE_FILL);
+  if (set_h > OSXUI_CSD_H) {
+    fill_cpu(pix_va, 0, OSXUI_CSD_H, SIDE_W, set_h - OSXUI_CSD_H, SIDE_FILL);
+  }
   if (page == PAGE_APPEAR) {
     fill_cpu(pix_va, 8UL, OSXUI_CSD_H + 68UL, SIDE_W - 16UL, 24UL, SIDE_SEL);
   }
@@ -277,7 +281,7 @@ static void paint_labels(u64 va, u64 on) {
   } else {
     paint_devices_chrome();
   }
-  osxui_app_csd(shm_h, WIN_W, lab_set, 8UL);
+  osxui_app_csd(shm_h, set_w, lab_set, 8UL);
   if (csd_noted == 0) {
     csd_noted = 1;
     wr(msg_csd, sizeof(msg_csd) - 1);
@@ -288,10 +292,10 @@ static void paint_labels(u64 va, u64 on) {
 static void paint_all(u64 va, u64 on) {
   volatile u32 *p = (volatile u32 *)va;
   u64 py = 0;
-  while (py < WIN_H) {
+  while (py < set_h) {
     u64 px = 0;
-    while (px < WIN_W) {
-      p[py * WIN_W + px] = pixel_of(px, py, on);
+    while (px < set_w) {
+      p[py * set_w + px] = pixel_of(px, py, on);
       px = px + 1;
     }
     py = py + 1;
@@ -308,7 +312,7 @@ static void paint_toggle(u64 va, u64 on) {
   while (py < (CTL_Y + CTL_H)) {
     u64 px = CTL_X;
     while (px < (CTL_X + CTL_W)) {
-      p[py * WIN_W + px] = c;
+      p[py * set_w + px] = c;
       px = px + 1;
     }
     py = py + 1;
@@ -317,7 +321,7 @@ static void paint_toggle(u64 va, u64 on) {
   while (py < (SW_Y + SW_H)) {
     u64 px = sw1x;
     while (px < (sw1x + SW_W)) {
-      p[py * WIN_W + px] = sc;
+      p[py * set_w + px] = sc;
       px = px + 1;
     }
     py = py + 1;
@@ -339,6 +343,27 @@ static void commit_rect(u64 x, u64 y, u64 w, u64 h, u64 seq) {
     die(0x5E000004UL | (frames << 32));
   }
   scratch[0] = frames;
+}
+
+static void set_apply_configure(u64 ev) {
+  u64 nw = (ev >> 40) & 0xFFFUL;
+  u64 nh = (ev >> 52) & 0xFFFUL;
+  if (nw < 1 || nh < 1) {
+    return;
+  }
+  if (nw > WIN_W) {
+    nw = WIN_W;
+  }
+  if (nh > WIN_H) {
+    nh = WIN_H;
+  }
+  if (nw == set_w && nh == set_h) {
+    return;
+  }
+  set_w = nw;
+  set_h = nh;
+  paint_all(pix_va, armed);
+  commit_rect(0, 0, set_w, set_h, 5);
 }
 
 static void emit_toggle(u64 on) {
@@ -369,7 +394,7 @@ static void flip(void) {
   armed = 1;
   write_pref();
   paint_toggle(pix_va, 1);
-  commit_rect(0, 0, WIN_W, WIN_H, 2);
+  commit_rect(0, 0, set_w, set_h, 2);
   emit_toggle(1);
 }
 
@@ -420,7 +445,7 @@ static void handle_nav(u64 ev) {
     if (ry < OSXUI_CSD_H + 92UL) {
       page = PAGE_APPEAR;
       paint_all(pix_va, armed);
-      commit_rect(0, 0, WIN_W, WIN_H, 3);
+      commit_rect(0, 0, set_w, set_h, 3);
       return;
     }
   }
@@ -428,7 +453,7 @@ static void handle_nav(u64 ev) {
     if (ry < OSXUI_CSD_H + 124UL) {
       page = PAGE_DEVICES;
       paint_all(pix_va, armed);
-      commit_rect(0, 0, WIN_W, WIN_H, 4);
+      commit_rect(0, 0, set_w, set_h, 4);
     }
   }
 }
@@ -569,8 +594,16 @@ void _start(void) {
     die(0x5E000003UL | (pix_va << 32));
   }
 
+  {
+    u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
+    if (ev != WMEVENT_EMPTY) {
+      if ((ev & 0xFFUL) == WMEVENT_TYPE_CONFIGURE) {
+        set_apply_configure(ev);
+      }
+    }
+  }
   paint_all(pix_va, 0);
-  commit_rect(0, 0, WIN_W, WIN_H, 1);
+  commit_rect(0, 0, set_w, set_h, 1);
   wr(msg_ready, sizeof(msg_ready) - 1);
   {
     unsigned at = put(0, msg_row);
@@ -593,7 +626,9 @@ void _start(void) {
     }
     u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
     if (ev != WMEVENT_EMPTY) {
-      if (press_in_ctl(ev) > 0) {
+      if ((ev & 0xFFUL) == WMEVENT_TYPE_CONFIGURE) {
+        set_apply_configure(ev);
+      } else if (press_in_ctl(ev) > 0) {
         flip();
       } else if (press_in_side(ev) > 0) {
         handle_nav(ev);

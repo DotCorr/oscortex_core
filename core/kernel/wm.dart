@@ -1501,9 +1501,58 @@ u64 wmFreeWindow() {
 /// **The answer is an ADDRESS THE KERNEL COMPUTED AND HANDED OVER**, not one
 /// the client derived. See this file's header §3: that is the whole reason this
 /// operation exists rather than the client simply committing.
-/// Tile to the previous client's right when that fits; otherwise pack
-/// against the right edge and drop 24px so title bars stay visible.
-/// Panel strips and the first client keep the requested origin.
+/// Last usable non-panel, non-overlay client, or [wmMaxWindows].
+/// Overlay cards (DESK menus) must not steal the tile slot.
+@bare
+u64 wmPlacePrev() {
+  u64 prev = u64(wmMaxWindows);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i) > u64(0)) {
+      if (wmIsPanel(i) < u64(1)) {
+        if (wmWinOverlay(i) < u64(1)) {
+          prev = i;
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  return prev;
+}
+
+/// Shrinks [w],[h] so a client at ([x],[y]) stays in the work area.
+/// Packed `(w << 32) | h`. Minimum 240×160 when the remainder allows it.
+@bare
+u64 wmPlaceExtent(u64 x, u64 y, u64 w, u64 h) {
+  final u64 b = u64(wmBorder);
+  u64 maxW = fbGeomWidth() - b - x;
+  u64 maxH = fbGeomHeight() - u64(wmChromeH) - b - y;
+  u64 nw = w;
+  u64 nh = h;
+  if (maxW < u64(1)) {
+    maxW = u64(1);
+  }
+  if (maxH < u64(1)) {
+    maxH = u64(1);
+  }
+  if (nw > maxW) {
+    nw = maxW;
+  }
+  if (nh > maxH) {
+    nh = maxH;
+  }
+  if (nw < u64(1)) {
+    nw = u64(1);
+  }
+  if (nh < u64(1)) {
+    nh = u64(1);
+  }
+  return (nw << u64(32)) | nh;
+}
+
+/// Tile to the previous client's right when the remainder is usable;
+/// otherwise stack below. The first client keeps the requested origin.
+/// Overlay cards and the panel strip are ignored.
 @bare
 u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if (wmDeOn() < u64(1)) {
@@ -1512,43 +1561,34 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if ((y + h) >= (fbGeomHeight() - u64(wmChromeH))) {
     return (x << u64(32)) | y;
   }
-  u64 prev = u64(wmMaxWindows);
-  u64 n = u64(0);
-  u64 i = u64(0);
-  while (i < u64(wmMaxWindows)) {
-    if (wmWindowUsable(i) > u64(0)) {
-      if (wmIsPanel(i) < u64(1)) {
-        if (wmWinResizableOf(i) > u64(0)) {
-          prev = i;
-          n = n + u64(1);
-        }
-      }
-    }
-    i = i + u64(1);
-  }
-  if (n < u64(1)) {
+  final u64 prev = wmPlacePrev();
+  if (prev >= u64(wmMaxWindows)) {
     return (x << u64(32)) | y;
   }
   final u64 b = u64(wmBorder);
-  u64 maxX = fbGeomWidth() - b - w;
-  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - h;
-  if (maxX < b) {
-    maxX = b;
-  }
-  if (maxY < b) {
-    maxY = b;
-  }
+  final u64 gap = u64(16);
+  final u64 minW = u64(240);
+  final u64 minH = u64(160);
   final u64 g = wmWin(prev, u64(wmWinGeom));
   final u64 px = wmGeomX(g);
   final u64 py = wmGeomY(g);
   final u64 pw = wmGeomW(g);
-  u64 nx = px + pw + u64(16);
-  u64 ny = py + u64(24);
-  if ((nx + w + b) > fbGeomWidth()) {
-    nx = maxX;
-  }
-  if ((ny + h + u64(wmChromeH) + b) > fbGeomHeight()) {
-    ny = maxY;
+  final u64 ph = wmGeomH(g);
+  u64 nx = px + pw + gap;
+  u64 ny = py;
+  u64 remainW = fbGeomWidth() - b - nx;
+  if (remainW >= minW) {
+    if ((ny + h + u64(wmChromeH) + b) > fbGeomHeight()) {
+      ny = fbGeomHeight() - u64(wmChromeH) - b - h;
+    }
+  } else {
+    nx = px;
+    ny = py + ph + gap;
+    final u64 remainH = fbGeomHeight() - u64(wmChromeH) - b - ny;
+    if (remainH < minH) {
+      nx = px + u64(40);
+      ny = py + u64(40);
+    }
   }
   if (nx < b) {
     nx = b;
@@ -1556,17 +1596,19 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if (ny < b) {
     ny = b;
   }
-  if (nx == x) {
-    if (ny == y) {
-      nx = nx + u64(32);
-      ny = ny + u64(32);
-      if (nx > maxX) {
-        nx = maxX;
-      }
-      if (ny > maxY) {
-        ny = maxY;
-      }
-    }
+  u64 maxX = fbGeomWidth() - b - minW;
+  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - minH;
+  if (maxX < b) {
+    maxX = b;
+  }
+  if (maxY < b) {
+    maxY = b;
+  }
+  if (nx > maxX) {
+    nx = maxX;
+  }
+  if (ny > maxY) {
+    ny = maxY;
   }
   return (nx << u64(32)) | ny;
 }
@@ -1576,8 +1618,8 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 h = wmDesc(ptr, u64(wmDescHandle));
   u64 x = wmDesc(ptr, u64(wmDescX));
   u64 y = wmDesc(ptr, u64(wmDescY));
-  final u64 w = wmDesc(ptr, u64(wmDescW));
-  final u64 hh = wmDesc(ptr, u64(wmDescH));
+  u64 w = wmDesc(ptr, u64(wmDescW));
+  u64 hh = wmDesc(ptr, u64(wmDescH));
   final u64 rawOff = wmDesc(ptr, u64(wmDescOffset));
   final u64 resizable = rawOff & u64(wmResizableFlag);
   final u64 off = rawOff & u64(wmOffsetMask);
@@ -1600,6 +1642,19 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   if (wmFits(nx, ny, w, hh) > u64(0)) {
     x = nx;
     y = ny;
+  }
+  final u64 fitted = wmPlaceExtent(x, y, w, hh);
+  final u64 fw = fitted >> u64(32);
+  final u64 fh = fitted & u64(0xFFFFFFFF);
+  if (fw != w) {
+    w = fw;
+  }
+  if (fh != hh) {
+    hh = fh;
+  }
+  if (wmFits(x, y, w, hh) < u64(1)) {
+    wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetBadGeom));
+    return;
   }
   // A stride of 0 means "no padding", which is what a client that has nothing
   // to say about layout sends. High 32 bits are the integer buffer scale
@@ -1726,12 +1781,12 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   final u64 hh = wmGeomH(g);
   final u64 dx = wmDesc(ptr, u64(wmDescX));
   final u64 dy = wmDesc(ptr, u64(wmDescY));
-  final u64 dw = wmDesc(ptr, u64(wmDescW));
-  final u64 dh = wmDesc(ptr, u64(wmDescH));
-  // REFUSED RATHER THAN CLAMPED, same as a geometry on attach. A clamp would
-  // turn a client's off-by-one into a compositor that paints the wrong
-  // rectangle and reports it as the right one. The overflow-safe order is
-  // "origin inside, then extent no larger than what remains".
+  u64 dw = wmDesc(ptr, u64(wmDescW));
+  u64 dh = wmDesc(ptr, u64(wmDescH));
+  // Origin outside the live window or a zero extent is refused. A
+  // damage rect that overruns the live geom is clipped: rapid
+  // max/restore leaves a stale full-surface commit in the client
+  // before configure is popped, and that is valid input.
   if (dx >= ww) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
     return;
@@ -1748,11 +1803,21 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
     return;
   }
+  // Stale full-surface commits after a shrink or restore are clipped
+  // to the live geom. A clamp of the damage rect is not a lie about
+  // the window size: the return is the frame count. Origin outside
+  // the live window or a zero extent is still a refusal.
   if (dw > (ww - dx)) {
+    dw = ww - dx;
+  }
+  if (dh > (hh - dy)) {
+    dh = hh - dy;
+  }
+  if (dw < u64(1)) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
     return;
   }
-  if (dh > (hh - dy)) {
+  if (dh < u64(1)) {
     wmRefuse(frame, u64(wmOpCommit), h, u64(wmRetBadGeom));
     return;
   }
@@ -3332,6 +3397,11 @@ void wmPointerTick() {
   }
   wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);
   wmDragStep(x, y);
+  if (wmPopIsCard(wmPopKind()) > u64(0)) {
+    if (wmMeta(u64(wmMetaDrag)) < u64(1)) {
+      final u64 hoverMoved = wmPopHoverTick(x, y);
+    }
+  }
   final u64 ox = wmMeta(u64(wmMetaCurX));
   final u64 oy = wmMeta(u64(wmMetaCurY));
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {

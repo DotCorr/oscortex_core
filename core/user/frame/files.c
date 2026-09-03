@@ -67,7 +67,12 @@ typedef unsigned int u32;
 #define LAB_FG 0x00202830UL
 #define ICON_FG 0x00405060UL
 #define SURF_OFFSET 1024UL
-#define YIELD_SPIN 40000UL
+#define YIELD_SPIN 8000UL
+#define FAT_ATTR 11U
+#define FAT_ATTR_DIR 0x10U
+#define FILE_RET_ISDIR 0xFFFFFFFFFFFFFFF8UL
+#define FILE_RET_EMPTY 0xFFFFFFFFFFFFFFF7UL
+#define FILE_RET_NOTFOUND 0xFFFFFFFFFFFFFFF9UL
 #define ROW_H 28UL
 #define SCROLL_TRACK_W 4UL
 #define SCROLL_TRACK_PAD 6UL
@@ -133,6 +138,12 @@ static u64 scroll_off;
 static u64 list_sel;
 static u64 files_err;
 static u64 empty_noted;
+static u64 root_names;
+static u64 in_folder;
+static const char path_gone[] = "GONE.DAT";
+static const char path_miss[] = "MISS.DAT";
+static const char msg_retry[] = "FILES RETRY";
+static const char msg_dir[] = "FILES DIR ";
 #if FILES_NO_ICON == 0
 static u64 csd_noted;
 #endif
@@ -504,8 +515,8 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
 #endif
 }
 
-#define FILE_MENU_W 128UL
-#define FILE_MENU_H 64UL
+#define FILE_MENU_W 168UL
+#define FILE_MENU_H 80UL
 
 static u64 row_at_y(u64 y, u64 names) {
   u64 body_h = files_height;
@@ -560,13 +571,23 @@ static void paint_file_menu(void) {
                   OSXUI_MENU_BG);
   osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD, FILE_MENU_W - 8UL,
                   OSXUI_MENU_ROW_H - 2UL, 4UL, row0);
-  osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + 4UL, "Open", 4,
-                 WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
-  osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H,
-                  FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL,
-                  row1);
-  osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL,
-                 "Rename", 6, WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+  if (in_folder > 0) {
+    osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + 4UL, "Back", 4,
+                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+    osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H,
+                    FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL, row1);
+    osxui_app_text(files_h, mx + 8UL,
+                   my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL, "Retry", 5,
+                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+  } else {
+    osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + 4UL, "Open", 4,
+                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+    osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H,
+                    FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL, row1);
+    osxui_app_text(files_h, mx + 8UL,
+                   my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL, "Rename", 6,
+                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+  }
 }
 
 static void files_repaint(void) {
@@ -738,22 +759,135 @@ static void files_type_sel(char letter) {
   }
 }
 
-static void files_go_back(void) {
+static u64 files_is_dir(u64 row) {
+  if (row >= files_names) {
+    return 0;
+  }
+  if ((recs[row][FAT_ATTR] & FAT_ATTR_DIR) != 0) {
+    return 1;
+  }
+  return 0;
+}
+
+static u64 files_plant_skip(u64 row) {
+  if (row >= files_names) {
+    return 1;
+  }
+  if (files_is_dir(row) > 0) {
+    return 1;
+  }
+  if (dotlen[row] == 8) {
+    if (same_bytes(dotted[row], 8, path_gone, 8) > 0) {
+      return 1;
+    }
+    if (same_bytes(dotted[row], 8, path_miss, 8) > 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static void files_show_empty(void) {
+  if (in_folder == 0) {
+    root_names = files_names;
+  }
+  in_folder = 1;
+  files_err = 0;
+  files_names = 0;
   list_sel = 0;
   scroll_off = 0;
   menu_on = 0;
+  empty_noted = 0;
+  wr(msg_empty, sizeof(msg_empty) - 1);
+  files_repaint();
+}
+
+static void files_show_error(void) {
+  if (in_folder == 0) {
+    root_names = files_names;
+  }
+  in_folder = 1;
+  files_err = 1;
+  files_names = 0;
+  list_sel = 0;
+  scroll_off = 0;
+  menu_on = 0;
+  empty_noted = 0;
+  wr(msg_error, sizeof(msg_error) - 1);
+  files_repaint();
+}
+
+static void files_restore_root(void) {
+  files_names = root_names;
+  files_err = 0;
+  in_folder = 0;
+  list_sel = 0;
+  scroll_off = 0;
+  menu_on = 0;
+  empty_noted = 0;
+}
+
+static void files_go_back(void) {
+  menu_on = 0;
+  if (in_folder > 0) {
+    files_restore_root();
+    wr(msg_back, sizeof(msg_back) - 1);
+    files_repaint();
+    return;
+  }
+  list_sel = 0;
+  scroll_off = 0;
   wr(msg_back, sizeof(msg_back) - 1);
+  files_repaint();
+}
+
+static void files_retry(void) {
+  u64 fd;
+  wr(msg_retry, sizeof(msg_retry) - 1);
+  if (files_err > 0) {
+    fd = sys2(SYS_OPEN, (u64)path_gone, 8);
+    if (fd < ERR_FLOOR) {
+      sys1(SYS_CLOSE, fd);
+      files_restore_root();
+      files_repaint();
+      return;
+    }
+    files_show_error();
+    return;
+  }
+  if (in_folder > 0) {
+    files_show_empty();
+    return;
+  }
   files_repaint();
 }
 
 static void do_file_open(u64 row) {
   unsigned at;
+  u64 fd;
   if (row >= files_names) {
-    files_err = 1;
+    files_show_error();
     wr(msg_err, sizeof(msg_err) - 1);
-    files_repaint();
     return;
   }
+  if (files_is_dir(row) > 0) {
+    at = put(0, msg_dir);
+    at = put(at, dotted[row]);
+    emit(at);
+    files_show_empty();
+    return;
+  }
+  fd = sys2(SYS_OPEN, (u64)dotted[row], (u64)dotlen[row]);
+  if (fd >= ERR_FLOOR) {
+    wr(msg_err, sizeof(msg_err) - 1);
+    if (fd == FILE_RET_ISDIR) {
+      files_show_empty();
+      return;
+    }
+    files_show_error();
+    return;
+  }
+  sys1(SYS_CLOSE, fd);
   cat_file(dotted[row], dotlen[row]);
   at = put(0, msg_fopen);
   at = put(at, dotted[row]);
@@ -918,11 +1052,20 @@ static void files_on_event(u64 ev) {
         u64 row = (ry - my - OSXUI_MENU_PAD) / OSXUI_MENU_ROW_H;
         menu_on = 0;
         menu_sel = row;
-        if (row == 0) {
-          do_file_open(menu_row);
-        }
-        if (row == 1) {
-          do_file_rename(menu_row);
+        if (in_folder > 0) {
+          if (row == 0) {
+            files_go_back();
+          }
+          if (row == 1) {
+            files_retry();
+          }
+        } else {
+          if (row == 0) {
+            do_file_open(menu_row);
+          }
+          if (row == 1) {
+            do_file_rename(menu_row);
+          }
         }
         files_repaint();
         return;
@@ -967,7 +1110,13 @@ static void files_on_key(u64 ev) {
     if (scan == SCAN_ENTER) {
       u64 selected = menu_sel;
       menu_on = 0;
-      if (selected == 0) {
+      if (in_folder > 0) {
+        if (selected == 0) {
+          files_go_back();
+        } else {
+          files_retry();
+        }
+      } else if (selected == 0) {
         do_file_open(menu_row);
       } else {
         do_file_rename(menu_row);
@@ -1384,12 +1533,14 @@ void files_main(u64 sp) {
   move_i = CAT_MAX;
   for (i = 0; i < (unsigned)names; i++) {
     if (is_self(recs[i]) < 1) {
-      if (is_dat(recs[i]) > 0) {
-        if (copy_i >= CAT_MAX) {
-          copy_i = i;
-        } else {
-          if (move_i >= CAT_MAX) {
-            move_i = i;
+      if (files_plant_skip(i) < 1) {
+        if (is_dat(recs[i]) > 0) {
+          if (copy_i >= CAT_MAX) {
+            copy_i = i;
+          } else {
+            if (move_i >= CAT_MAX) {
+              move_i = i;
+            }
           }
         }
       }
