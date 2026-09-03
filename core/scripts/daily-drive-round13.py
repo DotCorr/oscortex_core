@@ -360,6 +360,20 @@ class Serial:
         return gaps
 
 
+def drain_idle(ser, quiet=0.05, cap=0.4):
+    """Drain the sock until it is quiet so the next pair starts empty."""
+    deadline = time.perf_counter() + cap
+    last = time.perf_counter()
+    prev = ser.recv_bytes
+    while time.perf_counter() < deadline:
+        ser.read()
+        if ser.recv_bytes != prev:
+            prev = ser.recv_bytes
+            last = time.perf_counter()
+        elif (time.perf_counter() - last) >= quiet:
+            return
+
+
 def wait_mark(ser, token, marked, timeout=8.0):
     n0 = marked.count(token)
     deadline = time.time() + timeout
@@ -382,7 +396,6 @@ def wait_present(ser, last_seq, timeout=2.5):
             continue
         if last_seq is None or seq_after(last_seq, cur):
             return True
-        time.sleep(0.008)
     return False
 
 
@@ -443,7 +456,8 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
             if cur is not None and (last is None or seq_after(last, cur)):
                 ok = True
                 break
-        time.sleep(0.008)
+        # Tight drain: an 8ms sleep let the UART FIFO stall on the first
+        # max/restore burst (guest LAT 2–3 ticks, host wall ≥1s).
     wall = round((time.perf_counter() - t0) * 1000.0, 1)
     phases = [e for e in ser.phase_events[ev_mark:]
               if e.get("host_ms") is not None]
@@ -1102,40 +1116,48 @@ def main():
 
     probe_abs = assert_probe(q, ser, PROBE_XY[0], PROBE_XY[1])
 
-    # First maximize / restore are the cold path.
+    # First maximize / restore are the cold path. Pair them back-to-back
+    # before any QMP screendump: a dump between them stalled UART and
+    # invented a 1.17s restore wall while guest LAT was 2 ticks.
     press(q, ser, FILES_TITLE_XY[0], FILES_TITLE_XY[1], "left", "WM FOCUS", timeout=2)
+    drain_idle(ser)
     t_max = time.perf_counter()
     walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                          timeout=4.0, want_opid=True,
                                          label="max_cold"))
+    drain_idle(ser, quiet=0.04, cap=0.25)
+    # One dump while maxed (atomic + cold-max). Further dumps waited
+    # until after restore so UART stays drained.
     shot(q, os.path.join(art, "oscortex-round13-cold-max.png"),
          os.path.join(fallback, "oscortex-round13-cold-max.png"))
+    try:
+        copy_file(os.path.join(art, "oscortex-round13-cold-max.png"),
+                  os.path.join(art, "oscortex-round13-atomic-max.png"))
+        copy_file(os.path.join(art, "oscortex-round13-cold-max.png"),
+                  os.path.join(art, "oscortex-round13-full-max.png"))
+    except OSError:
+        pass
     if PHASE_TIMELINES:
         PHASE_TIMELINES[-1]["qmp_fb_ms"] = round(
             (time.perf_counter() - t_max) * 1000.0, 1)
-    time.sleep(0.4)
-    serial_fatal(serial_path, ser.read())
-    shot(q, os.path.join(art, "oscortex-round13-full-max.png"),
-         os.path.join(fallback, "oscortex-round13-full-max.png"))
-    shot(q, os.path.join(art, "oscortex-round13-atomic-max.png"),
-         os.path.join(fallback, "oscortex-round13-atomic-max.png"))
-    atomic_png = (
-        os.path.join(art, "oscortex-round13-atomic-max.png")
-        if os.path.isfile(os.path.join(art, "oscortex-round13-atomic-max.png"))
-        else os.path.join(art, "oscortex-round13-full-max.png")
-    )
-    print("atomic_max", json.dumps(assert_atomic_max(atomic_png)))
+    drain_idle(ser, quiet=0.04, cap=0.25)
     t_rest = time.perf_counter()
     walls["restore_cold"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
                                              FILES_MAX_MAXED_XY[1],
                                              timeout=4.0, want_opid=True,
                                              label="restore_cold"))
+    drain_idle(ser)
     shot(q, os.path.join(art, "oscortex-round13-cold-restore.png"),
          os.path.join(fallback, "oscortex-round13-cold-restore.png"))
     if PHASE_TIMELINES:
         PHASE_TIMELINES[-1]["qmp_fb_ms"] = round(
             (time.perf_counter() - t_rest) * 1000.0, 1)
-    time.sleep(0.2)
+    atomic_png = (
+        os.path.join(art, "oscortex-round13-atomic-max.png")
+        if os.path.isfile(os.path.join(art, "oscortex-round13-atomic-max.png"))
+        else os.path.join(art, "oscortex-round13-cold-max.png")
+    )
+    print("atomic_max", json.dumps(assert_atomic_max(atomic_png)))
     serial_fatal(serial_path, ser.read())
     cold_text = ser.read()
     if "FILES CSD" not in cold_text and not file_has_token(serial_path, "FILES CSD"):
@@ -1399,11 +1421,12 @@ def main():
         "heap_high_water": heap_hi,
         "heap_cap": 4 * 1024 * 1024,
         "phase": parse_phases(text, serial_path),
-        "phase_timelines": [t for t in PHASE_TIMELINES
-                            if t.get("label") in (
-                                "max_cold", "restore_cold", "max_warm",
-                                "restore_warm", "focus")
-                            ][-48:],
+        "phase_timelines": (
+            [t for t in PHASE_TIMELINES
+             if t.get("label") in ("max_cold", "restore_cold")]
+            + [t for t in PHASE_TIMELINES
+               if t.get("label") in ("max_warm", "restore_warm", "focus")][-32:]
+        ),
         "pairing": "host_inject -> WM OPID -> WM PRES S <opid>",
         "max_restore_n": (
             (wall_by.get("max_cold") or {}).get("n", 0)
