@@ -1646,12 +1646,14 @@ void wmWarmupAfterCommit(u64 slot) {
     u64 i = u64(0);
     while (i < u64(wmMaxWindows)) {
       if (wmPage(u64(wmPageWLaunch0) + i) == u64(1)) {
-        final u64 mask = u64(1) << i;
-        final u64 done = wmPage(u64(wmPageWWarmDone));
-        wmPageSet(u64(wmPageWWarmDone), done - (done & mask));
-        wmPageSet(u64(wmPageWWarm), u64(0));
-        wmWarmupAfterCommit(i);
-        return;
+        if (wmGeomW(wmWin(i, u64(wmWinGeom))) >= u64(400)) {
+          final u64 mask = u64(1) << i;
+          final u64 done = wmPage(u64(wmPageWWarmDone));
+          wmPageSet(u64(wmPageWWarmDone), done - (done & mask));
+          wmPageSet(u64(wmPageWWarm), u64(0));
+          wmWarmupAfterCommit(i);
+          return;
+        }
       }
       i = i + u64(1);
     }

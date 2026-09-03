@@ -471,7 +471,7 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
                 if has_cfg:
                     continue
                 if (not need_files) or (t_pres is not None
-                                        and (time.perf_counter() - t_pres) > 0.12):
+                                        and (time.perf_counter() - t_pres) > 0.025):
                     break
         elif not want_opid:
             cur = ser.last_pres_seq
