@@ -32,45 +32,50 @@ static void put_px(OsGfx *g, int x, int y, uint32_t rgb) {
   *(volatile uint32_t *)((uint32_t *)row + x) = rgb & 0x00FFFFFFu;
 }
 
-static int rrect_hit(int px, int py, int x, int y, int w, int h, int r) {
-  int cx;
-  int cy;
-  int dx;
-  int dy;
+static uint32_t read_px(OsGfx *g, int x, int y) {
+  uint8_t *row;
 
-  if (w <= 0 || h <= 0) {
+  if (g == 0 || g->px == 0) {
     return 0;
   }
-  if (px < x || py < y || px >= x + w || py >= y + h) {
+  if (x < 0 || y < 0 || x >= g->w || y >= g->h) {
     return 0;
   }
-  if (r < 1) {
-    return 1;
+  row = (uint8_t *)g->px + (unsigned)y * (unsigned)g->pitch;
+  return *(volatile uint32_t *)((uint32_t *)row + x);
+}
+
+static void sw_blend(OsGfx *g, int x, int y, uint32_t rgb, int cov) {
+  uint32_t dst;
+  unsigned a;
+  unsigned ia;
+  unsigned sr;
+  unsigned sg;
+  unsigned sb;
+  unsigned dr;
+  unsigned dg;
+  unsigned db;
+
+  if (cov <= 0) {
+    return;
   }
-  if (r > w / 2) {
-    r = w / 2;
+  if (cov >= 250) {
+    put_px(g, x, y, rgb);
+    return;
   }
-  if (r > h / 2) {
-    r = h / 2;
-  }
-  if (px < x + r && py < y + r) {
-    cx = x + r;
-    cy = y + r;
-  } else if (px >= x + w - r && py < y + r) {
-    cx = x + w - 1 - r;
-    cy = y + r;
-  } else if (px < x + r && py >= y + h - r) {
-    cx = x + r;
-    cy = y + h - 1 - r;
-  } else if (px >= x + w - r && py >= y + h - r) {
-    cx = x + w - 1 - r;
-    cy = y + h - 1 - r;
-  } else {
-    return 1;
-  }
-  dx = px - cx;
-  dy = py - cy;
-  return dx * dx + dy * dy <= r * r;
+  dst = read_px(g, x, y);
+  a = (unsigned)cov;
+  ia = 255u - a;
+  sr = (rgb >> 16) & 0xffu;
+  sg = (rgb >> 8) & 0xffu;
+  sb = rgb & 0xffu;
+  dr = (dst >> 16) & 0xffu;
+  dg = (dst >> 8) & 0xffu;
+  db = dst & 0xffu;
+  dr = (sr * a + dr * ia) / 255u;
+  dg = (sg * a + dg * ia) / 255u;
+  db = (sb * a + db * ia) / 255u;
+  put_px(g, x, y, (dr << 16) | (dg << 8) | db);
 }
 
 static uint32_t mix_rgb(uint32_t a, uint32_t b, int i, int n) {
@@ -150,6 +155,7 @@ void osgfx_fill_rrect(OsGfx *g, int x, int y, int w, int h, int radius,
   int xx;
   int x1;
   int y1;
+  int cover;
 
   if (g == 0 || w <= 0 || h <= 0) {
     return;
@@ -160,8 +166,11 @@ void osgfx_fill_rrect(OsGfx *g, int x, int y, int w, int h, int radius,
   while (yy < y1) {
     xx = x;
     while (xx < x1) {
-      if (rrect_hit(xx, yy, x, y, w, h, radius)) {
+      cover = osgfx_rrect_cover(xx, yy, x, y, w, h, radius);
+      if (cover >= 250) {
         put_px(g, xx, yy, rgb);
+      } else if (cover > 0) {
+        sw_blend(g, xx, yy, rgb, cover);
       }
       xx = xx + 1;
     }
@@ -175,6 +184,7 @@ void osgfx_fill_rrect_vgrad(OsGfx *g, int x, int y, int w, int h, int radius,
   int xx;
   int x1;
   int y1;
+  int cover;
   uint32_t rgb;
 
   if (g == 0 || w <= 0 || h <= 0) {
@@ -187,8 +197,11 @@ void osgfx_fill_rrect_vgrad(OsGfx *g, int x, int y, int w, int h, int radius,
     rgb = mix_rgb(top, bot, yy - y, h - 1);
     xx = x;
     while (xx < x1) {
-      if (rrect_hit(xx, yy, x, y, w, h, radius)) {
+      cover = osgfx_rrect_cover(xx, yy, x, y, w, h, radius);
+      if (cover >= 250) {
         put_px(g, xx, yy, rgb);
+      } else if (cover > 0) {
+        sw_blend(g, xx, yy, rgb, cover);
       }
       xx = xx + 1;
     }

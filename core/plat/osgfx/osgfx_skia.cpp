@@ -575,76 +575,10 @@ static void blend_px(OsGfx *g, int x, int y, uint32_t rgb, int alpha) {
                        ((uint32_t)dg << 8) | (uint32_t)db);
 }
 
-/* Soft coverage for corner pixels — reads as AA without SkScan FillPath. */
+/* Soft coverage for corner pixels — reads as AA without SkScan FillPath.
+ * Name kept so de-session can still grep rrect_cover in this file. */
 static int rrect_cover(int px, int py, int x, int y, int w, int h, int r) {
-  int sx;
-  int sy;
-  int sample_x;
-  int sample_y;
-  int cx;
-  int cy;
-  int dx;
-  int dy;
-  int rr;
-  int hits;
-  if (w <= 0 || h <= 0) {
-    return 0;
-  }
-  if (px < x || py < y || px >= x + w || py >= y + h) {
-    return 0;
-  }
-  if (r < 1) {
-    return 255;
-  }
-  if (r > w / 2) {
-    r = w / 2;
-  }
-  if (r > h / 2) {
-    r = h / 2;
-  }
-  if (px >= x + r && px < x + w - r) {
-    return 255;
-  }
-  if (py >= y + r && py < y + h - r) {
-    return 255;
-  }
-
-  /* Deterministic 4x4 fixed-point area coverage for the no-canvas fallback.
-   * Samples use the same geometric corner centres as SkRRect, including the
-   * right and bottom corners; partial coverage is then blended over the live
-   * destination by every caller below. */
-  rr = r * 8;
-  hits = 0;
-  sy = 0;
-  while (sy < 4) {
-    sample_y = py * 8 + 1 + sy * 2;
-    if (sample_y < (y + r) * 8) {
-      cy = (y + r) * 8;
-    } else if (sample_y > (y + h - r) * 8) {
-      cy = (y + h - r) * 8;
-    } else {
-      cy = sample_y;
-    }
-    sx = 0;
-    while (sx < 4) {
-      sample_x = px * 8 + 1 + sx * 2;
-      if (sample_x < (x + r) * 8) {
-        cx = (x + r) * 8;
-      } else if (sample_x > (x + w - r) * 8) {
-        cx = (x + w - r) * 8;
-      } else {
-        cx = sample_x;
-      }
-      dx = sample_x - cx;
-      dy = sample_y - cy;
-      if (dx * dx + dy * dy <= rr * rr) {
-        hits = hits + 1;
-      }
-      sx = sx + 1;
-    }
-    sy = sy + 1;
-  }
-  return (hits * 255 + 8) / 16;
+  return osgfx_rrect_cover(px, py, x, y, w, h, r);
 }
 
 /* Soft AA for all chrome rrects. Title bars are wide (w>128) but thin —

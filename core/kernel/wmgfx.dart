@@ -208,6 +208,99 @@ u64 wmRrectHit(u64 px, u64 py, u64 x, u64 y, u64 w, u64 h, u64 r) {
   return hit;
 }
 
+/// 0..255 coverage for ([px], [py]) in the rounded rect. Same 4×4
+/// eighths sampler as osgfx_rrect_cover — binary [wmRrectHit] is only
+/// a hit test.
+@bare
+u64 wmRrectCover(u64 px, u64 py, u64 x, u64 y, u64 w, u64 h, u64 r) {
+  u64 rr = r;
+  u64 hits = u64(0);
+  u64 sy = u64(0);
+  u64 sx = u64(0);
+  u64 sampleX = u64(0);
+  u64 sampleY = u64(0);
+  u64 cx = u64(0);
+  u64 cy = u64(0);
+  u64 dx = u64(0);
+  u64 dy = u64(0);
+  if (w < u64(1)) {
+    return u64(0);
+  }
+  if (h < u64(1)) {
+    return u64(0);
+  }
+  if (px < x) {
+    return u64(0);
+  }
+  if (py < y) {
+    return u64(0);
+  }
+  if (px >= (x + w)) {
+    return u64(0);
+  }
+  if (py >= (y + h)) {
+    return u64(0);
+  }
+  if (rr < u64(1)) {
+    return u64(255);
+  }
+  if ((rr + rr) > w) {
+    rr = w >> u64(1);
+  }
+  if ((rr + rr) > h) {
+    rr = h >> u64(1);
+  }
+  if (px >= (x + rr)) {
+    if (px < ((x + w) - rr)) {
+      return u64(255);
+    }
+  }
+  if (py >= (y + rr)) {
+    if (py < ((y + h) - rr)) {
+      return u64(255);
+    }
+  }
+  while (sy < u64(4)) {
+    sampleY = (py * u64(8)) + u64(1) + (sy * u64(2));
+    cy = sampleY;
+    if (sampleY < ((y + rr) * u64(8))) {
+      cy = (y + rr) * u64(8);
+    } else {
+      if (sampleY > (((y + h) - rr) * u64(8))) {
+        cy = ((y + h) - rr) * u64(8);
+      }
+    }
+    sx = u64(0);
+    while (sx < u64(4)) {
+      sampleX = (px * u64(8)) + u64(1) + (sx * u64(2));
+      cx = sampleX;
+      if (sampleX < ((x + rr) * u64(8))) {
+        cx = (x + rr) * u64(8);
+      } else {
+        if (sampleX > (((x + w) - rr) * u64(8))) {
+          cx = ((x + w) - rr) * u64(8);
+        }
+      }
+      if (sampleX < cx) {
+        dx = cx - sampleX;
+      } else {
+        dx = sampleX - cx;
+      }
+      if (sampleY < cy) {
+        dy = cy - sampleY;
+      } else {
+        dy = sampleY - cy;
+      }
+      if (((dx * dx) + (dy * dy)) <= ((rr * u64(8)) * (rr * u64(8)))) {
+        hits = hits + u64(1);
+      }
+      sx = sx + u64(1);
+    }
+    sy = sy + u64(1);
+  }
+  return ((hits * u64(255)) + u64(8)) / u64(16);
+}
+
 @bare
 void wmGfxKick() {
   u64 mailbox = u64(0);

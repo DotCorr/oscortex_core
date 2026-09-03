@@ -388,7 +388,9 @@ static void chrome_unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
 }
 
 /* Client-body span on scanout row [yy], or x1<=x0 if this row is chrome.
- * Title band and bottom-corner insets stay cache-owned (wmBlitRow). */
+ * Top-corner insets stay cache-owned (title AA card). Bottom-corner
+ * squares are a client hole so wmBlitRow coverage can close the curve
+ * without chrome restamping wallpaper or a white AABB through the mask. */
 static void chrome_body_span(uint64_t geom, int yy, int *x0, int *x1, int csd) {
   int wx;
   int wy;
@@ -425,8 +427,8 @@ static void chrome_body_span(uint64_t geom, int yy, int *x0, int *x1, int csd) {
     *x1 = wx + ww - OSGFX_RADIUS;
   }
   if (yy >= wy + wh - OSGFX_RADIUS) {
-    *x0 = wx + OSGFX_RADIUS;
-    *x1 = wx + ww - OSGFX_RADIUS;
+    *x0 = wx;
+    *x1 = wx + ww;
   }
 }
 

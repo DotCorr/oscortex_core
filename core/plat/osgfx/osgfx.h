@@ -130,6 +130,80 @@ void osgfx_fill_rrect(OsGfx *g, int x, int y, int w, int h, int radius,
                       uint32_t rgb);
 /* Coverage blend into the bound store (0 = clear, 255 = opaque). Soft AA. */
 void osgfx_blend_px(OsGfx *g, int x, int y, uint32_t rgb, uint8_t cov);
+
+/* Shared 4×4 fixed-point rrect coverage. Units are eighths of a pixel;
+ * samples sit at 1/8, 3/8, 5/8, 7/8. Corner centres match SkRRect
+ * (x+r, x+w-r). 0 = outside (preserve destination / wallpaper);
+ * 255 = opaque interior. Every chrome, glass, software, and Dart blit
+ * path must use this primitive — binary wmRrectHit / AABB through the
+ * curve is what read as white corner teeth. */
+static inline int osgfx_rrect_cover(int px, int py, int x, int y, int w, int h,
+                                    int r) {
+  int sx;
+  int sy;
+  int sample_x;
+  int sample_y;
+  int cx;
+  int cy;
+  int dx;
+  int dy;
+  int rr;
+  int hits;
+
+  if (w <= 0 || h <= 0) {
+    return 0;
+  }
+  if (px < x || py < y || px >= x + w || py >= y + h) {
+    return 0;
+  }
+  if (r < 1) {
+    return 255;
+  }
+  if (r > w / 2) {
+    r = w / 2;
+  }
+  if (r > h / 2) {
+    r = h / 2;
+  }
+  if (px >= x + r && px < x + w - r) {
+    return 255;
+  }
+  if (py >= y + r && py < y + h - r) {
+    return 255;
+  }
+  rr = r * 8;
+  hits = 0;
+  sy = 0;
+  while (sy < 4) {
+    sample_y = py * 8 + 1 + sy * 2;
+    if (sample_y < (y + r) * 8) {
+      cy = (y + r) * 8;
+    } else if (sample_y > (y + h - r) * 8) {
+      cy = (y + h - r) * 8;
+    } else {
+      cy = sample_y;
+    }
+    sx = 0;
+    while (sx < 4) {
+      sample_x = px * 8 + 1 + sx * 2;
+      if (sample_x < (x + r) * 8) {
+        cx = (x + r) * 8;
+      } else if (sample_x > (x + w - r) * 8) {
+        cx = (x + w - r) * 8;
+      } else {
+        cx = sample_x;
+      }
+      dx = sample_x - cx;
+      dy = sample_y - cy;
+      if (dx * dx + dy * dy <= rr * rr) {
+        hits = hits + 1;
+      }
+      sx = sx + 1;
+    }
+    sy = sy + 1;
+  }
+  return (hits * 255 + 8) / 16;
+}
 /* One 8x16 glyph with neighbourhood soft AA — not 1×1 paper stamps. */
 void osgfx_fill_glyph(OsGfx *g, int x, int y, const uint8_t *rows, uint32_t rgb);
 /* 16-byte glyph for ASCII ch. Fallback box outside 0x20..0x7E.

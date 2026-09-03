@@ -126,12 +126,49 @@ static void paint_soft_shadow(OsGfx *g, int x, int y, int w, int h, int r) {
   osgfx_shadow(g, x + 6, y + 10, w, h, r, 18, SESS_SHADOW);
 }
 
+/* Mid-span sides only. An AABB through the curve stamped OSGFX_FOCUS
+ * (near-white) onto wallpaper and read as corner teeth. Corner pixels
+ * are the coverage difference of the outer vs inner rrect. */
+static void paint_border_corner(OsGfx *g, int x0, int y0, int x1, int y1, int wx,
+                                int wy, int ww, int wh, int r, int b,
+                                uint32_t border) {
+  int xx;
+  int yy;
+  int cov;
+  int cov_o;
+  int cov_i;
+  int orad;
+
+  orad = r + b;
+  yy = y0;
+  while (yy < y1) {
+    xx = x0;
+    while (xx < x1) {
+      cov_o = osgfx_rrect_cover(xx, yy, wx - b, wy - b, ww + b + b, wh + b + b,
+                                orad);
+      cov_i = osgfx_rrect_cover(xx, yy, wx, wy, ww, wh, r);
+      cov = cov_o - cov_i;
+      if (cov > 255) {
+        cov = 255;
+      }
+      if (cov > 0) {
+        osgfx_blend_px(g, xx, yy, border, (uint8_t)cov);
+      }
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+}
+
 static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
   int x;
   int y;
   int w;
   int h;
   int b;
+  int r;
+  int mid_w;
+  int mid_h;
 
   if (g == 0 || geom == 0) {
     return;
@@ -144,10 +181,31 @@ static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
     return;
   }
   b = OSGFX_BORDER;
-  osgfx_fill_rect(g, x - b, y - b, w + b + b, b + 1, border);
-  osgfx_fill_rect(g, x - b, y + h - 1, w + b + b, b + 1, border);
-  osgfx_fill_rect(g, x - b, y, b, h, border);
-  osgfx_fill_rect(g, x + w, y, b, h, border);
+  r = OSGFX_RADIUS;
+  if (r + r > w) {
+    r = w / 2;
+  }
+  if (r + r > h) {
+    r = h / 2;
+  }
+  mid_w = w - r - r;
+  mid_h = h - r - r;
+  if (mid_w > 0) {
+    osgfx_fill_rect(g, x + r, y - b, mid_w, b, border);
+    osgfx_fill_rect(g, x + r, y + h, mid_w, b, border);
+  }
+  if (mid_h > 0) {
+    osgfx_fill_rect(g, x - b, y + r, b, mid_h, border);
+    osgfx_fill_rect(g, x + w, y + r, b, mid_h, border);
+  }
+  paint_border_corner(g, x - b, y - b, x + r + 1, y + r + 1, x, y, w, h, r, b,
+                      border);
+  paint_border_corner(g, x + w - r - 1, y - b, x + w + b, y + r + 1, x, y, w, h,
+                      r, b, border);
+  paint_border_corner(g, x - b, y + h - r - 1, x + r + 1, y + h + b, x, y, w, h,
+                      r, b, border);
+  paint_border_corner(g, x + w - r - 1, y + h - r - 1, x + w + b, y + h + b, x, y,
+                      w, h, r, b, border);
 }
 
 /* ADR-0183: frame + title band only — never fill the client body.

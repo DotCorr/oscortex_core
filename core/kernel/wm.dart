@@ -857,6 +857,43 @@ u64 wmPanelSrcOver(u64 src, u64 dst) {
       (b & u64(0xFF));
 }
 
+/// Opaque [src] over [dst] with 0..255 coverage. Always sample wallpaper
+/// as [dst] so a repeated compose is idempotent.
+@bare
+u64 wmCoverBlend(u64 src, u64 dst, u64 cov) {
+  if (cov < u64(1)) {
+    return dst & u64(0x00FFFFFF);
+  }
+  if (cov >= u64(250)) {
+    return src & u64(0x00FFFFFF);
+  }
+  final u64 inv = u64(255) - cov;
+  final u64 sr = (src >> u64(16)) & u64(0xFF);
+  final u64 sg = (src >> u64(8)) & u64(0xFF);
+  final u64 sb = src & u64(0xFF);
+  final u64 dr = (dst >> u64(16)) & u64(0xFF);
+  final u64 dg = (dst >> u64(8)) & u64(0xFF);
+  final u64 db = dst & u64(0xFF);
+  final u64 r = ((sr * cov) + (dr * inv)) ~/ u64(255);
+  final u64 g = ((sg * cov) + (dg * inv)) ~/ u64(255);
+  final u64 b = ((sb * cov) + (db * inv)) ~/ u64(255);
+  return ((r & u64(0xFF)) << u64(16)) |
+      ((g & u64(0xFF)) << u64(8)) |
+      (b & u64(0xFF));
+}
+
+@bare
+u64 wmUnderWallpaper(u64 x, u64 y) {
+  u64 under = wmDeskPixel(x, y);
+  if (under == u64(wmNoPixel)) {
+    under = wmChromeCachePixel(x, y);
+  }
+  if (under == u64(wmNoPixel)) {
+    under = Volatile<u32>.fromAddress(fbPixelAddr(x, y)).value.toU64();
+  }
+  return under & u64(0x00FFFFFF);
+}
+
 /// Blits row [py] of window [wI] from its region onto the framebuffer.
 /// [py] is a surface row; buffer sampling multiplies by the window's
 /// integer scale (ADR-0185).
@@ -923,10 +960,22 @@ void wmBlitRow(u64 wI, u64 py) {
         if (w > x0) {
           x1 = w - x0;
         }
+        /* Coverage owns the bottom corner squares. Visit the full row
+         * so partial-cover pixels are blended instead of a binary stair. */
+        x0 = u64(0);
+        x1 = w;
       }
     }
   }
   u64 px = x0;
+  u64 coverRow = u64(0);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (panel < u64(1)) {
+      if (py >= (h - u64(wmGfxRadius))) {
+        coverRow = u64(1);
+      }
+    }
+  }
   while (px < x1) {
     final u64 boff = rowOff + ((px * scale) << u64(2));
     final u64 src = wmRegionPixel(vec, boff);
@@ -944,7 +993,20 @@ void wmBlitRow(u64 wI, u64 py) {
       }
       fbPutPixel(x + px, y + py, wmPanelSrcOver(src, under));
     } else {
-      fbPutPixel(x + px, y + py, src);
+      if (coverRow > u64(0)) {
+        final u64 cov =
+            wmRrectCover(px, py, u64(0), u64(0), w, h, u64(wmGfxRadius));
+        if (cov > u64(0)) {
+          if (cov >= u64(250)) {
+            fbPutPixel(x + px, y + py, src);
+          } else {
+            fbPutPixel(x + px, y + py,
+                wmCoverBlend(src, wmUnderWallpaper(x + px, y + py), cov));
+          }
+        }
+      } else {
+        fbPutPixel(x + px, y + py, src);
+      }
     }
     px = px + u64(1);
   }
@@ -2518,12 +2580,12 @@ u64 wmGfxCornerHole(u64 wI, u64 x, u64 y) {
   }
   if (py >= wh - r) {
     if (px < r) {
-      if (wmRrectHit(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
+      if (wmRrectCover(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
         return u64(1);
       }
     }
     if (px >= ww - r) {
-      if (wmRrectHit(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
+      if (wmRrectCover(px, py, u64(0), u64(0), ww, wh, r) < u64(1)) {
         return u64(1);
       }
     }
@@ -2799,6 +2861,20 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
     }
     if (under != u64(wmNoPixel)) {
       return wmPanelSrcOver(src, under);
+    }
+  }
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmIsPanel(wI) < u64(1)) {
+      if (sourceY >= (wh - u64(wmGfxRadius))) {
+        final u64 cov = wmRrectCover(
+            sourceX, sourceY, u64(0), u64(0), ww, wh, u64(wmGfxRadius));
+        if (cov < u64(1)) {
+          return u64(wmNoPixel);
+        }
+        if (cov < u64(250)) {
+          return wmCoverBlend(src, wmUnderWallpaper(x, y), cov);
+        }
+      }
     }
   }
   return src;
