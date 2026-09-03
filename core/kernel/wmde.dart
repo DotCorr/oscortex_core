@@ -1553,14 +1553,9 @@ void wmToggleMaxWindow(u64 wI) {
   if (saved < u64(1)) {
     wmPageSet(at, old);
     u64 size = u64(0);
-    if (wmWinResizableOf(wI) > u64(0)) {
-      size = ((fbGeomWidth() - b - b) << u64(32)) |
-          (fbGeomHeight() - u64(wmChromeH) - b - b);
-    } else {
-      size = wmClampSize(
-          wI, b, b, fbGeomWidth() - b - b,
-          fbGeomHeight() - u64(wmChromeH) - b - b);
-    }
+    size = wmClampSize(
+        wI, b, b, fbGeomWidth() - b - b,
+        fbGeomHeight() - u64(wmChromeH) - b - b);
     next = wmPackGeom(
         b, b, size >> u64(32), size & u64(0xFFFFFFFF));
   } else {

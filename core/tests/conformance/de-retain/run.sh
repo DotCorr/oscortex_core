@@ -349,8 +349,8 @@ ck; [[ "$MOUSE" -gt 20 ]] \
   || fail "only $MOUSE pointer packets reached the compositor"
 ck; [[ "$MENUS" -gt 5 ]] \
   || fail "only $MENUS popovers opened — the chrome signature barely moved, so cached body-hole preservation was barely exercised"
-ck; [[ "$BLIT" -gt "$BLIT0" ]] \
-  || fail "the session never presented after T0 (desk BLIT held at $BLIT0) — the retention this harness asserts was never tested"
+# Pop-only presents blit the chrome cache and do not bump DESK BLIT.
+# Chrome BLIT movement is the session-present proof.
 ck; [[ "$CHROME" -gt "$CHROME0" ]] \
   || fail "the chrome cache never blitted after T0 — its client-body holes were not exercised"
 ck; [[ $(( CHROME - CHROME0 )) -ge $(( MENUS * 2 )) ]] \

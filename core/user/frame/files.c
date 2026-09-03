@@ -611,13 +611,26 @@ static void files_pregrow(void) {
   }
   sw = osxui_app_screen_w();
   sh = osxui_app_screen_h();
-  nw = WIN_W;
-  nh = WIN_H;
+  nw = 1264UL;
+  nh = 400UL;
   if (sw > 32UL) {
     nw = sw - 16UL;
   }
-  if (sh > 80UL) {
-    nh = sh - 64UL;
+  /* shmMaxPages is 510. 1264×656 needs 811 and SHMGROW refuses. */
+  {
+    u64 room = 500UL * 4096UL;
+    u64 maxh;
+    if (room > SURF_OFFSET) {
+      room = room - SURF_OFFSET;
+    }
+    maxh = room / (nw * 4UL);
+    nh = maxh;
+    if (sh > 80UL) {
+      u64 want = sh - 64UL;
+      if (want < nh) {
+        nh = want;
+      }
+    }
   }
   if (nw <= files_cap_w) {
     if (nh <= files_cap_h) {

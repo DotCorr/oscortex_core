@@ -49,6 +49,8 @@ FILES_TITLE_XY = (120, 55)
 SET_TITLE_XY = (min(SCREEN_W - 40, 500), 55)
 PROBE_XY = (120, 180)
 FILES_MAX_XY = (min(SCREEN_W - 24, 379), 57)
+# Maximized traffic-light: wx+ww-78 for the max disc (8+1264-78=1194).
+FILES_MAX_MAXED_XY = (min(SCREEN_W - 24, 1194 + 9), 16)
 SET_MAX_XY = (min(SCREEN_W - 24, 728), 20)
 
 SEQ_MASK = 0xFFFFFFFF
@@ -923,7 +925,8 @@ def main():
     walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                          timeout=4.0))
     time.sleep(0.25)
-    walls["restore_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
+    walls["restore_cold"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
+                                             FILES_MAX_MAXED_XY[1],
                                              timeout=4.0))
     time.sleep(0.2)
     serial_fatal(serial_path, ser.read())
@@ -969,7 +972,8 @@ def main():
         walls[bucket].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                          timeout=3.5))
         time.sleep(0.12)
-        walls["restore_warm"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
+        walls["restore_warm"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
+                                                 FILES_MAX_MAXED_XY[1],
                                                  timeout=3.5))
         time.sleep(0.12)
 
@@ -1013,7 +1017,8 @@ def main():
         walls["max_warm"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                              timeout=3.0))
         time.sleep(0.06)
-        walls["restore_warm"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
+        walls["restore_warm"].append(timed_click(q, ser, FILES_MAX_MAXED_XY[0],
+                                                 FILES_MAX_MAXED_XY[1],
                                                  timeout=3.0))
         time.sleep(0.06)
         ms = timed_place(q, ser, 80 + (cycles % 20) * 12, 160)

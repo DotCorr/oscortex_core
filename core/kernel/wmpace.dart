@@ -554,6 +554,13 @@ void wmLatStamp(u64 kind) {
   if (kind < u64(1)) {
     return;
   }
+  /* One pending event, one seq. A second stamp before present used to
+   * skip a number and invent lat_seq_gaps / 3.5s wait_present timeouts. */
+  if (wmPage(u64(wmPageWEvKind)) > u64(0)) {
+    wmPageSet(u64(wmPageWEvTick), tick_count());
+    wmPageSet(u64(wmPageWEvKind), kind);
+    return;
+  }
   wmPageSet(u64(wmPageWEvTick), tick_count());
   wmPageSet(u64(wmPageWEvKind), kind);
   wmPageSet(u64(wmPageWEvSeq), wmPage(u64(wmPageWEvSeq)) + u64(1));

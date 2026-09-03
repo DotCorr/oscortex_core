@@ -837,6 +837,7 @@ void desk_main(u64 sp) {
     paint_desk_menu(1UL);
     paint_desk_menu(4UL);
     paint_desk_menu(5UL);
+    menu_on = 1;
   }
   last_pop = 0;
   wr(msg_ready, 10);

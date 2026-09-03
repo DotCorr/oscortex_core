@@ -341,7 +341,7 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
   if (m->win0 == g_stamp_win0 && m->win1 == g_stamp_win1) {
     return 0;
   }
-  if (m->pop != g_stamp_pop || m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
+  if (m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
     return 0;
   }
   if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
@@ -350,8 +350,8 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
   if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
     return 0;
   }
-  if ((m->flags & ~OSGFX_CHROME_GEOM_MASK) !=
-      (g_stamp_flags & ~OSGFX_CHROME_GEOM_MASK)) {
+  if ((m->flags & ~(OSGFX_CHROME_GEOM_MASK | OSGFX_CHROME_POP_MASK)) !=
+      (g_stamp_flags & ~(OSGFX_CHROME_GEOM_MASK | OSGFX_CHROME_POP_MASK))) {
     return 0;
   }
   if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
