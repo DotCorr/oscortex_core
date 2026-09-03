@@ -1439,7 +1439,20 @@ __attribute__((noinline)) static void tick_body(void) {
       if (geom_only != 0) {
         uint64_t old0;
         uint64_t old1;
-        com1_puts("OSGFX CHROME GEOM\n");
+        com1_puts("OSGFX CHROME GEOM OP ");
+        if (m->wmpage != 0) {
+          const uint64_t *page = (const uint64_t *)(uintptr_t)m->wmpage;
+          uint64_t seq = page[OSGFX_WMPAGE_W_EV_SEQ];
+          char hx[9];
+          int i;
+          for (i = 0; i < 8; i++) {
+            unsigned d = (unsigned)((seq >> (28 - i * 4)) & 15u);
+            hx[i] = (char)(d < 10u ? '0' + d : 'A' + (d - 10u));
+          }
+          hx[8] = 0;
+          com1_puts(hx);
+        }
+        com1_puts("\n");
         osgfx_chrome_stamp_wins(&old0, &old1);
         osgfx_chrome_note_uncover(old0, old1);
         osgfx_session_paint_geom(g, &local, old0, old1);

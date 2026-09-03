@@ -395,6 +395,14 @@ final List<u8> wmPresStrLine = const [
   u8(0x20), u8(0x53), u8(0x20),
 ];
 
+/// `'WM OPID '` -- 8 bytes. Stamped on kind-5 (focus/max/restore) so the
+/// host pairs by this id, not the next PRES on a busy UART.
+@rodata
+final List<u8> wmOpidStrLine = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4F), u8(0x50), u8(0x49), u8(0x44),
+  u8(0x20),
+];
+
 /// `' COAL '` -- 6 bytes.
 @rodata
 final List<u8> wmPaceStrCoal = const [
@@ -559,11 +567,21 @@ void wmLatStamp(u64 kind) {
   if (wmPage(u64(wmPageWEvKind)) > u64(0)) {
     wmPageSet(u64(wmPageWEvTick), tick_count());
     wmPageSet(u64(wmPageWEvKind), kind);
+    if (kind == u64(wmLatKindFocus)) {
+      uartWrite(Rodata.addressOf(wmOpidStrLine), u64(8));
+      uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+      uartNewline();
+    }
     return;
   }
   wmPageSet(u64(wmPageWEvTick), tick_count());
   wmPageSet(u64(wmPageWEvKind), kind);
   wmPageSet(u64(wmPageWEvSeq), wmPage(u64(wmPageWEvSeq)) + u64(1));
+  if (kind == u64(wmLatKindFocus)) {
+    uartWrite(Rodata.addressOf(wmOpidStrLine), u64(8));
+    uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+    uartNewline();
+  }
 }
 
 /// Records present-tick minus event-tick. One UART line per pending event.

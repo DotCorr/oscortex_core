@@ -134,12 +134,13 @@ static u64 files_height = WIN_H;
 static u64 files_stride = WIN_W * 4UL;
 static u64 files_cap_w = WIN_W;
 static u64 files_cap_h = WIN_H;
-/* Pages to keep after a restore. Applied after YIELD so the COMMIT
- * present can leave the UART before a 719-page unmap pegs TCG. */
-static u64 files_shrink_keep;
-/* 1 while a configure/paint slice just ran. Shrink only after an
- * idle YIELD so wait_present can ingest WM PRES first. */
-static u64 files_shrink_busy;
+/* 1 after the native-max body is painted into hidden backing. Restore
+ * and later maximize reuse it; do not shrink the cap (SHM allows it). */
+static u64 files_retain_body;
+/* Configure-side operation id. Printed on REST / PHZ / COMMIT so the
+ * host pairs by id, not the next PRES. */
+static u64 files_op;
+static u64 files_note_commit;
 static u64 files_slot = 0xFFUL;
 static u64 menu_on;
 static u64 menu_row;
@@ -190,7 +191,8 @@ static const char msg_csd[] = "FILES CSD";
 static const char cap_files[] = "FILES";
 #endif
 static const char msg_phz_grow[] = "FILES PHZ GROW\n";
-static const char msg_phz_paint[] = "FILES PHZ PAINT\n";
+static const char msg_phz_paint[] = "FILES PHZ PAINT";
+static const char msg_prefill[] = "FILES PREFILL\n";
 static const char msg_menu[] = "FILES MENU";
 static const char msg_menu_esc[] = "FILES MENU ESC";
 static const char msg_menu_sel[] = "FILES MENU SEL ";
@@ -266,6 +268,36 @@ static unsigned putdec(unsigned at, u64 v) {
 }
 
 static void emit(unsigned n) { sys2(SYS_WRITE, (u64)line, n); }
+
+/* TCG turns `rep stosl` into a host memset. The per-pixel cream loop
+ * was the 663–746ms cold max (848k stores with a swatch test each). */
+static void fill_dwords(volatile u32 *p, u64 n, u32 c) {
+  u32 *d;
+  u64 cnt;
+  if (n == 0) {
+    return;
+  }
+  d = (u32 *)p;
+  cnt = n;
+  __asm__ volatile("rep stosl" : "+D"(d), "+c"(cnt) : "a"(c) : "memory");
+}
+
+static void emit_phz_paint(char which) {
+  unsigned at = put(0, msg_phz_paint);
+  line[at++] = ' ';
+  line[at++] = which;
+  at = put(at, " OP ");
+  at = puthex(at, files_op, 8);
+  line[at++] = '\n';
+  emit(at);
+}
+
+static void emit_files_commit(void) {
+  unsigned at = put(0, "FILES COMMIT OP ");
+  at = puthex(at, files_op, 8);
+  line[at++] = '\n';
+  emit(at);
+}
 
 static void cat_file(const char *name, unsigned nlen);
 
@@ -410,6 +442,16 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
   u64 band_h = ROW_H;
   u64 visible;
   u64 max_off;
+  u64 stride_px = files_stride / 4UL;
+  u64 span_w = files_w;
+  if (files_retain_body > 0) {
+    if (files_cap_w > span_w) {
+      span_w = files_cap_w;
+    }
+  }
+  if (span_w > stride_px) {
+    span_w = stride_px;
+  }
   if (body_h > TITLE_H) {
     body_h = files_height - TITLE_H;
   }
@@ -425,7 +467,6 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
     scroll_off = max_off;
   }
   while (py < files_height) {
-    u64 px = 0;
     u32 c = (u32)SURF_FILL;
     if (names > 0) {
       if (py >= TITLE_H) {
@@ -439,27 +480,23 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
         }
       }
     }
-    while (px < files_w) {
-      u64 hit = 0;
-      if (swatch != 0) {
-        if (px >= SWATCH_X) {
-          if (px < (SWATCH_X + SWATCH_W)) {
-            if (py >= SWATCH_Y) {
-              if (py < (SWATCH_Y + SWATCH_H)) {
-                hit = 1;
-              }
-            }
+    fill_dwords(p + py * stride_px, span_w, c);
+    py = py + 1;
+  }
+  if (swatch != 0) {
+    u64 sy = SWATCH_Y;
+    while (sy < (SWATCH_Y + SWATCH_H)) {
+      if (sy < files_height) {
+        u64 sx = SWATCH_X;
+        while (sx < (SWATCH_X + SWATCH_W)) {
+          if (sx < span_w) {
+            p[sy * stride_px + sx] = swatch;
           }
+          sx = sx + 1;
         }
       }
-      if (hit > 0) {
-        p[py * (files_stride / 4UL) + px] = swatch;
-      } else {
-        p[py * (files_stride / 4UL) + px] = c;
-      }
-      px = px + 1;
+      sy = sy + 1;
     }
-    py = py + 1;
   }
 #if FILES_NO_ICON == 0
   osxui_app_csd(h, files_w, cap_files, 5);
@@ -572,6 +609,41 @@ static void commit_files_rect(u64 y, u64 h) {
   desc[WM_DESC_STRIDE] = files_seq;
   desc[WM_DESC_OFFSET] = 0;
   (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
+  if (files_note_commit > 0) {
+    files_note_commit = 0;
+    emit_files_commit();
+  }
+}
+
+#if FILES_NO_ICON == 0
+static void files_paint_csd_only(void) {
+  if (files_h == 0) {
+    return;
+  }
+  osxui_app_csd(files_h, files_w, cap_files, 5);
+  files_note_commit = 1;
+  commit_files_rect(0, files_height);
+}
+#endif
+
+static void files_prefill_cap(void) {
+  u64 saved_w = files_w;
+  u64 saved_h = files_height;
+  if (files_h == 0 || files_cap_w <= files_w) {
+    if (files_cap_h <= files_height) {
+      return;
+    }
+  }
+  files_w = files_cap_w;
+  files_height = files_cap_h;
+  paint_all(files_h, files_va, files_names, files_swatch);
+  files_w = saved_w;
+  files_height = saved_h;
+#if FILES_NO_ICON == 0
+  osxui_app_csd(files_h, files_w, cap_files, 5);
+#endif
+  files_retain_body = 1;
+  wr(msg_prefill, sizeof(msg_prefill) - 1);
 }
 
 static void paint_file_menu(void) {
@@ -1008,28 +1080,49 @@ static void files_on_event(u64 ev) {
       }
       if (nw != files_w || nh != files_height) {
         u64 shrinking = 0;
+        u64 growing = 0;
+        files_op = files_op + 1;
         if (nw < files_w || nh < files_height) {
           shrinking = 1;
           at = put(0, "FILES REST ");
           at = putdec(at, nw);
           at = put(at, " ");
           at = putdec(at, nh);
+          at = put(at, " OP ");
+          at = puthex(at, files_op, 8);
+          line[at++] = '\n';
           emit(at);
+        } else {
+          growing = 1;
         }
         files_w = nw;
         files_height = nh;
-        wr(msg_phz_paint, sizeof(msg_phz_paint) - 1);
-        files_repaint();
-        /* Reclaim after the next YIELD. Same-syscall shrink after
-         * COMMIT still pegged TCG before the host saw WM PRES
-         * (cold restore 1.3s). */
-        if (shrinking > 0) {
-          u64 keep = (SURF_OFFSET + nw * 4UL * nh + 4095UL) / 4096UL;
-          if (keep >= 1UL) {
-            files_shrink_keep = keep;
-            files_shrink_busy = 1;
-          }
+        emit_phz_paint('B');
+        /* Retained native-max backing already holds the body. Restore
+         * only redraws CSD at the new width (buttons move). Maximize
+         * after a scroll still needs a full stosl paint so newly
+         * visible rows are not stale. First-ever max before PREFILL
+         * also takes the full path. */
+        if (files_retain_body > 0 && shrinking > 0) {
+#if FILES_NO_ICON == 0
+          files_paint_csd_only();
+#else
+          files_note_commit = 1;
+          commit_files_rect(0, files_height);
+#endif
+        } else if (files_retain_body > 0 && growing > 0 && scroll_off == 0) {
+#if FILES_NO_ICON == 0
+          files_paint_csd_only();
+#else
+          files_note_commit = 1;
+          commit_files_rect(0, files_height);
+#endif
+        } else {
+          files_note_commit = 1;
+          files_repaint();
         }
+        emit_phz_paint('E');
+        (void)growing;
       }
     }
     return;
@@ -1277,6 +1370,8 @@ static void try_strip(u64 names, u32 swatch) {
   files_names = names;
   files_swatch = swatch;
   files_seq = 1;
+  files_op = 0;
+  files_retain_body = 0;
   paint_all(h, va, names, swatch);
 
   desc[WM_DESC_OP] = WM_OP_COMMIT;
@@ -1291,6 +1386,9 @@ static void try_strip(u64 names, u32 swatch) {
   if (frames >= WM_RET_FLOOR) {
     return;
   }
+  /* Hidden native-max body, off the click path. Restore/max then
+   * reuse this backing instead of a cream fill that blocked UART. */
+  files_prefill_cap();
   wr(msg_strip, sizeof(msg_strip) - 1);
 #if FILES_NO_ICON == 0
   if (names > 0) {
@@ -1658,24 +1756,6 @@ void files_main(u64 sp) {
     u64 key;
     u64 got;
     got = 0;
-    if (files_shrink_keep >= 1UL && files_shrink_busy == 0) {
-      u64 keep = files_shrink_keep;
-      files_shrink_keep = 0;
-      if (sys2(SYS_SHMSHRINK, files_h, keep) < WM_RET_FLOOR) {
-        files_stride = files_w * 4UL;
-        files_cap_w = files_w;
-        files_cap_h = files_height;
-        desc[WM_DESC_OP] = WM_OP_BACKING;
-        desc[WM_DESC_HANDLE] = files_h;
-        desc[WM_DESC_STRIDE] = files_stride;
-        (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
-        {
-          unsigned at = put(0, "FILES SHRINK ");
-          at = putdec(at, keep);
-          emit(at);
-        }
-      }
-    }
     ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
     while (ev != 0) {
       files_on_event(ev);
@@ -1693,10 +1773,6 @@ void files_main(u64 sp) {
       while (spin < YIELD_SPIN) {
         spin = spin + 1;
       }
-      files_shrink_busy = 0;
-    }
-    if (got > 0) {
-      files_shrink_busy = 1;
     }
     sys1(SYS_YIELD, 0);
   }
