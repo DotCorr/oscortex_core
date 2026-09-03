@@ -306,6 +306,63 @@ int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m) {
   return 1;
 }
 
+/* 1 when the cached frame is still the right picture except window
+ * geometry (maximize / restore / resize). Desk, pop, wall, tones, page
+ * and flags-minus-TOP stay. Title/borders are recomposed from slices;
+ * do not re-run wallpaper generation. */
+int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
+  uint64_t *pg;
+
+  if (g_stamp_have == 0 || m == 0) {
+    return 0;
+  }
+  pg = chrome_page();
+  if (pg == 0 || chrome_buf(m, pg) == 0) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_CHROME_HAVE] == 0) {
+    return 0;
+  }
+  if (m->w != g_stamp_w || m->h != g_stamp_h) {
+    return 0;
+  }
+  if (m->win0 == g_stamp_win0 && m->win1 == g_stamp_win1) {
+    return 0;
+  }
+  if (m->pop != g_stamp_pop || m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
+    return 0;
+  }
+  if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
+    return 0;
+  }
+  if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
+    return 0;
+  }
+  if ((m->flags & ~OSGFX_CHROME_TOP_MASK) !=
+      (g_stamp_flags & ~OSGFX_CHROME_TOP_MASK)) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 0] != g_stamp_launch0) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 1] != g_stamp_launch1) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 2] != g_stamp_launch2) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_CAP_MAIL] != g_stamp_cap_mail) {
+    return 0;
+  }
+  return 1;
+}
+
 /* Packed the same way wmPackGeom writes win0/win1: x<<48|y<<32|w<<16|h. */
 static void chrome_unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *x = (int)((g >> 48) & 0xffffu);

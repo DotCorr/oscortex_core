@@ -333,18 +333,20 @@ ck; [[ "$R6_REGEN" -gt "$R5_REGEN" ]] \
   || fail "a window mapped and the chrome was NOT repainted (REGEN stuck at $R5_REGEN) — the key does not see geometry"
 
 echo
-echo "--- the taskbar band survives a chrome repaint ---"
-B6_FILL=$(jq_num "$REPORT" r6.band.fill)
-B6_HIT=$(jq_num "$REPORT" r6.band.hit)
-echo "    band: FILL $B6_FILL HIT $B6_HIT over $R6_REGEN rasterisation(s)"
-# The gradient shader ran once and served every rasterisation after it. This is
-# a DIFFERENT claim from the frame cache's, and the one that matters when the
-# chrome does change: the frame cache makes an unchanged tick cheap, the band
-# cache makes a CHANGED one cheap.
-ck; [[ "$B6_FILL" -ge 1 ]] || fail "the taskbar gradient was never rasterised"
-ck; [[ "$B6_FILL" -lt "$R6_REGEN" ]] \
-  || fail "the band was filled $B6_FILL times for $R6_REGEN rasterisations; the band cache is not serving"
-ck; [[ "$B6_HIT" -ge 1 ]] || fail "no chrome rasterisation reused the cached band"
+echo "--- DESK-owned strip / wallpaper cache serves under chrome ---"
+# DE-004 removed the session taskbar. osgfx_chrome_band is unused under
+# `wm de` (no paint_de_strip). Replacement evidence: the DESK cache that
+# actually fills the bottom strip, plus chrome REGEN/BLIT above.
+D1_REGEN=$(jq_num "$REPORT" r1.desk.regen); D1_BLIT=$(jq_num "$REPORT" r1.desk.blit)
+D2_REGEN=$(jq_num "$REPORT" r2.desk.regen); D2_BLIT=$(jq_num "$REPORT" r2.desk.blit)
+D6_REGEN=$(jq_num "$REPORT" r6.desk.regen); D6_BLIT=$(jq_num "$REPORT" r6.desk.blit)
+echo "    desk report 1: REGEN $D1_REGEN BLIT $D1_BLIT"
+echo "    desk report 2: REGEN $D2_REGEN BLIT $D2_BLIT   after $DRAWS x \`wm draw\`"
+echo "    desk report 6: REGEN $D6_REGEN BLIT $D6_BLIT   after window map"
+ck; [[ "$D1_REGEN" -ge 1 ]] || fail "the DESK wallpaper cache was never filled"
+ck; [[ "$D2_REGEN" -eq "$D1_REGEN" ]] \
+  || fail "DESK REGEN moved $D1_REGEN -> $D2_REGEN across unchanged composes; wallpaper was regenerated"
+ck; [[ $((D2_BLIT - D1_BLIT)) -ge 1 ]] || fail "DESK BLIT did not move; the chrome path did not reuse the wallpaper cache"
 
 echo
 echo "--- the glyph runs, counted and NOT cached (GAP-0327) ---"
@@ -388,16 +390,15 @@ bad = []
 # speed is not this harness's to assume -- not a restatement of one run.
 if hit <= 0 or raw / hit < 10.0:
     bad.append("cached tick is only %.1fx the uncached one (want >= 10x)" % (raw / hit if hit else 0))
-if band <= 0 or raw / band < 3.0:
-    bad.append("band cache is only %.1fx on a rasterising tick (want >= 3x)" % (raw / band if band else 0))
 if chit <= 0 or craw / chit < 5.0:
     bad.append("cached compose is only %.1fx the rasterising one (want >= 5x)" % (craw / chit if chit else 0))
-if hit > band:
-    bad.append("a cache HIT (%.3f ms) costs more than a rasterisation with the band cached (%.3f ms)" % (hit, band))
+# DE-004: no session taskbar, so K B (band-only) is not the DESK strip path.
+# Chrome frame cache 10x + compose 5x is the live speed claim; desk REGEN/BLIT
+# is asserted from the WM DESK report above.
 if bad:
     raise SystemExit("; ".join(bad))
-print("    tick %.1fx, compose %.1fx, band %.1fx on a miss"
-      % (raw / hit, craw / chit, raw / band))
+print("    tick %.1fx, compose %.1fx (band stage %.3f ms, not asserted)"
+      % (raw / hit, craw / chit, band))
 PY
 
 echo

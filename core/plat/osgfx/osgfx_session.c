@@ -145,14 +145,104 @@ static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
 
 /* ADR-0183: frame + title band only — never fill the client body.
  * Body pixels come from wmDrawWindow blit of FRAME shm. */
-static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
-                                uint32_t fill, int fb_w, int fb_h) {
+/* Reusable title 9-patch: Skia rrect-vgrad once, then blit caps + mid. */
+enum { TITLE_SLICE_CAP = 24, TITLE_SLICE_MID = 8, TITLE_SLICE_H = 32 };
+static uint32_t title_l[TITLE_SLICE_CAP * TITLE_SLICE_H];
+static uint32_t title_m[TITLE_SLICE_MID * TITLE_SLICE_H];
+static uint32_t title_r[TITLE_SLICE_CAP * TITLE_SLICE_H];
+static int title_slices_ready;
+static int title_slice_th;
+static int title_slice_r;
+static uint32_t title_slice_top;
+static uint32_t title_slice_bot;
+
+static uint32_t *title_px(uint32_t *fb, int pitch, int x, int y) {
+  return (uint32_t *)((uint8_t *)fb + (unsigned)y * (unsigned)pitch) + x;
+}
+
+static void title_capture_slices(uint32_t *fb, int pitch, int x, int y, int w,
+                                 int th, int r, uint32_t top, uint32_t bot) {
+  int yy;
+  int xx;
+  uint32_t *row;
+
+  if (fb == 0 || w < TITLE_SLICE_CAP * 2 + TITLE_SLICE_MID || th != TITLE_SLICE_H) {
+    return;
+  }
+  yy = 0;
+  while (yy < th) {
+    row = title_px(fb, pitch, x, y + yy);
+    xx = 0;
+    while (xx < TITLE_SLICE_CAP) {
+      title_l[yy * TITLE_SLICE_CAP + xx] = row[xx];
+      title_r[yy * TITLE_SLICE_CAP + xx] = row[w - TITLE_SLICE_CAP + xx];
+      xx = xx + 1;
+    }
+    xx = 0;
+    while (xx < TITLE_SLICE_MID) {
+      title_m[yy * TITLE_SLICE_MID + xx] = row[TITLE_SLICE_CAP + xx];
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  title_slices_ready = 1;
+  title_slice_th = th;
+  title_slice_r = r;
+  title_slice_top = top;
+  title_slice_bot = bot;
+}
+
+static int title_blit_slices(uint32_t *fb, int pitch, int x, int y, int w, int th,
+                             int r, uint32_t top, uint32_t bot) {
+  int yy;
+  int xx;
+  int mid;
+  uint32_t *row;
+  uint32_t px;
+
+  if (title_slices_ready == 0 || fb == 0) {
+    return 0;
+  }
+  if (th != title_slice_th || r != title_slice_r) {
+    return 0;
+  }
+  if (top != title_slice_top || bot != title_slice_bot) {
+    return 0;
+  }
+  if (w < TITLE_SLICE_CAP * 2 + TITLE_SLICE_MID) {
+    return 0;
+  }
+  mid = w - TITLE_SLICE_CAP * 2;
+  yy = 0;
+  while (yy < th) {
+    row = title_px(fb, pitch, x, y + yy);
+    xx = 0;
+    while (xx < TITLE_SLICE_CAP) {
+      row[xx] = title_l[yy * TITLE_SLICE_CAP + xx];
+      row[w - TITLE_SLICE_CAP + xx] = title_r[yy * TITLE_SLICE_CAP + xx];
+      xx = xx + 1;
+    }
+    xx = 0;
+    while (xx < mid) {
+      px = title_m[yy * TITLE_SLICE_MID + (xx % TITLE_SLICE_MID)];
+      row[TITLE_SLICE_CAP + xx] = px;
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+  return 1;
+}
+
+static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom,
+                                uint32_t border, uint32_t fill, int fb_w,
+                                int fb_h) {
   int x;
   int y;
   int w;
   int h;
   int r;
   int th;
+  int sliced;
 
   (void)fill;
   if (geom == 0) {
@@ -174,18 +264,23 @@ static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
   if (skip_soft_shadow(x, y, w, h, fb_w, fb_h) == 0) {
     paint_soft_shadow(g, x, y, w, h, r);
   }
-  /* OSGFX_CORNER_TL / OSGFX_CORNER_TR — top pearl pair closes the AA card
-   * radius when CSD withdraws the session title band (ADR-0196). */
-  if (r > 0) {
-    osgfx_fill_rrect(g, x, y, r, r, r, OSGFX_TITLE);
-    osgfx_fill_rrect(g, x + w - r, y, r, r, r, OSGFX_TITLE);
+  sliced = title_blit_slices(fb, pitch, x, y, w, th, r, SESS_TITLE_TOP,
+                             OSGFX_TITLE);
+  if (sliced == 0) {
+    /* OSGFX_CORNER_TL / OSGFX_CORNER_TR — top pearl pair closes the AA card
+     * radius when CSD withdraws the session title band (ADR-0196). */
+    if (r > 0) {
+      osgfx_fill_rrect(g, x, y, r, r, r, OSGFX_TITLE);
+      osgfx_fill_rrect(g, x + w - r, y, r, r, r, OSGFX_TITLE);
+    }
+    /* Pearl title chrome is a real vertical ramp. First paint of this
+     * (th, r, colours) captures 9-patch slices for later widths. */
+    osgfx_fill_rrect_vgrad(g, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
+    osgfx_flush(g);
+    title_capture_slices(fb, pitch, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
   }
   /* Border ring only — do not paint OSGFX_WIN_FILL over client shm. */
   paint_window_borders(g, geom, border);
-  /* Pearl title chrome is a real vertical ramp, not a flat beige card with
-   * a two-pixel highlight stamped over it. The rrect gradient shares the
-   * window radius, so fill and AA border cannot disagree at the corners. */
-  osgfx_fill_rrect_vgrad(g, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
 }
 
 /* Live OsGfx path — osxui_button → osgfx_fill_rrect (Graphite when armed). */
@@ -412,14 +507,10 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   int hh;
   int desk_h;
   int pitch;
-  int top;
   uint32_t seed;
   uint32_t frame;
   uint32_t user;
   uint32_t *fb;
-  uint64_t held0;
-  uint64_t held1;
-  unsigned pop_kind;
   int panel;
   int session_csd;
   static int client_noted;
@@ -487,6 +578,36 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   } else {
     osgfx_fill_rect(g, 0, 0, ww, desk_h, OSGFX_DESK);
   }
+  osgfx_session_paint_windows(g, cmd);
+}
+
+void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
+  int ww;
+  int hh;
+  int pitch;
+  int top;
+  uint32_t *fb;
+  uint64_t held0;
+  uint64_t held1;
+  unsigned pop_kind;
+  int panel;
+  int session_csd;
+
+  if (g == 0 || cmd == 0 || cmd->magic != OSGFX_GUEST_MAGIC) {
+    return;
+  }
+  if (cmd->fb == 0) {
+    return;
+  }
+  ww = (int)cmd->w;
+  hh = (int)cmd->h;
+  pitch = (int)cmd->pitch;
+  if (ww < 8 || hh < 8 || pitch < ww * 4) {
+    return;
+  }
+  fb = (uint32_t *)(uintptr_t)cmd->fb;
+  panel = (cmd->flags & OSGFX_GUEST_PANEL) != 0;
+  session_csd = 0;
   top = (int)((cmd->flags >> 8) & 3u);
   held0 = cmd->win0;
   held1 = cmd->win1;
@@ -507,11 +628,13 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
      * clients (wmgfx skips the strip). Gating their chrome on panel
      * left FILES untitled and forced SET's caption to FILES. */
     if (held0 != 0) {
-      paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
+      paint_window_chrome(g, fb, pitch, held0,
+                          top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
                           OSGFX_WIN_FILL, ww, hh);
     }
     if (held1 != 0) {
-      paint_window_chrome(g, held1, top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
+      paint_window_chrome(g, fb, pitch, held1,
+                          top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
                           OSGFX_WIN2_FILL, ww, hh);
     }
     if ((cmd->flags & OSGFX_GUEST_DE) != 0) {

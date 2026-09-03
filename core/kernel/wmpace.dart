@@ -388,6 +388,13 @@ final List<u8> wmLatStrA = const [
   u8(0x20), u8(0x41), u8(0x20),
 ];
 
+/// `'WM PRES S '` -- 10 bytes. Host pairs injection with this present seq.
+@rodata
+final List<u8> wmPresStrLine = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x53),
+  u8(0x20), u8(0x53), u8(0x20),
+];
+
 /// `' COAL '` -- 6 bytes.
 @rodata
 final List<u8> wmPaceStrCoal = const [
@@ -588,6 +595,9 @@ void wmLatNotePresent() {
     ah = wmPage(u64(wmPageWDmgY1)) - wmPage(u64(wmPageWDmgY0));
   }
   uartPutHex(aw * ah, u64(8));
+  uartNewline();
+  uartWrite(Rodata.addressOf(wmPresStrLine), u64(10));
+  uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
   uartNewline();
   wmPageSet(u64(wmPageWEvKind), u64(0));
 }

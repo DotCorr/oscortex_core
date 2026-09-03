@@ -54,16 +54,20 @@ void osgfx_heap_frame_begin(void);
 int osgfx_heap_ready(void);
 size_t osgfx_heap_used(void);
 size_t osgfx_heap_cap(void);
+void osgfx_fill_desk_cached(uint32_t *fb, int pitch, int x, int y, int w, int h,
+                            uint32_t seed);
 void osgfx_glass_frost(uint32_t *dst, int pitch_px, int dw, int dh, int x, int y,
                        int w, int h, int radius, int scr_x0, int scr_y0,
                        uint32_t tint);
 uint32_t *osgfx_chrome_target(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_fresh(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m);
+int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
+void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_chrome_glyph_count(int hit);
 uint32_t *osgfx_chrome_band(int w, int h);
 int osgfx_chrome_band_fresh(int w, int h, uint32_t top, uint32_t bot);
@@ -105,6 +109,16 @@ struct OsGfx {
 static OsGfx g_one;
 static OsGfx client_g;
 static int resource_cache_disabled;
+
+static int heap_needs_rewind(void) {
+  if (osgfx_heap_ready() > 0) {
+    size_t cap = osgfx_heap_cap();
+    if (cap > 0 && osgfx_heap_used() + (384u * 1024u) > cap) {
+      return 1;
+    }
+  }
+  return 0;
+}
 
 static void drop_skia_before_rewind(void) {
   if (!resource_cache_disabled) {
@@ -178,6 +192,9 @@ static SkCanvas *canvas_of(OsGfx *g) {
 OsGfx *osgfx_create(int w, int h) {
   if (w < 1 || h < 1) {
     return 0;
+  }
+  if (g_one.w == w && g_one.h == h && g_one.canvas != 0) {
+    return &g_one;
   }
   g_one.w = w;
   g_one.h = h;
@@ -1159,17 +1176,20 @@ __attribute__((noinline)) static void tick_body(void) {
   if (m->gen == last_gen) {
     return;
   }
-  drop_skia_before_rewind();
   if (m->fb == 0 || m->w < 8 || m->h < 8) {
     return;
   }
   if (m->pitch < m->w * 4) {
     return;
   }
+  /* HIT first: a blit must not rewind the Skia arena or drop g_one. */
   if (osgfx_chrome_fresh(m) != 0) {
     (void)osgfx_chrome_present(m);
     last_gen = m->gen;
     return;
+  }
+  if (heap_needs_rewind() != 0) {
+    drop_skia_before_rewind();
   }
   ww = (int)m->w;
   hh = (int)m->h;
@@ -1180,6 +1200,7 @@ __attribute__((noinline)) static void tick_body(void) {
   {
     struct OsGfxGuestCmd local = *m;
     uint32_t *target = osgfx_chrome_target(m);
+    uint32_t seed;
     if (target != 0) {
       local.fb = (uint64_t)(uintptr_t)target;
       local.pitch = m->w * 4;
@@ -1198,7 +1219,16 @@ __attribute__((noinline)) static void tick_body(void) {
       g->px = (uint32_t *)(uintptr_t)local.fb;
       g->pitch = (int)local.pitch;
       (void)canvas_of(g);
-      osgfx_session_paint(g, &local, osgfx_graphite_ready());
+      if (target != 0 && osgfx_chrome_is_geom_only(m) != 0) {
+        seed = 0xD074A17u;
+        if (local.desk != 0) {
+          seed = (uint32_t)local.desk;
+        }
+        osgfx_fill_desk_cached(g->px, g->pitch, 0, 0, ww, hh, seed);
+        osgfx_session_paint_windows(g, &local);
+      } else {
+        osgfx_session_paint(g, &local, osgfx_graphite_ready());
+      }
       osgfx_flush(g);
     }
     osgfx_chrome_done(m);

@@ -2196,16 +2196,19 @@ void procYield(u64 frame) {
   // zero for both of its programs while their preempt counts are not.
   procSet(cur, u64(procSlotYields), procGet(cur, u64(procSlotYields)) + u64(1));
   /* m11-proc needs every switch printed (those boots never set wm gfx).
-   * Under `wm gfx` a per-yield COM1 line floods the UART and drops ABS/LAT. */
+   * Demo/release: no PROC YIELD on COM1 while wm gfx is live. Opt in with
+   * `wm pace log` (wmPageFlagLog) for diagnostics/conformance. */
   u64 logYield = u64(1);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    final u64 sw = procHead(u64(procHeadSwitches)) + u64(1);
     logYield = u64(0);
-    if (sw < u64(8)) {
-      logYield = u64(1);
-    } else {
-      if ((sw & u64(255)) == u64(0)) {
+    if (wmPaceLogging() > u64(0)) {
+      final u64 sw = procHead(u64(procHeadSwitches)) + u64(1);
+      if (sw < u64(8)) {
         logYield = u64(1);
+      } else {
+        if ((sw & u64(255)) == u64(0)) {
+          logYield = u64(1);
+        }
       }
     }
   }

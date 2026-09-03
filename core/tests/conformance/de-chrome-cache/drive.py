@@ -176,6 +176,11 @@ CHROME_RE = re.compile(
 BAND_RE = re.compile(
     r"^WM BAND PX ([0-9A-F]{8}) FILL ([0-9A-F]{8}) HIT ([0-9A-F]{8})", re.M
 )
+DESK_RE = re.compile(
+    r"^WM DESK PX ([0-9A-F]{8}) FRM ([0-9A-F]{8}) "
+    r"REGEN ([0-9A-F]{8}) BLIT ([0-9A-F]{8}) READ ([0-9A-F]{8})",
+    re.M,
+)
 FPS_RE = re.compile(r"^WM FPS K ([0-9A-F]) N ([0-9A-F]{8}) T ([0-9A-F]{8})", re.M)
 
 
@@ -207,8 +212,19 @@ def chrome_reports(path):
         }
         for m in BAND_RE.finditer(text)
     ]
+    dk = [
+        {
+            "px": int(m.group(1), 16),
+            "frames": int(m.group(2), 16),
+            "regen": int(m.group(3), 16),
+            "blit": int(m.group(4), 16),
+            "read": int(m.group(5), 16),
+        }
+        for m in DESK_RE.finditer(text)
+    ]
     for i, c in enumerate(ch):
         c["band"] = bd[i] if i < len(bd) else None
+        c["desk"] = dk[i] if i < len(dk) else None
     return ch
 
 
@@ -227,10 +243,12 @@ def report(q, path, want, what, timeout=30):
         if len(got) >= want:
             if got[want - 1]["band"] is None:
                 raise SystemExit("report %d has no WM BAND line" % want)
+            if got[want - 1]["desk"] is None:
+                raise SystemExit("report %d has no WM DESK line" % want)
             r = got[want - 1]
-            print("  report %d (%s): REGEN %d BLIT %d BAND fill %d hit %d"
-                  % (want, what, r["regen"], r["blit"], r["band"]["fill"],
-                     r["band"]["hit"]))
+            print("  report %d (%s): REGEN %d BLIT %d DESK regen %d blit %d"
+                  % (want, what, r["regen"], r["blit"], r["desk"]["regen"],
+                     r["desk"]["blit"]))
             return r
         time.sleep(0.05)
     raise SystemExit(
@@ -386,9 +404,9 @@ def main():
     q.cmd("quit")
     print(
         "DE-chrome-cache: REGEN %d -> %d over %d unchanged composes; popover "
-        "took it to %d then %d; window A to %d. BLIT %d. BAND FILL %d HIT %d."
+        "took it to %d then %d; window A to %d. BLIT %d. DESK REGEN %d BLIT %d."
         % (r1["regen"], r2["regen"], DRAWS, r3["regen"], r4["regen"],
-           r6["regen"], r6["blit"], r6["band"]["fill"], r6["band"]["hit"])
+           r6["regen"], r6["blit"], r6["desk"]["regen"], r6["desk"]["blit"])
     )
     return 0
 

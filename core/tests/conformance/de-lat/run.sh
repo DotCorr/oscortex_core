@@ -18,7 +18,7 @@ setup_error() { echo "DE-lat: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=28
+ASSERTIONS_REQUIRED=32
 
 PACE="$CORE_DIR/kernel/wmpace.dart"
 WM="$CORE_DIR/kernel/wm.dart"
@@ -28,7 +28,7 @@ PROC="$CORE_DIR/kernel/proc.dart"
 GUEST_H="$CORE_DIR/plat/osgfx/osgfx_guest.h"
 SESSION_C="$CORE_DIR/plat/osgfx/osgfx_session.c"
 CHROME_C="$CORE_DIR/plat/osgfx/osgfx_chrome.c"
-DRIVE="$CORE_DIR/scripts/daily-drive-round7.py"
+DRIVE="$CORE_DIR/scripts/daily-drive-round8.py"
 PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"
 ART="$CORE_DIR/scripts/artifacts-dir.sh"
 
@@ -73,10 +73,18 @@ ck; grep -q -- '--absent' "$PROBE" \
   || fail "probe.py has no --absent (start_tile still prints MISMATCH on success)"
 ck; [[ -f "$ART" ]] || fail "no artifacts-dir.sh"
 ck; grep -q 'PROBE_XY = (120, 180)' "$DRIVE" \
-  || fail "round7 driver does not pin the (120,180) probe"
+  || fail "round8 driver does not pin the (120,180) probe"
 ck; grep -q 'lat_seq_gaps' "$DRIVE" \
   || fail "driver has no LAT drop detection"
+ck; grep -q 'osgfx_chrome_is_geom_only' "$CHROME_C" \
+  || fail "chrome cache has no geom-only incremental path"
+ck; grep -q 'def wait_present' "$DRIVE" \
+  || fail "driver has no host event→present pairing"
+ck; grep -q 'sock-only' "$DRIVE" \
+  || fail "driver does not document sock-only live ingest"
+ck; grep -q 'wmPaceLogging' "$PROC" \
+  || fail "procYield is not opt-in under wm pace log"
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick event→present, not wall time"
+echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick + host wall-time pairing"
 exit 0
