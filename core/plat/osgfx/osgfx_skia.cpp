@@ -1277,11 +1277,13 @@ __attribute__((noinline)) static void tick_body(void) {
       /* Blit the existing desk+windows cache (new pop hole), overlay the
        * card on scanout, restamp without REGEN. */
       (void)osgfx_chrome_present(m);
-      g->px = (uint32_t *)(uintptr_t)m->fb;
-      g->pitch = (int)m->pitch;
-      (void)canvas_of(g);
-      osgfx_session_paint_pop(g, m);
-      osgfx_flush(g);
+      if ((m->flags & OSGFX_GUEST_PANEL) == 0) {
+        g->px = (uint32_t *)(uintptr_t)m->fb;
+        g->pitch = (int)m->pitch;
+        (void)canvas_of(g);
+        osgfx_session_paint_pop(g, m);
+        osgfx_flush(g);
+      }
       osgfx_chrome_stamp_pop(m);
       com1_puts("OSGFX CHROME POP\n");
       last_gen = m->gen;
@@ -1333,8 +1335,9 @@ __attribute__((noinline)) static void tick_body(void) {
     } else {
       com1_puts("OSGFX CHROME MISS\n");
     }
-    /* Card lives on scanout. Cache stays pop-free so hide is a blit. */
-    if (m->pop != 0) {
+    /* Card lives on scanout. Cache stays pop-free so hide is a blit.
+     * Do not rebind g_one when DESK owns the overlay (PANEL). */
+    if (m->pop != 0 && (m->flags & OSGFX_GUEST_PANEL) == 0) {
       g->px = (uint32_t *)(uintptr_t)m->fb;
       g->pitch = (int)m->pitch;
       (void)canvas_of(g);
@@ -1399,11 +1402,9 @@ static void client_body(uint32_t *px, int pitch, int w, int h, int kind) {
    * client rewind so unique_ptrs do not outlive the bump. */
   client_arg.kind = kind;
   if (kind != CLIENT_POINTER) {
-    if (client_g.canvas != 0 && client_g.px == px && client_g.pitch == pitch) {
-      if (w <= client_g.w && h <= client_g.h) {
-        /* Same backing, smaller clip: reuse the native-max canvas. */
-        return;
-      }
+    if (client_g.canvas != 0 && client_g.px == px && client_g.pitch == pitch &&
+        client_g.w == w && client_g.h == h) {
+      return;
     }
     skia_release_client();
     client_reclaim_if_tight();
