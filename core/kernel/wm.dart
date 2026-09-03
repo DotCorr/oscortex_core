@@ -1922,7 +1922,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
       if (dw == ww) {
         if (dh == hh) {
           wmComposeCommit(slot, u64(1), u64(0), u64(0), u64(0), u64(0));
-          wmIdlePrep();
+          wmIdlePrep(slot);
           userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
           return;
         }
@@ -1930,7 +1930,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     }
   }
   wmComposeCommit(slot, u64(0), dx, dy, dw, dh);
-  wmIdlePrep();
+  wmIdlePrep(slot);
   userSetFrame(frame, u64(userFrameRax), wmMeta(u64(wmMetaFrames)));
 }
 

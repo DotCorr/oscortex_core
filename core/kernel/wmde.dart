@@ -1629,7 +1629,7 @@ void wmDefClear(u64 slot) {
 }
 
 @bare
-void wmIdlePrep() {
+void wmIdlePrep(u64 fromSlot) {
   if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
     return;
   }
@@ -1643,7 +1643,22 @@ void wmIdlePrep() {
   if (fbGeomWidth() < u64(1200)) {
     return;
   }
-  if ((wmPage(u64(wmPageWDefOp)) & u64(wmDefFlagPending)) > u64(0)) {
+  if (((wmPage(u64(wmPageWDefOp)) >> u64(16)) & u64(wmDefFlagPending)) >
+      u64(0)) {
+    return;
+  }
+  /* Bit 4: this attach already paid idle max+restore chrome. */
+  if ((wmPage(u64(wmPageWPrepHave)) & u64(16)) > u64(0)) {
+    return;
+  }
+  if (fromSlot >= u64(wmMaxWindows)) {
+    return;
+  }
+  final u64 fromCap = wmPage(u64(wmPageWLaunch0) + fromSlot);
+  if (fromCap < u64(1)) {
+    return;
+  }
+  if (fromCap > u64(2)) {
     return;
   }
   if (wmPrepBufEnsure() < u64(1)) {
@@ -1696,14 +1711,9 @@ void wmIdlePrep() {
     }
     i2 = i2 + u64(1);
   }
-  if ((have & u64(1)) > u64(0)) {
-    if (wmPage(u64(wmPageWPrepWin0)) == win0) {
-      if (wmPage(u64(wmPageWPrepWin1)) == win1) {
-        if ((have & u64(2)) > u64(0)) {
-          return;
-        }
-      }
-    }
+  if ((have & u64(3)) == u64(3)) {
+    wmPageSet(u64(wmPageWPrepHave), have | u64(16));
+    return;
   }
   if ((have & u64(2)) < u64(1)) {
     final u64 rest = osgfx_chrome_prep_rest();
@@ -1711,6 +1721,7 @@ void wmIdlePrep() {
   if (osgfx_chrome_prep(win0, win1) < u64(1)) {
     return;
   }
+  wmPageSet(u64(wmPageWPrepHave), wmPage(u64(wmPageWPrepHave)) | u64(16));
   uartWrite(Rodata.addressOf(wmStrPrepMax), u64(11));
   uartNewline();
 }
