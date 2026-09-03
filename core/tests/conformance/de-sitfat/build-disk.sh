@@ -98,9 +98,6 @@ printf 'APP1.ELF\n' >"$OUT/APPS.TXT"
 PAIRS=(
   "FILES.ELF=$OUT/files/files.elf"
   "FACTS.DAT=$OUT/FACTS.DAT"
-  "EMPTY=:dir"
-  "GONE.DAT=:gone"
-  "MISS.DAT=:miss"
   "SET.ELF=$OUT/set/set.elf"
   "PING.ELF=$OUT/chrome/ping.elf"
   "STUDIO.ELF=$OUT/studio/studio.elf"
@@ -116,6 +113,8 @@ if [[ "$WANT_SURF" == 1 ]]; then
     || fail "SURF.ELF failed to build"
   PAIRS+=("SURF.ELF=$OUT/frame2/surf.elf")
 fi
+# After every launch/app plant so de-desk row 4 stays STUDIO.ELF.
+PAIRS+=("EMPTY=:dir" "GONE.DAT=:gone" "MISS.DAT=:miss")
 
 python3 "$SCRIPT_DIR/make-image.py" "$OUT/disk.img" --json \
   "${PAIRS[@]}" >"$OUT/layout.json" \

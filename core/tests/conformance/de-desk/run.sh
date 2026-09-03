@@ -864,12 +864,11 @@ marked = read()
 q.cmd("send-key", keys=[{"type": "qcode", "data": "esc"}])
 if not wait_new("FILES BACK", marked):
     raise SystemExit("Escape did not reset FILES list")
-# EMPTY is the third root row (FILES, FACTS, EMPTY). Enter the folder.
+# EMPTY is the first directory after the launch/app plants (row 11).
 marked = read()
-q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
-time.sleep(0.08)
-q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
-time.sleep(0.08)
+for _ in range(11):
+    q.cmd("send-key", keys=[{"type": "qcode", "data": "down"}])
+    time.sleep(0.05)
 q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
 if not wait_new("FILES EMPTY", marked, timeout=2.0):
     raise SystemExit("Enter on EMPTY did not show the empty-folder state")
