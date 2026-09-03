@@ -864,7 +864,7 @@ def main():
             if line == "vtab":
                 time.sleep(0.3)
                 vtab = ser.read()
-                if "VTAB OK" not in vtab:
+                if "VTAB OK" not in vtab and not file_has_token(serial_path, "VTAB OK"):
                     raise SystemExit("vtab did not arm (need VTAB OK): %s"
                                      % [ln for ln in vtab.splitlines()
                                         if "VTAB" in ln][-6:])
