@@ -1525,16 +1525,20 @@ u64 wmPlacePrev() {
 @bare
 u64 wmPlaceExtent(u64 x, u64 y, u64 w, u64 h) {
   final u64 b = u64(wmBorder);
-  u64 maxW = fbGeomWidth() - b - x;
-  u64 maxH = fbGeomHeight() - u64(wmChromeH) - b - y;
+  final u64 sw = fbGeomWidth();
+  final u64 sh = fbGeomHeight();
+  u64 maxW = u64(1);
+  u64 maxH = u64(1);
+  // Saturate: a panel on the chrome strip has y+h past the work area.
+  // An underflow here is a #UD (llvm.sadd/ssub trap), not a shrink.
+  if (sw > (b + x)) {
+    maxW = sw - b - x;
+  }
+  if (sh > (u64(wmChromeH) + b + y)) {
+    maxH = sh - u64(wmChromeH) - b - y;
+  }
   u64 nw = w;
   u64 nh = h;
-  if (maxW < u64(1)) {
-    maxW = u64(1);
-  }
-  if (maxH < u64(1)) {
-    maxH = u64(1);
-  }
   if (nw > maxW) {
     nw = maxW;
   }
@@ -1576,15 +1580,25 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   final u64 ph = wmGeomH(g);
   u64 nx = px + pw + gap;
   u64 ny = py;
-  u64 remainW = fbGeomWidth() - b - nx;
+  u64 remainW = u64(0);
+  if (fbGeomWidth() > (b + nx)) {
+    remainW = fbGeomWidth() - b - nx;
+  }
   if (remainW >= minW) {
     if ((ny + h + u64(wmChromeH) + b) > fbGeomHeight()) {
-      ny = fbGeomHeight() - u64(wmChromeH) - b - h;
+      if (fbGeomHeight() > (u64(wmChromeH) + b + h)) {
+        ny = fbGeomHeight() - u64(wmChromeH) - b - h;
+      } else {
+        ny = b;
+      }
     }
   } else {
     nx = px;
     ny = py + ph + gap;
-    final u64 remainH = fbGeomHeight() - u64(wmChromeH) - b - ny;
+    u64 remainH = u64(0);
+    if (fbGeomHeight() > (u64(wmChromeH) + b + ny)) {
+      remainH = fbGeomHeight() - u64(wmChromeH) - b - ny;
+    }
     if (remainH < minH) {
       nx = px + u64(40);
       ny = py + u64(40);
@@ -1643,14 +1657,18 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
     x = nx;
     y = ny;
   }
-  final u64 fitted = wmPlaceExtent(x, y, w, hh);
-  final u64 fw = fitted >> u64(32);
-  final u64 fh = fitted & u64(0xFFFFFFFF);
-  if (fw != w) {
-    w = fw;
-  }
-  if (fh != hh) {
-    hh = fh;
+  // Panel / chrome-strip clients already fit. Shrinking them against the
+  // work area would collapse DESK onto a 1-row strip (and used to #UD).
+  if (wmFits(x, y, w, hh) < u64(1)) {
+    final u64 fitted = wmPlaceExtent(x, y, w, hh);
+    final u64 fw = fitted >> u64(32);
+    final u64 fh = fitted & u64(0xFFFFFFFF);
+    if (fw != w) {
+      w = fw;
+    }
+    if (fh != hh) {
+      hh = fh;
+    }
   }
   if (wmFits(x, y, w, hh) < u64(1)) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetBadGeom));
