@@ -144,6 +144,18 @@ const int virtgpuCapBound = 32;
 /// clear on both VirtIO GPUs (gpu.md §3.2, measured cmd=0x0103).
 const int virtgpuCmdMaster = 0x04;
 
+/// PCI command-register bit 1: memory-space decode. Cleared while a
+/// 64-bit BAR is rewritten into the 3–4 GiB hole, then set again.
+const int virtgpuCmdMemory = 0x02;
+
+/// OVMF parks virtio modern 64-bit BARs at 0xc000000000 (UEFI + 512M
+/// pc, measured). boot.S / vmInit identity-map [3 GiB, 4 GiB) and
+/// nothing above 4 GiB, so COMMON_CFG was VTAB FAIL 1. Reprogram into
+/// this already-mapped hole. 64 KiB per PCI slot; 32 slots stay under
+/// the IOAPIC at 0xFEC00000.
+const int virtgpuBarHole = 0xC1000000;
+const int virtgpuBarHoleStride = 0x10000;
+
 /// Common-configuration field offsets (VIRTIO §4.1.4.3). Widths are
 /// mandatory: 8-bit fields are byte accesses, 16-bit fields are
 /// aligned 16-bit, 32- and 64-bit fields are aligned 32-bit
@@ -663,8 +675,30 @@ void virtgpuInit() {
 // [3 GiB, 4 GiB) and nothing above 4 GiB).
 // ---------------------------------------------------------------------------
 
-/// Physical base of BAR [bar] on [bus]:[dev].[fn], or 0 if it is I/O,
-/// above 4 GiB, or not a BAR index.
+/// Move a 64-bit BAR whose upper dword is non-zero into [virtgpuBarHole].
+/// Returns the new 32-bit base, or 0 if the write did not stick.
+@bare
+u64 virtgpuBarRelocate(u64 bus, u64 dev, u64 fn, u64 reg, u64 lo) {
+  final u64 chosen = u64(virtgpuBarHole) + (dev * u64(virtgpuBarHoleStride));
+  final u64 cmd = pciRead32(bus, dev, fn, u64(virtgpuRegCmd));
+  final u64 cmdLo = cmd & u64(0xFFFF);
+  final u64 withoutMem = cmdLo - (cmdLo & u64(virtgpuCmdMemory));
+  pciWrite32(bus, dev, fn, u64(virtgpuRegCmd), withoutMem);
+  pciWrite32(bus, dev, fn, reg, (chosen & u64(0xFFFFFFF0)) | (lo & u64(0xF)));
+  pciWrite32(bus, dev, fn, reg + u64(4), u64(0));
+  pciWrite32(
+      bus, dev, fn, u64(virtgpuRegCmd), cmdLo | u64(virtgpuCmdMemory));
+  final u64 now = pciRead32(bus, dev, fn, reg) & u64(0xFFFFFFF0);
+  if (now != chosen) {
+    return u64(0);
+  }
+  return chosen;
+}
+
+/// Physical base of BAR [bar] on [bus]:[dev].[fn], or 0 if it is I/O
+/// or not a BAR index. A 64-bit BAR above 4 GiB is relocated into the
+/// mapped PCI hole (OVMF UEFI) rather than refused — otherwise
+/// virtio-tablet COMMON_CFG is unreachable and the HD door has no pointer.
 @bare
 u64 virtgpuBarBase(u64 bus, u64 dev, u64 fn, u64 bar) {
   if (bar > u64(5)) {
@@ -683,7 +717,7 @@ u64 virtgpuBarBase(u64 bus, u64 dev, u64 fn, u64 bar) {
     }
     final u64 hi = pciRead32(bus, dev, fn, reg + u64(4));
     if (hi > u64(0)) {
-      return u64(0); // above 4 GiB: not identity-mapped (gpu.md §3.1)
+      return virtgpuBarRelocate(bus, dev, fn, reg, lo);
     }
   }
   return addr;

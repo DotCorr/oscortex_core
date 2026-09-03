@@ -318,6 +318,13 @@ def main():
     ):
         q.type_line(line)
         time.sleep(wait)
+        if line == "vtab":
+            time.sleep(0.3)
+            vtab = ser.read()
+            if "VTAB OK" not in vtab:
+                raise SystemExit("vtab did not arm (need VTAB OK): %s"
+                                 % [ln for ln in vtab.splitlines()
+                                    if "VTAB" in ln][-6:])
 
     if "DESK READY" not in ser.read():
         wait_mark(ser, "DESK READY", "", 12)

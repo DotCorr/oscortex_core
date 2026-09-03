@@ -1418,6 +1418,8 @@ if [[ "$MODE" == "uefi-hd" ]]; then
     -no-reboot \
     -drive "file=$RUN_DIR/disk.img,format=raw,if=ide,index=0,media=disk" \
     -qmp "tcp:127.0.0.1:$PORT,server,nowait"
+  # OVMF may assign the virtio modern 64-bit BAR at 0xc000000000.
+  # virtgpuBarBase relocates it into the 3–4 GiB hole (VTAB FAIL 1 otherwise).
 else
   say "booting QEMU ($DISPLAY_ARG) — Bochs 800×600 + cocoa zoom-to-fit + tablet"
   [[ "$ABS_DOOR" == 1 ]] && say "abs net: user SLIRP + e1000 (10.0.2.2 host)"
