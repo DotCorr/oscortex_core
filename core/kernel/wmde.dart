@@ -1452,6 +1452,9 @@ void wmCloseWindow(u64 wI) {
   final u64 ow = wmGeomW(g) + b + b;
   final u64 oh = wmGeomH(g) + b + b;
   wmeventResetSlot(wI);
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWLaunch0) + wI, u64(0));
+  }
   wmSetWin(wI, u64(wmWinState), u64(wmWinFree));
   if (wmMeta(u64(wmMetaLive)) > u64(0)) {
     wmSetMeta(u64(wmMetaLive), wmMeta(u64(wmMetaLive)) - u64(1));

@@ -213,6 +213,19 @@ final List<u8> wmStrAttach = const [
 ];
 
 ///
+/// `' P '` -- 3 bytes. Attach owner id (identity probe).
+@rodata
+final List<u8> wmStrP = const [
+  u8(0x20), u8(0x50), u8(0x20),
+];
+
+/// `' C '` -- 3 bytes. Caption code (1 FILES, 2 SET).
+@rodata
+final List<u8> wmStrC = const [
+  u8(0x20), u8(0x43), u8(0x20),
+];
+
+///
 /// `' R '` -- 3 bytes.
 @rodata
 final List<u8> wmStrR = const [
@@ -716,6 +729,7 @@ u64 wmFocusLive() {
 /// wmevent enter/leave (ADR-0142). A dead slot is none.
 @bare
 void wmFocusTo(u64 wI) {
+  wmLatStamp(u64(wmLatKindFocus));
   wmSeatFocusSet(u64(0), wI);
 }
 
@@ -987,6 +1001,7 @@ void wmPublishFrameQ(u64 px, u64 quiet) {
   wmSetMeta(u64(wmMetaBusy), u64(0));
   wmSetMeta(u64(wmMetaPixels), px);
   wmBumpMeta(u64(wmMetaFrames));
+  wmLatNotePresent();
   if (quiet > u64(0)) {
     if (pending > u64(0)) {
       wmPointerTick();
@@ -1091,6 +1106,9 @@ void wmCompose() {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     wmSessionOwedClear();
     wmGfxChromeStamp();
+    /* Session paints the card before FRAME blits; stamp it again so a
+     * wallpaper menu is not buried under FILES/SET. */
+    px = px + wmPopDraw();
   }
   if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
     px = px + wmChromeDraw();
@@ -1634,6 +1652,8 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   u64 y = wmDesc(ptr, u64(wmDescY));
   u64 w = wmDesc(ptr, u64(wmDescW));
   u64 hh = wmDesc(ptr, u64(wmDescH));
+  final u64 reqW = w;
+  final u64 reqH = hh;
   final u64 rawOff = wmDesc(ptr, u64(wmDescOffset));
   final u64 resizable = rawOff & u64(wmResizableFlag);
   final u64 off = rawOff & u64(wmOffsetMask);
@@ -1731,8 +1751,16 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinOffsetW), off | resizable);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
+  u64 cap = u64(0);
+  if (reqH > (u64(wmChromeH) + u64(4))) {
+    cap = u64(1);
+    if (reqW == u64(440)) {
+      cap = u64(2);
+    }
+  }
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWMax0) + slot, u64(0));
+    wmPageSet(u64(wmPageWLaunch0) + slot, cap);
   }
   // THE NEWEST SURFACE IS ON TOP. That is the whole of this compositor's
   // stacking policy, it is one line, and `display-protocol.md` §0.1 is explicit
@@ -1743,6 +1771,10 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 va = shmRegionVa(r);
   uartWrite(Rodata.addressOf(wmStrAttach), u64(12));
   uartPutHex(slot, u64(1));
+  uartWrite(Rodata.addressOf(wmStrP), u64(3));
+  uartPutHex(id, u64(2));
+  uartWrite(Rodata.addressOf(wmStrC), u64(3));
+  uartPutHex(cap, u64(1));
   uartWrite(Rodata.addressOf(wmStrR), u64(3));
   uartPutHex(r, u64(1));
   uartWrite(Rodata.addressOf(wmStrGen), u64(5));
@@ -3285,6 +3317,7 @@ void wmDragStep(u64 x, u64 y) {
   if (drag < u64(1)) {
     return;
   }
+  wmLatStamp(u64(wmLatKindDrag));
   final u64 wI = drag - u64(1);
   if (wmWindowUsable(wI) < u64(1)) {
     wmSetMeta(u64(wmMetaDrag), u64(0));
@@ -3373,6 +3406,7 @@ void wmPointerTick() {
     return;
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
+  wmLatStamp(u64(wmLatKindPtr));
   // THE LIFETIME CHECK, before anything reads a frame vector. See [wmReap].
   wmReap();
   final u64 x = mouseState(u64(mouseWordX));

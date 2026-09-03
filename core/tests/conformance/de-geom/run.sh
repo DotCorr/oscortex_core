@@ -18,7 +18,7 @@ setup_error() { echo "DE-geom: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=13
+ASSERTIONS_REQUIRED=18
 
 WM="$CORE_DIR/kernel/wm.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
@@ -50,7 +50,17 @@ ck; grep -q 'VOID=:dir' "$DISK" \
   || fail "sit-in FAT does not plant VOID"
 ck; grep -q 'MISS.DAT=:miss' "$DISK" \
   || fail "sit-in FAT does not plant MISS.DAT"
+ck; grep -q 'wmStrP' "$WM" \
+  || fail "attach no longer prints owner id"
+ck; grep -q 'wmStrC' "$WM" \
+  || fail "attach no longer prints caption code"
+ck; grep -q 'reqW == u64(440)' "$WM" \
+  || fail "SET caption is not bound to requested 440"
+ck; grep -q 'files_slot' "$FILES" \
+  || fail "FILES does not filter configure by slot"
+ck; grep -q 'set_slot' "$CORE_DIR/user/frame/set.c" \
+  || fail "SET does not filter configure by slot"
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "DE-geom: PASS ($ASSERTIONS_REQUIRED checks) — clip stale commits, refuse invalid, tile on small screens"
+echo "DE-geom: PASS ($ASSERTIONS_REQUIRED checks) — clip stale commits, refuse invalid, tile on small screens, identity"
 exit 0

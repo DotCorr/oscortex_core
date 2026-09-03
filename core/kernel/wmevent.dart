@@ -432,6 +432,7 @@ void wmeventEnqueueScroll(u64 x, u64 y, u64 delta) {
       | ((rx & u64(0xFFFF)) << u64(16))
       | ((ry & u64(0xFFFF)) << u64(32))
       | (d << u64(48));
+  wmLatStamp(u64(wmLatKindWheel));
   wmeventPushCoalesceScroll(hit, ev);
 }
 

@@ -249,6 +249,22 @@ const int wmPageWScratchFrames = 377;
 /// Pre-maximise geometry, one word per physical window slot. Zero = restored.
 const int wmPageWMax0 = 378;
 
+/// Guest-tick event→present (PIT `tick_count`, not UART wall time).
+const int wmPageWEvTick = 382;
+const int wmPageWEvKind = 383;
+const int wmPageWPresTick = 384;
+const int wmPageWEvToPres = 385;
+const int wmPageWEvSeq = 386;
+
+/// Mailbox win0/win1 caption codes (low 8 / next 8). 1 = FILES, 2 = SET.
+const int wmPageWCapMail = 387;
+
+const int wmLatKindPtr = 1;
+const int wmLatKindWheel = 2;
+const int wmLatKindDrag = 3;
+const int wmLatKindMenu = 4;
+const int wmLatKindFocus = 5;
+
 const int wmPageFlagPaced = 1;
 const int wmPageFlagDamage = 2;
 const int wmPageFlagFull = 4;
@@ -339,6 +355,24 @@ final List<u8> wmPaceStrP = const [
 @rodata
 final List<u8> wmPaceStrPres = const [
   u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x53), u8(0x20),
+];
+
+/// `'WM LAT '` -- 7 bytes. Guest tick delta, not host wall time.
+@rodata
+final List<u8> wmLatStrLine = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4C), u8(0x41), u8(0x54), u8(0x20),
+];
+
+/// `' D '` -- 3 bytes.
+@rodata
+final List<u8> wmLatStrD = const [
+  u8(0x20), u8(0x44), u8(0x20),
+];
+
+/// `' S '` -- 3 bytes.
+@rodata
+final List<u8> wmLatStrS = const [
+  u8(0x20), u8(0x53), u8(0x20),
 ];
 
 /// `' COAL '` -- 6 bytes.
@@ -489,6 +523,48 @@ void wmPageSet(u64 i, u64 v) {
     return;
   }
   Pointer<u64>.fromAddress(p + (i << u64(3))).value = v;
+}
+
+/// Stamps the PIT tick and kind of an input that must present.
+@bare
+void wmLatStamp(u64 kind) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (kind < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWEvTick), tick_count());
+  wmPageSet(u64(wmPageWEvKind), kind);
+  wmPageSet(u64(wmPageWEvSeq), wmPage(u64(wmPageWEvSeq)) + u64(1));
+}
+
+/// Records present-tick minus event-tick. One UART line per pending event.
+@bare
+void wmLatNotePresent() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 kind = wmPage(u64(wmPageWEvKind));
+  if (kind < u64(1)) {
+    return;
+  }
+  final u64 now = tick_count();
+  final u64 ev = wmPage(u64(wmPageWEvTick));
+  u64 delta = u64(0);
+  if (now >= ev) {
+    delta = now - ev;
+  }
+  wmPageSet(u64(wmPageWPresTick), now);
+  wmPageSet(u64(wmPageWEvToPres), delta);
+  uartWrite(Rodata.addressOf(wmLatStrLine), u64(7));
+  uartPutHex(kind, u64(2));
+  uartWrite(Rodata.addressOf(wmLatStrD), u64(3));
+  uartPutHex(delta, u64(4));
+  uartWrite(Rodata.addressOf(wmLatStrS), u64(3));
+  uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+  uartNewline();
+  wmPageSet(u64(wmPageWEvKind), u64(0));
 }
 
 /// Takes one frame for the state page and publishes it in the mailbox.
@@ -1334,6 +1410,7 @@ void wmPacePresent() {
   final u64 px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+  wmLatNotePresent();
   wmPublishFrameQ(px, u64(1) - wmPaceLogging());
   wmSetMeta(u64(wmMetaBusy), u64(0));
 }

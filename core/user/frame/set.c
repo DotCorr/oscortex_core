@@ -102,8 +102,9 @@ static const char msg_row_cell[] = " CELL ";
 static const char lab_set[] = "Settings";
 static const char lab_app[] = "Appearance";
 static const char lab_dev[] = "Devices";
-static const char msg_csd[] = "SET CSD";
+static const char msg_csd[] = "SET CSD\n";
 static u64 csd_noted;
+static u64 set_slot = 0xFFUL;
 static const char lab_on[] = "ON";
 static const char lab_off[] = "OFF";
 static unsigned char pref_on = 1;
@@ -346,8 +347,15 @@ static void commit_rect(u64 x, u64 y, u64 w, u64 h, u64 seq) {
 }
 
 static void set_apply_configure(u64 ev) {
+  u64 slot = (ev >> 8) & 0xFFUL;
   u64 nw = (ev >> 40) & 0xFFFUL;
   u64 nh = (ev >> 52) & 0xFFFUL;
+  if (set_slot == 0xFFUL) {
+    set_slot = slot;
+  }
+  if (slot != set_slot) {
+    return;
+  }
   if (nw < 1 || nh < 1) {
     return;
   }
@@ -594,12 +602,23 @@ void _start(void) {
     die(0x5E000003UL | (pix_va << 32));
   }
 
+  /* Identity probe before the first fill: a wrong-stride paint used to
+   * fault and never reach SET CSD. */
+  if (csd_noted == 0) {
+    csd_noted = 1;
+    wr(msg_csd, sizeof(msg_csd) - 1);
+  }
   {
-    u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
-    if (ev != WMEVENT_EMPTY) {
+    u64 n = 0;
+    while (n < 8UL) {
+      u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
+      if (ev == WMEVENT_EMPTY) {
+        break;
+      }
       if ((ev & 0xFFUL) == WMEVENT_TYPE_CONFIGURE) {
         set_apply_configure(ev);
       }
+      n = n + 1UL;
     }
   }
   paint_all(pix_va, 0);

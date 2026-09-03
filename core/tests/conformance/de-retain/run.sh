@@ -186,9 +186,9 @@ ck; grep -q 'const int wmPageWSessionOwed' "$PACE_DART" \
   || fail "the session debt is not a state-page word"
 
 # 1f. THE CACHED PATH DOES NOT CREATE DEBT IN THE FIRST PLACE. It copies the
-# chrome frame around the union of both live client-body spans. Checking only
-# one slot would preserve whichever window happened to be first and erase the
-# other while every single-window test remained green.
+# chrome frame around DISJOINT live client-body spans (and the dock/pop
+# holes). Unioning win0+win1 into one cut punched the wallpaper between
+# FILES and SET and left stale FILES pixels in SET's hole.
 capture_sh HOLE_OUT HOLE_STATUS -- "python3 - '$CHROME_C' <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
@@ -201,9 +201,11 @@ for geom in ('win0', 'win1'):
         raise SystemExit('chrome_blit does not cut a body hole for %s' % geom)
 if 'chrome_copy_span' not in body:
     raise SystemExit('chrome_blit no longer copies row spans around its holes')
-if not all(token in body for token in ('cut0', 'cut1')):
-    raise SystemExit('chrome_blit no longer forms the union of overlapping body holes')
-print('    chrome_blit copies around the union of both live client-body spans')
+if 'chrome_span_hit' not in body:
+    raise SystemExit('chrome_blit no longer keeps disjoint body holes')
+if 'OSGFX_GUEST_PANEL' not in body:
+    raise SystemExit('chrome_blit dropped the dock-strip hole')
+print('    chrome_blit copies around disjoint client-body, dock, and pop holes')
 PY"
 ck; [[ $HOLE_STATUS -eq 0 ]] || { echo "$HOLE_OUT" >&2; fail "cached chrome presents can overwrite a client body"; }
 echo "$HOLE_OUT"

@@ -129,6 +129,7 @@ static u64 files_height = WIN_H;
 static u64 files_stride = WIN_W * 4UL;
 static u64 files_cap_w = WIN_W;
 static u64 files_cap_h = WIN_H;
+static u64 files_slot = 0xFFUL;
 static u64 menu_on;
 static u64 menu_row;
 static u64 menu_x;
@@ -938,8 +939,15 @@ static void files_on_event(u64 ev) {
   u64 rx = (ev >> 16) & 0xFFFFUL;
   u64 ry = (ev >> 32) & 0xFFFFUL;
   if (typ == WMEVENT_TYPE_CONFIGURE) {
+    u64 slot = (ev >> 8) & 0xFFUL;
     u64 nw = (ev >> 40) & 0xFFFUL;
     u64 nh = (ev >> 52) & 0xFFFUL;
+    if (files_slot == 0xFFUL) {
+      files_slot = slot;
+    }
+    if (slot != files_slot) {
+      return;
+    }
     if (nw > 0 && nh > 0) {
       unsigned at;
       if (nw > files_cap_w || nh > files_cap_h) {

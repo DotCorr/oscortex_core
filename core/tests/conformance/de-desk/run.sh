@@ -304,7 +304,7 @@ if title < guard:
     raise SystemExit("title hole is not guarded away from panels")
 call = chrome[chrome.index("chrome_blit((uint32_t"):chrome.index(
     "pg[OSGFX_WMPAGE_W_CHROME_BLITS]")]
-if "m->win0, m->win1, 0);" not in call:
+if "m->win0, m->win1, m->pop, m->flags, 0);" not in call:
     raise SystemExit("panel-presence is still passed as global CSD policy")
 for name, end in (("u64 wmPixelAt(", "void wmRepaintScratchRow("),
                   ("u64 wmHit(", "u64 wmClampOrigin(")):

@@ -263,8 +263,10 @@ static void paint_traffic(OsGfx *g, uint32_t *fb, int pitch, int ww, int hh,
                   SESS_BTN_S - 2, (SESS_BTN_S - 2) / 2, fill);
 }
 
+static int set_title_noted;
+
 static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
-                                    int hh, uint64_t geom, int slot) {
+                                    int hh, uint64_t geom, int cap_code) {
   int x;
   int y;
   int w;
@@ -293,9 +295,16 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
     title_noted = 1;
     com1_puts("OSGFX TITLE CLOSE\n");
   }
-  (void)slot;
   cap = "FILES";
   cap_n = 5;
+  if (cap_code == 2) {
+    cap = "SET";
+    cap_n = 3;
+    if (set_title_noted == 0) {
+      set_title_noted = 1;
+      com1_puts("OSGFX TITLE SET\n");
+    }
+  }
   i = SESS_TITLE_BAND;
   if (i > h) {
     i = h;
@@ -435,31 +444,46 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
   top = (int)((cmd->flags >> 8) & 3u);
   held0 = cmd->win0;
   held1 = cmd->win1;
-  if (held0 != 0 && panel == 0) {
-    paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
-                        OSGFX_WIN_FILL);
-  }
-  if (held1 != 0) {
-    paint_window_chrome(g, held1, top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
-                        OSGFX_WIN2_FILL);
-  }
-  if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-    if (session_csd == 0) {
-      if (held0 != 0 && panel == 0) {
-        paint_de_title_controls(g, fb, pitch, ww, hh, held0, 0);
-      } else {
-        if (held0_noted == 0 && panel == 0) {
-          held0_noted = 1;
-          com1_puts("OSGFX TITLE HELD0 0\n");
-        }
+  {
+    unsigned cap0 = 1;
+    unsigned cap1 = 1;
+    if (cmd->wmpage != 0) {
+      const uint64_t *page = (const uint64_t *)(uintptr_t)cmd->wmpage;
+      uint64_t mail = page[OSGFX_WMPAGE_W_CAP_MAIL];
+      if ((mail & 0xffu) != 0) {
+        cap0 = (unsigned)(mail & 0xffu);
       }
-      if (held1 != 0) {
-        paint_de_title_controls(g, fb, pitch, ww, hh, held1,
-                                panel != 0 ? 0 : 1);
+      if (((mail >> 8) & 0xffu) != 0) {
+        cap1 = (unsigned)((mail >> 8) & 0xffu);
       }
     }
-  } else {
-    osgfx_fill_rect(g, 0, hh - OSGFX_CHROME_H, ww, OSGFX_CHROME_H, OSGFX_CHROME);
+    if (held0 != 0 && panel == 0) {
+      paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
+                          OSGFX_WIN_FILL);
+    }
+    if (held1 != 0) {
+      paint_window_chrome(g, held1, top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
+                          OSGFX_WIN2_FILL);
+    }
+    if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+      if (session_csd == 0) {
+        if (held0 != 0 && panel == 0) {
+          paint_de_title_controls(g, fb, pitch, ww, hh, held0, (int)cap0);
+        } else {
+          if (held0_noted == 0 && panel == 0) {
+            held0_noted = 1;
+            com1_puts("OSGFX TITLE HELD0 0\n");
+          }
+        }
+        if (held1 != 0) {
+          paint_de_title_controls(g, fb, pitch, ww, hh, held1,
+                                  panel != 0 ? 0 : (int)cap1);
+        }
+      }
+    } else {
+      osgfx_fill_rect(g, 0, hh - OSGFX_CHROME_H, ww, OSGFX_CHROME_H,
+                      OSGFX_CHROME);
+    }
   }
   if (cmd->pop != 0 && panel == 0) {
     int px = (int)(cmd->pop >> 32);

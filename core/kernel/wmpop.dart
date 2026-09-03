@@ -401,9 +401,6 @@ void wmPopLabel(u64 ox, u64 oy, u64 row, u64 text) {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return;
   }
-  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    return;
-  }
   osxui_label_fb(
       fbState(u64(fbStateBase)),
       fbState(u64(fbStatePitch)),
@@ -511,10 +508,81 @@ void wmPopHide() {
   }
 }
 
+/// 1 when the 168×80 card at ([ox], [oy]) overlaps an ordinary client.
+@bare
+u64 wmPopClientHit(u64 ox, u64 oy) {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i) > u64(0)) {
+      if (wmIsPanel(i) < u64(1)) {
+        if (wmIsOverlay(i) < u64(1)) {
+          final u64 g = wmWin(i, u64(wmWinGeom));
+          final u64 cx = wmGeomX(g);
+          final u64 cy = wmGeomY(g);
+          final u64 cw = wmGeomW(g);
+          final u64 ch = wmGeomH(g);
+          if (ox < (cx + cw)) {
+            if (oy < (cy + ch)) {
+              if ((ox + u64(wmPopW)) > cx) {
+                if ((oy + u64(wmPopH)) > cy) {
+                  return u64(1);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(0);
+}
+
+/// 1 when the card stays on-screen and off ordinary clients.
+@bare
+u64 wmPopFits(u64 ox, u64 oy) {
+  if ((ox + u64(wmPopW)) > fbGeomWidth()) {
+    return u64(0);
+  }
+  if ((oy + u64(wmPopH)) > fbGeomHeight()) {
+    return u64(0);
+  }
+  if (wmPopClientHit(ox, oy) > u64(0)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// Lowest y below every ordinary client, or 16 when that would clip.
+@bare
+u64 wmPopBelowClients() {
+  u64 below = u64(16);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i) > u64(0)) {
+      if (wmIsPanel(i) < u64(1)) {
+        if (wmIsOverlay(i) < u64(1)) {
+          final u64 g = wmWin(i, u64(wmWinGeom));
+          final u64 y2 = wmGeomY(g) + wmGeomH(g) + u64(8);
+          if (y2 > below) {
+            below = y2;
+          }
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  if ((below + u64(wmPopH) + u64(wmChromeH)) > fbGeomHeight()) {
+    below = u64(16);
+  }
+  return below;
+}
+
 /// Places a measured card near ([x], [y]) and paints it. Flips to the
 /// pointer's left/above when the default gap would leave the screen.
-/// A popover that was already showing is hidden first so a second
-/// right-click moves it rather than leaving a stale fill.
+/// Also walks off ordinary client rects so a wallpaper card is not
+/// buried under FILES/SET. A popover that was already showing is hidden
+/// first so a second right-click moves it rather than leaving a stale fill.
 @bare
 void wmPopShowKind(u64 x, u64 y, u64 kind) {
   if (wmPopIsCard(wmPopKind()) > u64(0)) {
@@ -539,6 +607,40 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
       oy = fbGeomHeight() - u64(wmPopH);
     }
   }
+  if (wmPopFits(ox, oy) < u64(1)) {
+    u64 lx = u64(0);
+    if (x > u64(wmPopW)) {
+      lx = x - u64(wmPopW);
+    }
+    u64 ay = u64(0);
+    if (y > u64(wmPopH)) {
+      ay = y - u64(wmPopH);
+    }
+    if (wmPopFits(lx, oy) > u64(0)) {
+      ox = lx;
+    } else {
+      if (wmPopFits(ox, ay) > u64(0)) {
+        oy = ay;
+      } else {
+        if (wmPopFits(lx, ay) > u64(0)) {
+          ox = lx;
+          oy = ay;
+        } else {
+          final u64 by = wmPopBelowClients();
+          if (wmPopFits(u64(16), by) > u64(0)) {
+            ox = u64(16);
+            oy = by;
+          } else {
+            if (wmPopFits(u64(16), u64(16)) > u64(0)) {
+              ox = u64(16);
+              oy = u64(16);
+            }
+          }
+        }
+      }
+    }
+  }
+  wmLatStamp(u64(wmLatKindMenu));
   wmSetMeta(u64(wmMetaPop), kind | (u64(0xFF) << u64(8)));
   wmSetMeta(u64(wmMetaPopXY), (ox << u64(32)) | oy);
   wmPopWritePage();

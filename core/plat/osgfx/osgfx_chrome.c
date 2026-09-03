@@ -129,6 +129,7 @@ static uint64_t chrome_key(const struct OsGfxGuestCmd *m, const uint64_t *pg) {
     h = mix(h, pg[OSGFX_WMPAGE_W_LAUNCH0 + 1]);
     h = mix(h, pg[OSGFX_WMPAGE_W_LAUNCH0 + 2]);
     h = mix(h, pg[OSGFX_WMPAGE_W_LAUNCH0 + 3]);
+    h = mix(h, pg[OSGFX_WMPAGE_W_CAP_MAIL]);
   }
   return h | 1ULL;
 }
@@ -258,13 +259,27 @@ static void chrome_copy_span(uint32_t *drow, const uint32_t *srow, int x0,
   }
 }
 
-/* WHAT A TICK PAYS. Row copies with rectangular holes for live FRAME
- * bodies. The chrome cache holds wallpaper in those holes, but copying it
- * would empty FILES/SET; preserving both body spans makes a cached present
- * non-destructive. wmSessionRestore remains the fallback for a direct,
- * uncached session paint. */
+/* 1 when [x] is inside [x0, x1). */
+static int chrome_span_hit(int x, int x0, int x1) {
+  if (x1 <= x0) {
+    return 0;
+  }
+  if (x < x0) {
+    return 0;
+  }
+  if (x >= x1) {
+    return 0;
+  }
+  return 1;
+}
+
+/* WHAT A TICK PAYS. Row copies with DISJOINT rectangular holes for live
+ * FRAME bodies, the dock strip, and the popover card. Unioning win0+win1
+ * into one span used to punch the wallpaper BETWEEN FILES and SET and
+ * leave stale FILES pixels in SET's 333-wide hole. */
 static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
-                        int h, uint64_t win0, uint64_t win1, int csd) {
+                        int h, uint64_t win0, uint64_t win1, uint64_t pop,
+                        uint64_t flags, int csd) {
   int yy;
   uint32_t *drow;
   const uint32_t *srow;
@@ -272,8 +287,15 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
   int a1;
   int b0;
   int b1;
-  int cut0;
-  int cut1;
+  int p0;
+  int p1;
+  int q0;
+  int q1;
+  int xx;
+  int x1;
+  int hit;
+  int px;
+  int py;
 
   yy = 0;
   while (yy < h) {
@@ -281,26 +303,59 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
     srow = src + (unsigned)yy * (unsigned)w;
     chrome_body_span(win0, yy, &a0, &a1, csd);
     chrome_body_span(win1, yy, &b0, &b1, csd);
-    cut0 = a0;
-    cut1 = a1;
-    if (b1 > b0) {
-      if (cut1 <= cut0) {
-        cut0 = b0;
-        cut1 = b1;
-      } else {
-        if (b0 < cut0) {
-          cut0 = b0;
-        }
-        if (b1 > cut1) {
-          cut1 = b1;
-        }
+    p0 = 0;
+    p1 = 0;
+    if ((flags & OSGFX_GUEST_PANEL) != 0) {
+      if (yy >= h - OSGFX_CHROME_H) {
+        p0 = 0;
+        p1 = w;
       }
     }
-    if (cut1 <= cut0) {
-      chrome_copy_span(drow, srow, 0, w, w);
-    } else {
-      chrome_copy_span(drow, srow, 0, cut0, w);
-      chrome_copy_span(drow, srow, cut1, w, w);
+    q0 = 0;
+    q1 = 0;
+    if (pop != 0) {
+      px = (int)(pop >> 32);
+      py = (int)(pop & 0xffffffffu);
+      if (yy >= py && yy < py + OSGFX_POP_H) {
+        q0 = px;
+        q1 = px + OSGFX_POP_W;
+      }
+    }
+    xx = 0;
+    while (xx < w) {
+      hit = chrome_span_hit(xx, a0, a1);
+      if (chrome_span_hit(xx, b0, b1) != 0) {
+        hit = 1;
+      }
+      if (chrome_span_hit(xx, p0, p1) != 0) {
+        hit = 1;
+      }
+      if (chrome_span_hit(xx, q0, q1) != 0) {
+        hit = 1;
+      }
+      if (hit != 0) {
+        xx = xx + 1;
+        continue;
+      }
+      x1 = xx + 1;
+      while (x1 < w) {
+        hit = chrome_span_hit(x1, a0, a1);
+        if (chrome_span_hit(x1, b0, b1) != 0) {
+          hit = 1;
+        }
+        if (chrome_span_hit(x1, p0, p1) != 0) {
+          hit = 1;
+        }
+        if (chrome_span_hit(x1, q0, q1) != 0) {
+          hit = 1;
+        }
+        if (hit != 0) {
+          break;
+        }
+        x1 = x1 + 1;
+      }
+      chrome_copy_span(drow, srow, xx, x1, w);
+      xx = x1;
     }
     yy = yy + 1;
   }
@@ -333,7 +388,7 @@ int osgfx_chrome_present(const struct OsGfxGuestCmd *m) {
    * every ordinary window as soon as the dock attached.
    */
   chrome_blit((uint32_t *)(uintptr_t)m->fb, (int)m->pitch, buf, (int)m->w,
-              (int)m->h, m->win0, m->win1, 0);
+              (int)m->h, m->win0, m->win1, m->pop, m->flags, 0);
   pg[OSGFX_WMPAGE_W_CHROME_BLITS] = pg[OSGFX_WMPAGE_W_CHROME_BLITS] + 1;
   return (int)(m->w * m->h);
 }

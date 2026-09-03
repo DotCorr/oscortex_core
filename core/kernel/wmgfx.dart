@@ -217,25 +217,22 @@ void wmGfxKick() {
     }
     desk = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailDesk)).value;
     wall = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailWall)).value;
-    /* The mailbox has two chrome/preserve slots, not "physical WM slots 0
-     * and 1". Keep DESK's panel as the first preserve hole, skip its parked
-     * menu, and use the second slot for the first ordinary window. Copying
-     * physical slot 1 painted the menu at the upper-left; dropping the panel
-     * instead let a retained full-screen present erase the dock. */
+    /* Two ordinary FRAME clients (FILES then SET), never the panel.
+     * The dock is a separate full-width hole in chrome_blit when
+     * OSGFX_GUEST_PANEL is set. Putting DESK in win0 used to leave SET
+     * without a title or body hole, so its rect showed stale FILES pixels. */
     u64 i = u64(0);
     while (i < u64(wmMaxWindows)) {
-      u64 preserve = wmWindowUsable(i);
-      if (wmIsPanel(i) > u64(0)) {
-        preserve = wmWindowHeld(i);
-      }
-      if (preserve > u64(0)) {
-        if (wmIsOverlay(i) < u64(1)) {
-          if (win0Slot >= u64(wmMaxWindows)) {
-            win0Slot = i;
-            win0 = wmWin(i, u64(wmWinGeom));
-          } else if (win1Slot >= u64(wmMaxWindows)) {
-            win1Slot = i;
-            win1 = wmWin(i, u64(wmWinGeom));
+      if (wmWindowUsable(i) > u64(0)) {
+        if (wmIsPanel(i) < u64(1)) {
+          if (wmIsOverlay(i) < u64(1)) {
+            if (win0Slot >= u64(wmMaxWindows)) {
+              win0Slot = i;
+              win0 = wmWin(i, u64(wmWinGeom));
+            } else if (win1Slot >= u64(wmMaxWindows)) {
+              win1Slot = i;
+              win1 = wmWin(i, u64(wmWinGeom));
+            }
           }
         }
       }
@@ -267,6 +264,17 @@ void wmGfxKick() {
     }
     if (wmPanelStrip() > u64(0)) {
       flags = flags | u64(osgfxGuestPanel);
+    }
+    if (wmPageAddr() > u64(0)) {
+      u64 mail = u64(0);
+      if (win0Slot < u64(wmMaxWindows)) {
+        mail = wmPage(u64(wmPageWLaunch0) + win0Slot) & u64(0xFF);
+      }
+      if (win1Slot < u64(wmMaxWindows)) {
+        mail = mail |
+            ((wmPage(u64(wmPageWLaunch0) + win1Slot) & u64(0xFF)) << u64(8));
+      }
+      wmPageSet(u64(wmPageWCapMail), mail);
     }
     Pointer<u64>.fromAddress(mailbox + u64(wmPageMailOff)).value =
         wmPageAddr();
