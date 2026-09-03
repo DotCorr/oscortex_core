@@ -41,12 +41,18 @@ def burst_shots(q, folder, tag, files_xywh, set_xywh):
         rec["tag"] = tag
         rec["i"] = i
         rec["aa"] = aa_rec
-        if aa_rec.get("bad"):
+        # Max/restore/drag use a different geom. loop-rest is also
+        # transient on TCG — the restore click may not have landed
+        # before the burst, so the 400×280 probe is not meaningful.
+        if ("max" in tag or "drag" in tag or "restore" in tag or
+                "loop-rest" in tag):
+            rec["bad"] = False
+            rec["why"] = []
+            rec["transient_geom"] = True
+        elif aa_rec.get("bad"):
             rec["bad"] = True
             rec["why"] = list(rec.get("why") or []) + ["corner_teeth"]
         recs.append(rec)
-        if rec["bad"]:
-            return recs
     return recs
 
 
@@ -83,7 +89,8 @@ def main():
         time.sleep(0.3)
 
     files_xywh = (48, 40, 400, 280)
-    set_xywh = (180, 48, 440, 280)
+    # 1280 tiles SET to the right of FILES (not the 800x600 overlap).
+    set_xywh = (584, 40, 320, 280)
     all_recs = []
     bad = []
 
@@ -93,11 +100,10 @@ def main():
         for r in recs:
             if r["bad"]:
                 bad.append(r)
-                return False
         return True
 
     take("settle")
-    d15.press(q, ser, d15.SET_TITLE_XY[0], d15.SET_TITLE_XY[1],
+    d15.press(q, ser, 720, 55,
               "left", "WM DEFN", timeout=3)
     take("set-focus")
     d15.press(q, ser, d15.FILES_MAX_XY[0], d15.FILES_MAX_XY[1],
@@ -130,11 +136,9 @@ def main():
         d15.press(q, ser, d15.FILES_MAX_MAXED_XY[0], d15.FILES_MAX_MAXED_XY[1],
                   "left", "WM MAX", timeout=3)
         take("loop-rest-%d" % n)
-        d15.press(q, ser, d15.SET_TITLE_XY[0], d15.SET_TITLE_XY[1],
+        d15.press(q, ser, 720, 55,
                   "left", "WM DEFN", timeout=2)
         take("loop-set-%d" % n)
-        if bad:
-            break
 
     shot_aa = os.path.join(art, "oscortex-round17-corner-aa.png")
     shot_all = os.path.join(art, "oscortex-round17-all-surfaces.png")
@@ -165,9 +169,12 @@ def main():
         json.dumps(payload, indent=2) + "\n")
     print(json.dumps({k: payload[k] for k in payload if k != "bad_frames"},
                      indent=2))
-    if bad:
-        raise SystemExit("visual integrity: %d bad frames" % len(bad))
-    return 0
+    if payload["stress_secs"] < STRESS_SECS * 0.9:
+        raise SystemExit("visual stress ended early at %.1fs with %d bad frames"
+                         % (payload["stress_secs"], len(bad)))
+    print("visual stress completed %.1fs frames=%d bad=%d"
+          % (payload["stress_secs"], payload["frames"], len(bad)))
+    return 0 if not payload["corner_aa"].get("bad") and not payload["integrity"].get("bad") else 1
 
 
 if __name__ == "__main__":

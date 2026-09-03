@@ -71,7 +71,7 @@ def main():
     dump("restore")
     time.sleep(dt)
     dump("restore2")
-    d15.press(q, ser, d15.SET_TITLE_XY[0], d15.SET_TITLE_XY[1],
+    d15.press(q, ser, 720, 55,
               "left", "WM DEFN", timeout=3)
     dump("set")
     d15.press(q, ser, d15.FILES_TITLE_XY[0], d15.FILES_TITLE_XY[1],

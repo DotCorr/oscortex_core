@@ -309,6 +309,73 @@ static int title_blit_slices(uint32_t *fb, int pitch, int x, int y, int w, int t
   return 1;
 }
 
+/* Title is the top [th] rows of the WINDOW rrect, not a short card.
+ * fill_rrect_vgrad(w, th, r) clamps r to th/2 and rounds the title
+ * bottom, leaving wallpaper wedges at the title/body seam that read
+ * as corner teeth. Coverage uses the full window height so rows
+ * past the top radius are opaque and meet the client body. */
+static uint32_t title_mix(uint32_t top, uint32_t bot, int t, int den) {
+  unsigned tr;
+  unsigned tg;
+  unsigned tb;
+  unsigned br;
+  unsigned bg;
+  unsigned bb;
+  unsigned u;
+
+  if (den < 1) {
+    den = 1;
+  }
+  if (t < 0) {
+    t = 0;
+  }
+  if (t > den) {
+    t = den;
+  }
+  u = (unsigned)den - (unsigned)t;
+  tr = (top >> 16) & 0xffu;
+  tg = (top >> 8) & 0xffu;
+  tb = top & 0xffu;
+  br = (bot >> 16) & 0xffu;
+  bg = (bot >> 8) & 0xffu;
+  bb = bot & 0xffu;
+  tr = (tr * u + br * (unsigned)t) / (unsigned)den;
+  tg = (tg * u + bg * (unsigned)t) / (unsigned)den;
+  tb = (tb * u + bb * (unsigned)t) / (unsigned)den;
+  return (tr << 16) | (tg << 8) | tb;
+}
+
+static void paint_title_window_rrect(OsGfx *g, int x, int y, int w, int h,
+                                     int th, int r, uint32_t top,
+                                     uint32_t bot) {
+  int yy;
+  int xx;
+  int cov;
+  int den;
+  uint32_t rgb;
+
+  if (g == 0 || w < 1 || h < 1 || th < 1) {
+    return;
+  }
+  if (th > h) {
+    th = h;
+  }
+  den = th > 1 ? th - 1 : 1;
+  yy = y;
+  while (yy < y + th) {
+    rgb = title_mix(top, bot, yy - y, den);
+    xx = x;
+    while (xx < x + w) {
+      cov = osgfx_rrect_cover(xx, yy, x, y, w, h, r);
+      if (cov > 0) {
+        osgfx_blend_px(g, xx, yy, rgb, (uint8_t)cov);
+      }
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+}
+
 static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom,
                                 uint32_t border, uint32_t fill, int fb_w,
                                 int fb_h) {
@@ -350,28 +417,25 @@ static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom
       osgfx_fill_rrect(g, x + w - r, y, r, r, r, OSGFX_TITLE);
     }
     /* Pearl title chrome is a real vertical ramp. First paint of this
-     * (th, r, colours) captures 9-patch slices for later widths. */
+     * (th, r, colours) captures 9-patch slices for later widths. The
+     * short vgrad is the mid-band colour; window-rrect coverage then
+     * closes the title/body seam so the 9-patch does not stamp wedges. */
     osgfx_fill_rrect_vgrad(g, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
+    paint_title_window_rrect(g, x, y, w, h, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
     osgfx_flush(g);
     title_capture_slices(fb, pitch, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
+  } else if (sliced != 0) {
+    /* 9-patch caps were captured from a window-rrect title. Re-close
+     * the seam in case an older short-card slice is still resident. */
+    paint_title_window_rrect(g, x, y, w, h, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
   }
   if (fb != 0 && w > 8 && th > 2) {
     uint32_t probe = title_px(fb, pitch, x + (w / 2), y + (th / 2))[0];
     if (((probe >> 16) & 0xffu) < 160u) {
-      int yy;
-      int xx;
-      /* Skia missed the cache after a bump rewind. Write pearl
-       * directly so compose does not present a wallpaper title hole. */
-      yy = 0;
-      while (yy < th) {
-        uint32_t *row = title_px(fb, pitch, x, y + yy);
-        xx = 0;
-        while (xx < w) {
-          row[xx] = SESS_TITLE_TOP;
-          xx = xx + 1;
-        }
-        yy = yy + 1;
-      }
+      /* Skia missed the cache after a bump rewind. Coverage-paint
+       * pearl so compose does not AABB-stamp the top corner mask. */
+      paint_title_window_rrect(g, x, y, w, h, th, r, SESS_TITLE_TOP,
+                              OSGFX_TITLE);
     }
   }
   /* Border ring only — do not paint OSGFX_WIN_FILL over client shm. */

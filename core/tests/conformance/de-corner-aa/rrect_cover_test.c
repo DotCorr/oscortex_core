@@ -370,6 +370,80 @@ int main(void) {
     fprintf(stderr, "FAIL coverage endpoints\n");
   }
 
+  /* Title band is a clip of the WINDOW rrect. A short card of height
+   * th clamps r and leaves wallpaper at the title/body seam. */
+  {
+    int th = 32;
+    int wr = 18;
+    int tw = 80;
+    int thgt = 64;
+    uint32_t wall = 0x005bc0b7u;
+    uint32_t src = 0x00e8eef4u;
+    int i;
+    int seam;
+
+    cases = cases + 1;
+    i = 0;
+    while (i < n) {
+      fb[i] = wall;
+      i = i + 1;
+    }
+    /* Paint only the title band with the full window rrect. */
+    {
+      int yy = y;
+      while (yy < y + th) {
+        int xx = x;
+        while (xx < x + tw) {
+          int cov = osgfx_rrect_cover(xx, yy, x, y, tw, thgt, wr);
+          fb[(unsigned)yy * (unsigned)SW + (unsigned)xx] =
+              cover_blend(src, wall, cov);
+          xx = xx + 1;
+        }
+        yy = yy + 1;
+      }
+    }
+    seam = 0;
+    /* Last title row is past the top radius — must be opaque, not a
+     * short-card bottom wedge. */
+    if (!is_src(fb[(unsigned)(y + th - 1) * (unsigned)SW + (unsigned)x] &
+                    0x00ffffffu,
+                src)) {
+      seam = 1;
+    }
+    if (!is_src(fb[(unsigned)(y + th - 1) * (unsigned)SW +
+                   (unsigned)(x + tw - 1)] &
+                    0x00ffffffu,
+                src)) {
+      seam = 1;
+    }
+    if (osgfx_rrect_cover(x, y + th - 1, x, y, tw, th, wr) >= 250) {
+      fprintf(stderr, "FAIL title-seam short card is already opaque\n");
+      seam = 1;
+    }
+    if (osgfx_rrect_cover(x, y + th - 1, x, y, tw, thgt, wr) < 250) {
+      fprintf(stderr, "FAIL title-seam window rrect is not opaque\n");
+      seam = 1;
+    }
+    if (seam == 0 &&
+        corner_band_ok(fb, SW, x, y, wr, src, wall, "title-tl") &&
+        corner_band_ok(fb, SW, x + tw - wr, y, wr, src, wall, "title-tr")) {
+      pass = pass + 1;
+    } else if (seam == 0) {
+      /* corner_band_ok printed */
+    } else {
+      fprintf(stderr, "FAIL title-seam wallpaper wedge at title/body\n");
+    }
+
+    cases = cases + 1;
+    if (osgfx_rrect_cover(x, y + wr, x, y, tw, thgt, wr) == 255 &&
+        osgfx_rrect_cover(x + tw - 1, y + wr, x, y, tw, thgt, wr) == 255 &&
+        osgfx_rrect_cover(x - 1, y + wr, x, y, tw, thgt, wr) == 0) {
+      pass = pass + 1;
+    } else {
+      fprintf(stderr, "FAIL title mid-span coverage\n");
+    }
+  }
+
   printf("{\"cases\":%d,\"pass\":%d,\"fail\":%d,\"radii\":[6,8,12,18,24],"
          "\"corners_per_case\":4,\"backgrounds\":3,\"fills\":3}\n",
          cases, pass, cases - pass);

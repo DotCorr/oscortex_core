@@ -19,7 +19,11 @@ except ImportError:
     raise SystemExit("corner-aa.py needs Pillow")
 
 
-WALL_TEAL = ((0x48, 0xA0, 0x90), (0x78, 0xE0, 0xD8))
+# Generative wallpaper is ~5BC0B7. A wide teal band also matches AA mixes
+# (6DD3BF) and invents teeth. Tight match is the wallpaper field only.
+WALL = (0x5B, 0xC0, 0xB7)
+CREAM = (0xE8, 0xEE, 0xF4)
+SET_FILL = (0xF0, 0xF4, 0xF8)
 
 
 def load_rgb(path):
@@ -29,14 +33,13 @@ def load_rgb(path):
 
 def is_wallpaper(rgb):
     r, g, b = rgb
-    lo, hi = WALL_TEAL
-    if r < lo[0] or r > hi[0]:
-        return False
-    if g < lo[1] or g > hi[1]:
-        return False
-    if b < lo[2] or b > hi[2]:
+    if abs(r - WALL[0]) > 8 or abs(g - WALL[1]) > 16 or abs(b - WALL[2]) > 16:
         return False
     return (g - r) > 40
+
+
+def is_opaque_fill(rgb):
+    return rgb == CREAM or rgb == SET_FILL
 
 
 def near_white(rgb):
@@ -66,10 +69,19 @@ def shades(pix, x0, y0, x1, y1, w, h):
     }
 
 
-def corner_tooth(pix, x0, y0, x1, y1, w, h):
-    """Binary wall↔fill jump with no mix neighbour counts as a tooth."""
+def corner_tooth(pix, x0, y0, x1, y1, w, h, rect=None):
+    """Wallpaper 4-adjacent to opaque fill *inside* the card is a tooth.
+
+    Wallpaper just outside the AABB next to an opaque side is the
+    straight edge, not a corner stair.
+    """
     teeth = 0
     samples = 0
+    rx0 = ry0 = rx1 = ry1 = None
+    if rect is not None:
+        rx0, ry0, rw, rh = rect
+        rx1 = rx0 + rw
+        ry1 = ry0 + rh
     for y in range(max(1, y0), min(h - 1, y1)):
         for x in range(max(1, x0), min(w - 1, x1)):
             c = pix[x, y]
@@ -77,27 +89,16 @@ def corner_tooth(pix, x0, y0, x1, y1, w, h):
             if not is_wallpaper(c):
                 continue
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                n = pix[x + dx, y + dy]
-                if is_wallpaper(n) or near_white(n):
-                    if near_white(n):
-                        teeth += 1
+                nx, ny = x + dx, y + dy
+                n = pix[nx, ny]
+                if not (is_opaque_fill(n) or near_white(n)):
                     continue
-                # fill-ish neighbour of a wallpaper pixel is OK if it is
-                # mixed (not a hard cream jump). Cream E8EEF4 is ~232,238,244.
-                nr, ng, nb = n
-                if nr >= 220 and ng >= 220 and nb >= 220:
-                    # look for a mix in the 4-neighbourhood of the fill px
-                    mixed = False
-                    for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        m = pix[x + dx + ddx, y + dy + ddy]
-                        if is_wallpaper(m) or near_white(m):
-                            continue
-                        mr, mg, mb = m
-                        if mr < 220 or mg < 220 or mb < 220:
-                            mixed = True
-                            break
-                    if not mixed:
-                        teeth += 1
+                if rx0 is not None:
+                    inside_w = rx0 <= x < rx1 and ry0 <= y < ry1
+                    inside_f = rx0 <= nx < rx1 and ry0 <= ny < ry1
+                    if not (inside_w and inside_f):
+                        continue
+                teeth += 1
     return teeth, samples
 
 
@@ -112,7 +113,8 @@ def inspect_card(pix, w, h, x, y, cw, ch, r, name):
     teeth = 0
     for key, (cx, cy) in corners.items():
         band = shades(pix, cx - 1, cy - 1, cx + r + 2, cy + r + 2, w, h)
-        t, s = corner_tooth(pix, cx - 1, cy - 1, cx + r + 2, cy + r + 2, w, h)
+        t, s = corner_tooth(pix, cx - 1, cy - 1, cx + r + 2, cy + r + 2, w, h,
+                            rect=(x, y, cw, ch))
         band["teeth"] = t
         band["samples"] = s
         out["corners"][key] = band
@@ -125,16 +127,40 @@ def inspect_card(pix, w, h, x, y, cw, ch, r, name):
     return out
 
 
-def inspect_png(path, files_xywh=(48, 40, 400, 280), set_xywh=(180, 48, 440, 280),
-                r=18):
+def title_seam(pix, x, y, cw, ch, r, th=32):
+    """Wallpaper inside the card on title rows past the top radius is a
+    short-card bottom wedge (title/body seam)."""
+    if ch < th:
+        th = ch
+    teeth = 0
+    y0 = y + r
+    y1 = y + th
+    for yy in range(max(0, y0), min(y + ch, y1)):
+        for xx in range(x, x + cw):
+            if is_wallpaper(pix[xx, yy]):
+                teeth += 1
+    return teeth
+
+
+def inspect_png(path, files_xywh=None, set_xywh=None, r=18):
     w, h, pix = load_rgb(path)
+    if files_xywh is None:
+        files_xywh = (48, 40, 400, 280)
+    if set_xywh is None:
+        # 1280 tiles SET to the right of FILES; 800×600 overlaps it.
+        set_xywh = (584, 40, 320, 280) if w >= 1200 else (180, 48, 440, 280)
     recs = []
     fx, fy, fw, fh = files_xywh
     sx, sy, sw, sh = set_xywh
     recs.append(inspect_card(pix, w, h, fx, fy, fw, fh, r, "files"))
     recs.append(inspect_card(pix, w, h, sx, sy, sw, sh, r, "set"))
-    # Dock glass pills sit on the bottom strip; probe the right island.
-    recs.append(inspect_card(pix, w, h, w - 220, h - 44, 200, 36, 12, "dock"))
+    for rec in recs:
+        seam = title_seam(pix, rec["rect"][0], rec["rect"][1], rec["rect"][2],
+                          rec["rect"][3], r)
+        rec["title_seam"] = seam
+        rec["teeth"] += seam
+        if seam > 0:
+            rec["bad"] = True
     teeth = sum(c["teeth"] for c in recs)
     return {
         "png": path,
