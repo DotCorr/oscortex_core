@@ -110,6 +110,7 @@ static const char lab_off[] = "OFF";
 static unsigned char pref_on = 1;
 
 static u64 lab_adv;
+static u64 theme_sel;
 
 static unsigned put(unsigned at, const char *s) {
   while (*s) {
@@ -218,8 +219,8 @@ static void paint_appear_chrome(u64 on) {
   i = 0;
   while (i < 6UL) {
     tx = SIDE_W + 12UL + (i % 3UL) * 96UL;
-    fill_cpu(pix_va, tx, OSXUI_CSD_H + 52UL + (i / 3UL) * 48UL, 88UL, 40UL,
-             THEME_CARD);
+    osxui_app_card(shm_h, tx, OSXUI_CSD_H + 52UL + (i / 3UL) * 48UL, 88UL, 40UL,
+                   (i == theme_sel) ? 1UL : 0UL, THEME_CARD, SIDE_SEL);
     fill_cpu(pix_va, tx + 10UL, OSXUI_CSD_H + 68UL + (i / 3UL) * 48UL, 8UL, 8UL,
              0x00E07070UL);
     fill_cpu(pix_va, tx + 24UL, OSXUI_CSD_H + 68UL + (i / 3UL) * 48UL, 8UL, 8UL,
@@ -252,10 +253,14 @@ static void paint_appear_chrome(u64 on) {
 static void paint_devices_chrome(void) {
   osxui_app_text(shm_h, SIDE_W + 16UL, OSXUI_CSD_H + 12UL, lab_dev, 7UL,
                  WM_TEXT_TITLE_PX, WM_TEXT_MEDIUM, LAB_FG);
-  fill_cpu(pix_va, SIDE_W + 12UL, OSXUI_CSD_H + 48UL, 140UL, 56UL, THEME_CARD);
-  fill_cpu(pix_va, SIDE_W + 164UL, OSXUI_CSD_H + 48UL, 140UL, 56UL, THEME_CARD);
-  fill_cpu(pix_va, SIDE_W + 12UL, OSXUI_CSD_H + 116UL, 140UL, 56UL, THEME_CARD);
-  fill_cpu(pix_va, SIDE_W + 164UL, OSXUI_CSD_H + 116UL, 140UL, 56UL, THEME_CARD);
+  osxui_app_card(shm_h, SIDE_W + 12UL, OSXUI_CSD_H + 48UL, 140UL, 56UL, 0UL,
+                 THEME_CARD, SIDE_SEL);
+  osxui_app_card(shm_h, SIDE_W + 164UL, OSXUI_CSD_H + 48UL, 140UL, 56UL, 0UL,
+                 THEME_CARD, SIDE_SEL);
+  osxui_app_card(shm_h, SIDE_W + 12UL, OSXUI_CSD_H + 116UL, 140UL, 56UL, 0UL,
+                 THEME_CARD, SIDE_SEL);
+  osxui_app_card(shm_h, SIDE_W + 164UL, OSXUI_CSD_H + 116UL, 140UL, 56UL, 0UL,
+                 THEME_CARD, SIDE_SEL);
 }
 
 static void paint_sidebar(void) {
@@ -282,7 +287,7 @@ static void paint_labels(u64 va, u64 on) {
   } else {
     paint_devices_chrome();
   }
-  osxui_app_csd(shm_h, set_w, lab_set, 8UL);
+  osxui_app_csd_win(shm_h, set_w, set_h, lab_set, 8UL);
   if (csd_noted == 0) {
     csd_noted = 1;
     wr(msg_csd, sizeof(msg_csd) - 1);
@@ -435,6 +440,46 @@ static u64 press_in_ctl(u64 ev) {
     return 0;
   }
   return 1;
+}
+
+static u64 press_in_theme(u64 ev) {
+  u64 typ = ev & 0xFFUL;
+  u64 rx = (ev >> 16) & 0xFFFFUL;
+  u64 ry = (ev >> 32) & 0xFFFFUL;
+  u64 i;
+  u64 tx;
+  u64 ty;
+  if (typ != WMEVENT_TYPE_PRESS) {
+    return 0;
+  }
+  if (page != PAGE_APPEAR) {
+    return 0;
+  }
+  i = 0;
+  while (i < 6UL) {
+    tx = SIDE_W + 12UL + (i % 3UL) * 96UL;
+    ty = OSXUI_CSD_H + 52UL + (i / 3UL) * 48UL;
+    if (rx >= tx) {
+      if (rx < (tx + 88UL)) {
+        if (ry >= ty) {
+          if (ry < (ty + 40UL)) {
+            theme_sel = i;
+            paint_all(pix_va, armed);
+            commit_rect(0, 0, set_w, set_h, 6);
+            {
+              unsigned at = put(0, "SET CARD ");
+              at = puthex(at, i, 1);
+              line[at++] = '\n';
+              emit(at);
+            }
+            return 1;
+          }
+        }
+      }
+    }
+    i = i + 1;
+  }
+  return 0;
 }
 
 static u64 press_in_side(u64 ev) {
@@ -651,6 +696,8 @@ void _start(void) {
         set_apply_configure(ev);
       } else if (press_in_ctl(ev) > 0) {
         flip();
+      } else if (press_in_theme(ev) > 0) {
+        /* selection committed inside the hit */
       } else if (press_in_side(ev) > 0) {
         handle_nav(ev);
       } else {

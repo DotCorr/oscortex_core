@@ -509,7 +509,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
     }
   }
 #if FILES_NO_ICON == 0
-  osxui_app_csd(h, files_w, cap_files, 5);
+  osxui_app_csd_win(h, files_w, files_height, cap_files, 5);
   if (csd_noted == 0) {
     csd_noted = 1;
     wr(msg_csd, sizeof(msg_csd) - 1);
@@ -635,7 +635,7 @@ static void files_paint_csd_only(void) {
   if (files_h == 0) {
     return;
   }
-  osxui_app_csd(files_h, files_w, cap_files, 5);
+  osxui_app_csd_win(files_h, files_w, files_height, cap_files, 5);
   files_note_commit = 1;
   /* Same-size CSD stays title-only so a leftover 1274×666 compose
    * cannot sit on the next click. First publish at a new size must
@@ -662,7 +662,7 @@ static void files_prefill_cap(void) {
   files_w = saved_w;
   files_height = saved_h;
 #if FILES_NO_ICON == 0
-  osxui_app_csd(files_h, files_w, cap_files, 5);
+  osxui_app_csd_win(files_h, files_w, files_height, cap_files, 5);
 #endif
   files_retain_body = 1;
   wr(msg_prefill, sizeof(msg_prefill) - 1);

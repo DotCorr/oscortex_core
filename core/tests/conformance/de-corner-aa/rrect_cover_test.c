@@ -444,6 +444,74 @@ int main(void) {
     }
   }
 
+  /* SET theme cards: 88×40 and 140×56 at r=8 over teal. */
+  {
+    uint32_t wall = 0x00f0f4f8u;
+    uint32_t src = 0x00ffffffu;
+    int i;
+    cases = cases + 1;
+    i = 0;
+    while (i < n) {
+      fb[i] = wall;
+      i = i + 1;
+    }
+    paint(fb, SW, x, y, 88, 40, 8, src, wall);
+    if (corner_band_ok(fb, SW, x, y, 8, src, wall, "set-card-88") &&
+        corner_band_ok(fb, SW, x + 88 - 8, y + 40 - 8, 8, src, wall,
+                       "set-card-88-br")) {
+      pass = pass + 1;
+    }
+    cases = cases + 1;
+    i = 0;
+    while (i < n) {
+      fb[i] = wall;
+      i = i + 1;
+    }
+    paint(fb, SW, x, y, 140, 56, 8, src, wall);
+    if (corner_band_ok(fb, SW, x, y, 8, src, wall, "set-card-140") &&
+        corner_band_ok(fb, SW, x + 140 - 8, y + 56 - 8, 8, src, wall,
+                       "set-card-140-br")) {
+      pass = pass + 1;
+    }
+  }
+
+  /* Title material is wallpaper-independent: same RGB over two dests. */
+  {
+    uint32_t wall_a = 0x005bc0b7u;
+    uint32_t wall_b = 0x00d45050u;
+    uint32_t src = 0x00f4f0e8u;
+    int i;
+    int xx;
+    int yy;
+    int same = 1;
+    cases = cases + 1;
+    i = 0;
+    while (i < n) {
+      fb[i] = wall_a;
+      a[i] = wall_b;
+      i = i + 1;
+    }
+    osgfx_title_band_into(fb, SW * 4, x, y, 80, 64, 32, 18, src, 0x00e8e0d0u);
+    osgfx_title_band_into(a, SW * 4, x, y, 80, 64, 32, 18, src, 0x00e8e0d0u);
+    yy = y + 18;
+    while (yy < y + 32) {
+      xx = x + 18;
+      while (xx < x + 62) {
+        if ((fb[(unsigned)yy * (unsigned)SW + (unsigned)xx] & 0x00ffffffu) !=
+            (a[(unsigned)yy * (unsigned)SW + (unsigned)xx] & 0x00ffffffu)) {
+          same = 0;
+        }
+        xx = xx + 1;
+      }
+      yy = yy + 1;
+    }
+    if (same != 0) {
+      pass = pass + 1;
+    } else {
+      fprintf(stderr, "FAIL title mid RGB depends on wallpaper dest\n");
+    }
+  }
+
   printf("{\"cases\":%d,\"pass\":%d,\"fail\":%d,\"radii\":[6,8,12,18,24],"
          "\"corners_per_case\":4,\"backgrounds\":3,\"fills\":3}\n",
          cases, pass, cases - pass);

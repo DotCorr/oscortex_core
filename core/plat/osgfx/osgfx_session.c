@@ -210,11 +210,15 @@ static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
 
 /* ADR-0183: frame + title band only — never fill the client body.
  * Body pixels come from wmDrawWindow blit of FRAME shm. */
-/* Reusable title 9-patch: Skia rrect-vgrad once, then blit caps + mid. */
+/* Reusable title 9-patch: material RGB + coverage, never a FB sample.
+ * Capturing scanout baked first-paint wallpaper into later widths. */
 enum { TITLE_SLICE_CAP = 24, TITLE_SLICE_MID = 8, TITLE_SLICE_H = 32 };
 static uint32_t title_l[TITLE_SLICE_CAP * TITLE_SLICE_H];
 static uint32_t title_m[TITLE_SLICE_MID * TITLE_SLICE_H];
 static uint32_t title_r[TITLE_SLICE_CAP * TITLE_SLICE_H];
+static uint8_t title_l_cov[TITLE_SLICE_CAP * TITLE_SLICE_H];
+static uint8_t title_m_cov[TITLE_SLICE_MID * TITLE_SLICE_H];
+static uint8_t title_r_cov[TITLE_SLICE_CAP * TITLE_SLICE_H];
 static int title_slices_ready;
 static int title_slice_th;
 static int title_slice_r;
@@ -225,41 +229,46 @@ static uint32_t *title_px(uint32_t *fb, int pitch, int x, int y) {
   return (uint32_t *)((uint8_t *)fb + (unsigned)y * (unsigned)pitch) + x;
 }
 
-static void title_capture_slices(uint32_t *fb, int pitch, int x, int y, int w,
-                                 int th, int r, uint32_t top, uint32_t bot) {
+/* Build caps/mid from coverage × pearl. Dest is not sampled. */
+static void title_build_material(int th, int r, uint32_t top, uint32_t bot) {
   int yy;
   int xx;
-  uint32_t *row;
+  int synth_w;
+  int synth_h;
+  int den;
+  int cov;
+  uint32_t rgb;
 
-  if (fb == 0 || w < TITLE_SLICE_CAP * 2 + TITLE_SLICE_MID || th != TITLE_SLICE_H) {
+  if (th != TITLE_SLICE_H || r < 1) {
+    title_slices_ready = 0;
     return;
   }
+  synth_w = TITLE_SLICE_CAP * 2 + TITLE_SLICE_MID;
+  synth_h = th + r + 2;
+  den = th > 1 ? th - 1 : 1;
   yy = 0;
   while (yy < th) {
-    row = title_px(fb, pitch, x, y + yy);
+    rgb = osgfx_title_mix(top, bot, yy, den);
     xx = 0;
     while (xx < TITLE_SLICE_CAP) {
-      title_l[yy * TITLE_SLICE_CAP + xx] = row[xx];
-      title_r[yy * TITLE_SLICE_CAP + xx] = row[w - TITLE_SLICE_CAP + xx];
+      cov = osgfx_rrect_cover(xx, yy, 0, 0, synth_w, synth_h, r);
+      title_l[yy * TITLE_SLICE_CAP + xx] = rgb;
+      title_l_cov[yy * TITLE_SLICE_CAP + xx] = (uint8_t)cov;
+      cov = osgfx_rrect_cover(synth_w - TITLE_SLICE_CAP + xx, yy, 0, 0, synth_w,
+                              synth_h, r);
+      title_r[yy * TITLE_SLICE_CAP + xx] = rgb;
+      title_r_cov[yy * TITLE_SLICE_CAP + xx] = (uint8_t)cov;
       xx = xx + 1;
     }
     xx = 0;
     while (xx < TITLE_SLICE_MID) {
-      title_m[yy * TITLE_SLICE_MID + xx] = row[TITLE_SLICE_CAP + xx];
+      cov = osgfx_rrect_cover(TITLE_SLICE_CAP + xx, yy, 0, 0, synth_w, synth_h,
+                              r);
+      title_m[yy * TITLE_SLICE_MID + xx] = rgb;
+      title_m_cov[yy * TITLE_SLICE_MID + xx] = (uint8_t)cov;
       xx = xx + 1;
     }
     yy = yy + 1;
-  }
-  {
-    uint32_t mid = title_m[(th / 2) * TITLE_SLICE_MID + (TITLE_SLICE_MID / 2)];
-    unsigned mr = (unsigned)((mid >> 16) & 0xffu);
-    unsigned mg = (unsigned)((mid >> 8) & 0xffu);
-    /* Pearl title is warm grey. Wallpaper teal in the 9-patch would
-     * stamp a hole on every later width. */
-    if (mr < 160u || mg < 150u) {
-      title_slices_ready = 0;
-      return;
-    }
   }
   title_slices_ready = 1;
   title_slice_th = th;
@@ -273,6 +282,7 @@ static int title_blit_slices(uint32_t *fb, int pitch, int x, int y, int w, int t
   int yy;
   int xx;
   int mid;
+  int cov;
   uint32_t *row;
   uint32_t px;
 
@@ -294,14 +304,27 @@ static int title_blit_slices(uint32_t *fb, int pitch, int x, int y, int w, int t
     row = title_px(fb, pitch, x, y + yy);
     xx = 0;
     while (xx < TITLE_SLICE_CAP) {
-      row[xx] = title_l[yy * TITLE_SLICE_CAP + xx];
-      row[w - TITLE_SLICE_CAP + xx] = title_r[yy * TITLE_SLICE_CAP + xx];
+      cov = (int)title_l_cov[yy * TITLE_SLICE_CAP + xx];
+      if (cov > 0) {
+        row[xx] = osgfx_cover_blend(title_l[yy * TITLE_SLICE_CAP + xx], row[xx],
+                                    cov);
+      }
+      cov = (int)title_r_cov[yy * TITLE_SLICE_CAP + xx];
+      if (cov > 0) {
+        row[w - TITLE_SLICE_CAP + xx] = osgfx_cover_blend(
+            title_r[yy * TITLE_SLICE_CAP + xx], row[w - TITLE_SLICE_CAP + xx],
+            cov);
+      }
       xx = xx + 1;
     }
     xx = 0;
     while (xx < mid) {
       px = title_m[yy * TITLE_SLICE_MID + (xx % TITLE_SLICE_MID)];
-      row[TITLE_SLICE_CAP + xx] = px;
+      cov = (int)title_m_cov[yy * TITLE_SLICE_MID + (xx % TITLE_SLICE_MID)];
+      if (cov > 0) {
+        row[TITLE_SLICE_CAP + xx] =
+            osgfx_cover_blend(px, row[TITLE_SLICE_CAP + xx], cov);
+      }
       xx = xx + 1;
     }
     yy = yy + 1;
@@ -314,66 +337,10 @@ static int title_blit_slices(uint32_t *fb, int pitch, int x, int y, int w, int t
  * bottom, leaving wallpaper wedges at the title/body seam that read
  * as corner teeth. Coverage uses the full window height so rows
  * past the top radius are opaque and meet the client body. */
-static uint32_t title_mix(uint32_t top, uint32_t bot, int t, int den) {
-  unsigned tr;
-  unsigned tg;
-  unsigned tb;
-  unsigned br;
-  unsigned bg;
-  unsigned bb;
-  unsigned u;
-
-  if (den < 1) {
-    den = 1;
-  }
-  if (t < 0) {
-    t = 0;
-  }
-  if (t > den) {
-    t = den;
-  }
-  u = (unsigned)den - (unsigned)t;
-  tr = (top >> 16) & 0xffu;
-  tg = (top >> 8) & 0xffu;
-  tb = top & 0xffu;
-  br = (bot >> 16) & 0xffu;
-  bg = (bot >> 8) & 0xffu;
-  bb = bot & 0xffu;
-  tr = (tr * u + br * (unsigned)t) / (unsigned)den;
-  tg = (tg * u + bg * (unsigned)t) / (unsigned)den;
-  tb = (tb * u + bb * (unsigned)t) / (unsigned)den;
-  return (tr << 16) | (tg << 8) | tb;
-}
-
-static void paint_title_window_rrect(OsGfx *g, int x, int y, int w, int h,
-                                     int th, int r, uint32_t top,
+static void paint_title_window_rrect(uint32_t *fb, int pitch, int x, int y,
+                                     int w, int h, int th, int r, uint32_t top,
                                      uint32_t bot) {
-  int yy;
-  int xx;
-  int cov;
-  int den;
-  uint32_t rgb;
-
-  if (g == 0 || w < 1 || h < 1 || th < 1) {
-    return;
-  }
-  if (th > h) {
-    th = h;
-  }
-  den = th > 1 ? th - 1 : 1;
-  yy = y;
-  while (yy < y + th) {
-    rgb = title_mix(top, bot, yy - y, den);
-    xx = x;
-    while (xx < x + w) {
-      cov = osgfx_rrect_cover(xx, yy, x, y, w, h, r);
-      if (cov > 0) {
-        osgfx_blend_px(g, xx, yy, rgb, (uint8_t)cov);
-      }
-      xx = xx + 1;
-    }
-    yy = yy + 1;
-  }
+  osgfx_title_band_into(fb, pitch, x, y, w, h, th, r, top, bot);
 }
 
 static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom,
@@ -407,6 +374,9 @@ static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom
   if (skip_soft_shadow(x, y, w, h, fb_w, fb_h) == 0) {
     paint_soft_shadow(g, x, y, w, h, r);
   }
+  if (title_slices_ready == 0) {
+    title_build_material(th, r, SESS_TITLE_TOP, OSGFX_TITLE);
+  }
   sliced = title_blit_slices(fb, pitch, x, y, w, th, r, SESS_TITLE_TOP,
                              OSGFX_TITLE);
   if (sliced == 0) {
@@ -416,25 +386,17 @@ static void paint_window_chrome(OsGfx *g, uint32_t *fb, int pitch, uint64_t geom
       osgfx_fill_rrect(g, x, y, r, r, r, OSGFX_TITLE);
       osgfx_fill_rrect(g, x + w - r, y, r, r, r, OSGFX_TITLE);
     }
-    /* Pearl title chrome is a real vertical ramp. First paint of this
-     * (th, r, colours) captures 9-patch slices for later widths. The
-     * short vgrad is the mid-band colour; window-rrect coverage then
-     * closes the title/body seam so the 9-patch does not stamp wedges. */
-    osgfx_fill_rrect_vgrad(g, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
-    paint_title_window_rrect(g, x, y, w, h, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
+    paint_title_window_rrect(fb, pitch, x, y, w, h, th, r, SESS_TITLE_TOP,
+                            OSGFX_TITLE);
     osgfx_flush(g);
-    title_capture_slices(fb, pitch, x, y, w, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
-  } else if (sliced != 0) {
-    /* 9-patch caps were captured from a window-rrect title. Re-close
-     * the seam in case an older short-card slice is still resident. */
-    paint_title_window_rrect(g, x, y, w, h, th, r, SESS_TITLE_TOP, OSGFX_TITLE);
+    title_build_material(th, r, SESS_TITLE_TOP, OSGFX_TITLE);
   }
   if (fb != 0 && w > 8 && th > 2) {
     uint32_t probe = title_px(fb, pitch, x + (w / 2), y + (th / 2))[0];
     if (((probe >> 16) & 0xffu) < 160u) {
       /* Skia missed the cache after a bump rewind. Coverage-paint
        * pearl so compose does not AABB-stamp the top corner mask. */
-      paint_title_window_rrect(g, x, y, w, h, th, r, SESS_TITLE_TOP,
+      paint_title_window_rrect(fb, pitch, x, y, w, h, th, r, SESS_TITLE_TOP,
                               OSGFX_TITLE);
     }
   }

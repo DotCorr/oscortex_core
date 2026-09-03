@@ -1626,7 +1626,14 @@ extern "C" uint64_t osgfx_client_paint(uint64_t px, uint64_t pitch, uint64_t w,
     return 0;
   }
   if (kind == 2) {
-    osgfx_fill_rrect_vgrad(g, x, y, rw, rh, rad, (uint32_t)c0, (uint32_t)c1);
+    int clip = (int)nrun;
+    if (clip > 0 && clip < rh) {
+      /* CSD title band: coverage of the WINDOW rrect, write clip rows. */
+      osgfx_title_band_into((uint32_t *)(uintptr_t)px, (int)pitch, x, y, rw, rh,
+                            clip, rad, (uint32_t)c0, (uint32_t)c1);
+    } else {
+      osgfx_fill_rrect_vgrad(g, x, y, rw, rh, rad, (uint32_t)c0, (uint32_t)c1);
+    }
     (void)osgfx_flush(g);
     skia_release_client();
     client_in_paint = 0;

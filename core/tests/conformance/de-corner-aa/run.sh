@@ -17,7 +17,7 @@ setup_error() { echo "DE-corner-aa: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=20
+ASSERTIONS_REQUIRED=25
 
 for tool in clang python3; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -65,8 +65,18 @@ ck; grep -q 'paint_border_corner' "$SESS" \
   || fail "session borders have no coverage corner stroke"
 ck; grep -q 'paint_title_window_rrect' "$SESS" \
   || fail "session title is still a short rrect with a body-seam wedge"
-ck; grep -q 'osgfx_rrect_cover(xx, yy, x, y, w, h, r)' "$SESS" \
-  || fail "title coverage does not use the full window rrect"
+ck; grep -q 'title_build_material' "$SESS" \
+  || fail "title 9-patch still captures framebuffer wallpaper"
+ck; grep -q 'title_l_cov' "$SESS" \
+  || fail "title slices have no coverage channel"
+ck; grep -q 'osxui_app_card' "$CORE_DIR/user/frame/osxui_app.h" \
+  || fail "osxui has no shared theme-card primitive"
+ck; grep -q 'osxui_app_card' "$CORE_DIR/user/frame/set.c" \
+  || fail "SET theme cards are still square fill_cpu"
+ck; grep -q 'osxui_app_title_band' "$CORE_DIR/user/frame/osxui_app.h" \
+  || fail "CSD title is still a short vgrad rrect"
+ck; grep -q 'osxui_app_csd_win' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES CSD does not pass window height"
 ck; ! grep -q 'osgfx_fill_rect(g, x - b, y - b, w + b + b, b + 1, border)' "$SESS" \
   || fail "session still draws an AABB through the rounded corners"
 ck; grep -q 'yy < wy + OSGFX_RADIUS' "$CHROME" \

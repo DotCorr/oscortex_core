@@ -204,6 +204,91 @@ static inline int osgfx_rrect_cover(int px, int py, int x, int y, int w, int h,
   }
   return (hits * 255 + 8) / 16;
 }
+
+/* Pearl title mix and SRC_OVER. Material RGB is independent of dest;
+ * coverage decides how much of dest (wallpaper) remains. */
+static inline uint32_t osgfx_title_mix(uint32_t top, uint32_t bot, int t,
+                                       int den) {
+  unsigned tr, tg, tb, br, bg, bb, u;
+
+  if (den < 1) {
+    den = 1;
+  }
+  if (t < 0) {
+    t = 0;
+  }
+  if (t > den) {
+    t = den;
+  }
+  u = (unsigned)den - (unsigned)t;
+  tr = (top >> 16) & 0xffu;
+  tg = (top >> 8) & 0xffu;
+  tb = top & 0xffu;
+  br = (bot >> 16) & 0xffu;
+  bg = (bot >> 8) & 0xffu;
+  bb = bot & 0xffu;
+  tr = (tr * u + br * (unsigned)t) / (unsigned)den;
+  tg = (tg * u + bg * (unsigned)t) / (unsigned)den;
+  tb = (tb * u + bb * (unsigned)t) / (unsigned)den;
+  return (tr << 16) | (tg << 8) | tb;
+}
+
+static inline uint32_t osgfx_cover_blend(uint32_t src, uint32_t dst, int cov) {
+  unsigned sr, sg, sb, dr, dg, db, a, ia;
+
+  if (cov <= 0) {
+    return dst & 0x00ffffffu;
+  }
+  if (cov >= 250) {
+    return src & 0x00ffffffu;
+  }
+  a = (unsigned)cov;
+  ia = 255u - a;
+  sr = (src >> 16) & 0xffu;
+  sg = (src >> 8) & 0xffu;
+  sb = src & 0xffu;
+  dr = (dst >> 16) & 0xffu;
+  dg = (dst >> 8) & 0xffu;
+  db = dst & 0xffu;
+  dr = (sr * a + dr * ia) / 255u;
+  dg = (sg * a + dg * ia) / 255u;
+  db = (sb * a + db * ia) / 255u;
+  return (dr << 16) | (dg << 8) | db;
+}
+
+/* Title is a clip of the WINDOW rrect. Writes [y, y+th) only. */
+static inline void osgfx_title_band_into(uint32_t *fb, int pitch, int x, int y,
+                                         int w, int h, int th, int r,
+                                         uint32_t top, uint32_t bot) {
+  int yy;
+  int xx;
+  int cov;
+  int den;
+  uint32_t rgb;
+  uint32_t *row;
+
+  if (fb == 0 || w < 1 || h < 1 || th < 1 || pitch < 4) {
+    return;
+  }
+  if (th > h) {
+    th = h;
+  }
+  den = th > 1 ? th - 1 : 1;
+  yy = y;
+  while (yy < y + th) {
+    rgb = osgfx_title_mix(top, bot, yy - y, den);
+    row = (uint32_t *)((uint8_t *)fb + (unsigned)yy * (unsigned)pitch);
+    xx = x;
+    while (xx < x + w) {
+      cov = osgfx_rrect_cover(xx, yy, x, y, w, h, r);
+      if (cov > 0) {
+        row[xx] = osgfx_cover_blend(rgb, row[xx], cov);
+      }
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
+}
 /* One 8x16 glyph with neighbourhood soft AA — not 1×1 paper stamps. */
 void osgfx_fill_glyph(OsGfx *g, int x, int y, const uint8_t *rows, uint32_t rgb);
 /* 16-byte glyph for ASCII ch. Fallback box outside 0x20..0x7E.
