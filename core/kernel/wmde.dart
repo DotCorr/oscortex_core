@@ -1553,14 +1553,6 @@ void wmToggleMaxWindow(u64 wI) {
   wmSetWin(wI, u64(wmWinGeom), next);
   wmSetMeta(u64(wmMetaTop), wI);
   wmeventEnqueueConfigure(wI);
-  if (saved < u64(1)) {
-    if (wmWinResizableOf(wI) > u64(0)) {
-      uartWrite(Rodata.addressOf(wmStrMax), u64(9));
-      uartPutHex(wI, u64(1));
-      uartNewline();
-      return;
-    }
-  }
   final u64 px = wmRepaintUnion2(
       wmGeomX(old) - b, wmGeomY(old) - b,
       wmGeomW(old) + b + b, wmGeomH(old) + b + b,

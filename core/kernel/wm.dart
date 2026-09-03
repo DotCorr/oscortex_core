@@ -848,6 +848,17 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 panel = wmIsPanel(wI);
   u64 x0 = u64(0);
   u64 x1 = w;
+  if (stride >= u64(4)) {
+    final u64 bw = stride >> u64(2);
+    if (x1 > bw) {
+      x1 = bw;
+    }
+  }
+  final u64 bytes =
+      shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages)) << u64(vmPageShift);
+  if ((rowOff + u64(4)) > bytes) {
+    return;
+  }
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
@@ -2506,8 +2517,19 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
   final u64 baseOff = wmWinOffsetOf(wI);
   final u64 sourceX = x - wx;
   final u64 sourceY = y - wy;
+  if (stride < u64(4)) {
+    return u64(wmNoPixel);
+  }
+  if (sourceX >= (stride >> u64(2))) {
+    return u64(wmNoPixel);
+  }
   final u64 off = baseOff +
       ((sourceY * scale) * stride) + ((sourceX * scale) << u64(2));
+  final u64 bytes =
+      shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegPages)) << u64(vmPageShift);
+  if ((off + u64(4)) > bytes) {
+    return u64(wmNoPixel);
+  }
   final u64 src = wmRegionPixel(vec, off);
   if (wmIsPanel(wI) > u64(0)) {
     u64 under = wmDeskPixel(x, y);

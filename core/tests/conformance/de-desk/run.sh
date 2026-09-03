@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=163
+ASSERTIONS_REQUIRED=164
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -233,6 +233,17 @@ if body.find("wmChromeCachePixel") < 0 or body.find("wmDeskPixel") < 0:
     raise SystemExit("wmPixelAt does not restore title chrome from cache")
 if body.find("wmChromeCachePixel") > body.find("return wmDeskPixel"):
     raise SystemExit("chrome cache is read after wallpaper fallback")
+PY
+ck; python3 - "$WM" <<'PY' \
+  || fail "window pixels still sample past the committed backing"
+import sys
+s = open(sys.argv[1]).read()
+body = s[s.index("u64 wmPixelAt("):s.index("void wmRepaintScratchRow(")]
+win = s[s.index("u64 wmWindowPixel("):s.index("u64 wmBorderColor(")]
+if "sourceX >= (stride >> u64(2))" not in win:
+    raise SystemExit("wmWindowPixel does not clamp X to stride")
+if "shmRegPages" not in win:
+    raise SystemExit("wmWindowPixel does not clamp Y to region pages")
 PY
 ck; grep -q 'list_sel' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES has no list selection"
