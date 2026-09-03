@@ -103,9 +103,7 @@ uint32_t *osgfx_chrome_target(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_fresh(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m);
-int osgfx_chrome_is_pop_only(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1);
-void osgfx_chrome_stamp_pop(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);
@@ -117,8 +115,6 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
                               uint64_t old0, uint64_t old1);
-void osgfx_session_paint_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd);
-void osgfx_session_prewarm_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_fill_rect(OsGfx *g, int x, int y, int w, int h, uint32_t rgb);
 void osgfx_fill_rrect(OsGfx *g, int x, int y, int w, int h, int radius,

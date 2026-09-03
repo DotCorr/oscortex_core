@@ -68,9 +68,7 @@ uint32_t *osgfx_chrome_target(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_fresh(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m);
-int osgfx_chrome_is_pop_only(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1);
-void osgfx_chrome_stamp_pop(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);
@@ -78,8 +76,6 @@ void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
                               uint64_t old0, uint64_t old1);
-void osgfx_session_paint_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd);
-void osgfx_session_prewarm_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_chrome_glyph_count(int hit);
 uint32_t *osgfx_chrome_band(int w, int h);
 int osgfx_chrome_band_fresh(int w, int h, uint32_t top, uint32_t bot);
@@ -1263,7 +1259,6 @@ __attribute__((noinline)) static void tick_body(void) {
     uint32_t *target = osgfx_chrome_target(m);
     int focus_only;
     int geom_only;
-    int pop_only;
     if (target != 0) {
       local.fb = (uint64_t)(uintptr_t)target;
       local.pitch = m->w * 4;
@@ -1271,24 +1266,6 @@ __attribute__((noinline)) static void tick_body(void) {
     focus_only = (target != 0 && osgfx_chrome_is_focus_only(m) != 0);
     geom_only = (target != 0 && focus_only == 0 &&
                  osgfx_chrome_is_geom_only(m) != 0);
-    pop_only = (target != 0 && focus_only == 0 && geom_only == 0 &&
-                osgfx_chrome_is_pop_only(m) != 0);
-    if (pop_only != 0) {
-      /* Blit the existing desk+windows cache (new pop hole), overlay the
-       * card on scanout, restamp without REGEN. */
-      (void)osgfx_chrome_present(m);
-      if ((m->flags & OSGFX_GUEST_PANEL) == 0) {
-        g->px = (uint32_t *)(uintptr_t)m->fb;
-        g->pitch = (int)m->pitch;
-        (void)canvas_of(g);
-        osgfx_session_paint_pop(g, m);
-        osgfx_flush(g);
-      }
-      osgfx_chrome_stamp_pop(m);
-      com1_puts("OSGFX CHROME POP\n");
-      last_gen = m->gen;
-      return;
-    }
     /* Rewind only on a full miss after client unique_ptrs are gone.
      * Dropping g_one here is a ~1.8s TCG re-bind and was the 3.4s hitch. */
     if (focus_only == 0 && geom_only == 0 && heap_needs_rewind() != 0) {
@@ -1328,22 +1305,6 @@ __attribute__((noinline)) static void tick_body(void) {
       chrome_heap_after_paint();
     }
     osgfx_chrome_done(m);
-    if (focus_only != 0) {
-      com1_puts("OSGFX CHROME FOCUS\n");
-    } else if (geom_only != 0) {
-      com1_puts("OSGFX CHROME GEOM\n");
-    } else {
-      com1_puts("OSGFX CHROME MISS\n");
-    }
-    /* Card lives on scanout. Cache stays pop-free so hide is a blit.
-     * Do not rebind g_one when DESK owns the overlay (PANEL). */
-    if (m->pop != 0 && (m->flags & OSGFX_GUEST_PANEL) == 0) {
-      g->px = (uint32_t *)(uintptr_t)m->fb;
-      g->pitch = (int)m->pitch;
-      (void)canvas_of(g);
-      osgfx_session_paint_pop(g, m);
-      osgfx_flush(g);
-    }
   }
   /* ADR-0153 proof stamp — never on live DE chrome. Under wm de the
    * (64,48) Graphite ICD rrect landed on FILES title (binary coverage =

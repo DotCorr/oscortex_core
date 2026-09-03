@@ -214,7 +214,6 @@ static uint64_t g_stamp_launch3;
 static uint64_t g_stamp_cap_mail;
 
 #define OSGFX_CHROME_TOP_MASK (3ULL << OSGFX_GUEST_TOP_SHIFT)
-#define OSGFX_CHROME_POP_MASK (3ULL << OSGFX_GUEST_POP_SHIFT)
 #define OSGFX_CHROME_GEOM_MASK \
   (OSGFX_CHROME_TOP_MASK | OSGFX_GUEST_HELD0 | OSGFX_GUEST_HELD1)
 
@@ -341,7 +340,7 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
   if (m->win0 == g_stamp_win0 && m->win1 == g_stamp_win1) {
     return 0;
   }
-  if (m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
+  if (m->pop != g_stamp_pop || m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
     return 0;
   }
   if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
@@ -350,8 +349,8 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
   if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
     return 0;
   }
-  if ((m->flags & ~(OSGFX_CHROME_GEOM_MASK | OSGFX_CHROME_POP_MASK)) !=
-      (g_stamp_flags & ~(OSGFX_CHROME_GEOM_MASK | OSGFX_CHROME_POP_MASK))) {
+  if ((m->flags & ~OSGFX_CHROME_GEOM_MASK) !=
+      (g_stamp_flags & ~OSGFX_CHROME_GEOM_MASK)) {
     return 0;
   }
   if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
@@ -367,69 +366,6 @@ int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m) {
     return 0;
   }
   if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
-    return 0;
-  }
-  return 1;
-}
-
-/* 1 when the cached frame is still the right picture except the 168×80
- * context card (xy / kind bits). Start's launch list lives in LAUNCH0-3
- * and must still miss. Do not re-run wallpaper or window chrome. */
-int osgfx_chrome_is_pop_only(const struct OsGfxGuestCmd *m) {
-  uint64_t *pg;
-  uint64_t ignore;
-
-  if (g_stamp_have == 0 || m == 0) {
-    return 0;
-  }
-  pg = chrome_page();
-  if (pg == 0 || chrome_buf(m, pg) == 0) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_CHROME_HAVE] == 0) {
-    return 0;
-  }
-  if (m->w != g_stamp_w || m->h != g_stamp_h) {
-    return 0;
-  }
-  if (m->win0 != g_stamp_win0 || m->win1 != g_stamp_win1) {
-    return 0;
-  }
-  if (m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
-    return 0;
-  }
-  if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
-    return 0;
-  }
-  if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
-    return 0;
-  }
-  ignore = OSGFX_CHROME_POP_MASK | OSGFX_CHROME_TOP_MASK;
-  if ((m->flags & ~ignore) != (g_stamp_flags & ~ignore)) {
-    return 0;
-  }
-  if (m->pop == g_stamp_pop) {
-    if ((m->flags & OSGFX_CHROME_POP_MASK) ==
-        (g_stamp_flags & OSGFX_CHROME_POP_MASK)) {
-      return 0;
-    }
-  }
-  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 0] != g_stamp_launch0) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 1] != g_stamp_launch1) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 2] != g_stamp_launch2) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
-    return 0;
-  }
-  if (pg[OSGFX_WMPAGE_W_CAP_MAIL] != g_stamp_cap_mail) {
     return 0;
   }
   return 1;
@@ -682,24 +618,6 @@ void osgfx_chrome_done(const struct OsGfxGuestCmd *m) {
     com1_puts("OSGFX CHROME REGEN\n");
   }
   (void)osgfx_chrome_present(m);
-}
-
-/* Context-menu overlay: restamp the key without a REGEN. The cache
- * buffer still holds desk+windows; only mailbox pop/flags moved. */
-void osgfx_chrome_stamp_pop(const struct OsGfxGuestCmd *m) {
-  uint64_t *pg;
-
-  pg = chrome_page();
-  if (pg == 0 || m == 0) {
-    return;
-  }
-  if (chrome_buf(m, pg) == 0) {
-    return;
-  }
-  pg[OSGFX_WMPAGE_W_CHROME_W] = m->w;
-  pg[OSGFX_WMPAGE_W_CHROME_H] = m->h;
-  pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);
-  chrome_note_mailbox(m);
 }
 
 /* The glyph run cache's counters. Kept here rather than in osgfx_skia.cpp so

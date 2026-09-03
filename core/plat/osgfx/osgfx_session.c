@@ -655,6 +655,8 @@ void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
   uint32_t *fb;
   uint64_t held0;
   uint64_t held1;
+  unsigned pop_kind;
+  int panel;
   int session_csd;
 
   if (g == 0 || cmd == 0 || cmd->magic != OSGFX_GUEST_MAGIC) {
@@ -670,6 +672,7 @@ void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
     return;
   }
   fb = (uint32_t *)(uintptr_t)cmd->fb;
+  panel = (cmd->flags & OSGFX_GUEST_PANEL) != 0;
   session_csd = 0;
   top = (int)((cmd->flags >> 8) & 3u);
   held0 = cmd->win0;
@@ -719,64 +722,29 @@ void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
                       OSGFX_CHROME);
     }
   }
-  /* Context card is an overlay on scanout, not a chrome-cache pixel.
-   * Burning it into the cache forced a full REGEN on every open/hide. */
-}
-
-void osgfx_session_paint_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
-  int ww;
-  int hh;
-  int pitch;
-  uint32_t *fb;
-  unsigned pop_kind;
-  int px;
-  int py;
-
-  if (g == 0 || cmd == 0 || cmd->magic != OSGFX_GUEST_MAGIC) {
-    return;
-  }
-  if (cmd->fb == 0 || cmd->pop == 0) {
-    return;
-  }
-  if ((cmd->flags & OSGFX_GUEST_PANEL) != 0) {
-    /* DESK owns the live 160×88 overlay while the strip is up. */
-    return;
-  }
-  ww = (int)cmd->w;
-  hh = (int)cmd->h;
-  pitch = (int)cmd->pitch;
-  if (ww < 8 || hh < 8 || pitch < ww * 4) {
-    return;
-  }
-  fb = (uint32_t *)(uintptr_t)cmd->fb;
-  px = (int)(cmd->pop >> 32);
-  py = (int)(cmd->pop & 0xffffffffu);
-  pop_kind = (unsigned)((cmd->flags >> OSGFX_GUEST_POP_SHIFT) & 3u);
-  osgfx_shadow(g, px + OSGFX_POP_SHADOW_OX, py + OSGFX_POP_SHADOW_OY,
-               OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, OSGFX_POP_SHADOW_BLUR,
-               0x000C2030u);
-  osgfx_fill_rrect(g, px, py, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS,
-                   0x00F4F6FAu);
-  if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
-    unsigned hover = 0xFFu;
-    unsigned ck = pop_kind;
-    if (cmd->wmpage != 0) {
-      const uint64_t *page = (const uint64_t *)(uintptr_t)cmd->wmpage;
-      ck = (unsigned)page[OSGFX_WMPAGE_W_CTX_KIND];
-      hover = (unsigned)page[OSGFX_WMPAGE_W_CTX_SLOT];
+  if (cmd->pop != 0 && panel == 0) {
+    int px = (int)(cmd->pop >> 32);
+    int py = (int)(cmd->pop & 0xffffffffu);
+    pop_kind = (unsigned)((cmd->flags >> OSGFX_GUEST_POP_SHIFT) & 3u);
+    osgfx_shadow(g, px + OSGFX_POP_SHADOW_OX, py + OSGFX_POP_SHADOW_OY,
+                 OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS, OSGFX_POP_SHADOW_BLUR,
+                 0x000C2030u);
+    osgfx_fill_rrect(g, px, py, OSGFX_POP_W, OSGFX_POP_H, OSGFX_RADIUS,
+                     0x00F4F6FAu);
+    if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
+      unsigned hover = 0xFFu;
+      unsigned ck = pop_kind;
+      if (cmd->wmpage != 0) {
+        const uint64_t *page = (const uint64_t *)(uintptr_t)cmd->wmpage;
+        ck = (unsigned)page[OSGFX_WMPAGE_W_CTX_KIND];
+        hover = (unsigned)page[OSGFX_WMPAGE_W_CTX_SLOT];
+      }
+      if (ck == 0) {
+        ck = pop_kind;
+      }
+      paint_ctx_menu(g, fb, pitch, ww, hh, px, py, ck, hover);
     }
-    if (ck == 0) {
-      ck = pop_kind;
-    }
-    paint_ctx_menu(g, fb, pitch, ww, hh, px, py, ck, hover);
   }
-}
-
-void osgfx_session_prewarm_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
-  /* DESK paints the live card at attach. Negative-origin prewarm
-   * underflowed fb+y*pitch and #PF'd the kernel (CR2 in FILES shm). */
-  (void)g;
-  (void)cmd;
 }
 
 /* TOP-only chrome miss: rewrite the 2px focus rings on the cached frame.
