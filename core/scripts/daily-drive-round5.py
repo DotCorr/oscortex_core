@@ -95,6 +95,7 @@ class Serial:
     def __init__(self, path, sock_port=0):
         self.path = path
         self.buf = ""
+        self.archive = ""
         self.off = 0
         self.sock = None
         if sock_port:
@@ -112,34 +113,46 @@ class Serial:
             if self.sock is None:
                 print("WARN: serial socket failed (%s); using file" % last)
 
+    _ARCHIVE = (
+        "SET CSD", "SET READY", "SET SLOT", "DESK LAUNCH", "OSGFX TITLE",
+        "FILES CSD", "FILES READY", "FILES EMPTY", "FILES ERR", "FILES SEL",
+        "FILES KEY", "FILES SLOT", "WM LAT ", "WM COMMIT", "WM ATTACH",
+        "WM MAX", "WM WALL MENU", "WM WIN MENU", "WM DOCK MENU", "WM FRAME",
+        "WM FOCUS", "MOUSE ABS",
+    )
+
     def _keep_line(self, line):
         if line.startswith("PROC YIELD"):
             return False
         if line.startswith("SHM PAGE"):
             return False
+        if line.startswith("PROC PREEMPT"):
+            return False
         return True
+
+    def _interesting(self, line):
+        for tok in self._ARCHIVE:
+            if tok in line:
+                return True
+        return False
 
     def _ingest(self, text):
         if not text:
             return
-        kept = [ln for ln in text.splitlines() if self._keep_line(ln)]
-        if not kept:
-            return
-        self.buf = (self.buf + "\n" + "\n".join(kept))[-1048576:]
-
-    def _drain_sock(self):
-        if self.sock is None:
-            return
-        got = 0
-        try:
-            while got < 65536:
-                chunk = self.sock.recv(4096)
-                if not chunk:
-                    break
-                self._ingest(chunk.decode("utf-8", "replace"))
-                got += len(chunk)
-        except (socket.timeout, BlockingIOError):
-            pass
+        kept = []
+        arch = []
+        for ln in text.splitlines():
+            if not self._keep_line(ln):
+                continue
+            kept.append(ln)
+            if self._interesting(ln):
+                arch.append(ln)
+        if kept:
+            self.buf = (self.buf + "\n" + "\n".join(kept))[-262144:]
+        if arch:
+            # Identity / LAT / commit lines are never washed by FRAME noise.
+            self.archive = (getattr(self, "archive", "") + "\n" +
+                            "\n".join(arch))[-1048576:]
 
     def read(self):
         self._drain_sock()
@@ -156,7 +169,21 @@ class Serial:
                         self._ingest(chunk.decode("utf-8", "replace"))
         except OSError:
             pass
-        return self.buf
+        return (getattr(self, "archive", "") + "\n" + self.buf)
+
+    def _drain_sock(self):
+        if self.sock is None:
+            return
+        got = 0
+        try:
+            while got < 65536:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                self._ingest(chunk.decode("utf-8", "replace"))
+                got += len(chunk)
+        except (socket.timeout, BlockingIOError):
+            pass
 
 
 def wait_mark(ser, token, marked, timeout=8.0):
