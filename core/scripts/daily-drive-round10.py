@@ -1033,16 +1033,16 @@ def main():
         if cycles % 8 == 0:
             walls["focus"].append(timed_click(q, ser, SET_TITLE_XY[0], SET_TITLE_XY[1],
                                               timeout=2.0))
-        if cycles % 6 == 0:
+        if cycles % 10 == 0:
             walls["menu"].append(timed_click(q, ser, WALL_XY[0], WALL_XY[1], "right",
                                              timeout=2.0))
             q.key("esc")
-        if cycles % 9 == 0:
+        if cycles % 15 == 0:
             walls["menu"].append(timed_click(q, ser, FILES_TITLE_XY[0],
                                              FILES_TITLE_XY[1], "right",
                                              timeout=2.0))
             q.key("esc")
-        if cycles % 11 == 0:
+        if cycles % 18 == 0:
             walls["menu"].append(timed_click(q, ser, DOCK_MENU_XY[0],
                                              DOCK_MENU_XY[1], "right",
                                              timeout=2.0))
