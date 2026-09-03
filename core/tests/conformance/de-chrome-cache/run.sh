@@ -110,6 +110,7 @@ ck; grep -q 'pg\[OSGFX_WMPAGE_W_CHROME_HAVE\] = 0;' "$CHROME_C" \
 ck; grep -q 'osgfx_chrome_fresh(m) != 0' "$SKIA_CPP" \
   || fail "tick_body has no cache-hit arm"
 ck; grep -q 'osgfx_chrome_present(m)' "$SKIA_CPP" \
+  || grep -q 'osgfx_chrome_present(m)' "$CHROME_C" \
   || fail "tick_body never presents the cached frame"
 
 # THE BAND CACHE IS GATED ON radius == 0, and that is a correctness condition,

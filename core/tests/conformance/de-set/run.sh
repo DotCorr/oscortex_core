@@ -52,7 +52,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-BUILD_DIR="${BUILD_DIR:-$CORE_DIR/build}"
+# Isolated tree — never stomp the live core/build kernels.
+if [[ "${BUILD_DIR:-}" == "$CORE_DIR/build" || -z "${BUILD_DIR:-}" ]]; then
+  BUILD_DIR="$WORKDIR/kbuild"
+fi
+mkdir -p "$BUILD_DIR"
+if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+  ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+fi
 KERNEL_ELF="$BUILD_DIR/kernel.elf"
 DRIVER="$CORE_DIR/tests/conformance/d2-compositor/comp-drive.py"
 PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"

@@ -1340,9 +1340,9 @@ __attribute__((noinline)) static void tick_body(void) {
    * Present a fresh cache if we have one; never session_paint. */
   if (client_in_paint != 0) {
     if (osgfx_chrome_fresh(m) != 0) {
-      /* IRQ during a client paint: the scanout may be mid-blit. Full
-       * present is the safe repair; interactive HIT below is overlay-only. */
-      (void)osgfx_chrome_present(m);
+      /* Overlay only — a full 1280 blit here was the 1 s hitch when
+       * focus/drag kicked during a client IFHOLD paint. */
+      (void)osgfx_chrome_hit_present(m);
       chrome_overlay_scanout(m);
     }
     return;

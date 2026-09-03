@@ -572,8 +572,15 @@ void wmPopHide() {
     if (wmPageAddr() > u64(0)) {
       final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
       wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, u64(0));
+    }
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      wmGfxKick();
+      osgfx_guest_tick();
+      wmGfxChromeStamp();
     } else {
-      wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
+      if (wmPageAddr() < u64(1)) {
+        wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
+      }
     }
   }
 }
@@ -730,8 +737,16 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
   if (wmPageAddr() > u64(0)) {
     final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
     wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+  }
+  /* Present both sides even when drain last-wins coalesces hide. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxKick();
+    osgfx_guest_tick();
+    wmGfxChromeStamp();
   } else {
-    wmPopPaintCard();
+    if (wmPageAddr() < u64(1)) {
+      wmPopPaintCard();
+    }
   }
 }
 
@@ -769,6 +784,10 @@ void wmContextFocus(u64 hit) {
         wmGfxKick();
         osgfx_guest_tick();
         wmGfxChromeStamp();
+        /* Token for de-desk: no-page path only. Live DESK has a page. */
+        if (wmActive() > u64(0)) {
+          wmCompose();
+        }
       } else {
         if (oldTop != hit) {
           u64 px = wmRepaintWindow(oldTop);

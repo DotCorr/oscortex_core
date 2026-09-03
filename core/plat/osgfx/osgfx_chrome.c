@@ -1038,6 +1038,15 @@ void osgfx_chrome_done(const struct OsGfxGuestCmd *m) {
     com1_puts("OSGFX CHROME REGEN\n");
   }
   (void)osgfx_chrome_present(m);
+  /* TCG-translate the discrete drag path once so the first real
+   * title-bar step is not a 500 ms code-cache fill. */
+  if (m->win0 != 0) {
+    static int drag_warm;
+    if (drag_warm == 0) {
+      drag_warm = 1;
+      (void)osgfx_chrome_drag_step(m->win0, m->win0);
+    }
+  }
 }
 
 /* The glyph run cache's counters. Kept here rather than in osgfx_skia.cpp so
