@@ -308,6 +308,16 @@ void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1) {
   }
 }
 
+/* Old max/restore rects. Present sources leftover pixels from the desk
+ * cache so geom paint does not store 848k wallpaper words (1.3s TCG). */
+static uint64_t g_uncover0;
+static uint64_t g_uncover1;
+
+void osgfx_chrome_note_uncover(uint64_t old0, uint64_t old1) {
+  g_uncover0 = old0;
+  g_uncover1 = old1;
+}
+
 /* 1 when the cached frame is still the right picture except window
  * geometry (maximize / restore / resize). Desk, pop, wall, tones, page
  * and flags-minus-TOP stay. Title/borders are recomposed from slices;
@@ -405,9 +415,37 @@ static void chrome_body_span(uint64_t geom, int yy, int *x0, int *x1, int csd) {
   }
 }
 
+static int geom_contains(uint64_t geom, int x, int y, int pad) {
+  int gx;
+  int gy;
+  int gw;
+  int gh;
+
+  if (geom == 0) {
+    return 0;
+  }
+  chrome_unpack_geom(geom, &gx, &gy, &gw, &gh);
+  if (gw < 1 || gh < 1) {
+    return 0;
+  }
+  gx = gx - pad;
+  gy = gy - pad;
+  gw = gw + pad + pad;
+  gh = gh + pad + pad;
+  if (x < gx || y < gy) {
+    return 0;
+  }
+  if (x >= gx + gw || y >= gy + gh) {
+    return 0;
+  }
+  return 1;
+}
+
 static void chrome_copy_span(uint32_t *drow, const uint32_t *srow, int x0,
-                             int x1, int w) {
+                             int x1, int w, int yy, const uint32_t *desk,
+                             int dw, int dh, uint64_t keep0, uint64_t keep1) {
   int xx;
+  int from_desk;
 
   if (x0 < 0) {
     x0 = 0;
@@ -417,7 +455,21 @@ static void chrome_copy_span(uint32_t *drow, const uint32_t *srow, int x0,
   }
   xx = x0;
   while (xx < x1) {
-    drow[xx] = srow[xx];
+    from_desk = 0;
+    if (desk != 0 && (g_uncover0 != 0 || g_uncover1 != 0)) {
+      if (geom_contains(g_uncover0, xx, yy, 8) != 0 ||
+          geom_contains(g_uncover1, xx, yy, 8) != 0) {
+        if (geom_contains(keep0, xx, yy, 16) == 0 &&
+            geom_contains(keep1, xx, yy, 16) == 0) {
+          from_desk = 1;
+        }
+      }
+    }
+    if (from_desk != 0 && xx < dw && yy < dh) {
+      drow[xx] = desk[(unsigned)yy * (unsigned)dw + (unsigned)xx];
+    } else {
+      drow[xx] = srow[xx];
+    }
     xx = xx + 1;
   }
 }
@@ -446,6 +498,9 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
   int yy;
   uint32_t *drow;
   const uint32_t *srow;
+  const uint32_t *desk;
+  int dw;
+  int dh;
   int a0;
   int a1;
   int b0;
@@ -460,6 +515,12 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
   int px;
   int py;
 
+  dw = 0;
+  dh = 0;
+  desk = 0;
+  if (g_uncover0 != 0 || g_uncover1 != 0) {
+    desk = osgfx_desk_cache(&dw, &dh);
+  }
   yy = 0;
   while (yy < h) {
     drow = (uint32_t *)((uint8_t *)fb + (unsigned)yy * (unsigned)pitch);
@@ -520,7 +581,7 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
         }
         x1 = x1 + 1;
       }
-      chrome_copy_span(drow, srow, xx, x1, w);
+      chrome_copy_span(drow, srow, xx, x1, w, yy, desk, dw, dh, win0, win1);
       xx = x1;
     }
     yy = yy + 1;

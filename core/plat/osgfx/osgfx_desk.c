@@ -300,6 +300,31 @@ static uint32_t desk_sample_at(int sx, int sy, int sw, int sh, uint32_t seed) {
   return desk_sample_field(sx, sy, sw, sh, seed);
 }
 
+const uint32_t *osgfx_desk_cache(int *w, int *h) {
+  uint64_t *pg;
+  uint32_t *buf;
+  int dw;
+  int dh;
+
+  pg = desk_page();
+  if (pg == 0) {
+    return 0;
+  }
+  buf = (uint32_t *)(uintptr_t)pg[OSGFX_WMPAGE_W_DESK_BUF];
+  dw = (int)pg[OSGFX_WMPAGE_W_DESK_W];
+  dh = (int)pg[OSGFX_WMPAGE_W_DESK_H];
+  if (buf == 0 || dw < 1 || dh < 1) {
+    return 0;
+  }
+  if (w != 0) {
+    *w = dw;
+  }
+  if (h != 0) {
+    *h = dh;
+  }
+  return buf;
+}
+
 void osgfx_fill_desk_cached(uint32_t *fb, int pitch, int x, int y, int w, int h,
                             uint32_t seed) {
   uint64_t *pg;

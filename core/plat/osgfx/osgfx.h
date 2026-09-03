@@ -104,6 +104,8 @@ int osgfx_chrome_fresh(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m);
 int osgfx_chrome_is_geom_only(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_stamp_wins(uint64_t *win0, uint64_t *win1);
+void osgfx_chrome_note_uncover(uint64_t old0, uint64_t old1);
+const uint32_t *osgfx_desk_cache(int *w, int *h);
 int osgfx_chrome_present(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_begin(const struct OsGfxGuestCmd *m);
 void osgfx_chrome_done(const struct OsGfxGuestCmd *m);

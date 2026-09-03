@@ -1441,12 +1441,14 @@ __attribute__((noinline)) static void tick_body(void) {
         uint64_t old1;
         com1_puts("OSGFX CHROME GEOM\n");
         osgfx_chrome_stamp_wins(&old0, &old1);
+        osgfx_chrome_note_uncover(old0, old1);
         osgfx_session_paint_geom(g, &local, old0, old1);
         if (((local.win0 & 0xffffu) > 48u) || ((local.win1 & 0xffffu) > 48u)) {
           g_one_want_rich_seal = 1;
         }
       } else {
         com1_puts("OSGFX CHROME MISS\n");
+        osgfx_chrome_note_uncover(0, 0);
         osgfx_session_paint(g, &local, osgfx_graphite_ready());
         if (((local.win0 & 0xffffu) > 48u) || ((local.win1 & 0xffffu) > 48u)) {
           g_one_want_rich_seal = 1;

@@ -823,14 +823,10 @@ void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
   }
   keep0 = cmd->win0;
   keep1 = cmd->win1;
-  /* Patch only leftover wallpaper. Unchanged neighbours stay in the
-   * chrome cache so restore does not re-Skia SET after a FILES max. */
-  if (old0 != 0 && old0 != keep0) {
-    uncover_geom_except(fb, pitch, old0, keep0, keep1, ww, hh, seed);
-  }
-  if (old1 != 0 && old1 != keep1) {
-    uncover_geom_except(fb, pitch, old1, keep0, keep1, ww, hh, seed);
-  }
+  /* Do not blit leftover wallpaper into the chrome cache. Present
+   * sources those pixels from the desk cache (osgfx_chrome_note_uncover).
+   * A 1274×666 cache store was the 1.3s TCG restore. */
+  (void)seed;
   cap0 = 1;
   cap1 = 1;
   if (cmd->wmpage != 0) {
