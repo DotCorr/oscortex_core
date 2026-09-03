@@ -74,7 +74,7 @@ typedef unsigned int u32;
 #define SCROLL_THUMB_MIN 20UL
 #define SCROLL_TRACK 0x003A4654UL
 #define SCROLL_THUMB 0x00869BB0UL
-#define MENU_SELECTED 0x006884A0UL
+#define MENU_SELECTED 0x00D0E4F8UL
 #define SCAN_ESC 0x01UL
 #define SCAN_BKSP 0x0EUL
 #define SCAN_TAB 0x0FUL
@@ -176,8 +176,9 @@ static const char msg_back[] = "FILES BACK";
 static const char msg_empty[] = "FILES EMPTY";
 static const char msg_err[] = "FILES ERR";
 static const char msg_key[] = "FILES KEY ";
-static const char lab_empty[] = "Empty";
-static const char lab_error[] = "Error";
+static const char lab_empty[] = "This folder is empty";
+static const char lab_error[] = "This path is unavailable";
+static const char msg_error[] = "FILES ERROR";
 static const char ext_cpy[] = "CPY";
 static const char ext_mov[] = "MOV";
 static const char ext_ren[] = "REN";
@@ -485,22 +486,26 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
   paint_scrollbar(h, names, visible);
   if (names == 0) {
     if (files_err > 0) {
-      osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_error, 5,
+      osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_error, 24,
                      WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, SURF_EMPTY_FG);
     } else {
-      osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_empty, 5,
+      osxui_app_text(h, LAB_PAD_X, TITLE_H + 8UL, lab_empty, 20,
                      WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, SURF_EMPTY_FG);
     }
     if (empty_noted == 0) {
       empty_noted = 1;
-      wr(msg_empty, sizeof(msg_empty) - 1);
+      if (files_err > 0) {
+        wr(msg_error, sizeof(msg_error) - 1);
+      } else {
+        wr(msg_empty, sizeof(msg_empty) - 1);
+      }
     }
   }
 #endif
 }
 
-#define FILE_MENU_W 96UL
-#define FILE_MENU_H 56UL
+#define FILE_MENU_W 128UL
+#define FILE_MENU_H 64UL
 
 static u64 row_at_y(u64 y, u64 names) {
   u64 body_h = files_height;

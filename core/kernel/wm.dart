@@ -1501,11 +1501,79 @@ u64 wmFreeWindow() {
 /// **The answer is an ADDRESS THE KERNEL COMPUTED AND HANDED OVER**, not one
 /// the client derived. See this file's header §3: that is the whole reason this
 /// operation exists rather than the client simply committing.
+/// Tile to the previous client's right when that fits; otherwise pack
+/// against the right edge and drop 24px so title bars stay visible.
+/// Panel strips and the first client keep the requested origin.
+@bare
+u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
+  if (wmDeOn() < u64(1)) {
+    return (x << u64(32)) | y;
+  }
+  if ((y + h) >= (fbGeomHeight() - u64(wmChromeH))) {
+    return (x << u64(32)) | y;
+  }
+  u64 prev = u64(wmMaxWindows);
+  u64 n = u64(0);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i) > u64(0)) {
+      if (wmIsPanel(i) < u64(1)) {
+        prev = i;
+        n = n + u64(1);
+      }
+    }
+    i = i + u64(1);
+  }
+  if (n < u64(1)) {
+    return (x << u64(32)) | y;
+  }
+  final u64 b = u64(wmBorder);
+  u64 maxX = fbGeomWidth() - b - w;
+  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - h;
+  if (maxX < b) {
+    maxX = b;
+  }
+  if (maxY < b) {
+    maxY = b;
+  }
+  final u64 g = wmWin(prev, u64(wmWinGeom));
+  final u64 px = wmGeomX(g);
+  final u64 py = wmGeomY(g);
+  final u64 pw = wmGeomW(g);
+  u64 nx = px + pw + u64(16);
+  u64 ny = py + u64(24);
+  if ((nx + w + b) > fbGeomWidth()) {
+    nx = maxX;
+  }
+  if ((ny + h + u64(wmChromeH) + b) > fbGeomHeight()) {
+    ny = maxY;
+  }
+  if (nx < b) {
+    nx = b;
+  }
+  if (ny < b) {
+    ny = b;
+  }
+  if (nx == x) {
+    if (ny == y) {
+      nx = nx + u64(32);
+      ny = ny + u64(32);
+      if (nx > maxX) {
+        nx = maxX;
+      }
+      if (ny > maxY) {
+        ny = maxY;
+      }
+    }
+  }
+  return (nx << u64(32)) | ny;
+}
+
 @bare
 void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 h = wmDesc(ptr, u64(wmDescHandle));
-  final u64 x = wmDesc(ptr, u64(wmDescX));
-  final u64 y = wmDesc(ptr, u64(wmDescY));
+  u64 x = wmDesc(ptr, u64(wmDescX));
+  u64 y = wmDesc(ptr, u64(wmDescY));
   final u64 w = wmDesc(ptr, u64(wmDescW));
   final u64 hh = wmDesc(ptr, u64(wmDescH));
   final u64 rawOff = wmDesc(ptr, u64(wmDescOffset));
@@ -1523,6 +1591,13 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   if (wmFits(x, y, w, hh) < u64(1)) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetBadGeom));
     return;
+  }
+  final u64 placed = wmPlaceClient(x, y, w, hh);
+  final u64 nx = placed >> u64(32);
+  final u64 ny = placed & u64(0xFFFFFFFF);
+  if (wmFits(nx, ny, w, hh) > u64(0)) {
+    x = nx;
+    y = ny;
   }
   // A stride of 0 means "no padding", which is what a client that has nothing
   // to say about layout sends. High 32 bits are the integer buffer scale

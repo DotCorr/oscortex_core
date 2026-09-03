@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=169
+ASSERTIONS_REQUIRED=171
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -193,6 +193,10 @@ ck; grep -q 'const int vmShmPages = 1024;' "$CORE_DIR/kernel/vm.dart" \
   || fail "SHM window is still one PDE — native-max FILES cannot grow"
 ck; grep -q 'const int vmShmPdCount = 2;' "$CORE_DIR/kernel/vm.dart" \
   || fail "SHM mapper has no second PDE"
+ck; grep -q 'u64 wmPlaceClient' "$WM" \
+  || fail "WM still attaches every client at the requested origin"
+ck; grep -q 'This folder is empty' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES empty state is still a one-word stub"
 ck; grep -q 'wmPointerPending' "$WM" \
   || fail "pointer packets arriving during composition are still discarded"
 ck; grep -q 'wmeventEnqueue(panel, x, y)' "$WM" \

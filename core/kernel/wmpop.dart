@@ -35,18 +35,23 @@ const int wmPopH = 64;
 /// Offset from the pointer to the popover origin. Positive is right and down.
 const int wmPopGap = 8;
 
-/// The fill. Not the desktop and not the chrome strip, so "the popover
-/// was drawn" is a different pixel from either.
-const int wmPopColor = 0x00C04088;
+/// Light card fill. Distinct from desk wallpaper and the title band.
+const int wmPopColor = 0x00F4F6FA;
 
-/// Wallpaper-menu row fill (DE on). Distinct from [wmPopColor] and desk.
-const int wmPopRow0 = 0x00304878;
+/// First row fill (DE on).
+const int wmPopRow0 = 0x00FFFFFF;
 
 /// Second row fill.
-const int wmPopRow1 = 0x00283868;
+const int wmPopRow1 = 0x00EEF2F6;
 
 /// Label ink on a menu row.
-const int wmPopLabelFg = 0x00F0F8FF;
+const int wmPopLabelFg = 0x00202830;
+
+/// 1px edge / separator.
+const int wmPopEdge = 0x00C8D0D8;
+
+/// Soft shadow along the card's south/east edge.
+const int wmPopShadow = 0x00687888;
 
 /// Top pad inside the popover before row 0.
 const int wmPopRowPad = 4;
@@ -346,8 +351,16 @@ void wmPopLabel(u64 ox, u64 oy, u64 row, u64 text) {
 @bare
 void wmPopMenuDraw(u64 ox, u64 oy) {
   final u64 k = wmMeta(u64(wmMetaPop));
+  wmFillRect(ox + u64(1), oy + u64(wmPopH) - u64(1), u64(wmPopW), u64(1),
+      u64(wmPopShadow));
+  wmFillRect(ox + u64(wmPopW) - u64(1), oy + u64(1), u64(1), u64(wmPopH),
+      u64(wmPopShadow));
+  wmFillRect(ox, oy, u64(wmPopW), u64(1), u64(wmPopEdge));
+  wmFillRect(ox, oy, u64(1), u64(wmPopH), u64(wmPopEdge));
   wmFillRect(ox + u64(4), oy + u64(wmPopRowPad), u64(wmPopW) - u64(8),
       u64(wmPopRowH) - u64(2), u64(wmPopRow0));
+  wmFillRect(ox + u64(6), oy + u64(wmPopRowPad) + u64(wmPopRowH) - u64(1),
+      u64(wmPopW) - u64(12), u64(1), u64(wmPopEdge));
   wmFillRect(ox + u64(4), oy + u64(wmPopRowPad) + u64(wmPopRowH),
       u64(wmPopW) - u64(8), u64(wmPopRowH) - u64(2), u64(wmPopRow1));
   if (k == u64(wmPopWin)) {

@@ -457,10 +457,10 @@ static inline void osxui_app_csd(unsigned long h, unsigned long win_w,
   }
 }
 
-#define OSXUI_MENU_BG 0x00F0F4F8UL
-#define OSXUI_MENU_ROW0 0x00304878UL
-#define OSXUI_MENU_ROW1 0x00283868UL
-#define OSXUI_MENU_FG 0x00F0F8FFUL
+#define OSXUI_MENU_BG 0x00F4F6FAUL
+#define OSXUI_MENU_ROW0 0x00FFFFFFUL
+#define OSXUI_MENU_ROW1 0x00EEF2F6UL
+#define OSXUI_MENU_FG 0x00202830UL
 #define OSXUI_MENU_ROW_H 24UL
 #define OSXUI_MENU_PAD 4UL
 #define OSXUI_MENU_R 8UL
