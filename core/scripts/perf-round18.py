@@ -38,6 +38,14 @@ def open_serial(serial_arg):
                 port = int(open(sib).read().strip())
             except (OSError, ValueError):
                 port = 0
+    last = None
+    for _try in range(20):
+        ser = d15.Serial(path, port)
+        if ser.sock is not None:
+            return ser
+        last = "no socket"
+        time.sleep(0.2)
+    print("WARN: serial socket not connected after retries (%s)" % last)
     return d15.Serial(path, port)
 
 

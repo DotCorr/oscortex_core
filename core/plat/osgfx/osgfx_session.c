@@ -163,7 +163,6 @@ static void shadow_build_material(int r) {
   int cover;
   int add;
   int ix;
-  int iy;
   static uint8_t acc[70 * 70];
   unsigned n;
 
