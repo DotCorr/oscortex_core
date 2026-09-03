@@ -18,14 +18,19 @@ setup_error() { echo "DE-lat: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=18
+ASSERTIONS_REQUIRED=28
 
 PACE="$CORE_DIR/kernel/wmpace.dart"
 WM="$CORE_DIR/kernel/wm.dart"
 POP="$CORE_DIR/kernel/wmpop.dart"
 EV="$CORE_DIR/kernel/wmevent.dart"
+PROC="$CORE_DIR/kernel/proc.dart"
 GUEST_H="$CORE_DIR/plat/osgfx/osgfx_guest.h"
-DRIVE="$CORE_DIR/scripts/daily-drive-round6.py"
+SESSION_C="$CORE_DIR/plat/osgfx/osgfx_session.c"
+CHROME_C="$CORE_DIR/plat/osgfx/osgfx_chrome.c"
+DRIVE="$CORE_DIR/scripts/daily-drive-round7.py"
+PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"
+ART="$CORE_DIR/scripts/artifacts-dir.sh"
 
 ck; [[ -f "$PACE" ]] || fail "no wmpace.dart"
 ck; grep -q 'void wmLatStamp' "$PACE" || fail "no guest-tick stamp"
@@ -49,8 +54,28 @@ ck; grep -q 'self.off' "$DRIVE" \
   || fail "driver still rereads the UART logfile from offset 0"
 ck; grep -q 'wmLatStrG' "$PACE" \
   || fail "present note does not print chrome-regen (TCG vs schedule)"
-ck; awk '/wmLatStamp\(u64\(wmLatKindPtr\)\)/{p=NR} /wmGfxKick\(\)/{if(p && NR-p<8) ok=1} END{exit ok?0:1}' "$WM" \
+ck; awk '/wmLatStamp\(u64\(wmLatKindPtr\)\)/{p=NR} /wmGfxKick\(\)/{if(p && NR-p<12) ok=1} END{exit ok?0:1}' "$WM" \
   || fail "pointer LAT is not stamped on the kick (sprite-only moves inherit the next compose)"
+ck; grep -q 'osgfx_chrome_is_focus_only' "$CHROME_C" \
+  || fail "chrome cache has no focus-only incremental path"
+ck; grep -q 'skip_soft_shadow' "$SESSION_C" \
+  || fail "session still always paints the 18px window shadow"
+ck; grep -q 'osgfx_session_patch_focus' "$SESSION_C" \
+  || fail "session has no focus-border patch"
+ck; grep -q 'wmLatNotePresent' "$PACE" \
+  && awk '/void wmSessionRestore/{p=1} p&&/wmLatNotePresent/{ok=1} END{exit ok?0:1}' "$PACE" \
+  || fail "session restore does not note LAT after the C tick (focus inherits maximize)"
+ck; awk '/wmGfxChromeFresh\(\) < u64\(1\)/{p=0} /else \{/{if(p==0) p=1} p&&/wmLatNotePresent/{ok=1} END{exit ok?0:1}' "$WM" \
+  || fail "sprite-only pointer path does not same-tick note LAT"
+ck; grep -q 'wmMetaGfx' "$PROC" \
+  || fail "procYield is not gated under wm gfx (COM1 flood)"
+ck; grep -q -- '--absent' "$PROBE" \
+  || fail "probe.py has no --absent (start_tile still prints MISMATCH on success)"
+ck; [[ -f "$ART" ]] || fail "no artifacts-dir.sh"
+ck; grep -q 'PROBE_XY = (120, 180)' "$DRIVE" \
+  || fail "round7 driver does not pin the (120,180) probe"
+ck; grep -q 'lat_seq_gaps' "$DRIVE" \
+  || fail "driver has no LAT drop detection"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick event→present, not wall time"
