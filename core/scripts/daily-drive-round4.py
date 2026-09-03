@@ -86,7 +86,8 @@ class Qmp:
 
 
 class Serial:
-    """Prefer a live socket; fall back to the block-buffered file."""
+    """File is the source of truth. An optional socket is drained with a
+    cap so a PROC YIELD storm cannot livelock wait_mark."""
 
     def __init__(self, path, sock_port=0):
         self.path = path
@@ -99,29 +100,39 @@ class Serial:
                 try:
                     self.sock = socket.create_connection(
                         ("127.0.0.1", sock_port), timeout=2)
-                    self.sock.settimeout(0.05)
-                    return
+                    self.sock.settimeout(0.02)
+                    break
                 except OSError as e:
                     last = e
                     time.sleep(0.1)
-            print("WARN: serial socket failed (%s); using file" % last)
+            if self.sock is None:
+                print("WARN: serial socket failed (%s); using file" % last)
+
+    def _drain_sock(self):
+        if self.sock is None:
+            return
+        got = 0
+        try:
+            while got < 65536:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                self.buf += chunk.decode("utf-8", "replace")
+                got += len(chunk)
+        except (socket.timeout, BlockingIOError):
+            pass
+        if len(self.buf) > 1048576:
+            self.buf = self.buf[-524288:]
 
     def read(self):
-        if self.sock is not None:
-            try:
-                while True:
-                    chunk = self.sock.recv(4096)
-                    if not chunk:
-                        break
-                    self.buf += chunk.decode("utf-8", "replace")
-            except (socket.timeout, BlockingIOError):
-                pass
-            if self.buf:
-                return self.buf
+        self._drain_sock()
         try:
-            return open(self.path, encoding="utf-8", errors="replace").read()
+            text = open(self.path, encoding="utf-8", errors="replace").read()
+            if text:
+                return text
         except OSError:
-            return self.buf
+            pass
+        return self.buf
 
 
 def wait_mark(ser, token, marked, timeout=8.0):
