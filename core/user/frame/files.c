@@ -1001,13 +1001,23 @@ static void files_on_event(u64 ev) {
         emit(at);
       }
       if (nw != files_w || nh != files_height) {
+        u64 shrinking = 0;
         if (nw < files_w || nh < files_height) {
-          u64 keep = (SURF_OFFSET + nw * 4UL * nh + 4095UL) / 4096UL;
+          shrinking = 1;
           at = put(0, "FILES REST ");
           at = putdec(at, nw);
           at = put(at, " ");
           at = putdec(at, nh);
           emit(at);
+        }
+        files_w = nw;
+        files_height = nh;
+        wr(msg_phz_paint, sizeof(msg_phz_paint) - 1);
+        files_repaint();
+        /* Reclaim after COMMIT so the restore present is not charged
+         * the 719-page unmap (cold restore was 1.3s TCG). */
+        if (shrinking > 0) {
+          u64 keep = (SURF_OFFSET + nw * 4UL * nh + 4095UL) / 4096UL;
           if (keep >= 1UL) {
             if (sys2(SYS_SHMSHRINK, files_h, keep) < WM_RET_FLOOR) {
               files_stride = nw * 4UL;
@@ -1023,10 +1033,6 @@ static void files_on_event(u64 ev) {
             }
           }
         }
-        files_w = nw;
-        files_height = nh;
-        wr(msg_phz_paint, sizeof(msg_phz_paint) - 1);
-        files_repaint();
       }
     }
     return;

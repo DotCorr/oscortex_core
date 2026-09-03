@@ -126,6 +126,8 @@ static int g_one_bound_pitch;
 static int g_one_bound_w;
 static int g_one_bound_h;
 static int g_one_paint_sealed;
+static int g_one_rich_sealed;
+static int g_one_want_rich_seal;
 static int resource_cache_disabled;
 /* WM_OP_PAINT binds MakeRasterDirect to a user SHM VA (FILES 0x1024A000
  * class). Chrome ticks run in DESK/IRQ CR3; those pages are NOTPRES
@@ -240,7 +242,14 @@ static void chrome_heap_after_paint(void) {
       g_one_own = SKIA_OWN_FLUSH;
     }
     skia_drop_chrome();
-    if (g_one_paint_sealed == 0) {
+    if (g_one_want_rich_seal != 0 && g_one_rich_sealed == 0) {
+      /* First titled/geom paint allocates typefaces above the empty-desk
+       * seal. Raise once more so restore/focus do not rebuild outlines. */
+      osgfx_heap_chrome_seal();
+      g_one_rich_sealed = 1;
+      g_one_paint_sealed = 1;
+      g_one_want_rich_seal = 0;
+    } else if (g_one_paint_sealed == 0) {
       osgfx_heap_chrome_seal();
       g_one_paint_sealed = 1;
     }
@@ -263,6 +272,8 @@ static void drop_skia_before_rewind(void) {
   g_one_bound_w = 0;
   g_one_bound_h = 0;
   g_one_paint_sealed = 0;
+  g_one_rich_sealed = 0;
+  g_one_want_rich_seal = 0;
   g_one_own = SKIA_OWN_EMPTY;
   client_own = SKIA_OWN_EMPTY;
   heap_rewind_gen = heap_rewind_gen + 1u;
@@ -1431,9 +1442,15 @@ __attribute__((noinline)) static void tick_body(void) {
         com1_puts("OSGFX CHROME GEOM\n");
         osgfx_chrome_stamp_wins(&old0, &old1);
         osgfx_session_paint_geom(g, &local, old0, old1);
+        if (((local.win0 & 0xffffu) > 48u) || ((local.win1 & 0xffffu) > 48u)) {
+          g_one_want_rich_seal = 1;
+        }
       } else {
         com1_puts("OSGFX CHROME MISS\n");
         osgfx_session_paint(g, &local, osgfx_graphite_ready());
+        if (((local.win0 & 0xffffu) > 48u) || ((local.win1 & 0xffffu) > 48u)) {
+          g_one_want_rich_seal = 1;
+        }
       }
       osgfx_flush(g);
       chrome_heap_after_paint();
