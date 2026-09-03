@@ -191,6 +191,121 @@ int osgfx_chrome_fresh(const struct OsGfxGuestCmd *m) {
   return 1;
 }
 
+/* Last mailbox the cache buffer was stamped for. C statics, not Dart .bss.
+ * Used to tell a TOP-only miss (focus/raise border) from a geom/desk miss. */
+static int g_stamp_have;
+static uint64_t g_stamp_flags;
+static uint64_t g_stamp_w;
+static uint64_t g_stamp_h;
+static uint64_t g_stamp_win0;
+static uint64_t g_stamp_win1;
+static uint64_t g_stamp_pop;
+static uint64_t g_stamp_desk;
+static uint64_t g_stamp_wall;
+static uint64_t g_stamp_tone0;
+static uint64_t g_stamp_tone1;
+static uint64_t g_stamp_vk;
+static uint64_t g_stamp_wmpage;
+static uint64_t g_stamp_desk_have;
+static uint64_t g_stamp_launch0;
+static uint64_t g_stamp_launch1;
+static uint64_t g_stamp_launch2;
+static uint64_t g_stamp_launch3;
+static uint64_t g_stamp_cap_mail;
+
+#define OSGFX_CHROME_TOP_MASK (3ULL << OSGFX_GUEST_TOP_SHIFT)
+
+static void chrome_note_mailbox(const struct OsGfxGuestCmd *m) {
+  uint64_t *pg;
+
+  if (m == 0) {
+    return;
+  }
+  g_stamp_have = 1;
+  g_stamp_flags = m->flags;
+  g_stamp_w = m->w;
+  g_stamp_h = m->h;
+  g_stamp_win0 = m->win0;
+  g_stamp_win1 = m->win1;
+  g_stamp_pop = m->pop;
+  g_stamp_desk = m->desk;
+  g_stamp_wall = m->wall;
+  g_stamp_tone0 = m->tone0;
+  g_stamp_tone1 = m->tone1;
+  g_stamp_vk = m->vk;
+  g_stamp_wmpage = m->wmpage;
+  pg = chrome_page();
+  if (pg == 0) {
+    return;
+  }
+  g_stamp_desk_have = pg[OSGFX_WMPAGE_W_DESK_HAVE];
+  g_stamp_launch0 = pg[OSGFX_WMPAGE_W_LAUNCH0 + 0];
+  g_stamp_launch1 = pg[OSGFX_WMPAGE_W_LAUNCH0 + 1];
+  g_stamp_launch2 = pg[OSGFX_WMPAGE_W_LAUNCH0 + 2];
+  g_stamp_launch3 = pg[OSGFX_WMPAGE_W_LAUNCH0 + 3];
+  g_stamp_cap_mail = pg[OSGFX_WMPAGE_W_CAP_MAIL];
+}
+
+/* 1 when the cached frame is still the right picture except the TOP
+ * (focus/raise) border colour. Title, shadow, geom, desk, pop and tones
+ * are unchanged — do not re-run osgfx_session_paint. */
+int osgfx_chrome_is_focus_only(const struct OsGfxGuestCmd *m) {
+  uint64_t *pg;
+
+  if (g_stamp_have == 0 || m == 0) {
+    return 0;
+  }
+  pg = chrome_page();
+  if (pg == 0 || chrome_buf(m, pg) == 0) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_CHROME_HAVE] == 0) {
+    return 0;
+  }
+  if (m->w != g_stamp_w || m->h != g_stamp_h) {
+    return 0;
+  }
+  if (m->win0 != g_stamp_win0 || m->win1 != g_stamp_win1) {
+    return 0;
+  }
+  if (m->pop != g_stamp_pop || m->desk != g_stamp_desk || m->wall != g_stamp_wall) {
+    return 0;
+  }
+  if (m->tone0 != g_stamp_tone0 || m->tone1 != g_stamp_tone1) {
+    return 0;
+  }
+  if (m->vk != g_stamp_vk || m->wmpage != g_stamp_wmpage) {
+    return 0;
+  }
+  if ((m->flags & ~OSGFX_CHROME_TOP_MASK) !=
+      (g_stamp_flags & ~OSGFX_CHROME_TOP_MASK)) {
+    return 0;
+  }
+  if ((m->flags & OSGFX_CHROME_TOP_MASK) ==
+      (g_stamp_flags & OSGFX_CHROME_TOP_MASK)) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_DESK_HAVE] != g_stamp_desk_have) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 0] != g_stamp_launch0) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 1] != g_stamp_launch1) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 2] != g_stamp_launch2) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_LAUNCH0 + 3] != g_stamp_launch3) {
+    return 0;
+  }
+  if (pg[OSGFX_WMPAGE_W_CAP_MAIL] != g_stamp_cap_mail) {
+    return 0;
+  }
+  return 1;
+}
+
 /* Packed the same way wmPackGeom writes win0/win1: x<<48|y<<32|w<<16|h. */
 static void chrome_unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *x = (int)((g >> 48) & 0xffffu);
@@ -433,6 +548,7 @@ void osgfx_chrome_done(const struct OsGfxGuestCmd *m) {
   pg[OSGFX_WMPAGE_W_CHROME_H] = m->h;
   pg[OSGFX_WMPAGE_W_CHROME_REGEN] = pg[OSGFX_WMPAGE_W_CHROME_REGEN] + 1;
   pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);
+  chrome_note_mailbox(m);
   if (pg[OSGFX_WMPAGE_W_CHROME_LOG] != 0) {
     com1_puts("OSGFX CHROME REGEN\n");
   }

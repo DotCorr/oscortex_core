@@ -86,7 +86,32 @@ static void unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *h = (int)(g & 0xffffu);
 }
 
-/* Soft drop shadow — osgfx_shadow alpha-blends expanding rings. */
+/* Soft drop shadow — osgfx_shadow alpha-blends expanding rings.
+ * A maximized 1280×672 ring at blur 18 is the 583-tick TCG stall. Skip
+ * when the window is large enough that the shadow falls off-screen or
+ * the blur would dominate a raise/max interaction. */
+static int skip_soft_shadow(int x, int y, int w, int h, int fb_w, int fb_h) {
+  long area;
+
+  if (w < 1 || h < 1) {
+    return 1;
+  }
+  area = (long)w * (long)h;
+  if (area > 360000L) {
+    return 1;
+  }
+  if (fb_w > 0 && fb_h > 0) {
+    if (x <= 16 && y <= 16) {
+      if ((x + w) >= (fb_w - 16)) {
+        if ((y + h) >= (fb_h - OSGFX_CHROME_H - 16)) {
+          return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
 static void paint_soft_shadow(OsGfx *g, int x, int y, int w, int h, int r) {
   if (g == 0) {
     return;
@@ -94,15 +119,38 @@ static void paint_soft_shadow(OsGfx *g, int x, int y, int w, int h, int r) {
   osgfx_shadow(g, x + 6, y + 10, w, h, r, 18, SESS_SHADOW);
 }
 
-/* ADR-0183: frame + title band only — never fill the client body.
- * Body pixels come from wmDrawWindow blit of FRAME shm. */
-static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
-                                uint32_t fill) {
+static void paint_window_borders(OsGfx *g, uint64_t geom, uint32_t border) {
   int x;
   int y;
   int w;
   int h;
   int b;
+
+  if (g == 0 || geom == 0) {
+    return;
+  }
+  unpack_geom(geom, &x, &y, &w, &h);
+  if (w < 8 || h < 8) {
+    return;
+  }
+  if (h <= OSGFX_CHROME_H + 4) {
+    return;
+  }
+  b = OSGFX_BORDER;
+  osgfx_fill_rrect(g, x - b, y - b, w + b + b, b + 1, 0, border);
+  osgfx_fill_rrect(g, x - b, y + h - 1, w + b + b, b + 1, 0, border);
+  osgfx_fill_rect(g, x - b, y, b, h, border);
+  osgfx_fill_rect(g, x + w, y, b, h, border);
+}
+
+/* ADR-0183: frame + title band only — never fill the client body.
+ * Body pixels come from wmDrawWindow blit of FRAME shm. */
+static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
+                                uint32_t fill, int fb_w, int fb_h) {
+  int x;
+  int y;
+  int w;
+  int h;
   int r;
   int th;
 
@@ -118,13 +166,14 @@ static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
   if (h <= OSGFX_CHROME_H + 4) {
     return;
   }
-  b = OSGFX_BORDER;
   r = OSGFX_RADIUS;
   th = SESS_TITLE_BAND;
   if (th > h) {
     th = h;
   }
-  paint_soft_shadow(g, x, y, w, h, r);
+  if (skip_soft_shadow(x, y, w, h, fb_w, fb_h) == 0) {
+    paint_soft_shadow(g, x, y, w, h, r);
+  }
   /* OSGFX_CORNER_TL / OSGFX_CORNER_TR — top pearl pair closes the AA card
    * radius when CSD withdraws the session title band (ADR-0196). */
   if (r > 0) {
@@ -132,10 +181,7 @@ static void paint_window_chrome(OsGfx *g, uint64_t geom, uint32_t border,
     osgfx_fill_rrect(g, x + w - r, y, r, r, r, OSGFX_TITLE);
   }
   /* Border ring only — do not paint OSGFX_WIN_FILL over client shm. */
-  osgfx_fill_rrect(g, x - b, y - b, w + b + b, b + 1, 0, border);
-  osgfx_fill_rrect(g, x - b, y + h - 1, w + b + b, b + 1, 0, border);
-  osgfx_fill_rect(g, x - b, y, b, h, border);
-  osgfx_fill_rect(g, x + w, y, b, h, border);
+  paint_window_borders(g, geom, border);
   /* Pearl title chrome is a real vertical ramp, not a flat beige card with
    * a two-pixel highlight stamped over it. The rrect gradient shares the
    * window radius, so fill and AA border cannot disagree at the corners. */
@@ -462,11 +508,11 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
      * left FILES untitled and forced SET's caption to FILES. */
     if (held0 != 0) {
       paint_window_chrome(g, held0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
-                          OSGFX_WIN_FILL);
+                          OSGFX_WIN_FILL, ww, hh);
     }
     if (held1 != 0) {
       paint_window_chrome(g, held1, top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS,
-                          OSGFX_WIN2_FILL);
+                          OSGFX_WIN2_FILL, ww, hh);
     }
     if ((cmd->flags & OSGFX_GUEST_DE) != 0) {
       if (session_csd == 0) {
@@ -509,5 +555,22 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
       }
       paint_ctx_menu(g, fb, pitch, ww, hh, px, py, ck, hover);
     }
+  }
+}
+
+/* TOP-only chrome miss: rewrite the 2px focus rings on the cached frame.
+ * Title, shadow, wallpaper and traffic lights stay. */
+void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd) {
+  int top;
+
+  if (g == 0 || cmd == 0 || cmd->magic != OSGFX_GUEST_MAGIC) {
+    return;
+  }
+  top = (int)((cmd->flags >> OSGFX_GUEST_TOP_SHIFT) & 3u);
+  if (cmd->win0 != 0) {
+    paint_window_borders(g, cmd->win0, top == 0 ? OSGFX_FOCUS : OSGFX_UNFOCUS);
+  }
+  if (cmd->win1 != 0) {
+    paint_window_borders(g, cmd->win1, top == 1 ? OSGFX_FOCUS : OSGFX_UNFOCUS);
   }
 }

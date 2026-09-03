@@ -737,6 +737,13 @@ u64 wmFocusLive() {
 void wmFocusTo(u64 wI) {
   wmLatStamp(u64(wmLatKindFocus));
   wmSeatFocusSet(u64(0), wI);
+  /* A focus that does not dirty chrome (TOP/geom unchanged) must not
+   * inherit the next maximize regen as a 583-tick kind-5 sample. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    if (wmGfxChromeFresh() > u64(0)) {
+      wmLatNotePresent();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3464,20 +3471,29 @@ void wmPointerTick() {
     wmSetMeta(u64(wmMetaCurX), x);
     wmSetMeta(u64(wmMetaCurY), y);
     if (wmGfxChromeFresh() < u64(1)) {
-      /* Drag/resize changes the Skia chrome key. Do not kick that raster from
-       * the pointer IRQ: the configure event makes the client commit, and its
-       * syscall performs the required full compose in safe task context.
-       * Kicking here enters Skia from isr_common and can leave only wallpaper
-       * before the client-restore half runs. */
+      /* Drag/resize/maximize change the Skia chrome key. Do not kick that
+       * raster from the pointer IRQ: the configure event makes the client
+       * commit, and its syscall performs the required full compose in safe
+       * task context. Raise (TOP only) still kicks so C can patch borders. */
       if (dragBefore < u64(1)) {
         if (wmMeta(u64(wmMetaDrag)) < u64(1)) {
-          /* Stamp only when a present is actually queued. A sprite-only
-           * move used to stamp here and inherit the next chrome-regen
-           * compose (tens of PIT ticks) as if it were pointer latency. */
-          wmLatStamp(u64(wmLatKindPtr));
-          wmGfxKick();
+          if ((wmMeta(u64(wmMetaRectPixels)) & u64(wmRectComposePending)) <
+              u64(1)) {
+            /* Keep a pending focus stamp; do not overwrite it with kind 1. */
+            if (wmPage(u64(wmPageWEvKind)) < u64(1)) {
+              wmLatStamp(u64(wmLatKindPtr));
+            }
+            wmGfxKick();
+          }
         }
       }
+    } else {
+      /* Sprite-only: same-tick LAT so walks produce kind-1 samples and a
+       * leftover focus stamp cannot inherit a later chrome regen. */
+      if (wmPage(u64(wmPageWEvKind)) < u64(1)) {
+        wmLatStamp(u64(wmLatKindPtr));
+      }
+      wmLatNotePresent();
     }
   } else {
     if (ox != x) {

@@ -1532,6 +1532,12 @@ void wmToggleMaxWindow(u64 wI) {
   if (wmPageEnsure() < u64(1)) {
     return;
   }
+  /* Consume a leftover stamp so maximize LAT is this geom change, not a
+   * prior wallpaper click. Kind 5 is the chrome-interaction bucket. */
+  if (wmPage(u64(wmPageWEvKind)) > u64(0)) {
+    wmLatNotePresent();
+  }
+  wmLatStamp(u64(wmLatKindFocus));
   final u64 at = u64(wmPageWMax0) + wI;
   final u64 old = wmWin(wI, u64(wmWinGeom));
   final u64 saved = wmPage(at);

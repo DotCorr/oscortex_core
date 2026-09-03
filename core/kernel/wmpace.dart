@@ -45,9 +45,10 @@
 //
 // 4. **Chrome changes still go through the session tick.** [wmGfxChromeSig] is
 //    a signature of everything `osgfx_session_paint` draws — the window set,
-//    their geometry, the top slot, focus, the DE and popover state, the
-//    wallpaper mode. While it holds still, damage is honoured. The moment it
-//    moves, the next present is a full compose and Skia repaints the chrome.
+//    their geometry, the top slot, the DE and popover state, the wallpaper
+//    mode. Keyboard focus is not folded: a wallpaper click must not inherit
+//    the next maximize regen. TOP (raise) still moves the sig so a kick can
+//    patch the 2px rings. While the sig holds still, damage is honoured.
 //    That is the invariant that lets damage be honoured WITHOUT the paper-doodle
 //    chrome stomping the gfx arm of `wmComposeCommit` was written to avoid.
 //
@@ -1093,7 +1094,8 @@ u64 wmGfxChromeSig() {
   u64 popBits = wmMeta(u64(wmMetaPop)) & u64(7);
   u64 popXY = wmMeta(u64(wmMetaPopXY));
   u64 i = u64(0);
-  s = (s << u64(3)) | (wmMeta(u64(wmMetaFocus)) & u64(7));
+  /* Focus is a C-side 2px border patch (osgfx_chrome_is_focus_only).
+   * Folding it here forced a full wmCompose + Skia shadow regen. */
   s = (s << u64(1)) | (wmDeOn() & u64(1));
   s = (s << u64(1)) | (wmMeta(u64(wmMetaChrome)) & u64(1));
   /* ADR-0195: once DESK owns the strip, session does not paint menus or
@@ -1271,6 +1273,9 @@ void wmSessionRestore() {
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPageSet(u64(wmPageWRestores), wmPage(u64(wmPageWRestores)) + u64(1));
   wmPageSet(u64(wmPageWRestorePx), wmPage(u64(wmPageWRestorePx)) + px);
+  /* After the session tick and the client restore — the real present.
+   * Noting here (not at stamp) is what keeps focus/raise LAT honest. */
+  wmLatNotePresent();
   // NOT [wmPublishFrame]. This is the second half of the frame the session
   // tick started, not a frame of its own, and ten byte-exact harnesses count
   // `WM FRAME` lines. The count is in the state page and `wm pace` prints it.

@@ -11,6 +11,7 @@ extern "C" {
 void osgfx_fill_desk_generative(uint32_t *fb, int pitch, int x, int y, int w, int h,
                                 uint32_t seed, uint32_t frame);
 void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite_ready);
+void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 
 #ifdef __cplusplus
 }
