@@ -820,8 +820,21 @@ void wmPaintOp(u64 frame, u64 ptr, u64 id) {
     scr_x = wmAbsX(slot);
     scr_y = wmAbsY(slot);
   }
+  /* Client Skia (CSD vgrad at 1274) is a long IF-clear critical
+   * section. Hold busy and STI so a restore click enqueues; never
+   * nest pointer Skia (that hung FILES prefill). */
+  u64 held = u64(0);
+  if (wmMeta(u64(wmMetaBusy)) < u64(1)) {
+    wmSetMeta(u64(wmMetaBusy), u64(1));
+    held = u64(1);
+    wmIfHoldBegin(u64(wmIfReasonSys));
+  }
   final u64 ret =
       osgfx_client_paint(px, pitch, ww, hh, scr_x, scr_y, ptr, id);
+  if (held > u64(0)) {
+    wmSetMeta(u64(wmMetaBusy), u64(0));
+    wmIfHoldEnd();
+  }
   if (ret >= u64(wmRetFloor)) {
     wmRefuse(frame, u64(wmOpPaint), wmDesc(ptr, u64(wmDescHandle)), ret);
     return;

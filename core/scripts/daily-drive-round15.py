@@ -1166,6 +1166,7 @@ def main():
     walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0], FILES_MAX_XY[1],
                                          timeout=4.0, want_opid=True,
                                          label="max_cold"))
+    wait_mark(ser, "FILES PHZ PAINT E", ser.read(), 2)
     drain_idle(ser, quiet=0.08, cap=0.6)
     shot(q, os.path.join(art, "oscortex-round15-cold-click.png"),
          os.path.join(fallback, "oscortex-round15-cold-click.png"))
@@ -1259,6 +1260,7 @@ def main():
         walls["max_cold"].append(timed_click(q, ser, FILES_MAX_XY[0],
                                              FILES_MAX_XY[1], timeout=4.0,
                                              want_opid=True, label="max_cold"))
+        wait_mark(ser, "FILES PHZ PAINT E", ser.read(), 2)
         drain_idle(ser, quiet=0.08, cap=0.6)
         walls["restore_cold"].append(timed_click(
             q, ser, FILES_MAX_MAXED_XY[0], FILES_MAX_MAXED_XY[1],
