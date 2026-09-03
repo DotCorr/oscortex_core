@@ -423,20 +423,29 @@ ck; python3 "$PROBE" "$FB_BIN" "$PITCH" 160 160 0x00F0C020 "win_body" \
 
 # DE-004 removed the session taskbar. Until DESK attaches, the bottom band in
 # the cached frame is real wallpaper rather than a legacy gradient/Start UI.
+# One column at x=400 can be a locally flat teal; sweep x and reject chrome
+# slate / Start orange instead of requiring 4 shades in a single column.
 ck; python3 - "$FB_BIN" "$PITCH" <<'PY' || fail "the cached bottom band is not wallpaper"
 import sys
 fb = open(sys.argv[1], "rb").read()
 pitch = int(sys.argv[2])
-x = 400
-rows = []
-for y in range(556, 596, 4):
-    off = y * pitch + x * 4
-    rows.append(int.from_bytes(fb[off:off + 4], "little") & 0xFFFFFF)
-shades = len(set(rows))
+start = 0x00C87840
+chrome = {0x00344050, 0x00485868, 0x00283040}
+pix = []
+for x in range(40, 760, 40):
+    for y in range(556, 596, 8):
+        off = y * pitch + x * 4
+        pix.append(int.from_bytes(fb[off:off + 4], "little") & 0xFFFFFF)
+if start in pix:
+    raise SystemExit("bottom band still has Start 0xC87840")
+hit = [hex(p) for p in pix if p in chrome]
+if hit:
+    raise SystemExit("bottom band still has session-taskbar slate %s" % hit[:6])
+shades = len(set(pix))
 if shades < 4:
-    raise SystemExit("bottom wallpaper column at x=%d has only %d shades (%s)"
-                     % (x, shades, [hex(v) for v in rows]))
-print("cached bottom wallpaper: %d shades" % shades)
+    raise SystemExit("bottom band has only %d shades across the sweep (%s)"
+                     % (shades, [hex(v) for v in sorted(set(pix))[:8]]))
+print("cached bottom wallpaper: %d shades, no Start/slate" % shades)
 PY
 echo "PICTURE: pass  wallpaper + no Start + close AA + outline caption through the cache"
 
