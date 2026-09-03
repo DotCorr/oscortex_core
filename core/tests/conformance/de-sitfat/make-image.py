@@ -137,10 +137,11 @@ def main():
     c = 2
     for name in order:
         kind = kinds[name]
-        if kind in ("gone", "miss"):
+        if kind == "miss":
             chains[name] = []
             continue
-        need = 1 if kind == "dir" else max(1, (len(blobs[name]) + CLUSTER_BYTES - 1) // CLUSTER_BYTES)
+        need = 1 if kind in ("dir", "gone") else max(
+            1, (len(blobs[name]) + CLUSTER_BYTES - 1) // CLUSTER_BYTES)
         chain = []
         while len(chain) < need:
             if c >= CLUSTER_COUNT + 2:
@@ -179,7 +180,7 @@ def main():
         if kind == "dir":
             add(name, 0x10, chains[name][0], 0)
         elif kind == "gone":
-            add(name, 0x20, 0, 0)
+            add(name, 0x20, chains[name][0], 0)
         elif kind == "miss":
             add(name, 0x20, 1, 32)
         else:
@@ -197,6 +198,10 @@ def main():
             dent[0:32] = dir_entry(b".          ", 0x10, cl, 0)
             dent[32:64] = dir_entry(b"..         ", 0x10, 0, 0)
             img[cluster_at(cl):cluster_at(cl) + CLUSTER_BYTES] = dent
+            continue
+        if kinds[name] == "gone" and chain:
+            img[cluster_at(chain[0]):cluster_at(chain[0]) + CLUSTER_BYTES] = (
+                b"\0" * CLUSTER_BYTES)
             continue
         if not chain:
             continue

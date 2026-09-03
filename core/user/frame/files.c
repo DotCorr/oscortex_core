@@ -852,6 +852,11 @@ static void files_retry(void) {
       files_repaint();
       return;
     }
+    if (fd == FILE_RET_EMPTY) {
+      files_restore_root();
+      files_repaint();
+      return;
+    }
     files_show_error();
     return;
   }
