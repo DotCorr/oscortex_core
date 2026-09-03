@@ -1204,6 +1204,14 @@ ck; ! sed -n '/^M1 END/,$p' "$SER" | grep -qE '^(M1|M4|USER) FAULT' \
 echo
 # The floor, which this harness printed a count against but never GATED on
 # (_lib/harness.sh: that is the GAP-0168 family verbatim).
+if [[ -n "${DE_DESK_PNG:-}" && -f "$PNG" ]]; then
+  mkdir -p "$(dirname "$DE_DESK_PNG")"
+  cp "$PNG" "$DE_DESK_PNG"
+fi
+if [[ -n "${DE_DESK_SERIAL:-}" && -f "$SER" ]]; then
+  mkdir -p "$(dirname "$DE_DESK_SERIAL")"
+  cp "$SER" "$DE_DESK_SERIAL"
+fi
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-DESK: PASS ($ASSERTIONS_REQUIRED checks) — glass dock, empty boot, FILES from hit"
 exit 0
