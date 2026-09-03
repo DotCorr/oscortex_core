@@ -2195,13 +2195,29 @@ void procYield(u64 frame) {
   // PARTICULAR process rather than about a session. `m18-preempt` asserts it is
   // zero for both of its programs while their preempt counts are not.
   procSet(cur, u64(procSlotYields), procGet(cur, u64(procSlotYields)) + u64(1));
-  uartWrite(Rodata.addressOf(procStrYield), u64(11));
-  uartPutHex(cur, u64(2));
-  uartWrite(Rodata.addressOf(procStrArrow), u64(4));
-  uartPutHex(next, u64(2));
-  uartWrite(Rodata.addressOf(procStrSwitches), u64(10));
-  uartPutHex(procHead(u64(procHeadSwitches)) + u64(1), u64(8));
-  uartNewline();
+  /* m11-proc needs every switch printed (those boots never set wm gfx).
+   * Under `wm gfx` a per-yield COM1 line floods the UART and drops ABS/LAT. */
+  u64 logYield = u64(1);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    final u64 sw = procHead(u64(procHeadSwitches)) + u64(1);
+    logYield = u64(0);
+    if (sw < u64(8)) {
+      logYield = u64(1);
+    } else {
+      if ((sw & u64(255)) == u64(0)) {
+        logYield = u64(1);
+      }
+    }
+  }
+  if (logYield > u64(0)) {
+    uartWrite(Rodata.addressOf(procStrYield), u64(11));
+    uartPutHex(cur, u64(2));
+    uartWrite(Rodata.addressOf(procStrArrow), u64(4));
+    uartPutHex(next, u64(2));
+    uartWrite(Rodata.addressOf(procStrSwitches), u64(10));
+    uartPutHex(procHead(u64(procHeadSwitches)) + u64(1), u64(8));
+    uartNewline();
+  }
   procSwitchTo(next, frame);
 }
 
