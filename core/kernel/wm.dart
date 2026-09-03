@@ -734,12 +734,49 @@ u64 wmFocusLive() {
 /// [wmMaxWindows]. Preserves seat 1. Under `wm de` a change is also a
 /// wmevent enter/leave (ADR-0142). A dead slot is none.
 @bare
+/// Title band + 2px inset ring. Focus/raise must not restamp the body.
+@bare
+void wmFocusChromeDamage(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  if (wmIsPanel(wI) > u64(0)) {
+    return;
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 x = wmAbsX(wI);
+  final u64 y = wmAbsY(wI);
+  final u64 w = wmGeomW(g);
+  final u64 h = wmGeomH(g);
+  final u64 th = u64(wmTitleH);
+  wmDamageRect(x, y, w, th);
+  if (w > u64(4)) {
+    if (h > u64(4)) {
+      wmDamageRect(x + u64(2), y + u64(2), w - u64(4), u64(2));
+      wmDamageRect(x + u64(2), y + h - u64(4), w - u64(4), u64(2));
+      wmDamageRect(x + u64(2), y + u64(2), u64(2), h - u64(4));
+      wmDamageRect(x + w - u64(4), y + u64(2), u64(2), h - u64(4));
+    }
+  }
+}
+
 void wmFocusTo(u64 wI) {
+  final u64 oldRaw = wmFocusLive();
+  u64 old = u64(wmMaxWindows);
+  if (oldRaw > u64(0)) {
+    old = oldRaw - u64(1);
+  }
   wmLatStamp(u64(wmLatKindFocus));
   wmSeatFocusSet(u64(0), wI);
-  /* A focus that does not dirty chrome (TOP/geom unchanged) must not
-   * inherit the next maximize regen as a 583-tick kind-5 sample. */
+  /* Ring colour is a C-side cache patch. Kick so focus_only runs, then
+   * dirty only title/border — not a 1280×720 session tick. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmFocusChromeDamage(old);
+    wmFocusChromeDamage(wI);
+    wmGfxKick();
     if (wmGfxChromeFresh() > u64(0)) {
       wmLatNotePresent();
     }
@@ -1414,9 +1451,16 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmIfHoldBegin(u64(wmIfReasonCompose));
-  /* Under `wm gfx`, honour damage when chrome is fresh; else full compose. */
+  /* Under `wm gfx`, honour client damage whenever the rect is not a
+   * full-surface restack. Chrome-stale used to force wmCompose() — a
+   * 1280×720 Skia restamp — on every FILES body commit. Geom/pop/desk
+   * changes still take the full path (chrome sig moved AND full=1). */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (wmGfxChromeFresh() > u64(0)) {
+    u64 honour = wmGfxChromeFresh();
+    if (full < u64(1)) {
+      honour = u64(1);
+    }
+    if (honour > u64(0)) {
       wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
       wmIfHoldEnd();
       return;
@@ -3629,7 +3673,6 @@ void wmPointerTick() {
   final u64 left = bits & u64(1);
   final u64 right = (bits >> u64(1)) & u64(1);
   final u64 was = wmMeta(u64(wmMetaButtons));
-  final u64 dragBefore = wmMeta(u64(wmMetaDrag));
   final u64 wasLeft = was & u64(1);
   final u64 wasRight = (was >> u64(1)) & u64(1);
   // Right PRESS: compositor consumes it. No drag, no client click.
@@ -3659,30 +3702,23 @@ void wmPointerTick() {
     wmPointerPlace(x, y);
     wmSetMeta(u64(wmMetaCurX), x);
     wmSetMeta(u64(wmMetaCurY), y);
-    if (wmGfxChromeFresh() < u64(1)) {
-      /* Drag/resize/maximize change the Skia chrome key. Do not kick that
-       * raster from the pointer IRQ: the configure event makes the client
-       * commit, and its syscall performs the required full compose in safe
-       * task context. Raise (TOP only) still kicks so C can patch borders. */
-      if (dragBefore < u64(1)) {
-        if (wmMeta(u64(wmMetaDrag)) < u64(1)) {
-          if ((wmMeta(u64(wmMetaRectPixels)) & u64(wmRectComposePending)) <
-              u64(1)) {
-            /* Keep a pending focus stamp; do not overwrite it with kind 1. */
-            if (wmPage(u64(wmPageWEvKind)) < u64(1)) {
-              wmLatStamp(u64(wmLatKindPtr));
-            }
-            wmGfxKick();
-          }
+    /* Sprite-only: old+new cursor already restored/placed. Never kick a
+     * full session tick from pointer motion — that was the idle
+     * full-frame restamp. Drag/max still compose in task context. */
+    if (wmPage(u64(wmPageWEvKind)) < u64(1)) {
+      wmLatStamp(u64(wmLatKindPtr));
+    }
+    wmLatNotePresent();
+    if (wmPaced() > u64(0)) {
+      if (ox != x) {
+        wmDamageRect(ox, oy, u64(wmPtrW), u64(wmPtrH));
+        wmDamageRect(x, y, u64(wmPtrW), u64(wmPtrH));
+      } else {
+        if (oy != y) {
+          wmDamageRect(ox, oy, u64(wmPtrW), u64(wmPtrH));
+          wmDamageRect(x, y, u64(wmPtrW), u64(wmPtrH));
         }
       }
-    } else {
-      /* Sprite-only: same-tick LAT so walks produce kind-1 samples and a
-       * leftover focus stamp cannot inherit a later chrome regen. */
-      if (wmPage(u64(wmPageWEvKind)) < u64(1)) {
-        wmLatStamp(u64(wmLatKindPtr));
-      }
-      wmLatNotePresent();
     }
   } else {
     if (ox != x) {

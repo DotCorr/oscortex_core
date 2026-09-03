@@ -45,10 +45,10 @@
 //
 // 4. **Chrome changes still go through the session tick.** [wmGfxChromeSig] is
 //    a signature of everything `osgfx_session_paint` draws — the window set,
-//    their geometry, the top slot, the DE and popover state, the wallpaper
-//    mode. Keyboard focus is not folded: a wallpaper click must not inherit
-//    the next maximize regen. TOP (raise) still moves the sig so a kick can
-//    patch the 2px rings. While the sig holds still, damage is honoured.
+//    their geometry, the DE and popover state, the wallpaper mode. Keyboard
+//    focus and TOP are not folded: a click-to-focus must not inherit the
+//    next maximize regen. The 2px rings are a C-side cache patch plus dirty
+//    title/border rects. While the sig holds still, damage is honoured.
 //    That is the invariant that lets damage be honoured WITHOUT the paper-doodle
 //    chrome stomping the gfx arm of `wmComposeCommit` was written to avoid.
 //
@@ -288,6 +288,16 @@ const int wmPageWDefQ = 405;
 /// Slot+1 last presented by deferred drain (skip redundant compose).
 const int wmPageWDefPres = 406;
 
+/// Discrete dirty regions (Round 19). AABB in DmgX0..X1 stays the union
+/// for drag/max atomic present. Up to [wmDmgCap] non-overlapping rects
+/// so pointer + a distant body do not restamp the wallpaper between them.
+const int wmDmgCap = 4;
+const int wmPageWDmgN = 407;
+const int wmPageWDmgR0 = 408;
+const int wmPageWDmgPx = 424;
+const int wmPageWDmgFull = 425;
+const int wmPageWDmgRegs = 426;
+
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
 const int wmDefKindFocus = 2;
@@ -459,6 +469,25 @@ final List<u8> wmPaceStrCoal = const [
 @rodata
 final List<u8> wmPaceStrLate = const [
   u8(0x20), u8(0x4C), u8(0x41), u8(0x54), u8(0x45), u8(0x20),
+];
+
+/// `'WM DMG '` -- 7 bytes. Discrete-region counters; not a WM PACE field.
+@rodata
+final List<u8> wmDmgStrLine = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x4D), u8(0x47),
+  u8(0x20),
+];
+
+/// `' RG '` -- 4 bytes.
+@rodata
+final List<u8> wmDmgStrRg = const [
+  u8(0x20), u8(0x52), u8(0x47), u8(0x20),
+];
+
+/// `' FL '` -- 4 bytes.
+@rodata
+final List<u8> wmDmgStrFl = const [
+  u8(0x20), u8(0x46), u8(0x4C), u8(0x20),
 ];
 
 /// `'WM DESK '` -- 8 bytes.
@@ -1223,12 +1252,14 @@ void wmChromeBufLine() {
 /// bringing back the solid stamps it was protecting against.
 @bare
 u64 wmGfxChromeSig() {
-  u64 s = wmMeta(u64(wmMetaTop)) & u64(7);
+  u64 s = u64(0);
   u64 popBits = wmMeta(u64(wmMetaPop)) & u64(7);
   u64 popXY = wmMeta(u64(wmMetaPopXY));
   u64 i = u64(0);
-  /* Focus is a C-side 2px border patch (osgfx_chrome_is_focus_only).
-   * Folding it here forced a full wmCompose + Skia shadow regen. */
+  /* Focus/TOP are a C-side 2px border patch (osgfx_chrome_is_focus_only).
+   * Folding them here forced a full wmCompose + Skia shadow regen on
+   * every click-to-focus. Raise still dirties the two title/border
+   * rects; the session tick is not required for a ring colour flip. */
   s = (s << u64(1)) | (wmDeOn() & u64(1));
   s = (s << u64(1)) | (wmMeta(u64(wmMetaChrome)) & u64(1));
   /* ADR-0195: once DESK owns the strip, session does not paint menus or
@@ -1471,13 +1502,71 @@ u64 wmPaceQuiet() {
   return u64(1);
 }
 
-/// Folds ([x], [y], [w], [h]) into the pending damage rectangle.
+/// Folds ([x], [y], [w], [h]) into the pending damage set.
 ///
-/// The union of two rectangles rather than a list of them, deliberately: a
-/// list is a queue that can overflow and then has to decide what to drop,
-/// and the union of everything that changed is never wrong — only sometimes
-/// bigger than it had to be. `COAL` counts the marks and `PRES` the frames,
-/// so how much bigger is a number a reader has rather than a worry.
+/// AABB in DmgX0..X1 is the union (drag/max atomic). Discrete slots
+/// [wmDmgCap] keep disjoint marks from restamping the gap. Overlap or
+/// an 8px halo merges. A fifth mark collapses to the AABB and counts
+/// as a full fallback when the union covers most of the screen.
+@bare
+void wmDmgStore(u64 i, u64 x0, u64 y0, u64 x1, u64 y1) {
+  final u64 b = u64(wmPageWDmgR0) + (i * u64(4));
+  wmPageSet(b, x0);
+  wmPageSet(b + u64(1), y0);
+  wmPageSet(b + u64(2), x1);
+  wmPageSet(b + u64(3), y1);
+}
+
+@bare
+u64 wmDmgNear(u64 ax0, u64 ay0, u64 ax1, u64 ay1, u64 bx0, u64 by0, u64 bx1,
+    u64 by1) {
+  u64 a0 = ax0;
+  u64 a1 = ax1;
+  u64 b0 = bx0;
+  u64 b1 = bx1;
+  if (a0 > u64(8)) {
+    a0 = a0 - u64(8);
+  } else {
+    a0 = u64(0);
+  }
+  a1 = a1 + u64(8);
+  if (b0 > u64(8)) {
+    b0 = b0 - u64(8);
+  } else {
+    b0 = u64(0);
+  }
+  b1 = b1 + u64(8);
+  if (a1 <= b0) {
+    return u64(0);
+  }
+  if (b1 <= a0) {
+    return u64(0);
+  }
+  u64 c0 = ay0;
+  u64 c1 = ay1;
+  u64 d0 = by0;
+  u64 d1 = by1;
+  if (c0 > u64(8)) {
+    c0 = c0 - u64(8);
+  } else {
+    c0 = u64(0);
+  }
+  c1 = c1 + u64(8);
+  if (d0 > u64(8)) {
+    d0 = d0 - u64(8);
+  } else {
+    d0 = u64(0);
+  }
+  d1 = d1 + u64(8);
+  if (c1 <= d0) {
+    return u64(0);
+  }
+  if (d1 <= c0) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
 @bare
 void wmDamageRect(u64 x, u64 y, u64 w, u64 h) {
   if (w < u64(1)) {
@@ -1489,41 +1578,94 @@ void wmDamageRect(u64 x, u64 y, u64 w, u64 h) {
   if (wmPageEnsure() < u64(1)) {
     return;
   }
-  u64 x0 = x;
-  u64 y0 = y;
-  u64 x1 = x + w;
-  u64 y1 = y + h;
-  if (x1 > fbGeomWidth()) {
-    x1 = fbGeomWidth();
+  u64 nx0 = x;
+  u64 ny0 = y;
+  u64 nx1 = x + w;
+  u64 ny1 = y + h;
+  if (nx1 > fbGeomWidth()) {
+    nx1 = fbGeomWidth();
   }
-  if (y1 > fbGeomHeight()) {
-    y1 = fbGeomHeight();
+  if (ny1 > fbGeomHeight()) {
+    ny1 = fbGeomHeight();
   }
-  if (x0 >= x1) {
+  if (nx0 >= nx1) {
     return;
   }
-  if (y0 >= y1) {
+  if (ny0 >= ny1) {
     return;
   }
   final u64 f = wmPage(u64(wmPageWFlags));
+  u64 ux0 = nx0;
+  u64 uy0 = ny0;
+  u64 ux1 = nx1;
+  u64 uy1 = ny1;
   if ((f & u64(wmPageFlagDamage)) > u64(0)) {
-    if (wmPage(u64(wmPageWDmgX0)) < x0) {
-      x0 = wmPage(u64(wmPageWDmgX0));
+    if (wmPage(u64(wmPageWDmgX0)) < ux0) {
+      ux0 = wmPage(u64(wmPageWDmgX0));
     }
-    if (wmPage(u64(wmPageWDmgY0)) < y0) {
-      y0 = wmPage(u64(wmPageWDmgY0));
+    if (wmPage(u64(wmPageWDmgY0)) < uy0) {
+      uy0 = wmPage(u64(wmPageWDmgY0));
     }
-    if (wmPage(u64(wmPageWDmgX1)) > x1) {
-      x1 = wmPage(u64(wmPageWDmgX1));
+    if (wmPage(u64(wmPageWDmgX1)) > ux1) {
+      ux1 = wmPage(u64(wmPageWDmgX1));
     }
-    if (wmPage(u64(wmPageWDmgY1)) > y1) {
-      y1 = wmPage(u64(wmPageWDmgY1));
+    if (wmPage(u64(wmPageWDmgY1)) > uy1) {
+      uy1 = wmPage(u64(wmPageWDmgY1));
     }
   }
-  wmPageSet(u64(wmPageWDmgX0), x0);
-  wmPageSet(u64(wmPageWDmgY0), y0);
-  wmPageSet(u64(wmPageWDmgX1), x1);
-  wmPageSet(u64(wmPageWDmgY1), y1);
+  wmPageSet(u64(wmPageWDmgX0), ux0);
+  wmPageSet(u64(wmPageWDmgY0), uy0);
+  wmPageSet(u64(wmPageWDmgX1), ux1);
+  wmPageSet(u64(wmPageWDmgY1), uy1);
+  u64 n = wmPage(u64(wmPageWDmgN));
+  u64 merged = u64(0);
+  u64 i = u64(0);
+  while (i < n) {
+    if (i < u64(wmDmgCap)) {
+      final u64 b = u64(wmPageWDmgR0) + (i * u64(4));
+      final u64 rx0 = wmPage(b);
+      final u64 ry0 = wmPage(b + u64(1));
+      final u64 rx1 = wmPage(b + u64(2));
+      final u64 ry1 = wmPage(b + u64(3));
+      if (wmDmgNear(rx0, ry0, rx1, ry1, nx0, ny0, nx1, ny1) > u64(0)) {
+        u64 mx0 = rx0;
+        u64 my0 = ry0;
+        u64 mx1 = rx1;
+        u64 my1 = ry1;
+        if (nx0 < mx0) {
+          mx0 = nx0;
+        }
+        if (ny0 < my0) {
+          my0 = ny0;
+        }
+        if (nx1 > mx1) {
+          mx1 = nx1;
+        }
+        if (ny1 > my1) {
+          my1 = ny1;
+        }
+        wmDmgStore(i, mx0, my0, mx1, my1);
+        merged = u64(1);
+      }
+    }
+    i = i + u64(1);
+  }
+  if (merged < u64(1)) {
+    if (n < u64(wmDmgCap)) {
+      wmDmgStore(n, nx0, ny0, nx1, ny1);
+      wmPageSet(u64(wmPageWDmgN), n + u64(1));
+    } else {
+      /* Cap: collapse to the AABB. Count full when the union is large. */
+      wmDmgStore(u64(0), ux0, uy0, ux1, uy1);
+      wmPageSet(u64(wmPageWDmgN), u64(1));
+      final u64 area = (ux1 - ux0) * (uy1 - uy0);
+      final u64 screen = fbGeomWidth() * fbGeomHeight();
+      if ((area + area) > screen) {
+        wmPageSet(u64(wmPageWDmgFull),
+            wmPage(u64(wmPageWDmgFull)) + u64(1));
+      }
+    }
+  }
   wmPageSet(u64(wmPageWFlags), f | u64(wmPageFlagDamage));
   wmPageSet(u64(wmPageWCoalesced), wmPage(u64(wmPageWCoalesced)) + u64(1));
 }
@@ -1540,6 +1682,7 @@ void wmDamageClear() {
   final u64 f = wmPage(u64(wmPageWFlags));
   wmPageSet(u64(wmPageWFlags),
       f - (f & (u64(wmPageFlagDamage) | u64(wmPageFlagFull))));
+  wmPageSet(u64(wmPageWDmgN), u64(0));
 }
 
 @bare
@@ -1552,13 +1695,55 @@ u64 wmDamagePending() {
 // The pacer
 // ---------------------------------------------------------------------------
 
-/// Presents the coalesced damage rectangle and clears it. Dart only.
+/// Presents pending dirty region(s) and clears them. Dart only.
+/// Snapshot the discrete list before [wmDamageClear] zeros N.
 @bare
 void wmPacePresent() {
   final u64 x0 = wmPage(u64(wmPageWDmgX0));
   final u64 y0 = wmPage(u64(wmPageWDmgY0));
   final u64 x1 = wmPage(u64(wmPageWDmgX1));
   final u64 y1 = wmPage(u64(wmPageWDmgY1));
+  u64 regs = wmPage(u64(wmPageWDmgN));
+  u64 r0x0 = u64(0);
+  u64 r0y0 = u64(0);
+  u64 r0x1 = u64(0);
+  u64 r0y1 = u64(0);
+  u64 r1x0 = u64(0);
+  u64 r1y0 = u64(0);
+  u64 r1x1 = u64(0);
+  u64 r1y1 = u64(0);
+  u64 r2x0 = u64(0);
+  u64 r2y0 = u64(0);
+  u64 r2x1 = u64(0);
+  u64 r2y1 = u64(0);
+  u64 r3x0 = u64(0);
+  u64 r3y0 = u64(0);
+  u64 r3x1 = u64(0);
+  u64 r3y1 = u64(0);
+  if (regs > u64(0)) {
+    r0x0 = wmPage(u64(wmPageWDmgR0));
+    r0y0 = wmPage(u64(wmPageWDmgR0) + u64(1));
+    r0x1 = wmPage(u64(wmPageWDmgR0) + u64(2));
+    r0y1 = wmPage(u64(wmPageWDmgR0) + u64(3));
+  }
+  if (regs > u64(1)) {
+    r1x0 = wmPage(u64(wmPageWDmgR0) + u64(4));
+    r1y0 = wmPage(u64(wmPageWDmgR0) + u64(5));
+    r1x1 = wmPage(u64(wmPageWDmgR0) + u64(6));
+    r1y1 = wmPage(u64(wmPageWDmgR0) + u64(7));
+  }
+  if (regs > u64(2)) {
+    r2x0 = wmPage(u64(wmPageWDmgR0) + u64(8));
+    r2y0 = wmPage(u64(wmPageWDmgR0) + u64(9));
+    r2x1 = wmPage(u64(wmPageWDmgR0) + u64(10));
+    r2y1 = wmPage(u64(wmPageWDmgR0) + u64(11));
+  }
+  if (regs > u64(3)) {
+    r3x0 = wmPage(u64(wmPageWDmgR0) + u64(12));
+    r3y0 = wmPage(u64(wmPageWDmgR0) + u64(13));
+    r3x1 = wmPage(u64(wmPageWDmgR0) + u64(14));
+    r3y1 = wmPage(u64(wmPageWDmgR0) + u64(15));
+  }
   wmDamageClear();
   if (x1 <= x0) {
     return;
@@ -1569,7 +1754,58 @@ void wmPacePresent() {
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
   wmPointerRestore();
-  final u64 px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
+  u64 px = u64(0);
+  final u64 unionA = (x1 - x0) * (y1 - y0);
+  final u64 screen = fbGeomWidth() * fbGeomHeight();
+  /* Atomic union when the AABB is most of the scanout (drag/max). */
+  if ((unionA + unionA + unionA) > (screen + screen)) {
+    px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
+    regs = u64(1);
+    wmPageSet(u64(wmPageWDmgFull), wmPage(u64(wmPageWDmgFull)) + u64(1));
+  } else {
+    if (regs < u64(1)) {
+      px = wmRepaintRect(x0, y0, x1 - x0, y1 - y0);
+      regs = u64(1);
+    } else {
+      if (r0x1 > r0x0) {
+        if (r0y1 > r0y0) {
+          px = px + wmRepaintRect(r0x0, r0y0, r0x1 - r0x0, r0y1 - r0y0);
+        }
+      }
+      if (regs > u64(1)) {
+        if (r1x1 > r1x0) {
+          if (r1y1 > r1y0) {
+            px = px + wmRepaintRect(r1x0, r1y0, r1x1 - r1x0, r1y1 - r1y0);
+          }
+        }
+      }
+      if (regs > u64(2)) {
+        if (r2x1 > r2x0) {
+          if (r2y1 > r2y0) {
+            px = px + wmRepaintRect(r2x0, r2y0, r2x1 - r2x0, r2y1 - r2y0);
+          }
+        }
+      }
+      if (regs > u64(3)) {
+        if (r3x1 > r3x0) {
+          if (r3y1 > r3y0) {
+            px = px + wmRepaintRect(r3x0, r3y0, r3x1 - r3x0, r3y1 - r3y0);
+          }
+        }
+      }
+    }
+  }
+  wmPageSet(u64(wmPageWDmgPx), px);
+  wmPageSet(u64(wmPageWDmgRegs), regs);
+  if (wmPaceLogging() > u64(0)) {
+    uartWrite(Rodata.addressOf(wmDmgStrLine), u64(7));
+    uartPutHex(px, u64(8));
+    uartWrite(Rodata.addressOf(wmDmgStrRg), u64(4));
+    uartPutHex(regs, u64(2));
+    uartWrite(Rodata.addressOf(wmDmgStrFl), u64(4));
+    uartPutHex(wmPage(u64(wmPageWDmgFull)), u64(8));
+    uartNewline();
+  }
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
   wmLatNotePresent();
@@ -1643,6 +1879,13 @@ void wmPaceLine() {
   uartPutHex(wmPage(u64(wmPageWCoalesced)), u64(8));
   uartWrite(Rodata.addressOf(wmPaceStrLate), u64(6));
   uartPutHex(wmPage(u64(wmPageWLate)), u64(8));
+  uartNewline();
+  uartWrite(Rodata.addressOf(wmDmgStrLine), u64(7));
+  uartPutHex(wmPage(u64(wmPageWDmgPx)), u64(8));
+  uartWrite(Rodata.addressOf(wmDmgStrRg), u64(4));
+  uartPutHex(wmPage(u64(wmPageWDmgRegs)), u64(2));
+  uartWrite(Rodata.addressOf(wmDmgStrFl), u64(4));
+  uartPutHex(wmPage(u64(wmPageWDmgFull)), u64(8));
   uartNewline();
   if (wmPage(u64(wmPageWDeskBuf)) < u64(1)) {
     uartWrite(Rodata.addressOf(wmDeskStrNone), u64(12));

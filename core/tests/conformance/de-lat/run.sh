@@ -54,8 +54,8 @@ ck; grep -q 'self.off' "$DRIVE" \
   || fail "driver still rereads the UART logfile from offset 0"
 ck; grep -q 'wmLatStrG' "$PACE" \
   || fail "present note does not print chrome-regen (TCG vs schedule)"
-ck; awk '/wmLatStamp\(u64\(wmLatKindPtr\)\)/{p=NR} /wmGfxKick\(\)/{if(p && NR-p<12) ok=1} END{exit ok?0:1}' "$WM" \
-  || fail "pointer LAT is not stamped on the kick (sprite-only moves inherit the next compose)"
+ck; awk '/void wmPointerTick/{p=1} p&&/wmLatStamp\(u64\(wmLatKindPtr\)\)/{s=1} s&&/wmLatNotePresent/{ok=1} END{exit ok?0:1}' "$WM" \
+  || fail "pointer LAT is not stamped and noted on the sprite path"
 ck; grep -q 'osgfx_chrome_is_focus_only' "$CHROME_C" \
   || fail "chrome cache has no focus-only incremental path"
 ck; grep -q 'skip_soft_shadow' "$SESSION_C" \
@@ -65,8 +65,8 @@ ck; grep -q 'osgfx_session_patch_focus' "$SESSION_C" \
 ck; grep -q 'wmLatNotePresent' "$PACE" \
   && awk '/void wmSessionRestore/{p=1} p&&/wmLatNotePresent/{ok=1} END{exit ok?0:1}' "$PACE" \
   || fail "session restore does not note LAT after the C tick (focus inherits maximize)"
-ck; awk '/wmGfxChromeFresh\(\) < u64\(1\)/{p=0} /else \{/{if(p==0) p=1} p&&/wmLatNotePresent/{ok=1} END{exit ok?0:1}' "$WM" \
-  || fail "sprite-only pointer path does not same-tick note LAT"
+ck; awk '/void wmPointerTick/{p=1} p&&/wmDamageRect\(ox, oy/{ok=1} END{exit ok?0:1}' "$WM" \
+  || fail "pointer path does not dirty old+new cursor bounds"
 ck; grep -q 'wmMetaGfx' "$PROC" \
   || fail "procYield is not gated under wm gfx (COM1 flood)"
 ck; grep -q -- '--absent' "$PROBE" \
