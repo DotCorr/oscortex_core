@@ -231,6 +231,13 @@ final List<u8> wmStrMax = const [
   u8(0x57), u8(0x20),
 ];
 
+/// `'WM PHZ MAX'` -- 10 bytes.
+@rodata
+final List<u8> wmStrPhzMax = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x48), u8(0x5A), u8(0x20),
+  u8(0x4D), u8(0x41), u8(0x58),
+];
+
 /// `'WM REST W '` -- 10 bytes.
 @rodata
 final List<u8> wmStrRest = const [
@@ -1559,9 +1566,14 @@ void wmToggleMaxWindow(u64 wI) {
   } else {
     wmPageSet(at, u64(0));
   }
+  if (next == old) {
+    return;
+  }
   wmSetWin(wI, u64(wmWinGeom), next);
   wmSetMeta(u64(wmMetaTop), wI);
   wmeventEnqueueConfigure(wI);
+  uartWrite(Rodata.addressOf(wmStrPhzMax), u64(10));
+  uartNewline();
   final u64 px = wmRepaintUnion2(
       wmGeomX(old) - b, wmGeomY(old) - b,
       wmGeomW(old) + b + b, wmGeomH(old) + b + b,

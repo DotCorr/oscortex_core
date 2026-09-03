@@ -191,6 +191,8 @@ static const char msg_key[] = "FILES KEY ";
 static const char lab_empty[] = "This folder is empty";
 static const char lab_error[] = "This path is unavailable";
 static const char msg_error[] = "FILES ERROR";
+static const char msg_phz_grow[] = "FILES PHZ GROW";
+static const char msg_phz_paint[] = "FILES PHZ PAINT";
 static const char ext_cpy[] = "CPY";
 static const char ext_mov[] = "MOV";
 static const char ext_ren[] = "REN";
@@ -593,6 +595,59 @@ static void paint_file_menu(void) {
                    my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL, "Rename", 6,
                    WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
   }
+}
+
+static void files_pregrow(void) {
+  u64 sw;
+  u64 sh;
+  u64 nw;
+  u64 nh;
+  u64 stride;
+  u64 pages;
+  u64 grown;
+  unsigned at;
+  if (files_h == 0) {
+    return;
+  }
+  sw = osxui_app_screen_w();
+  sh = osxui_app_screen_h();
+  nw = WIN_W;
+  nh = WIN_H;
+  if (sw > 32UL) {
+    nw = sw - 16UL;
+  }
+  if (sh > 80UL) {
+    nh = sh - 64UL;
+  }
+  if (nw <= files_cap_w) {
+    if (nh <= files_cap_h) {
+      return;
+    }
+  }
+  stride = nw * 4UL;
+  pages = (SURF_OFFSET + stride * nh + 4095UL) / 4096UL;
+  grown = sys2(SYS_SHMGROW, files_h, pages);
+  if (grown >= WM_RET_FLOOR) {
+    return;
+  }
+  if (grown > 0) {
+    files_va = grown + SURF_OFFSET;
+  }
+  desc[WM_DESC_OP] = WM_OP_BACKING;
+  desc[WM_DESC_HANDLE] = files_h;
+  desc[WM_DESC_STRIDE] = stride;
+  if (sys1(SYS_WMSURFACE, (u64)&desc[0]) >= WM_RET_FLOOR) {
+    return;
+  }
+  files_stride = stride;
+  files_cap_w = nw;
+  files_cap_h = nh;
+  at = put(0, msg_phz_grow);
+  at = put(at, " ");
+  at = putdec(at, nw);
+  at = put(at, " ");
+  at = putdec(at, nh);
+  emit(at);
 }
 
 static void files_repaint(void) {
@@ -999,10 +1054,29 @@ static void files_on_event(u64 ev) {
           at = put(at, " ");
           at = putdec(at, nh);
           emit(at);
+          files_w = nw;
+          files_height = nh;
+          return;
+        }
+        at = put(0, msg_phz_paint);
+        at = put(at, " ");
+        at = putdec(at, nw);
+        at = put(at, " ");
+        at = putdec(at, nh);
+        emit(at);
+        if (files_h != 0) {
+          if (nw > files_w) {
+            osxui_app_rrect(files_h, files_w, 0, nw - files_w, nh, 0UL,
+                            SURF_FILL);
+          }
+          if (nh > files_height) {
+            osxui_app_rrect(files_h, 0, files_height, files_w,
+                            nh - files_height, 0UL, SURF_FILL);
+          }
         }
         files_w = nw;
         files_height = nh;
-        files_repaint();
+        commit_files_rect(0, files_height);
       }
     }
     return;
@@ -1221,7 +1295,8 @@ static void try_strip(u64 names, u32 swatch) {
   files_names = names;
   files_swatch = swatch;
   files_seq = 1;
-  paint_all(h, va, names, swatch);
+  files_pregrow();
+  paint_all(h, files_va, names, swatch);
 
   desc[WM_DESC_OP] = WM_OP_COMMIT;
   desc[WM_DESC_HANDLE] = h;

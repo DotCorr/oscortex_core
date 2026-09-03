@@ -518,7 +518,7 @@ u64 wmPopDraw() {
 void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     if (wmPanelStrip() < u64(1)) {
-      wmChromeBufInvalidate();
+      /* Pop-only chrome path: blit the pop-free cache. Do not REGEN. */
       wmGfxKick();
       osgfx_guest_tick();
       if (wmActive() > u64(0)) {
@@ -1029,9 +1029,10 @@ u64 wmPopHoverTick(u64 x, u64 y) {
   wmPopSetHover(row);
   wmPopWritePage();
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    wmChromeBufInvalidate();
-    wmGfxKick();
-    osgfx_guest_tick();
+    if (wmPanelStrip() < u64(1)) {
+      wmGfxKick();
+      osgfx_guest_tick();
+    }
   }
   wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
       wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
@@ -1118,9 +1119,10 @@ u64 wmPopKey(u64 ev) {
       wmPopSetHover(row);
       wmPopWritePage();
       if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        wmChromeBufInvalidate();
-        wmGfxKick();
-        osgfx_guest_tick();
+        if (wmPanelStrip() < u64(1)) {
+          wmGfxKick();
+          osgfx_guest_tick();
+        }
       }
       wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
           wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
@@ -1133,9 +1135,10 @@ u64 wmPopKey(u64 ev) {
       wmPopSetHover(row);
       wmPopWritePage();
       if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        wmChromeBufInvalidate();
-        wmGfxKick();
-        osgfx_guest_tick();
+        if (wmPanelStrip() < u64(1)) {
+          wmGfxKick();
+          osgfx_guest_tick();
+        }
       }
       wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
           wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));

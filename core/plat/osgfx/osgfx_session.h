@@ -14,6 +14,8 @@ void osgfx_session_paint(OsGfx *g, const struct OsGfxGuestCmd *cmd, int graphite
 void osgfx_session_paint_windows(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_paint_geom(OsGfx *g, const struct OsGfxGuestCmd *cmd,
                               uint64_t old0, uint64_t old1);
+void osgfx_session_paint_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd);
+void osgfx_session_prewarm_pop(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 void osgfx_session_patch_focus(OsGfx *g, const struct OsGfxGuestCmd *cmd);
 
 #ifdef __cplusplus
