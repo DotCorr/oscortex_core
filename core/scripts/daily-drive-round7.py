@@ -446,7 +446,9 @@ def main():
         while time.time() < deadline and "M1 END" not in ser.read():
             time.sleep(0.2)
         if "M1 END" not in ser.read():
-            raise SystemExit("no M1 END")
+            if not file_has_token(serial_path, "M1 END"):
+                raise SystemExit("no M1 END")
+            print("M1 END from logfile (socket attached after boot)")
         time.sleep(1.5)
 
     if skip_boot:
