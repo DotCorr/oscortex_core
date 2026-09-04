@@ -51,7 +51,7 @@ if "wmPageWChromeHave" not in close_fn:
     raise SystemExit("wmCloseWindow does not invalidate chrome cache")
 if "wmLifeNote" not in close_fn:
     raise SystemExit("wmCloseWindow does not report reclaim")
-if "wmPageWLaunch0" not in close_fn:
+if "wmPageLaunchOf" not in close_fn and "wmPageWLaunch0" not in close_fn:
     raise SystemExit("wmCloseWindow does not clear launch/cap word")
 grab = wmde[wmde.index("u64 wmDeGrab("):wmde.index("void wmDeCmd(")]
 if grab.find("wmDeGeomHit(") > grab.find("wmCloseHit("):

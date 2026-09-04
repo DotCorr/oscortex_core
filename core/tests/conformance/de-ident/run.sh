@@ -37,7 +37,7 @@ ck; grep -q 'wmStrC' "$WM" || fail "attach dropped caption-code probe"
 ck; grep -q 'wmStrQ' "$WM" || fail "attach dropped requested-width probe"
 ck; grep -q 'reqW > u64(400)' "$WM" \
   || fail "SET caption is not keyed off requested width > 400"
-ck; grep -q 'wmPageWLaunch0' "$WM" \
+ck; grep -qE 'wmPageLaunchOf|wmPageWLaunch0' "$WM" \
   || fail "attach does not store caption on the launch words"
 ck; grep -q 'wmPageWCapMail' "$GFX" \
   || fail "kick does not publish mailbox captions"

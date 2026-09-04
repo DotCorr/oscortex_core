@@ -171,7 +171,7 @@ if "wmPageWChromeHave" not in watch:
 cancel = fn(wmde, "wmHoldCancel")
 if "wmStrHoldTo" not in cancel:
     raise SystemExit("HOLD cancel has no WM HOLD TO token")
-if "wmPageWMax0" not in cancel:
+if "wmPageMaxOf" not in cancel and "wmPageWMax0" not in cancel:
     raise SystemExit("HOLD cancel does not restash restore geom")
 
 arm = fn(wmde, "wmPendArm")
