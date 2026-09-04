@@ -78,13 +78,16 @@ def first_after(ser, prev_pos, want_kind=None):
     return None
 
 
-def wait_pair(ser, prev, timeout=3.0, skip_ptr=False):
+def wait_pair(ser, prev, timeout=3.0, skip_ptr=False, skip_full=False):
     t0 = time.time()
     while (time.time() - t0) < timeout:
         got = first_after(ser, prev)
         if got is not None:
             pos, kind, gen, px, w, h = got
             if skip_ptr and px <= 640 and px > 0:
+                prev = pos
+                continue
+            if skip_full and px >= FULL_PX:
                 prev = pos
                 continue
             return kind, gen, px, w, h, (time.time() - t0) * 1000.0
@@ -275,6 +278,15 @@ def cold_drag_first_scroll(q, ser, n=32):
         # Retain/complete drag-end configure before the first body hit.
         end, end_ms = wait_mark(ser, DRAGEND_RE, blob_len, timeout=0.25)
         cpath, cpath_ms = wait_mark(ser, CPATH_RE, blob_len, timeout=0.12)
+        # Drain a leftover session FRAME so the click pair is the body.
+        settle = last_pos(ser)
+        t_settle = time.time()
+        while (time.time() - t_settle) < 0.04:
+            got = first_after(ser, settle)
+            if got is None:
+                time.sleep(0.004)
+                continue
+            settle = got[0]
         geom = files_geom(ser)
         bx, by = body_xy(geom, i)
         d15.place(q, ser, bx, by)
@@ -286,9 +298,9 @@ def cold_drag_first_scroll(q, ser, n=32):
         except Exception as e:
             print("cold", "inject", e)
             continue
-        # Body damage publishes its own FRAME (not 640). Do not skip_ptr
-        # or a sprite present after the click steals the wait.
-        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=False)
+        # Body rect (~99200), not the 640 sprite and not a leftover
+        # 1.1 Mpx session FRAME that crossed the inject.
+        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=True, skip_full=True)
         if got is None:
             print("cold unpaired", bx, by, "prev", g0, "geom", geom)
             continue
@@ -356,7 +368,7 @@ def main():
         pass
     phase0 = len(harvest(ser))
     ensure_files(q, ser)
-    n_ptr = max(30, int(os.environ.get("DRIVE_PTR_N", "32")))
+    n_ptr = max(100, int(os.environ.get("DRIVE_PTR_N", "100")))
     n = max(30, int(os.environ.get("DRIVE_N", "32")))
     n_cold = max(30, int(os.environ.get("DRIVE_COLD_N", "32")))
 
