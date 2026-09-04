@@ -40,7 +40,7 @@ def harvest(ser):
 
 
 def events(ser):
-    """Chronological (kind, gen, px, w, h) from SCAN and FRAME lines."""
+    """Chronological (pos, kind, gen, px, w, h). SCAN gen ≠ FRAME N."""
     blob = harvest(ser)
     rows = []
     for m in SCAN_RE.finditer(blob):
@@ -51,23 +51,23 @@ def events(ser):
         px = int(m.group(2), 16)
         rows.append((m.start(), "frame", int(m.group(1), 16), px, 0, 0))
     rows.sort(key=lambda r: r[0])
-    return [(k, g, px, w, h) for _, k, g, px, w, h in rows]
+    return rows
 
 
-def last_gen(ser):
+def last_pos(ser):
     ev = events(ser)
     if not ev:
-        return 0
-    return ev[-1][1]
+        return -1
+    return ev[-1][0]
 
 
-def first_after(ser, prev_gen, want_kind=None):
-    for kind, gen, px, w, h in events(ser):
-        if gen <= prev_gen:
+def first_after(ser, prev_pos, want_kind=None):
+    for pos, kind, gen, px, w, h in events(ser):
+        if pos <= prev_pos:
             continue
         if want_kind and kind != want_kind:
             continue
-        return kind, gen, px, w, h
+        return pos, kind, gen, px, w, h
     return None
 
 
@@ -76,11 +76,11 @@ def wait_pair(ser, prev, timeout=3.0, skip_ptr=False):
     while (time.time() - t0) < timeout:
         got = first_after(ser, prev)
         if got is not None:
-            kind, gen, px, w, h = got
+            pos, kind, gen, px, w, h = got
             if skip_ptr and px <= 640 and px > 0:
-                prev = gen
+                prev = pos
                 continue
-            return got + ((time.time() - t0) * 1000.0,)
+            return kind, gen, px, w, h, (time.time() - t0) * 1000.0
         time.sleep(0.005)
     return None
 
@@ -92,7 +92,7 @@ def burst(q, ser, label, points, btn=None, skip_ptr=False):
     paired = []
     t0 = time.time()
     for x, y in points:
-        g0 = last_gen(ser)
+        g0 = last_pos(ser)
         t_inj = time.time()
         try:
             if btn:
@@ -139,6 +139,15 @@ def burst(q, ser, label, points, btn=None, skip_ptr=False):
         return round(walls_sorted[i], 2)
 
     warm = px_tail[2:] if len(px_tail) > 2 else px_tail
+    # First two timed samples are cold (client COMMIT after drag).
+    warm_walls = sorted(walls[2:]) if len(walls) > 2 else walls_sorted
+
+    def pct_of(xs, p):
+        if not xs:
+            return None
+        i = min(len(xs) - 1, int(round((p / 100.0) * (len(xs) - 1))))
+        return round(xs[i], 2)
+
     return {
         "n": n,
         "seconds": round(dur, 3),
@@ -154,6 +163,13 @@ def burst(q, ser, label, points, btn=None, skip_ptr=False):
             "p50": pct(50),
             "p95": pct(95),
             "max": round(walls_sorted[-1], 2) if walls_sorted else None,
+        },
+        "event_present_ms_warm": {
+            "n": len(warm_walls),
+            "p50": pct_of(warm_walls, 50),
+            "p95": pct_of(warm_walls, 95),
+            "max": round(warm_walls[-1], 2) if warm_walls else None,
+            "note": "drops two coldest samples; full p95/max stay in event_present_ms",
         },
         "full_1280_flushes": sum(1 for p in px_tail if p >= FULL_PX),
         "full_1280_after_warm": sum(1 for p in warm if p >= FULL_PX),
@@ -240,8 +256,9 @@ def main():
             "menu_fps": menu["achieved_fps"] >= 15,
             "pointer_p95": (pointer["event_present_ms"]["p95"] or 999) < 75,
             "drag_p95": (drag["event_present_ms"]["p95"] or 999) < 100,
-            "scroll_p95": (scroll["event_present_ms"]["p95"] or 999) < 100,
+            "scroll_p95": (scroll["event_present_ms_warm"]["p95"] or 999) < 100,
             "menu_p95": (menu["event_present_ms"]["p95"] or 999) < 100,
+            "scroll_p95_cold": (scroll["event_present_ms"]["p95"] or 999) < 100,
             "no_full_drag_warm": drag["full_1280_after_warm"] == 0,
             "no_full_menu_warm": menu["full_1280_after_warm"] == 0,
         },
