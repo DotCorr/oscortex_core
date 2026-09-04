@@ -28,16 +28,16 @@ def fn(src, name):
 
 close_x = fn(wmde, "wmCloseX")
 btn_y = fn(wmde, "wmBtnY")
-if "wmViewGeom" not in close_x:
-    raise SystemExit("wmCloseX does not use view/visible geom")
-if "wmAbsX(wI)" not in close_x:
-    raise SystemExit("wmCloseX does not use wmAbsX")
-if "wmGeomX(g)" in close_x and "wmAbsX" not in close_x:
+if "wmHitGeom" not in close_x and "wmViewGeom" not in close_x:
+    raise SystemExit("wmCloseX does not use committed/visible geom")
+if "wmHitAbsX(wI)" not in close_x and "wmAbsX(wI)" not in close_x:
+    raise SystemExit("wmCloseX does not use hit/abs X")
+if "wmGeomX(g)" in close_x and "AbsX" not in close_x:
     raise SystemExit("wmCloseX still uses packed geom X only")
-if "wmViewGeom" not in btn_y:
-    raise SystemExit("wmBtnY does not use view/visible geom")
-if "wmAbsY(wI)" not in btn_y and "wmAbsY(" not in btn_y:
-    raise SystemExit("wmBtnY does not use wmAbsY")
+if "wmHitGeom" not in btn_y and "wmViewGeom" not in btn_y:
+    raise SystemExit("wmBtnY does not use committed/visible geom")
+if "wmHitAbsY" not in btn_y and "wmAbsY" not in btn_y:
+    raise SystemExit("wmBtnY does not use hit/abs Y")
 if "wmBtnPadY" not in btn_y:
     raise SystemExit("wmBtnY does not use wmBtnPadY")
 if "win_close_x" not in sess or "SESS_BTN_GAP" not in sess:
