@@ -27,10 +27,35 @@ STUDIO_XY = (
     d15.PANEL_Y,
 )
 START_XY = d15.START_XY
-# PLAY attaches at (200,80); CTL0 is (96,48) 64×28 inside the card.
-PLAY_CTL = (200 + 96 + 32, 80 + 48 + 14)
-# STUDIO attaches at place-client origin; body click focuses before `e`.
-STUDIO_BODY = (280, 140)
+# Requested attach (200,80) / (48,56). Compositor place-client may move
+# them when FILES/SET already occupy that origin — click the live AABB.
+ATTACH_RE = re.compile(
+    r"WM ATTACH W [0-9A-F]+ P [0-9A-F]+ C ([0-9A-F]+) Q [0-9A-F]+ R [0-9A-F]+ "
+    r"GEN [0-9A-F]+ X ([0-9A-F]+) Y ([0-9A-F]+) W ([0-9A-F]+) H ([0-9A-F]+)")
+
+
+def last_attach(cap):
+    """Last ATTACH for caption code `cap` → (x, y, w, h) or None."""
+    hit = None
+    for m in ATTACH_RE.finditer(harvest()):
+        if int(m.group(1), 16) == cap:
+            hit = (int(m.group(2), 16), int(m.group(3), 16),
+                   int(m.group(4), 16), int(m.group(5), 16))
+    return hit
+
+
+def play_ctl_xy():
+    g = last_attach(4)
+    if g:
+        return (g[0] + 96 + 32, g[1] + 48 + 14)
+    return (200 + 96 + 32, 80 + 48 + 14)
+
+
+def studio_body_xy():
+    g = last_attach(5)
+    if g:
+        return (g[0] + 40, g[1] + 80)
+    return (280, 140)
 
 
 def harvest():
@@ -82,29 +107,36 @@ def main():
     # Fresh PLAY lifecycle: close a leftover card, then dock-launch.
     t_prep = len(harvest())
     if re.search(r"PLAY READY", harvest()):
-        close_near(q, (220, 90))
+        pg = last_attach(4)
+        close_near(q, (pg[0] + 20, pg[1] + 10) if pg else (220, 90))
         time.sleep(0.3)
     t0 = len(harvest())
     click(q, PLAY_XY)
     marks["play_ready"] = wait_re(r"PLAY READY", t0)
     marks["play_csd"] = wait_re(r"PLAY CSD", t0)
-    click(q, PLAY_CTL)
+    play_ctl = play_ctl_xy()
+    click(q, play_ctl)
     marks["play_hit"] = wait_re(r"PLAY HIT", t0)
+    marks["play_attach"] = last_attach(4)
+    marks["play_ctl"] = play_ctl
     if re.search(r"STUDIO2 READY", harvest()[:t0]):
-        close_near(q, STUDIO_BODY)
+        close_near(q, studio_body_xy())
         time.sleep(0.3)
     t1 = len(harvest())
     click(q, STUDIO_XY)
     marks["studio_ready"] = wait_re(r"STUDIO2 READY", t1)
     marks["studio_view"] = wait_re(r"STUDIO VIEW", t1)
-    # Focus the card (attach also focuses under wm de) then prove EDIT.
-    click(q, STUDIO_BODY)
+    # Focus the live card (attach also focuses under wm de) then prove EDIT.
+    studio_body = studio_body_xy()
+    click(q, studio_body)
     time.sleep(0.15)
     try:
         q.key("e")
     except Exception:
         pass
     marks["studio_edit"] = wait_re(r"STUDIO EDIT", t1)
+    marks["studio_attach"] = last_attach(5)
+    marks["studio_body"] = studio_body
     t2 = len(harvest())
     click(q, START_XY)
     time.sleep(0.4)
@@ -138,8 +170,8 @@ def main():
         "round": 29,
         "play_xy": PLAY_XY,
         "studio_xy": STUDIO_XY,
-        "play_ctl": PLAY_CTL,
-        "studio_body": STUDIO_BODY,
+        "play_ctl": marks.get("play_ctl"),
+        "studio_body": marks.get("studio_body"),
         "marks": marks,
         "play_ok": bool(marks.get("play_ready") and marks.get("play_hit")),
         "studio_ok": bool(marks.get("studio_ready") and marks.get("studio_edit")),
