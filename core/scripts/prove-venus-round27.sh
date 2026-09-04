@@ -33,11 +33,28 @@ DISK_SRC="${DISK_IMG:-$CORE_DIR/build/disk.img}"
 
 RUN="$CORE_DIR/build/prove-venus-r27"
 mkdir -p "$RUN"
+if [[ -f "$RUN/qemu.pid" ]]; then
+  old=$(cat "$RUN/qemu.pid" || true)
+  if [[ -n "${old:-}" ]] && kill -0 "$old" 2>/dev/null; then
+    if ps -p "$old" -o args= | grep -q 'oscortex-prove-venus-r27'; then
+      kill "$old" 2>/dev/null || true
+      sleep 0.4
+    fi
+  fi
+fi
+while read -r p; do
+  [[ -n "$p" ]] || continue
+  if ps -p "$p" -o args= 2>/dev/null | grep -q -- '-name oscortex-prove-venus-r27'; then
+    kill "$p" 2>/dev/null || true
+  fi
+done < <(ps -eo pid,args | awk '/oscortex-prove-venus-r27/ && !/awk/ {print $1}')
+sleep 0.3
 cp "$DISK_SRC" "$RUN/disk.img"
 : >"$RUN/serial.txt"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
 QMP=$(python3 "$PICKER")
 echo "$QMP" >"$RUN/qmp.port"
+export PROVE_SERIAL="$RUN/serial.txt"
 
 # Host has no /dev/dri. egl-headless needs a render node and dies.
 # GTK+llvmpipe is the functional Venus path.
@@ -62,7 +79,18 @@ timeout 180 "$QEMU" \
 QPID=$!
 set -e
 echo "$QPID" >"$RUN/qemu.pid"
-say "pid=$QPID qmp=$QMP qemu=$QEMU"
+sleep 0.2
+REAL=""
+while read -r p; do
+  [[ -n "$p" ]] || continue
+  if ps -p "$p" -o args= 2>/dev/null | grep -q -- '-name oscortex-prove-venus-r27'; then
+    if [[ "$p" != "$QPID" ]]; then
+      REAL="$p"
+    fi
+  fi
+done < <(ps -eo pid,args | awk '/qemu-system-x86_64/ && /oscortex-prove-venus-r27/ && !/awk/ {print $1}')
+[[ -n "$REAL" ]] && echo "$REAL" >"$RUN/qemu.real.pid"
+say "pid=$QPID qemu_pid=${REAL:-$QPID} qmp=$QMP qemu=$QEMU"
 
 deadline=$((SECONDS + 90))
 booted=0
@@ -102,14 +130,39 @@ def key(name):
         obj = json.loads(f.readline())
         if "return" in obj or "error" in obj:
             break
-# fb first: quiet SET_SCANOUT owner. Then Venus reuses the ring.
+# fb first: quiet SET_SCANOUT owner. Wait for the line before Venus
+# so two walkers do not share the control queue.
+serial_path = os.environ.get("PROVE_SERIAL", "")
+def wait_mark(token, timeout):
+    if not serial_path:
+        time.sleep(timeout)
+        return
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            blob = open(serial_path, encoding="latin-1", errors="replace").read()
+        except OSError:
+            blob = ""
+        if token in blob:
+            return
+        time.sleep(0.2)
 for cmd in ("fb", "virtgpuv", "wm on", "wm gfx", "wm de"):
     for ch in cmd:
         key("spc" if ch == " " else ch)
         time.sleep(0.04)
     key("ret")
-    time.sleep(0.55 if cmd == "fb" else 0.35)
-time.sleep(1.2)
+    if cmd == "fb":
+        wait_mark("FB VIRTIO ", 45)
+        time.sleep(0.4)
+    elif cmd == "virtgpuv":
+        wait_mark("VIRTIO VENUS OK", 20)
+        time.sleep(0.4)
+    elif cmd == "wm de":
+        wait_mark("WM DE ON", 12)
+        time.sleep(0.8)
+    else:
+        time.sleep(0.5)
+time.sleep(1.5)
 png = os.environ.get("ART_PNG", "/opt/cursor/artifacts/oscortex-round27-virtio-scanout.png")
 f.write(json.dumps({"execute": "screendump",
     "arguments": {"filename": png, "format": "png"}}) + "\n")
@@ -173,6 +226,9 @@ if w != 1280 or h != 720:
 PY
 
 kill "$QPID" 2>/dev/null || true
+if [[ -n "${REAL:-}" ]]; then
+  kill "$REAL" 2>/dev/null || true
+fi
 wait "$QPID" 2>/dev/null || true
 if [[ "$QTIMEOUT" == 1 ]]; then
   fail "VIRTIO QTIMEOUT after fb+Venus"

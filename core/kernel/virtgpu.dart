@@ -1659,11 +1659,14 @@ u64 virtgpuNotifyAddr(u64 bus, u64 dev, u64 fn, u64 cfg) {
   return ntfy + (noff * mul);
 }
 
-/// Two-descriptor command that takes the next used.idx as the avail
-/// slot and masks it into a size-64 ring. G5 cell flushes pass 64.
+/// Two-descriptor command that takes the next avail.idx as the slot
+/// and masks it into a size-64 ring. used.idx is only the wait
+/// target: after Venus the used count is already ahead of G5's
+/// old "used==2" assumption, and writing avail from used would
+/// drop in-flight commands. G5 cell flushes still pass heads 60/62.
 @bare
 u64 virtgpuSubmitCell(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 req, u64 reqlen, u64 resp, u64 kick) {
-  final u64 slot = virtgpuRamGet16(qdev + u64(2));
+  final u64 slot = virtgpuAvailIdx(qdrv);
   final u64 ring = slot & u64(63);
   virtgpuZero(resp, u64(24));
   virtgpuPutDesc(
@@ -1676,7 +1679,20 @@ u64 virtgpuSubmitCell(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 re
   if (kick > u64(0)) {
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
-  final u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
+  // Full-screen TRANSFER of 1280×720 is a multi-megabyte DMA on
+  // host llvmpipe. One poll bound is enough for a glyph; four
+  // covers the first present after Venus init.
+  u64 used = u64(0);
+  u64 tries = u64(0);
+  while (tries < u64(4)) {
+    used = virtgpuWaitUsed(qdev, slot + u64(1));
+    if (used >= (slot + u64(1))) {
+      tries = u64(4);
+    }
+    if (used < (slot + u64(1))) {
+      tries = tries + u64(1);
+    }
+  }
   if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
@@ -2561,10 +2577,12 @@ u64 virtgpuFbTry() {
   }
   u64 sw = virtgpuRamGet32(resp + u64(32));
   u64 sh = virtgpuRamGet32(resp + u64(36));
-  if (sw < u64(64)) {
+  // QEMU's first GET_DISPLAY_INFO on virtio-gpu-gl often names
+  // 640×480 before SET_SCANOUT. The leftover DE is 1280×720.
+  if (sw < u64(1280)) {
     sw = u64(1280);
   }
-  if (sh < u64(64)) {
+  if (sh < u64(720)) {
     sh = u64(720);
   }
   if (virtgpuRamGet32(qdesc + u64(virtgpuMetaFlag)) > u64(0)) {
@@ -2573,6 +2591,7 @@ u64 virtgpuFbTry() {
       if (live < u64(virtgpuRamCeil)) {
         fbSetState(u64(fbStateGeomW), sw);
         fbSetState(u64(fbStateGeomH), sh);
+        virtgpuRect(u64(0), u64(0), sw, sh);
         uartWrite(Rodata.addressOf(fbStrVirtio), u64(10));
         uartPutHex(sw, u64(4));
         uartWrite(Rodata.addressOf(fbStrBy), u64(1));
@@ -2731,6 +2750,7 @@ u64 virtgpuFbTry() {
   fbSetState(u64(fbStateGeomW), sw);
   fbSetState(u64(fbStateGeomH), sh);
   fbFill(u64(fbColorBg));
+  virtgpuRect(u64(0), u64(0), sw, sh);
   uartWrite(Rodata.addressOf(fbStrVirtio), u64(10));
   uartPutHex(sw, u64(4));
   uartWrite(Rodata.addressOf(fbStrBy), u64(1));
