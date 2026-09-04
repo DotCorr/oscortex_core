@@ -44,7 +44,7 @@ def main():
     blob = open(os.path.join(RUN, "serial.txt"), encoding="latin-1",
                 errors="replace").read()
     out = {
-        "round": 30,
+        "round": 31,
         "secs": round(time.time() - t0, 1),
         "cycles": n,
         "fault": ("FAULT 0E" in blob) or ("FAULT 0D" in blob)

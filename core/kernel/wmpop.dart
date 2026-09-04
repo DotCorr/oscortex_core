@@ -571,9 +571,9 @@ void wmPopMenuDraw(u64 ox, u64 oy) {
   wmPopLabel(ox, oy, u64(1), Rodata.addressOf(wmStrPopImage));
 }
 
-/// Overlay present: visual card bounds only, never the full scanout.
+/// Overlay present tagged with an operation kind. Open=4, hide=5.
 @bare
-void wmPopPresentVis(u64 ox, u64 oy) {
+void wmPopPresentKind(u64 ox, u64 oy, u64 kind) {
   u64 x = ox;
   u64 y = oy;
   if (ox > u64(wmPopVisL)) {
@@ -586,7 +586,7 @@ void wmPopPresentVis(u64 ox, u64 oy) {
   } else {
     y = u64(0);
   }
-  wmOpBegin(u64(wmOpKindMenu));
+  wmOpBegin(kind);
   final u64 px = wmPresentClipped(x, y, u64(wmPopVisW), u64(wmPopVisH));
   wmPublishFrameNoted(px);
   wmPublishFrameLine(
@@ -597,6 +597,12 @@ void wmPopPresentVis(u64 ox, u64 oy) {
   wmOpDone(px);
 }
 
+/// Overlay present: visual card bounds only, never the full scanout.
+@bare
+void wmPopPresentVis(u64 ox, u64 oy) {
+  wmPopPresentKind(ox, oy, u64(wmOpKindMenu));
+}
+
 /// Hover/selection rows only. Does not charge leftover body damage.
 @bare
 void wmPopPresentRows(u64 ox, u64 oy) {
@@ -604,7 +610,7 @@ void wmPopPresentRows(u64 ox, u64 oy) {
   final u64 ry = oy + u64(wmPopRowPad);
   final u64 rw = u64(wmPopW) - u64(12);
   final u64 rh = (u64(wmPopRowH) * u64(2)) - u64(2);
-  wmOpBegin(u64(wmOpKindMenu));
+  wmOpBegin(u64(wmOpKindMenuRow));
   final u64 px = wmPresentClipped(rx, ry, rw, rh);
   wmPublishFrameNoted(px);
   wmPublishFrameLine(
@@ -650,14 +656,14 @@ void wmPopRestoreFast(u64 ox, u64 oy) {
     if (wmPageAddr() > u64(0)) {
       if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
         final u64 unused = osgfx_chrome_hit_restore();
-        wmPopPresentVis(ox, oy);
+        wmPopPresentKind(ox, oy, u64(wmOpKindMenuHide));
         return;
       }
     }
     /* HAVE=0: restore the card rect only. A session tick here was
      * the 488 ms hide that then stole the next open pair. */
     final u64 unused = wmRepaintRect(ox, oy, u64(wmPopVisW), u64(wmPopVisH));
-    wmPopPresentVis(ox, oy);
+    wmPopPresentKind(ox, oy, u64(wmOpKindMenuHide));
     return;
   }
   final u64 unused = wmRepaintRect(ox, oy, u64(wmPopW), u64(wmPopH));
@@ -736,12 +742,9 @@ void wmPopHide() {
     final u64 oy = packed & u64(0xFFFFFFFF);
     wmLatStamp(u64(wmLatKindMenu));
     wmSetMeta(u64(wmMetaPop), u64(0));
-    if (wmPageAddr() > u64(0)) {
-      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
-        wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, u64(0));
-      }
-    }
+    /* Immediate restore is the hide token. A deferred menu def would
+     * restamp kind-4/5 after the host already paired and steal the
+     * next open. */
     if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
       wmPopRestoreFast(ox, oy);
       wmLatNotePresent();
@@ -899,15 +902,8 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
       uartNewline();
     }
   }
-  /* IRQ: gfx/DE enqueue for paced drain. Software sit-in paints now
-   * — idle drain is gfx-only, and osxui1 has a page after `wm on`. */
-  if (wmPageAddr() > u64(0)) {
-    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-      final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
-      wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
-    }
-  }
-  /* Present both sides even when drain last-wins coalesces hide. */
+  /* Present now. A paced menu def would restamp the same card as a
+   * second kind-4 DONE and steal the next measured open. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     wmPopPaintFast(ox, oy);
     wmLatNotePresent();

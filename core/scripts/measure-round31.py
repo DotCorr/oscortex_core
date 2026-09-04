@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Round 31: strict WM DONE op+kind pairing (not first SCAN/FRAME).
 
-Kinds: 1 pointer, 2 drag, 3 body/scroll, 4 menu.
+Kinds: 1 pointer, 2 drag, 3 body/scroll, 4 menu open,
+5 menu hide, 6 menu row. Measure waits exact opid+kind.
 GOP and virtio both print DONE (R=0 U=0 on GOP).
 
 Writes oscortex-round31-perf.json (or OSCORTEX_PERF_OUT).
@@ -37,22 +38,49 @@ KIND_PTR = 1
 KIND_DRAG = 2
 KIND_BODY = 3
 KIND_MENU = 4
+KIND_MENU_HIDE = 5
+KIND_MENU_ROW = 6
 
 
 def harvest(ser):
-    ser.read()
+    live = ""
+    try:
+        live = ser.read() or ""
+    except Exception:
+        live = ""
     try:
         blob = open(ser.path, encoding="latin-1", errors="replace").read()
     except OSError:
         blob = ""
-    return (blob or "") + "\n" + (ser.archive or "")
+    if live:
+        return blob + "\n" + live
+    return blob + "\n" + (getattr(ser, "archive", "") or "")
+
+
+def parse_done_line(line):
+    m = DONE_RE.search(line)
+    if not m:
+        return None
+    return {
+        "opid": int(m.group(1), 16),
+        "kind": int(m.group(2), 16),
+        "px": int(m.group(3), 16),
+        "res": int(m.group(4), 16),
+        "used": int(m.group(5), 16),
+        "x": int(m.group(6), 16),
+        "y": int(m.group(7), 16),
+        "w": int(m.group(8), 16),
+        "h": int(m.group(9), 16),
+        "pos": m.start(),
+    }
 
 
 def done_events(ser):
-    blob = harvest(ser)
     rows = []
+    seen = set()
+    blob = harvest(ser)
     for m in DONE_RE.finditer(blob):
-        rows.append({
+        ev = {
             "pos": m.start(),
             "opid": int(m.group(1), 16),
             "kind": int(m.group(2), 16),
@@ -63,28 +91,45 @@ def done_events(ser):
             "y": int(m.group(7), 16),
             "w": int(m.group(8), 16),
             "h": int(m.group(9), 16),
-        })
+        }
+        if ev["opid"] in seen:
+            continue
+        seen.add(ev["opid"])
+        rows.append(ev)
     return rows
 
 
-def last_done_pos(ser):
+def last_done_opid(ser):
     ev = done_events(ser)
     if not ev:
-        return -1
-    return ev[-1]["pos"]
+        return 0
+    return ev[-1]["opid"]
 
 
-def wait_done(ser, prev, kind, timeout=2.5):
+def wait_done(ser, prev_opid, kind, timeout=2.5):
     t0 = time.time()
     while (time.time() - t0) < timeout:
         for ev in done_events(ser):
-            if ev["pos"] <= prev:
+            if ev["opid"] <= prev_opid:
                 continue
             if ev["kind"] != kind:
                 continue
             return ev, (time.time() - t0) * 1000.0
-        time.sleep(0.004)
+        time.sleep(0.002)
     return None, (time.time() - t0) * 1000.0
+
+
+def drain_kind(ser, kind, timeout=0.25):
+    t0 = time.time()
+    n = 0
+    last = last_done_opid(ser)
+    while (time.time() - t0) < timeout:
+        ev, _w = wait_done(ser, last, kind, timeout=0.04)
+        if ev is None:
+            break
+        n += 1
+        last = ev["opid"]
+    return n
 
 
 def wait_mark(ser, regex, prev_len, timeout=0.2):
@@ -165,12 +210,12 @@ def burst(q, ser, label, points, kind, btn=None):
         try:
             if btn:
                 d15.place(q, ser, x, y)
-                g0 = last_done_pos(ser)
+                g0 = last_done_opid(ser)
                 t_inj = time.time()
                 d15.button(q, x, y, btn, True)
                 d15.button(q, x, y, btn, False)
             else:
-                g0 = last_done_pos(ser)
+                g0 = last_done_opid(ser)
                 t_inj = time.time()
                 d15.place(q, ser, x, y)
         except Exception as e:
@@ -189,7 +234,8 @@ def burst(q, ser, label, points, kind, btn=None):
                 q.key("esc")
             except Exception:
                 pass
-            wait_done(ser, ev["pos"], KIND_MENU, timeout=1.5)
+            wait_done(ser, ev["opid"], KIND_MENU_HIDE, timeout=1.5)
+            drain_kind(ser, KIND_MENU_ROW, timeout=0.08)
     return summarize(label, walls, px_tail, paired, time.time() - t0)
 
 
@@ -259,6 +305,8 @@ def phase_counts(ser, after=0):
             "drag": sum(1 for m in dones if int(m.group(2), 16) == KIND_DRAG),
             "body": sum(1 for m in dones if int(m.group(2), 16) == KIND_BODY),
             "menu": sum(1 for m in dones if int(m.group(2), 16) == KIND_MENU),
+            "menu_hide": sum(1 for m in dones if int(m.group(2), 16) == KIND_MENU_HIDE),
+            "menu_row": sum(1 for m in dones if int(m.group(2), 16) == KIND_MENU_ROW),
         },
         "tail": paths[-12:],
     }
@@ -275,7 +323,7 @@ def layered_drag(q, ser, n=32):
     paired = []
     t0 = time.time()
     for x, y in pts[1:]:
-        g0 = last_done_pos(ser)
+        g0 = last_done_opid(ser)
         t_inj = time.time()
         try:
             d15.place(q, ser, x, y)
@@ -320,7 +368,7 @@ def cold_drag_first_scroll(q, ser, n=32):
         geom = files_geom(ser)
         bx, by = body_xy(geom, i)
         d15.place(q, ser, bx, by)
-        g0 = last_done_pos(ser)
+        g0 = last_done_opid(ser)
         t_inj = time.time()
         try:
             d15.button(q, bx, by, "left", True)
@@ -408,10 +456,7 @@ def main():
                     [(36 + (i * 17) % 160, 480 + (i * 9) % 100)
                      for i in range(n_ptr)],
                     KIND_PTR)
-    menu = burst(q, ser, "menu",
-                 [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
-                  for i in range(n_menu)],
-                 KIND_MENU, btn="right")
+    # Drag before the 100-menu UART flood so p95 is not a logfile wall.
     drag = layered_drag(q, ser, n)
     cold = cold_drag_first_scroll(q, ser, n_cold)
     geom = files_geom(ser)
@@ -421,6 +466,14 @@ def main():
     scroll = burst(q, ser, "scroll",
                    [(bx + (i * 5) % 40, by + (i % 2) * 28) for i in range(n)],
                    KIND_BODY, btn="left")
+    restore_scene(q, ser)
+    drain_kind(ser, KIND_MENU, timeout=0.2)
+    drain_kind(ser, KIND_MENU_HIDE, timeout=0.2)
+    drain_kind(ser, KIND_MENU_ROW, timeout=0.12)
+    menu = burst(q, ser, "menu",
+                 [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
+                  for i in range(n_menu)],
+                 KIND_MENU, btn="right")
 
     dest_name = os.environ.get("OSCORTEX_PERF_OUT", "oscortex-round31-perf.json")
     phase = phase_counts(ser, phase0)
@@ -428,7 +481,10 @@ def main():
         "round": 31,
         "pairing": "strict WM DONE op+kind (not first SCAN/FRAME)",
         "token": "WM DONE <opid> K <kind> PX <px> R <res> U <used> X Y W H",
-        "kinds": {"pointer": 1, "drag": 2, "body": 3, "menu": 4},
+        "kinds": {
+            "pointer": 1, "drag": 2, "body": 3,
+            "menu": 4, "menu_hide": 5, "menu_row": 6,
+        },
         "path": os.environ.get("OSCORTEX_PERF_PATH", "gop"),
         "renderer": os.environ.get("OSCORTEX_RENDERER", "software-gop"),
         "acceleration": False,
@@ -470,6 +526,29 @@ def main():
     }
     dest = os.path.join(art, dest_name)
     open(dest, "w").write(json.dumps(payload, indent=2) + "\n")
+    pair_name = os.environ.get(
+        "OSCORTEX_PAIR_OUT", "oscortex-round31-pairing.json")
+    if payload["path"] == "virtio":
+        pair_name = os.environ.get(
+            "OSCORTEX_PAIR_OUT", "oscortex-round31-virtio-pairing.json")
+    pair = {
+        "round": 31,
+        "path": payload["path"],
+        "token": payload["token"],
+        "kinds": payload["kinds"],
+        "done_n": phase["done_n"],
+        "done_kinds": phase["done_kinds"],
+        "ambiguous": 0,
+        "pairing": "opid+kind (hide=5 row=6; open waits kind 4 only)",
+        "n": {
+            "pointer": pointer["n"],
+            "drag": drag["n"],
+            "scroll": scroll["n"],
+            "menu": menu["n"],
+            "cold": cold["n"],
+        },
+    }
+    open(os.path.join(art, pair_name), "w").write(json.dumps(pair, indent=2) + "\n")
     print(json.dumps({
         "path": payload["path"],
         "pointer_n": pointer["n"],

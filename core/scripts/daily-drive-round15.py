@@ -199,6 +199,7 @@ class Serial:
         "WM OPID", "FILES COMMIT", "FILES PREFILL", "WM CLOSE",
         "FILES CFG", "WM DEFN", "WM IRQ", "WM PREP", "WM IFHOLD",
         "WM SPRITE", "WM DMG", "FILES OPEN", "FILES CAT", "FILES MENU",
+        "WM DONE",
     )
 
     def _keep_line(self, line):

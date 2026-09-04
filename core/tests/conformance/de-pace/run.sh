@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=77
+ASSERTIONS_REQUIRED=80
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -227,6 +227,12 @@ ck; grep -q 'wmPresentMove' "$WM_DART" \
   || fail "wmDragStep still presents both full layers"
 ck; grep -q 'osgfx_menu_blit' "$CORE_DIR/kernel/wmgfx.dart" \
   || fail "menu open still has no pre-rendered card blit"
+ck; grep -q 'const int wmOpKindMenuHide = 5;' "$PACE_DART" \
+  || fail "wmpace.dart has no menu-hide operation kind"
+ck; grep -q 'wmPopPresentKind' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "wmpop.dart has no kind-tagged pop present"
+ck; grep -q 'wmOpKindMenuHide' "$CORE_DIR/kernel/wmpop.dart" \
+  || fail "menu hide still shares the open operation kind"
 
 # 1e. THE CLOCK IS THE PIT, AND IT IS ONLY LEFT RUNNING FOR A COMPOSITOR THAT
 # ASKED. GAP-0058's still tick counter is what makes `ticks` byte-exact.
