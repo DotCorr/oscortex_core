@@ -92,16 +92,35 @@ def fatal(path):
     return False
 
 
-def latest_client_vis(ser):
-    """Newest non-panel VIS (h>=64, not the 48px dock strip)."""
+def live_client_geoms(ser):
+    """Every live non-panel VIS, keyed by slot (ATTACH minus later CLOSE)."""
     blob = harvest(ser)
-    vis = None
+    closed = {}
+    for m in cs.CLOSE_RE.finditer(blob):
+        closed[int(m.group(1), 16)] = m.end()
+    last_vis = {}
+    last_at = {}
     for m in cs.VIS_RE.finditer(blob):
+        slot = int(m.group(1), 16)
         w = int(m.group(4), 16)
         h = int(m.group(5), 16)
-        if w >= 64 and h >= 64 and h < 600:
-            vis = (int(m.group(2), 16), int(m.group(3), 16), w, h)
-    return vis
+        if w < 64 or h < 64 or h >= 600:
+            continue
+        last_vis[slot] = (int(m.group(2), 16), int(m.group(3), 16), w, h)
+        last_at[slot] = m.end()
+    out = []
+    for slot, geom in last_vis.items():
+        if slot in closed and closed[slot] > last_at[slot]:
+            continue
+        out.append((slot, geom))
+    return out
+
+
+def latest_client_vis(ser):
+    rows = live_client_geoms(ser)
+    if not rows:
+        return None
+    return rows[-1][1]
 
 
 def close_via_title_menu(q, ser, geom):
@@ -118,15 +137,12 @@ def close_via_title_menu(q, ser, geom):
 
 
 def close_clients(q, ser):
-    """Close every live non-panel VIS window so the next spawn has a slot."""
-    for _ in range(4):
-        geom = cs.live_set_xywh(ser.path, ser.archive or "")
-        if geom is None:
-            geom = cs.live_files_xywh(ser.path, ser.archive or "")
-        if geom is None:
-            geom = latest_client_vis(ser)
-        if geom is None:
+    """Close every live non-panel VIS so the next spawn has a slot."""
+    for _ in range(6):
+        rows = live_client_geoms(ser)
+        if not rows:
             return
+        _slot, geom = rows[-1]
         _x, _y, _w, h = geom
         if h < 80:
             if not close_via_title_menu(q, ser, geom):
@@ -134,7 +150,7 @@ def close_clients(q, ser):
         else:
             cx, cy = cs.ctrl_of(geom, "close")
             d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=3)
-        time.sleep(0.15)
+        time.sleep(0.2)
 
 
 def count_px_change(a, b):
