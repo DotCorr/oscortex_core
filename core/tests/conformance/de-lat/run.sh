@@ -18,7 +18,7 @@ setup_error() { echo "DE-lat: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=42
+ASSERTIONS_REQUIRED=43
 
 PACE="$CORE_DIR/kernel/wmpace.dart"
 WM="$CORE_DIR/kernel/wm.dart"
@@ -104,6 +104,8 @@ ck; grep -q 'void wmLatNoteSprite' "$PACE" \
   || fail "no sprite-only present that leaves EvKind alone"
 ck; grep -q 'wmLatNoteSprite' "$WM" \
   || fail "pointer IRQ does not emit the bounded sprite present"
+ck; grep -q '16-consume summary' "$PACE" \
+  || fail "cumulative dmg has no bounded UART summary"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick + host wall-time pairing"

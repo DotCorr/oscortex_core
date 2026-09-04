@@ -153,23 +153,55 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
     }
 
 
+def close_files(q, ser, dx=0):
+    """Close the FILES tile at default geom + dx. Require a new CLOSE token."""
+    marked = ser.read()
+    cx = d15.FILES_CLOSE_XY[0] + dx
+    cy = d15.FILES_CLOSE_XY[1]
+    d15.place(q, ser, cx, cy)
+    time.sleep(0.08)
+    d15.button(q, cx, cy, "left", True)
+    time.sleep(0.05)
+    d15.button(q, cx, cy, "left", False)
+    got = d15.wait_mark(ser, "WM CLOSE", marked, 2.5)
+    if got:
+        return True
+    # Disc may still be at the default tile.
+    if dx != 0:
+        return close_files(q, ser, 0)
+    return False
+
+
+def launch_files(q, ser):
+    fx, fy = d15.FILES_DOCK_XY
+    for _try in range(8):
+        marked = ser.read()
+        d15.place(q, ser, fx, fy)
+        time.sleep(0.1)
+        d15.button(q, fx, fy, "left", True)
+        got = d15.wait_mark(ser, "FILES READY", marked, 1.6)
+        if not got:
+            got = d15.wait_mark(ser, "FILES CSD", marked, 1.2)
+        d15.button(q, fx, fy, "left", False)
+        if got:
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def first_drags(q, ser, n=22):
     walls = []
     presents = []
+    fresh = 0
     for i in range(n):
         if i > 0:
-            try:
-                d15.press(q, ser, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1],
-                          "left", "WM CLOSE", timeout=4)
-            except Exception as e:
-                print("close miss", i, e)
-            time.sleep(0.25)
-            try:
-                d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
-                          "left", "FILES READY", timeout=8)
-            except Exception as e:
-                print("relaunch miss", i, e)
+            if not close_files(q, ser, 28):
+                print("close miss", i)
+            time.sleep(0.2)
+            if not launch_files(q, ser):
+                print("relaunch miss", i)
                 continue
+            fresh += 1
             time.sleep(0.35)
         d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
         time.sleep(0.08)
@@ -197,6 +229,7 @@ def first_drags(q, ser, n=22):
         print("first_drag", i, wall)
     return {
         "n": len(walls),
+        "fresh_relaunches": fresh,
         "event_present_ms": {
             "n": len(walls),
             "p50": pct(walls, 0.50),
@@ -215,14 +248,18 @@ def first_drags(q, ser, n=22):
 
 def files_open_proof(q, ser):
     """CTX FILE then Open on the default FILES tile, not a dragged window."""
-    try:
-        d15.press(q, ser, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1],
-                  "left", "WM CLOSE", timeout=4)
-    except Exception as e:
-        print("files_open close", e)
-    time.sleep(0.3)
-    d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
-              "left", "FILES READY", timeout=8)
+    close_files(q, ser, 28)
+    close_files(q, ser, 0)
+    time.sleep(0.25)
+    if not launch_files(q, ser):
+        return {
+            "opened": False,
+            "cat": False,
+            "menu": False,
+            "refused": False,
+            "none": False,
+            "launch": False,
+        }
     time.sleep(0.4)
     marked = ser.read()
     d15.place(q, ser, CTX_XY[0], CTX_XY[1])
@@ -254,6 +291,7 @@ def files_open_proof(q, ser):
         "menu": bool(menu),
         "refused": refused,
         "none": none,
+        "launch": True,
     }
 
 

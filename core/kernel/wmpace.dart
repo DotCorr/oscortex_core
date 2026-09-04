@@ -1876,6 +1876,11 @@ void wmDmgAcc(u64 px, u64 regs, u64 ptrPx, u64 consumed) {
   wmPageSet(u64(wmPageWDmgCumRegs), wmPage(u64(wmPageWDmgCumRegs)) + regs);
   wmPageSet(u64(wmPageWDmgCumPtr), wmPage(u64(wmPageWDmgCumPtr)) + ptrPx);
   wmPageSet(u64(wmPageWDmgCumCons), wmPage(u64(wmPageWDmgCumCons)) + consumed);
+  /* DESK owns the keyboard, so typed `wm dmg` never reaches the shell.
+   * A 16-consume summary is the queryable cumulative path. */
+  if ((wmPage(u64(wmPageWDmgCumCons)) & u64(15)) == u64(0)) {
+    wmDmgLine();
+  }
 }
 
 /// Presents pending dirty region(s) and clears them. Dart only.
