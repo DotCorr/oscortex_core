@@ -496,7 +496,7 @@ done
 if [[ "$HAVE_CRT" -eq 0 && "${OSGFX_CRT:-1}" != 0 ]]; then
   # Default 3MiB Skia CRT plus FFmpeg fits in the 16MiB window.
   clang "${MEDIA_CFLAGS[@]}" -I "$CORE_DIR/plat/osgfx" \
-    -DCRT_HEAP=4194304 \
+    -DCRT_HEAP=6291456 \
     -o "$BUILD_DIR/osgfx_guest_crt.o" "$CORE_DIR/plat/osgfx/osgfx_guest_crt.c" \
     || fail "compiling osgfx_guest_crt.c for media failed"
   GUEST_OBJS+=("$BUILD_DIR/osgfx_guest_crt.o")

@@ -42,6 +42,7 @@ extern "C" void *calloc(unsigned long n, unsigned long sz);
 extern "C" void free(void *p);
 extern "C" unsigned long osgfx_heap_used(void);
 extern "C" unsigned long osgfx_heap_cap(void);
+extern "C" void osgfx_heap_frame_begin(void);
 
 /* Token the harness greps in kernel.elf. Not a success claim. */
 extern "C" const char osgfx_graphite_door[] = "graphite-vk-try";
@@ -723,6 +724,11 @@ extern "C" int osgfx_graphite_try(void) {
     if (make_live() != 0) {
       have_ctx = 1;
       com1_puts("OSGFX GRAPHITE OK\n");
+      /* Seal MakeVulkan as the bump watermark so the four init proofs
+       * (curve/pix/rrect/desk) can rewind. free() is a no-op; without
+       * this the proofs leave ~2MiB dead and the first chrome paint
+       * prints OSGFX OOM. */
+      osgfx_heap_frame_begin();
       /* Curved MakeRectXY first — host SPIR-V + ICD radius; no guest
        * AnalyticRRect SkSL (that path #GPs before CreateShaderModule). */
       com1_puts("OSGFX GRAPHITE CURVE A\n");
@@ -748,6 +754,7 @@ extern "C" int osgfx_graphite_try(void) {
       } else {
         com1_puts("OSGFX GRAPHITE DESK NONE\n");
       }
+      osgfx_heap_frame_begin();
       return 1;
     }
     com1_puts("OSGFX GRAPHITE NONE\n");

@@ -142,7 +142,7 @@ fi
 clang -c -target x86_64-unknown-none-elf -ffreestanding -fno-stack-protector \
   -fno-pic -mno-red-zone -O2 -Wall -I "$PLAT" \
   $OSCORTEX_CANON_CFLAGS \
-  -DCRT_HEAP=4194304 \
+  -DCRT_HEAP=6291456 \
   -o "$CORE/build/osgfx_guest_crt.o" "$PLAT/osgfx_guest_crt.c"
 
 bash "$CXX" -c -O2 -Wall \

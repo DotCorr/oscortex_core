@@ -143,7 +143,7 @@ void _start(void) {
   wr(msg_attach, sizeof(msg_attach) - 1);
 
   paint_body(pix_va, 0);
-  osxui_app_csd(shm_h, WIN_W, cap_play, 4UL);
+  osxui_app_csd_win(shm_h, WIN_W, WIN_H, cap_play, 4UL);
   wr(msg_csd, sizeof(msg_csd) - 1);
   commit_all(1);
   wr(msg_ready, sizeof(msg_ready) - 1);

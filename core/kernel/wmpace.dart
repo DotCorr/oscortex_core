@@ -2187,7 +2187,12 @@ void wmFrameTick() {
     return;
   }
   if (wmDamagePending() < u64(1)) {
-    return;
+    /* Pointer-only dirty is not compose damage. Without this the
+     * frame clock dropped sprite presents and SCAN pairing saw no
+     * RESOURCE_FLUSH (R27 pointer fps was an OPID token). */
+    if ((wmPage(u64(wmPageWFlags)) & u64(wmPageFlagPtrDmg)) < u64(1)) {
+      return;
+    }
   }
   if (wmActive() < u64(1)) {
     return;

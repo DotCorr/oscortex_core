@@ -2058,16 +2058,16 @@ void virtgpuRect(u64 x, u64 y, u64 w, u64 h) {
       qdesc + u64(virtgpuMetaFlush),
       virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)) + u64(1));
   virtgpuRamPut32(qdesc + u64(virtgpuMetaDamage), w * h);
-  /* Glyph cells stay silent so G5/G7 UART is one FLUSH count per
-   * banner. Interactive presents print the generation a host pairer
-   * waits on — RESOURCE_FLUSH, not an unrelated OPID. */
-  if (w > u64(8)) {
-    virtgpuReportScan(
-        x, y, w, h, virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)));
-  } else if (h > u64(16)) {
-    virtgpuReportScan(
-        x, y, w, h, virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)));
+  /* Glyph cells (exactly 8×16) stay silent so G5/G7 UART is one
+   * FLUSH count per banner. Every other RESOURCE_FLUSH prints the
+   * generation a host pairer waits on — including 16×20 pointer. */
+  if (w == u64(8)) {
+    if (h == u64(16)) {
+      return;
+    }
   }
+  virtgpuReportScan(
+      x, y, w, h, virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)));
 }
 
 /// Named present. Same walk as [virtgpuRect]; the SCAN line is

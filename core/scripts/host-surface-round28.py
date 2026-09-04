@@ -79,7 +79,7 @@ def main():
     try:
         q.cmd("screendump", filename=qmp_dump)
         qmp_ok = os.path.isfile(qmp_dump) and os.path.getsize(qmp_dump) > 64
-    except Exception as e:
+    except BaseException as e:
         qmp_err = str(e)
     rawp = os.path.join(RUN, "guest-fb.bgra")
     pngp = os.path.join(ART, "oscortex-round28-host-1280.png")
@@ -93,21 +93,36 @@ def main():
             if pmem_ok:
                 from PIL import Image
                 img = Image.frombytes(
-                    "RGBX", (WANT_W, WANT_H), data[:WANT_W * WANT_H * 4],
+                    "RGB", (WANT_W, WANT_H), data[:WANT_W * WANT_H * 4],
                     "raw", "BGRX")
-                img.convert("RGB").save(pngp)
-        except Exception as e:
+                img.save(pngp)
+        except BaseException as e:
             pmem_ok = False
             fb["pmem_err"] = str(e)
     host_shot = os.path.join(ART, "oscortex-round28-gtk-window.png")
     host_shot_ok = False
+    grab_cmd = None
+    if gtk.get("w") and gtk.get("h") is not None:
+        grab_cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "x11grab",
+            "-video_size", "%dx%d" % (gtk["w"], gtk["h"]),
+            "-i", "%s+%d,%d" % (os.environ.get("DISPLAY", ":1"),
+                                gtk.get("x") or 0, gtk.get("y") or 0),
+            "-frames:v", "1", host_shot,
+        ]
     try:
-        subprocess.check_call(
-            ["import", "-window", "root", host_shot],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        host_shot_ok = os.path.isfile(host_shot)
+        if grab_cmd:
+            subprocess.check_call(grab_cmd)
+            host_shot_ok = os.path.isfile(host_shot)
     except Exception:
         host_shot_ok = False
+    if host_shot_ok and not os.path.isfile(pngp):
+        try:
+            from PIL import Image
+            Image.open(host_shot).save(pngp)
+        except Exception:
+            pass
     gtk_w = gtk.get("w")
     gtk_h = gtk.get("h")
     # Title chrome can add ~20-40px; require the client area to cover 1280×720.

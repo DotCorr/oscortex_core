@@ -16,7 +16,7 @@ double strtod(const char *s, char **end);
  * build-kernel.sh may override via -DCRT_HEAP. free() is a no-op;
  * osgfx_heap_frame_begin reclaims per-tick scratch after the Graphite
  * init watermark. */
-#define CRT_HEAP (4 * 1024 * 1024)
+#define CRT_HEAP (6 * 1024 * 1024)
 #endif
 
 static unsigned char heap[CRT_HEAP];

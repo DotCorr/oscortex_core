@@ -1347,8 +1347,11 @@ __attribute__((noinline)) static void tick_body(void) {
     }
     return;
   }
-  /* MakeVulkan. Graphite .init_array #GPs on this image — not walked. */
+  /* MakeVulkan. Graphite .init_array #GPs on this image — not walked.
+   * graphite_try seals/rewinds its init proofs; call again so a chrome
+   * miss cannot sit on dead proof allocations. */
   (void)osgfx_graphite_try();
+  osgfx_heap_frame_begin();
   if (m->gen == last_gen) {
     return;
   }

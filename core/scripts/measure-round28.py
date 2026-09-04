@@ -139,6 +139,13 @@ def main():
         q.key("esc")
     except Exception:
         pass
+    # Open FILES so drag/scroll/max have a titled surface, not empty desk.
+    d15.place(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
+    time.sleep(0.05)
+    d15.button(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1], "left", True)
+    time.sleep(0.04)
+    d15.button(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1], "left", False)
+    time.sleep(0.8)
     d15.place(q, ser, 48, 520)
     time.sleep(0.1)
     ser.read()
@@ -147,7 +154,7 @@ def main():
     pointer = burst(q, ser, "pointer",
                     [(36 + (i * 17) % 160, 480 + (i * 9) % 100)
                      for i in range(n)])
-    drag_pts = [(80 + (i * 9) % 200, 90) for i in range(n)]
+    drag_pts = [(120 + (i * 9) % 200, 55) for i in range(n)]
     d15.place(q, ser, drag_pts[0][0], drag_pts[0][1])
     d15.button(q, drag_pts[0][0], drag_pts[0][1], "left", True)
     drag = burst(q, ser, "drag", drag_pts[1:])
