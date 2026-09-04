@@ -121,18 +121,37 @@ def main():
                 gone = True
                 break
             time.sleep(0.03)
+        blob0 = m31.harvest(ser)
+        n_ready = blob0.count("USER WRITE FILES READY")
+        n_csd = blob0.count("USER WRITE FILES CSD")
+        n_attach = blob0.count("WM ATTACH W ")
         d15.place(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
         click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
         t2 = time.time()
         ready = False
         while time.time() - t2 < 4.0:
             blob = m31.harvest(ser)
-            if "FILES SLOT" in blob[max(0, len(blob) - 8000):] or cs.files_slot(blob):
-                if "FILES READY" in blob or "FILES CSD" in blob:
+            if blob.count("WM ATTACH W ") <= n_attach:
+                time.sleep(0.04)
+                continue
+            if blob.count("USER WRITE FILES READY") > n_ready:
+                ready = True
+                break
+            if blob.count("USER WRITE FILES CSD") > n_csd:
+                # CSD is first commit; wait the READY that follows.
+                if blob.count("USER WRITE FILES READY") > n_ready:
                     ready = True
                     break
             time.sleep(0.04)
-        time.sleep(0.12)
+        # One full body COMMIT after READY so the list is on scanout.
+        t3 = time.time()
+        while time.time() - t3 < 1.2:
+            blob = m31.harvest(ser)
+            if blob.count("USER WRITE FILES READY") > n_ready:
+                if "WM COMMIT W " in blob[max(0, len(blob) - 2500):]:
+                    break
+            time.sleep(0.04)
+        time.sleep(0.15)
         geom = m31.files_geom(ser)
         shot = os.path.join("/tmp", "r32-life-%03d.png" % i)
         d15.shot(q, shot)
