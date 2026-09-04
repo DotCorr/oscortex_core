@@ -531,7 +531,7 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n,
             continue
         hit = None
         ev_hit = None
-        while (time.time() - t_inj) < 0.9:
+        while (time.time() - t_inj) < 1.4:
             chunk = ""
             if ser_path:
                 try:

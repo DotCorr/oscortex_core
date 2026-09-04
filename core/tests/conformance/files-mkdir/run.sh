@@ -142,9 +142,12 @@ def wait_marker(path, marker, timeout=25):
 def type_line(q, s):
     for ch in s:
         if ch == " ":
-            q.cmd("send-key", keys=[{"type": "qcode", "data": "spc"}])
+            data = "spc"
+        elif ch == ".":
+            data = "dot"
         else:
-            q.cmd("send-key", keys=[{"type": "qcode", "data": ch}])
+            data = ch
+        q.cmd("send-key", keys=[{"type": "qcode", "data": data}])
         time.sleep(0.03)
     q.cmd("send-key", keys=[{"type": "qcode", "data": "ret"}])
 

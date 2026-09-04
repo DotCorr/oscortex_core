@@ -373,9 +373,9 @@ const int fileMetaCreates = 14;
 const int fileMetaTruncs = 15;
 const int fileMetaFlushes = 16;
 
-/// Process cwd cluster. 0 is the root directory. Set when a
-/// subdirectory is opened as [fileFdDir]; cleared on `:ROOT`.
-const int fileMetaCwd = 17;
+/// Per-process cwd cluster words. 0 is the root directory.
+/// One word per [fileRows] slot so FILES cannot steal SET's path.
+const int fileMetaCwd0 = 18;
 const int fileMetaSpare17 = 17;
 const int fileMetaSpare18 = 18;
 const int fileMetaSpare19 = 19;
@@ -1180,12 +1180,20 @@ u64 fileRootSkip(u64 e) {
 
 @bare
 u64 fileCwd() {
-  return fileMeta(u64(fileMetaCwd));
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    return u64(0);
+  }
+  return fileMeta(u64(fileMetaCwd0) + row);
 }
 
 @bare
 void fileSetCwd(u64 c) {
-  fileSetMeta(u64(fileMetaCwd), c);
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    return;
+  }
+  fileSetMeta(u64(fileMetaCwd0) + row, c);
 }
 
 /// How many root entries [fileRootSkip] would keep, or bit 31 set if a
