@@ -179,26 +179,15 @@ def _click_close(q, ser, cx, cy):
 
 
 def close_files(q, ser, dx=0):
-    """Close FILES via the CSD disc. No title-pop: that card is moved
-    off the window and a miss opens WALL MENU."""
+    """Close FILES via the CSD disc at this origin. Do not spray nearby
+    discs — those are min/max and hide the window without WM CLOSE."""
     try:
         q.key("esc")
     except Exception:
         pass
     time.sleep(0.04)
-    trials = [dx, 0, 1, -28, 28]
-    seen = set()
-    for trial in trials:
-        if trial in seen:
-            continue
-        seen.add(trial)
-        cx, cy = files_close_xy(trial)
-        if _click_close(q, ser, cx, cy):
-            return True
-    # Maximized CSD (border 8, width 1274).
-    if _click_close(q, ser, 1260, 25):
-        return True
-    return False
+    cx, cy = files_close_xy(dx)
+    return _click_close(q, ser, cx, cy)
 
 
 def launch_files(q, ser):
@@ -249,6 +238,16 @@ def first_drags(q, ser, n=22):
         ], 3.0, want_opid=True, label="first_drag")
         d15.button(q, nx, ny, "left", False)
         time.sleep(0.08)
+        # Restore the sit-in origin so close is the default disc (426,57),
+        # not min/max and not the SET gap.
+        d15.place(q, ser, nx, ny)
+        time.sleep(0.04)
+        d15.button(q, nx, ny, "left", True)
+        time.sleep(0.04)
+        d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
+        time.sleep(0.08)
+        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
+        time.sleep(0.08)
         if wall is not None:
             walls.append(wall)
         if d15.PHASE_TIMELINES:
@@ -263,7 +262,7 @@ def first_drags(q, ser, n=22):
                     "oscortex-round21-first-drag.png"))
             except Exception as e:
                 print("first-drag shot", e)
-        if not close_files(q, ser, -28):
+        if not close_files(q, ser, 0):
             print("close miss", i)
             continue
         time.sleep(0.15)
