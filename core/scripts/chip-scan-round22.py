@@ -93,15 +93,14 @@ def live_files_xywh(serial_path, archive=""):
             continue
         x = int(m.group(2), 16)
         y = int(m.group(3), 16)
+    # Maximize toggles and reprints WM MAX, not WM REST (REST is un-min).
+    max_n = 0
     last_max = -1
-    last_rest = -1
     for m in MAX_RE.finditer(blob, attach_at):
         if slot is None or int(m.group(1), 16) == slot:
+            max_n += 1
             last_max = m.end()
-    for m in REST_RE.finditer(blob, attach_at):
-        if slot is None or int(m.group(1), 16) == slot:
-            last_rest = m.end()
-    if last_max > last_rest:
+    if max_n % 2 == 1 and last_max > attach_at:
         for m in CSDHIT_RE.finditer(blob, last_max):
             cw = int(m.group(3), 16)
             ch = int(m.group(4), 16)
@@ -234,7 +233,8 @@ def main():
             dump("max")
             geom = live_files_xywh(serial_path, ser.archive or "") or MAXED_XYWH
             rx, ry = ctrl_of(geom, "max")
-            d15.press(q, ser, rx, ry, "left", "WM REST", timeout=2)
+            # Toggle prints WM MAX again; WM REST is un-minimise only.
+            d15.press(q, ser, rx, ry, "left", "WM MAX", timeout=2)
             dump("restore")
         except Exception:
             dump("max-miss")

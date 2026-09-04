@@ -276,7 +276,7 @@ def lockstep_controls(q, ser, geom):
         if live is not None:
             moved = live
         rx, ry = ctrl_xy(moved, "max")
-        if d15.press(q, ser, rx, ry, "left", "WM REST", timeout=2.0):
+        if d15.press(q, ser, rx, ry, "left", "WM MAX", timeout=2.0):
             time.sleep(0.2)
             slot, live = parse_files_geom(harvest(ser))
             if live is not None:

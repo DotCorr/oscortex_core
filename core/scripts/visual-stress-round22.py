@@ -172,7 +172,7 @@ def main():
                 take("loop-max")
                 geom = live()
                 rx, ry = cs.ctrl_of(geom, "max")
-                d15.press(q, ser, rx, ry, "left", "WM REST", timeout=2)
+                d15.press(q, ser, rx, ry, "left", "WM MAX", timeout=2)
                 take("loop-rest")
             except Exception as e:
                 faults.append("max/rest %s" % e)
