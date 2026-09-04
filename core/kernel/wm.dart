@@ -1463,8 +1463,9 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
   if (wmPaced() > u64(0)) {
     /* Body/scroll (bigger than a 16x16 de-pace patch): publish now so a
-     * later 640-px pointer FRAME cannot steal the pair. Tiny damage stays
-     * on the PIT so `wm pace` still coalesces and prints WM PACE. */
+     * later 640-px pointer FRAME cannot steal the pair. Do not also
+     * wmDamageRect — a queued window AABB pairs the next body click to
+     * 232232 leftover px. Tiny damage stays on the PIT. */
     if (full < u64(1)) {
       if (rw > u64(0)) {
         if (rh > u64(0)) {
