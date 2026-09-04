@@ -255,7 +255,9 @@ def main():
         tx, ty = title_of(geom)
         d15.place(q, ser, tx, ty)
         d15.button(q, tx, ty, "left", True)
-        for dx in (0, 16, 32, 48, 64, 80, 64, 48, 32, 16, 0):
+        # Stay in the 16px FILES↔SET gap. Overlap samples SET's committed
+        # AABB through FILES (z-order), which is not a HOLD token lag.
+        for dx in (0, 8, 16, 8, 0, -8, -16, -8, 0):
             n0 = vis_count(serial_path, ser.archive or "")
             d15.place(q, ser, tx + dx, ty)
             if dx != 0:

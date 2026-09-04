@@ -808,9 +808,13 @@ static void chrome_clip_rect(int *x, int *y, int *rw, int *rh, int w, int h) {
   }
 }
 
+static int chrome_pt_in_geom(uint64_t g, int x, int y);
+static int chrome_rects_overlap(int ax, int ay, int aw, int ah, uint64_t g);
+
 /* Overlap-safe rectangle move inside the chrome cache. */
 static void chrome_move_rect(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
-                             int oy, int nx, int ny, int rw, int rh) {
+                             int oy, int nx, int ny, int rw, int rh,
+                             uint64_t keep) {
   int row;
   int col;
   int y;
@@ -836,6 +840,22 @@ static void chrome_move_rect(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
     }
   }
   if (rw < 1 || rh < 1) {
+    return;
+  }
+  if (keep != 0 && chrome_rects_overlap(nx, ny, rw, rh, keep) != 0) {
+    row = 0;
+    while (row < rh) {
+      srow = fb + (unsigned)(oy + row) * (unsigned)pitch_px;
+      drow = fb + (unsigned)(ny + row) * (unsigned)pitch_px;
+      col = 0;
+      while (col < rw) {
+        if (chrome_pt_in_geom(keep, nx + col, ny + row) == 0) {
+          drow[nx + col] = srow[ox + col];
+        }
+        col = col + 1;
+      }
+      row = row + 1;
+    }
     return;
   }
   if (ox == nx && oy == ny) {
@@ -884,17 +904,84 @@ static void chrome_move_rect(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
   }
 }
 
+static int chrome_pt_in_geom(uint64_t g, int x, int y) {
+  int gx;
+  int gy;
+  int gw;
+  int gh;
+
+  if (g == 0) {
+    return 0;
+  }
+  chrome_unpack_geom(g, &gx, &gy, &gw, &gh);
+  if (x < gx || y < gy) {
+    return 0;
+  }
+  if (x >= gx + gw || y >= gy + gh) {
+    return 0;
+  }
+  return 1;
+}
+
+static int chrome_rects_overlap(int ax, int ay, int aw, int ah, uint64_t g) {
+  int gx;
+  int gy;
+  int gw;
+  int gh;
+
+  if (g == 0 || aw < 1 || ah < 1) {
+    return 0;
+  }
+  chrome_unpack_geom(g, &gx, &gy, &gw, &gh);
+  if (ax + aw <= gx || gx + gw <= ax) {
+    return 0;
+  }
+  if (ay + ah <= gy || gy + gh <= ay) {
+    return 0;
+  }
+  return 1;
+}
+
 static void chrome_desk_rect(uint32_t *fb, int pitch_px, int x, int y, int rw,
-                             int rh, uint32_t seed) {
+                             int rh, uint32_t seed, uint64_t keep) {
+  int yy;
+  int xx;
+  int run0;
+
   if (rw < 1 || rh < 1) {
     return;
   }
-  osgfx_fill_desk_cached(fb, pitch_px * 4, x, y, rw, rh, seed);
+  if (keep == 0 || chrome_rects_overlap(x, y, rw, rh, keep) == 0) {
+    osgfx_fill_desk_cached(fb, pitch_px * 4, x, y, rw, rh, seed);
+    return;
+  }
+  /* Sibling VIS must stay committed. Wallpaper uncover of a drag AABB
+   * used to erase SET's title when FILES moved across it. */
+  yy = 0;
+  while (yy < rh) {
+    xx = 0;
+    run0 = -1;
+    while (xx <= rw) {
+      if (xx < rw && chrome_pt_in_geom(keep, x + xx, y + yy) == 0) {
+        if (run0 < 0) {
+          run0 = xx;
+        }
+      } else {
+        if (run0 >= 0) {
+          osgfx_fill_desk_cached(fb, pitch_px * 4, x + run0, y + yy,
+                                 xx - run0, 1, seed);
+          run0 = -1;
+        }
+      }
+      xx = xx + 1;
+    }
+    yy = yy + 1;
+  }
 }
 
 static void chrome_vacate(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
                           int oy, int ow, int oh, int nx, int ny, int nw,
-                          int nh, uint32_t seed) {
+                          int nh, uint32_t seed, uint64_t keep) {
   int ix;
   int iy;
   int iw;
@@ -932,20 +1019,20 @@ static void chrome_vacate(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
   }
   ih = ih - iy;
   if (iw < 1 || ih < 1) {
-    chrome_desk_rect(fb, pitch_px, ox, oy, ow, oh, seed);
+    chrome_desk_rect(fb, pitch_px, ox, oy, ow, oh, seed, keep);
     return;
   }
   if (oy < iy) {
-    chrome_desk_rect(fb, pitch_px, ox, oy, ow, iy - oy, seed);
+    chrome_desk_rect(fb, pitch_px, ox, oy, ow, iy - oy, seed, keep);
   }
   if (ay1 > iy + ih) {
-    chrome_desk_rect(fb, pitch_px, ox, iy + ih, ow, ay1 - (iy + ih), seed);
+    chrome_desk_rect(fb, pitch_px, ox, iy + ih, ow, ay1 - (iy + ih), seed, keep);
   }
   if (ox < ix) {
-    chrome_desk_rect(fb, pitch_px, ox, iy, ix - ox, ih, seed);
+    chrome_desk_rect(fb, pitch_px, ox, iy, ix - ox, ih, seed, keep);
   }
   if (ax1 > ix + iw) {
-    chrome_desk_rect(fb, pitch_px, ix + iw, iy, ax1 - (ix + iw), ih, seed);
+    chrome_desk_rect(fb, pitch_px, ix + iw, iy, ax1 - (ix + iw), ih, seed, keep);
   }
 }
 
@@ -999,24 +1086,38 @@ static uint64_t chrome_drag_apply(uint64_t old_g, uint64_t new_g) {
   if (m->desk != 0) {
     seed = (uint32_t)m->desk;
   }
-  chrome_move_rect(buf, ww, ww, hh, ox, oy, nx, ny, ow, oh);
   {
-    uint32_t *fb;
-    int pitch_px;
-    int bh;
-    fb = (uint32_t *)(uintptr_t)m->fb;
-    pitch_px = (int)(m->pitch / 4u);
-    bh = oh - OSGFX_TITLE_H;
-    if (bh > 0 && pitch_px >= ww) {
-      chrome_move_rect(fb, pitch_px, ww, hh, ox, oy + OSGFX_TITLE_H, nx,
-                       ny + OSGFX_TITLE_H, ow, bh);
+    uint64_t keep;
+    keep = 0;
+    /* Mailbox already holds the NEW content geom (Dart kicked before
+     * drag_step). Match that, not the vacated origin. */
+    if (chrome_geom_at(m->win0, nx + 3, ny + 3) != 0) {
+      keep = m->win1;
+    } else {
+      if (chrome_geom_at(m->win1, nx + 3, ny + 3) != 0) {
+        keep = m->win0;
+      }
     }
+    chrome_move_rect(buf, ww, ww, hh, ox, oy, nx, ny, ow, oh, keep);
+    {
+      uint32_t *fb;
+      int pitch_px;
+      int bh;
+      fb = (uint32_t *)(uintptr_t)m->fb;
+      pitch_px = (int)(m->pitch / 4u);
+      bh = oh - OSGFX_TITLE_H;
+      if (bh > 0 && pitch_px >= ww) {
+        chrome_move_rect(fb, pitch_px, ww, hh, ox, oy + OSGFX_TITLE_H, nx,
+                         ny + OSGFX_TITLE_H, ow, bh, keep);
+      }
+    }
+    /* Radius fringe lives outside the strict window AABB. Filling only
+     * x,y,w,h left AA/shadow chips on the vacated side. */
+    chrome_vacate(buf, ww, ww, hh, ox - OSGFX_RADIUS, oy - OSGFX_RADIUS,
+                  ow + OSGFX_RADIUS + OSGFX_RADIUS,
+                  oh + OSGFX_RADIUS + OSGFX_RADIUS, nx, ny, nw, nh, seed,
+                  keep);
   }
-  /* Radius fringe lives outside the strict window AABB. Filling only
-   * x,y,w,h left AA/shadow chips on the vacated side. */
-  chrome_vacate(buf, ww, ww, hh, ox - OSGFX_RADIUS, oy - OSGFX_RADIUS,
-                ow + OSGFX_RADIUS + OSGFX_RADIUS,
-                oh + OSGFX_RADIUS + OSGFX_RADIUS, nx, ny, nw, nh, seed);
   g_uncover0 = old_g;
   g_uncover1 = 0;
   dx = nx - ox;
@@ -1119,10 +1220,10 @@ static void chrome_idle_prep(const struct OsGfxGuestCmd *m) {
     seed = (uint32_t)m->desk;
   }
   if (ready == 0) {
-    chrome_move_rect(buf, w, w, h, 0, 0, 1, 0, 4, 4);
-    chrome_move_rect(buf, w, w, h, 1, 0, 0, 0, 4, 4);
-    chrome_vacate(buf, w, w, h, 2, 2, 2, 2, 2, 2, 2, 2, seed);
-    chrome_desk_rect(buf, w, 0, 0, 1, 1, seed);
+    chrome_move_rect(buf, w, w, h, 0, 0, 1, 0, 4, 4, 0);
+    chrome_move_rect(buf, w, w, h, 1, 0, 0, 0, 4, 4, 0);
+    chrome_vacate(buf, w, w, h, 2, 2, 2, 2, 2, 2, 2, 2, seed, 0);
+    chrome_desk_rect(buf, w, 0, 0, 1, 1, seed, 0);
     (void)chrome_present_clip(m, 0, 0, 8, 8);
     ready = 1;
   }

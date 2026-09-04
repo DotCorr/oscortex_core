@@ -79,7 +79,7 @@ def main():
     d15.place(q, ser, ftx, fty)
     d15.button(q, ftx, fty, "left", True)
     dump("first-drag-down")
-    for dx in (0, 20, 40, 64, 40, 16, 0):
+    for dx in (0, 8, 16, 12, 0, -8, -16, 0):
         n1 = cs.vis_count(serial_path, ser.archive or "")
         d15.place(q, ser, ftx + dx, fty)
         if dx:
