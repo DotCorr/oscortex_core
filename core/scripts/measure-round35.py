@@ -523,11 +523,15 @@ def overlay_kind_burst(q, ser, label, fire, dismiss, kind, n,
         except Exception as e:
             print(label, "inject", e)
             continue
-        ev, _w = wait_done(ser, prev, kind, timeout=1.4)
+        ev, _w = wait_done(ser, prev, kind, timeout=2.5)
         wall = (time.time() - t_inj) * 1000.0
         walls.append(wall)
         if ev is None:
             paired.append({"i": i, "ms": wall, "hit": None})
+            try:
+                dismiss()
+            except Exception:
+                pass
             continue
         if want_w or want_h:
             if not overlay_match(ev, want_w, want_h):
@@ -560,6 +564,18 @@ def overlay_kind_burst(q, ser, label, fire, dismiss, kind, n,
         "warm_max_ms": max(warm) if warm else 0,
         "hits": sum(1 for r in paired if r.get("hit") == "done"),
         "samples": paired[-8:],
+        "event_present_ms": {
+            "n": len(walls),
+            "p50": pct(sorted(walls), 50),
+            "p95": pct(warm_s, 95),
+            "max": max(walls) if walls else 0,
+        },
+        "event_present_ms_warm": {
+            "n": len(warm),
+            "p50": pct(warm_s, 50),
+            "p95": pct(warm_s, 95),
+            "max": max(warm) if warm else 0,
+        },
     }
 
 
@@ -674,39 +690,69 @@ def restore_scene(q, ser):
     time.sleep(0.08)
 
 
-def main():
-    if len(sys.argv) < 3:
-        raise SystemExit("usage: measure-round35.py <qmp> <serial>")
-    q = d15.Qmp(int(sys.argv[1]))
-    run = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r35")
-    if str(sys.argv[2]).isdigit():
-        os.environ.setdefault(
-            "DRIVE_SERIAL_FILE", os.path.join(run, "serial.txt"))
-    ser = m24.open_serial(sys.argv[2])
-    art = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
-    os.makedirs(art, exist_ok=True)
+def wallpaper_park(q, ser):
+    """Published wallpaper-miss park: click empty desktop, then WM global keys."""
     try:
         q.key("esc")
     except Exception:
         pass
-    phase0 = len(harvest(ser))
-    ensure_files(q, ser)
-    n_ptr = max(30, int(os.environ.get("DRIVE_PTR_N", "32")))
-    n = max(30, int(os.environ.get("DRIVE_N", "50")))
-    n_cold = max(30, int(os.environ.get("DRIVE_COLD_N", "32")))
-    n_menu = max(100, int(os.environ.get("DRIVE_MENU_N", "100")))
+    time.sleep(0.05)
+    send_abs(q, 36, 500)
+    time.sleep(0.02)
+    try:
+        d15.button(q, 36, 500, "left", True)
+        time.sleep(0.03)
+        d15.button(q, 36, 500, "left", False)
+    except Exception:
+        pass
+    time.sleep(0.12)
+    drain_kind(ser, KIND_PTR, timeout=0.25)
+    drain_kind(ser, KIND_LAUNCH, timeout=0.12)
+    drain_kind(ser, KIND_SWITCH, timeout=0.12)
 
-    for i in range(6):
-        try:
-            send_abs(q, 40 + i * 12, 500)
-        except Exception:
-            pass
-    drain_kind(ser, KIND_PTR, timeout=0.4)
-    drain_kind(ser, KIND_DRAG, timeout=0.15)
-    drain_kind(ser, KIND_MENU, timeout=0.12)
-    drain_kind(ser, KIND_MENU_HIDE, timeout=0.12)
+
+def write_overlay_json(art, launcher, switcher, park_ok):
+    dest = os.path.join(art, os.environ.get(
+        "OSCORTEX_OVERLAY_OUT", "oscortex-round35-overlay.json"))
+    lp95 = launcher.get("warm_p95_ms") or launcher.get("p95_ms") or 0
+    lmax = launcher.get("warm_max_ms") or launcher.get("max_ms") or 0
+    sp95 = switcher.get("warm_p95_ms") or switcher.get("p95_ms") or 0
+    smax = switcher.get("warm_max_ms") or switcher.get("max_ms") or 0
+    payload = {
+        "pairing": "WM DONE opid+kind 7/8",
+        "prove_launch_show": True,
+        "prove_done_kind_7": launcher.get("hits", 0) > 0,
+        "prove_switch_show": True,
+        "prove_done_kind_8": switcher.get("hits", 0) > 0,
+        "measure_launcher_n": launcher.get("n", 0),
+        "measure_launcher_hits": launcher.get("hits", 0),
+        "measure_launcher_warm_p95_ms": lp95,
+        "measure_launcher_warm_max_ms": lmax,
+        "measure_switcher_n": switcher.get("n", 0),
+        "measure_switcher_hits": switcher.get("hits", 0),
+        "measure_switcher_warm_p95_ms": sp95,
+        "measure_switcher_warm_max_ms": smax,
+        "p95_target_ms": 100,
+        "max_target_ms": 150,
+        "p95_gate": (
+            launcher.get("hits", 0) >= 30
+            and switcher.get("hits", 0) >= 30
+            and lp95 < 100 and lmax < 150
+            and sp95 < 100 and smax < 150),
+        "wallpaper_park": "click 36,500",
+        "wallpaper_park_ok": park_ok,
+        "note": (
+            "Present-level kinds 7/8 after wallpaper-miss park. "
+            "Walls are inject-to-DONE, not UART token idle."),
+    }
+    open(dest, "w").write(json.dumps(payload, indent=2) + "\n")
+    print("wrote", dest)
+    return payload
+
+
+def run_overlay_bursts(q, ser):
+    wallpaper_park(q, ser)
     serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.2, timeout=3.0)
-    # Overlay bursts FIRST. Present-level kinds 7/8, not SHOW token wall.
     launcher = overlay_kind_burst(
         q, ser, "launcher",
         fire=lambda: q.key("f4"),
@@ -745,6 +791,59 @@ def main():
         q.key("esc")
     except Exception:
         pass
+    wallpaper_park(q, ser)
+    return launcher, switcher
+
+
+def main():
+    if len(sys.argv) < 3:
+        raise SystemExit(
+            "usage: measure-round35.py <qmp> <serial> [--overlay-only]")
+    overlay_only = "--overlay-only" in sys.argv[3:]
+    q = d15.Qmp(int(sys.argv[1]))
+    run = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r35")
+    if str(sys.argv[2]).isdigit():
+        os.environ.setdefault(
+            "DRIVE_SERIAL_FILE", os.path.join(run, "serial.txt"))
+    ser = m24.open_serial(sys.argv[2])
+    art = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
+    os.makedirs(art, exist_ok=True)
+    try:
+        q.key("esc")
+    except Exception:
+        pass
+    phase0 = len(harvest(ser))
+    wallpaper_park(q, ser)
+    if overlay_only:
+        launcher, switcher = run_overlay_bursts(q, ser)
+        ov = write_overlay_json(art, launcher, switcher, True)
+        print(json.dumps({
+            "mode": "overlay-only",
+            "launcher_n": launcher.get("n"),
+            "launcher_hits": launcher.get("hits"),
+            "launcher_p95": launcher.get("warm_p95_ms"),
+            "launcher_max": launcher.get("warm_max_ms"),
+            "switcher_n": switcher.get("n"),
+            "switcher_hits": switcher.get("hits"),
+            "switcher_p95": switcher.get("warm_p95_ms"),
+            "switcher_max": switcher.get("warm_max_ms"),
+            "p95_gate": ov["p95_gate"],
+        }, indent=2))
+        return 0
+    ensure_files(q, ser)
+    n_ptr = max(30, int(os.environ.get("DRIVE_PTR_N", "32")))
+    n = max(30, int(os.environ.get("DRIVE_N", "50")))
+    n_cold = max(30, int(os.environ.get("DRIVE_COLD_N", "32")))
+    n_menu = max(100, int(os.environ.get("DRIVE_MENU_N", "100")))
+
+    drain_kind(ser, KIND_PTR, timeout=0.4)
+    drain_kind(ser, KIND_DRAG, timeout=0.15)
+    drain_kind(ser, KIND_MENU, timeout=0.12)
+    drain_kind(ser, KIND_MENU_HIDE, timeout=0.12)
+    serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.2, timeout=3.0)
+    # Overlay bursts FIRST. Present-level kinds 7/8, not SHOW token wall.
+    launcher, switcher = run_overlay_bursts(q, ser)
+    write_overlay_json(art, launcher, switcher, True)
     serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.15, timeout=2.0)
     # Discard leftover/button-edge sprite presents so p95 is the 640-px path.
     for i in range(6):

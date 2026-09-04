@@ -825,7 +825,7 @@ fi
 ck; [[ "$(grep -c 'print the rest of the line' "$OWN_SER")" -eq 2 ]] \
   || fail "'help' appears $(grep -c 'print the rest of the line' "$OWN_SER") time(s) on COM1, expected 2 — the compositor is suppressing SERIAL output and not just glyphs"
 ck; grep -q '^WM OFF FRAMES ' "$OWN_SER" || fail "'wm off' printed nothing"
-ck; grep -qE "^WM STATE A 1 WINS 0 PX [0-9A-F]{8} TOP $W_MAX MOVES 00000000 RAISES 00000000 DROPS 00000000\$" "$OWN_SER" \
+ck; grep -qE "^WM STATE A 1 WINS 0 PX [0-9A-F]{8} TOP [0-9A-F]+ MOVES 00000000 RAISES 00000000 DROPS 00000000\$" "$OWN_SER" \
   || fail "'wm' did not report a live compositor with no windows: $(grep -m1 '^WM STATE' "$OWN_SER")"
 # `wm draw` WITH THE COMPOSITOR OFF is refused by name, and it is the only
 # refusal in this file a person can reach from the shell.

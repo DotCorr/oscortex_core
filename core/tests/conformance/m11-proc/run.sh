@@ -139,7 +139,7 @@ M1_EXPECTED="$CORE_DIR/tests/conformance/m1-interrupts/expected.txt"
 ck; [[ -f "$M1_EXPECTED" ]] || setup_error "M1 golden not found at $M1_EXPECTED"
 
 ck; WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-m11.XXXXXX")" || setup_error "could not create a temp workdir"
-trap 'rm -rf "$WORKDIR"' EXIT
+trap 'if [ -f "$WORKDIR/session/serial.txt" ]; then cp "$WORKDIR/session/serial.txt" /tmp/m11-last-serial.txt || true; fi; if [ -f "$WORKDIR/session/screen.txt" ]; then cp "$WORKDIR/session/screen.txt" /tmp/m11-last-screen.txt || true; fi; rm -rf "$WORKDIR"' EXIT
 
 REGEN=0
 [[ "${1:-}" == "--regen" ]] && REGEN=1
