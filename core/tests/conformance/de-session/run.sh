@@ -135,8 +135,25 @@ sys.exit(0 if r == b == g == 18 else 1)
 PY
 ck; grep -q 'OSGFX_CORNER_TL' "$SESSION_C" \
   || fail "session does not paint top card corners"
-ck; grep -q 'cmd->pop != 0 && panel == 0' "$SESSION_C" \
-  || fail "osgfx_session.c does not withdraw menus when DESK is up"
+# Menus are a scanout overlay, not baked into the DESK session cache
+# (that bake was a 900 ms MISS and painted a session card after DESK
+# attached). Withdrawal = pop==0 skips the blit; DESK/panel does not
+# get a session-cached menu card.
+ck; grep -q 'osgfx_session_blit_menu' "$SESSION_C" \
+  || fail "osgfx_session.c lost osgfx_session_blit_menu"
+ck; grep -q 'Baking cmd->pop into the cache' "$SESSION_C" \
+  || fail "session paint no longer documents pop-not-in-cache"
+ck; grep -q 'm->pop != 0' "$SKIA_CPP" \
+  || fail "chrome_overlay_scanout does not gate menu blit on pop"
+ck; python3 - "$SESSION_C" <<'PY' \
+  || fail "session still paints a cached ctx menu after DESK (paint_ctx_menu is called)"
+import sys
+src = open(sys.argv[1]).read()
+# Definition may remain; a call would bake the card into session paint.
+body = src.split("void osgfx_session_paint(", 1)[-1]
+if "paint_ctx_menu(" in body:
+    raise SystemExit(1)
+PY
 ck; grep -q 'osgfxGuestPanel' "$CORE_DIR/kernel/wmgfx.dart" \
   || fail "wmgfx.dart does not publish the client-owns-the-strip flag"
 ck; grep -q 'u64 wmPanelStrip' "$CORE_DIR/kernel/wmgfx.dart" \
@@ -494,7 +511,7 @@ if [[ -n "$VENUS_SKIP_WHY" ]]; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 63
+    require_assertions 66
     echo "DE-session: PASS — Homebrew session chrome + generative desk ($ASSERTIONS checks); Venus SKIP ($VENUS_SKIP_WHY)"
   exit 0
 fi
@@ -521,7 +538,7 @@ if ! grep -q 'M1 END' "$SER"; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 63
+    require_assertions 66
     echo "DE-session: PASS — Homebrew only; Venus capability missing at runtime"
     exit 0
   fi
@@ -558,7 +575,7 @@ if ! grep -q 'VIRTIO VENUS OK' "$SER"; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 63
+    require_assertions 66
     echo "DE-session: PASS — Homebrew only; Venus Graphite isolation not available"
     exit 0
   fi

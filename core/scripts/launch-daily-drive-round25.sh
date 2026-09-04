@@ -10,14 +10,20 @@ QMP=$(python3 "$PICKER")
 SERPORT=$(python3 "$PICKER")
 META="$CORE_DIR/build/BUILD.json"
 HEAD="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-KERNEL_UEFI="${KERNEL_UEFI:-}"
-if [[ -z "$KERNEL_UEFI" ]]; then
-  if [[ -f "$CORE_DIR/build/kernel-uefi.elf" && -f "$META" ]]; then
-    meta_git="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("git_sha",""))' "$META")"
-    if [[ "$meta_git" == "$HEAD" ]]; then
-      KERNEL_UEFI="$CORE_DIR/build/kernel-uefi.elf"
-    fi
+# Inherited KERNEL_UEFI from an older daily-drive must not silently
+# boot a stale ELF. Exact-tip BUILD.json wins unless FORCE_KERNEL_UEFI=1.
+KERNEL_UEFI_IN="${KERNEL_UEFI:-}"
+KERNEL_UEFI=""
+if [[ "${FORCE_KERNEL_UEFI:-0}" == "1" && -n "$KERNEL_UEFI_IN" && -f "$KERNEL_UEFI_IN" ]]; then
+  KERNEL_UEFI="$KERNEL_UEFI_IN"
+elif [[ -f "$CORE_DIR/build/kernel-uefi.elf" && -f "$META" ]]; then
+  meta_git="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("git_sha",""))' "$META")"
+  if [[ "$meta_git" == "$HEAD" ]]; then
+    KERNEL_UEFI="$CORE_DIR/build/kernel-uefi.elf"
   fi
+fi
+if [[ -z "$KERNEL_UEFI" && -n "$KERNEL_UEFI_IN" && -f "$KERNEL_UEFI_IN" ]]; then
+  KERNEL_UEFI="$KERNEL_UEFI_IN"
 fi
 if [[ -z "$KERNEL_UEFI" || ! -f "$KERNEL_UEFI" ]]; then
   echo "launch-daily-drive-round25: promoting exact-tip core/build" >&2
