@@ -762,7 +762,17 @@ for sym in $PLAT_EXTERNS; do
   ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
     || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
 done
-EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# Subtract plat names verify actually honors, not unused leftovers still
+# sitting in the manifest. Two unused osgfx @externs were dropped; the
+# M5 remainder is 22 (was 20 when the census still subtracted those two).
+HONORED_PLAT=$(echo "$VERIFY_OUT" | python3 -c "
+import re, sys
+text = sys.stdin.read()
+m = re.search(r'declared extern\(s\): (.+)', text)
+names = m.group(1).split() if m else []
+print(sum(1 for n in names if n.startswith('osgfx_') or n.startswith('osxui_')))
+")
+EXTERN_COUNT=$(( EXTERN_COUNT - HONORED_PLAT ))
 # ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
 # numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
 # DCDart spelling. Subtracted by name, and asserted to BE assembly.
@@ -770,7 +780,7 @@ ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
   || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
 MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
 EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
-ck; [[ "$EXTERN_COUNT" -eq 20 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's eleven, expected 20 (plat C and msr_write subtracted; M5 added PCI/Bochs ports only)"
+ck; [[ "$EXTERN_COUNT" -eq 22 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's eleven, expected 22 (honored plat $HONORED_PLAT/$PLAT_PRESENT and msr_write subtracted; M5 added PCI/Bochs ports only)"
 for sym in port_inl port_outl port_inw port_outw; do
   ck; grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest — one of the four externs M5 added and still has is gone"
 done
