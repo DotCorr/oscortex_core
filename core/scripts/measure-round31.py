@@ -189,7 +189,7 @@ def burst(q, ser, label, points, kind, btn=None):
                 q.key("esc")
             except Exception:
                 pass
-            wait_done(ser, ev["pos"], KIND_MENU, timeout=0.25)
+            wait_done(ser, ev["pos"], KIND_MENU, timeout=1.5)
     return summarize(label, walls, px_tail, paired, time.time() - t0)
 
 

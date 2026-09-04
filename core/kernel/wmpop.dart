@@ -654,8 +654,9 @@ void wmPopRestoreFast(u64 ox, u64 oy) {
         return;
       }
     }
-    osgfx_guest_tick();
-    wmGfxChromeStamp();
+    /* HAVE=0: restore the card rect only. A session tick here was
+     * the 488 ms hide that then stole the next open pair. */
+    final u64 unused = wmRepaintRect(ox, oy, u64(wmPopVisW), u64(wmPopVisH));
     wmPopPresentVis(ox, oy);
     return;
   }
