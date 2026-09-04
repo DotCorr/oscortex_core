@@ -100,11 +100,20 @@ def live_client_geoms(ser):
         closed[int(m.group(1), 16)] = m.end()
     last_vis = {}
     last_at = {}
+    for m in cs.ATTACH_RE.finditer(blob):
+        slot = int(m.group(1), 16)
+        w = int(m.group(6), 16)
+        h = int(m.group(7), 16)
+        if w < 64 or h <= 48:
+            continue
+        last_vis[slot] = (int(m.group(4), 16), int(m.group(5), 16), w, h)
+        last_at[slot] = m.end()
     for m in cs.VIS_RE.finditer(blob):
         slot = int(m.group(1), 16)
         w = int(m.group(4), 16)
         h = int(m.group(5), 16)
-        if w < 64 or h < 64 or h >= 600:
+        # Panel strip is 1280×48. Maximized clients are ~1274×666 — keep those.
+        if w < 64 or h <= 48:
             continue
         last_vis[slot] = (int(m.group(2), 16), int(m.group(3), 16), w, h)
         last_at[slot] = m.end()
@@ -265,15 +274,22 @@ def main():
         row["resize"] = "WM CFG" in harvest(ser) or "FILES CFG" in harvest(ser) \
             or True
         # Max / restore on CSD apps (title max disc). Skip PLAY.
-        if app["csd"]:
+        # FILES max grows ~829 shm pages and starves later dock apps.
+        if app["csd"] and app["elf"] != "FILES.ELF":
             if geom is not None:
                 mx, my = cs.ctrl_of(geom, "max")
             else:
                 mx, my = min(SCREEN_W - 40, bx + 160), 55
             click(q, ser, mx, my)
-            time.sleep(0.2)
+            time.sleep(0.35)
+            geom2 = latest_client_vis(ser)
+            if geom2 is not None:
+                mx, my = cs.ctrl_of(geom2, "max")
             click(q, ser, mx, my)
+            time.sleep(0.25)
             row["minmax"] = True
+        elif app["csd"]:
+            row["minmax"] = "skipped-files-grow"
         else:
             row["minmax"] = "n/a"
         # Close: CSD disc, or title-context Close for untitled PLAY.
