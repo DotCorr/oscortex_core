@@ -78,10 +78,13 @@ def first_after(ser, prev_pos, want_kind=None):
     return None
 
 
-def wait_pair(ser, prev, timeout=3.0, skip_ptr=False, skip_full=False):
+def wait_pair(ser, prev, timeout=3.0, skip_ptr=False, skip_full=False,
+              prefer_scan=False):
     t0 = time.time()
     while (time.time() - t0) < timeout:
-        got = first_after(ser, prev)
+        got = first_after(ser, prev, want_kind=("scan" if prefer_scan else None))
+        if got is None and not prefer_scan:
+            got = first_after(ser, prev)
         if got is not None:
             pos, kind, gen, px, w, h = got
             if skip_ptr and px <= 640 and px > 0:
@@ -150,7 +153,7 @@ def summarize(label, walls, px_tail, paired, dur):
     }
 
 
-def burst(q, ser, label, points, btn=None, skip_ptr=False):
+def burst(q, ser, label, points, btn=None, skip_ptr=False, prefer_scan=False):
     walls = []
     px_tail = []
     paired = []
@@ -173,7 +176,8 @@ def burst(q, ser, label, points, btn=None, skip_ptr=False):
         except Exception as e:
             print(label, "inject", e)
             continue
-        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=skip_ptr)
+        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=skip_ptr,
+                        prefer_scan=prefer_scan)
         if got is None:
             print(label, "unpaired", x, y, "prev", g0)
             continue
@@ -347,7 +351,10 @@ def layered_drag(q, ser, n=32):
     pts = [(tx + (i * 9) % 160, ty) for i in range(n)]
     d15.place(q, ser, pts[0][0], pts[0][1])
     d15.button(q, pts[0][0], pts[0][1], "left", True)
-    drag = burst(q, ser, "drag", pts[1:], skip_ptr=True)
+    prefer = os.environ.get("OSCORTEX_PREFER_SCAN",
+                            "1" if "venus" in os.environ.get(
+                                "OSCORTEX_PERF_PATH", "") else "0") == "1"
+    drag = burst(q, ser, "drag", pts[1:], skip_ptr=True, prefer_scan=prefer)
     d15.button(q, pts[-1][0], pts[-1][1], "left", False)
     blob_len = len(harvest(ser))
     wait_mark(ser, DRAGEND_RE, blob_len, timeout=0.25)
@@ -371,6 +378,9 @@ def main():
     n_ptr = max(100, int(os.environ.get("DRIVE_PTR_N", "100")))
     n = max(30, int(os.environ.get("DRIVE_N", "32")))
     n_cold = max(30, int(os.environ.get("DRIVE_COLD_N", "32")))
+    prefer_scan = os.environ.get("OSCORTEX_PREFER_SCAN",
+                                 "1" if "venus" in os.environ.get(
+                                     "OSCORTEX_PERF_PATH", "") else "0") == "1"
 
     for i in range(6):
         try:
