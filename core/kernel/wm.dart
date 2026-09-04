@@ -3592,8 +3592,9 @@ void wmGrab(u64 x, u64 y) {
     }
   }
   if (hit >= u64(wmMaxWindows)) {
-    /* Keep the last ordinary client. Clearing to 0 parks keys in the
-     * shell drain; overlay / launcher shortcuts need a live popper. */
+    /* Wallpaper miss parks the seat so shell commands (`wm pace`)
+     * reach the prompt. F4 / Alt-Tab stay WM-global in wmDeKey. */
+    wmFocusTo(u64(wmMaxWindows));
     return;
   }
   if (wmIsOverlay(hit) > u64(0)) {
