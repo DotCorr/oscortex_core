@@ -26,6 +26,10 @@ const int wmBtnS = 18;
 /// Gap from the title's right edge and between the two buttons.
 const int wmBtnGap = 8;
 
+/// Title-control origin Y inset. Lockstep with SESS_BTN_PAD_Y (osgfx_session.c).
+/// Paint and hit-test share this; wmBtnGap stays the X pitch.
+const int wmBtnPadY = 7;
+
 /// Close affordance. Soft red — not a neon stamp.
 const int wmCloseColor = 0x00D45050;
 
@@ -215,6 +219,92 @@ final List<u8> wmStrPrefName = const [
 final List<u8> wmStrClose = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x4C), u8(0x4F), u8(0x53),
   u8(0x45), u8(0x20), u8(0x57), u8(0x20),
+];
+
+/// `'WM CSDHIT '` -- 10 bytes. Live geom + control AABB + pointer at press.
+@rodata
+final List<u8> wmStrCsdHit = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x53), u8(0x44), u8(0x48),
+  u8(0x49), u8(0x54), u8(0x20),
+];
+
+/// `'WM LIFE '` -- 8 bytes. Slot / SHM / chrome reclaim after close.
+@rodata
+final List<u8> wmStrLife = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x4C), u8(0x49), u8(0x46), u8(0x45),
+  u8(0x20),
+];
+
+/// `' SHM '` -- 5 bytes.
+@rodata
+final List<u8> wmStrShm = const [
+  u8(0x20), u8(0x53), u8(0x48), u8(0x4D), u8(0x20),
+];
+
+/// `' CH '` -- 4 bytes. Chrome-cache key present (0 = reclaimed).
+@rodata
+final List<u8> wmStrCh = const [
+  u8(0x20), u8(0x43), u8(0x48), u8(0x20),
+];
+
+/// `' LV '` -- 4 bytes. Live titled+panel window count.
+@rodata
+final List<u8> wmStrLv = const [
+  u8(0x20), u8(0x4C), u8(0x56), u8(0x20),
+];
+
+/// `' T '` -- 3 bytes. Top window id on a CSDHIT line.
+@rodata
+final List<u8> wmStrT = const [
+  u8(0x20), u8(0x54), u8(0x20),
+];
+
+/// `' HIT '` -- 5 bytes.
+@rodata
+final List<u8> wmStrHit = const [
+  u8(0x20), u8(0x48), u8(0x49), u8(0x54), u8(0x20),
+];
+
+/// `' GH '` -- 4 bytes. wmDeGeomHit result.
+@rodata
+final List<u8> wmStrGh = const [
+  u8(0x20), u8(0x47), u8(0x48), u8(0x20),
+];
+
+/// `' CX '` -- 4 bytes. Close-control origin X.
+@rodata
+final List<u8> wmStrCx = const [
+  u8(0x20), u8(0x43), u8(0x58), u8(0x20),
+];
+
+/// `' CY '` -- 4 bytes. Close-control origin Y.
+@rodata
+final List<u8> wmStrCy = const [
+  u8(0x20), u8(0x43), u8(0x59), u8(0x20),
+];
+
+/// `' PX '` -- 4 bytes. Pointer X at the press.
+@rodata
+final List<u8> wmStrPxCsd = const [
+  u8(0x20), u8(0x50), u8(0x58), u8(0x20),
+];
+
+/// `' PY '` -- 4 bytes. Pointer Y at the press.
+@rodata
+final List<u8> wmStrPyCsd = const [
+  u8(0x20), u8(0x50), u8(0x59), u8(0x20),
+];
+
+/// `' D '` -- 3 bytes. wmMetaDrag.
+@rodata
+final List<u8> wmStrD = const [
+  u8(0x20), u8(0x44), u8(0x20),
+];
+
+/// `' K '` -- 3 bytes. Chrome-cache key (low 16).
+@rodata
+final List<u8> wmStrK = const [
+  u8(0x20), u8(0x4B), u8(0x20),
 ];
 
 /// `'WM MIN W '` -- 9 bytes.
@@ -444,10 +534,12 @@ u64 wmWindowRegionLive(u64 wI) {
 }
 
 /// Close-button origin X for window [wI].
+/// Absolute origin + live width: same formula as session paint
+/// (`win_close_x`) so a cache blit cannot leave the vacated disc live.
 @bare
 u64 wmCloseX(u64 wI) {
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  return wmGeomX(g) + wmGeomW(g) - u64(wmBtnGap) - u64(wmBtnS);
+  return wmAbsX(wI) + wmGeomW(g) - u64(wmBtnGap) - u64(wmBtnS);
 }
 
 /// Min-button origin X for window [wI].
@@ -463,16 +555,17 @@ u64 wmMaxX(u64 wI) {
 }
 
 /// Title-button origin Y for window [wI].
+/// [wmBtnPadY] matches SESS_BTN_PAD_Y. Absolute Y matches [wmTitleHit].
 @bare
 u64 wmBtnY(u64 wI) {
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  u64 y = wmGeomY(g) + u64(wmBtnGap);
+  u64 y = wmAbsY(wI) + u64(wmBtnPadY);
   u64 th = u64(wmTitleH);
   if (th > wmGeomH(g)) {
     th = wmGeomH(g);
   }
-  if (y + u64(wmBtnS) > wmGeomY(g) + th) {
-    y = wmGeomY(g);
+  if (y + u64(wmBtnS) > wmAbsY(wI) + th) {
+    y = wmAbsY(wI);
   }
   return y;
 }
@@ -552,6 +645,100 @@ u64 wmMaxHit(u64 wI, u64 x, u64 y) {
     return u64(0);
   }
   return u64(1);
+}
+
+/// UART the live title-control source of truth at this press.
+@bare
+void wmCsdNote(u64 hit, u64 geomHit, u64 x, u64 y) {
+  final u64 top = wmMeta(u64(wmMetaTop));
+  u64 gx = u64(0);
+  u64 gy = u64(0);
+  u64 gw = u64(0);
+  u64 gh = u64(0);
+  u64 cx = u64(0);
+  u64 cy = u64(0);
+  u64 key = u64(0);
+  u64 slot = hit;
+  if (slot >= u64(wmMaxWindows)) {
+    slot = geomHit;
+  }
+  if (slot < u64(wmMaxWindows)) {
+    final u64 g = wmWin(slot, u64(wmWinGeom));
+    gx = wmAbsX(slot);
+    gy = wmAbsY(slot);
+    gw = wmGeomW(g);
+    gh = wmGeomH(g);
+    cx = wmCloseX(slot);
+    cy = wmBtnY(slot);
+  }
+  if (wmPageAddr() > u64(0)) {
+    key = wmPage(u64(wmPageWChromeHave));
+  }
+  uartWrite(Rodata.addressOf(wmStrCsdHit), u64(10));
+  uartWrite(Rodata.addressOf(wmStrT), u64(3));
+  uartPutHex(top, u64(1));
+  uartWrite(Rodata.addressOf(wmStrHit), u64(5));
+  uartPutHex(hit, u64(1));
+  uartWrite(Rodata.addressOf(wmStrGh), u64(4));
+  uartPutHex(geomHit, u64(1));
+  uartWrite(Rodata.addressOf(wmStrX), u64(3));
+  uartPutHex(gx, u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(gy, u64(4));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(gw, u64(4));
+  uartWrite(Rodata.addressOf(wmStrH), u64(3));
+  uartPutHex(gh, u64(4));
+  uartWrite(Rodata.addressOf(wmStrCx), u64(4));
+  uartPutHex(cx, u64(4));
+  uartWrite(Rodata.addressOf(wmStrCy), u64(4));
+  uartPutHex(cy, u64(4));
+  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
+  uartPutHex(x, u64(4));
+  uartWrite(Rodata.addressOf(wmStrPyCsd), u64(4));
+  uartPutHex(y, u64(4));
+  uartWrite(Rodata.addressOf(wmStrD), u64(3));
+  uartPutHex(wmMeta(u64(wmMetaDrag)), u64(2));
+  uartWrite(Rodata.addressOf(wmStrK), u64(3));
+  uartPutHex(key, u64(4));
+  uartNewline();
+}
+
+/// Live windows, SHM pages, chrome key, close/reap high-water.
+@bare
+void wmLifeNote() {
+  u64 shm = shmLivePages();
+  u64 ch = u64(0);
+  u64 closes = u64(0);
+  u64 reaps = u64(0);
+  u64 shmHi = shm;
+  if (wmPageAddr() > u64(0)) {
+    if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
+      ch = u64(1);
+    }
+    closes = wmPage(u64(wmPageWLifeClose));
+    reaps = wmPage(u64(wmPageWLifeReap));
+    shmHi = wmPage(u64(wmPageWLifeShmHi));
+    if (shm > shmHi) {
+      shmHi = shm;
+      wmPageSet(u64(wmPageWLifeShmHi), shmHi);
+    }
+    if (ch > wmPage(u64(wmPageWLifeCacheHi))) {
+      wmPageSet(u64(wmPageWLifeCacheHi), ch);
+    }
+  }
+  uartWrite(Rodata.addressOf(wmStrLife), u64(8));
+  uartWrite(Rodata.addressOf(wmStrLv), u64(4));
+  uartPutHex(wmMeta(u64(wmMetaLive)), u64(2));
+  uartWrite(Rodata.addressOf(wmStrShm), u64(5));
+  uartPutHex(shm, u64(4));
+  uartWrite(Rodata.addressOf(wmStrCh), u64(4));
+  uartPutHex(ch, u64(1));
+  uartWrite(Rodata.addressOf(wmStrR), u64(3));
+  uartPutHex(reaps, u64(4));
+  uartWrite(Rodata.addressOf(wmStrC), u64(3));
+  uartPutHex(closes, u64(4));
+  uartNewline();
 }
 
 /// Start-button origin Y (taskbar top).
@@ -1518,7 +1705,11 @@ void wmCloseWindow(u64 wI) {
   wmeventResetSlot(wI);
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWLaunch0) + wI, u64(0));
+    wmPageSet(u64(wmPageWMax0) + wI, u64(0));
+    wmPageSet(u64(wmPageWChromeHave), u64(0));
     wmDefClear(wI);
+    wmPageSet(u64(wmPageWLifeClose),
+        wmPage(u64(wmPageWLifeClose)) + u64(1));
   }
   wmSetWin(wI, u64(wmWinState), u64(wmWinFree));
   if (wmMeta(u64(wmMetaLive)) > u64(0)) {
@@ -1539,6 +1730,7 @@ void wmCloseWindow(u64 wI) {
   uartPutHex(owner, u64(8));
   uartNewline();
   procKillId(owner);
+  wmLifeNote();
   final u64 unused = wmRepaintRect(ox, oy, ow, oh);
 }
 
@@ -1983,6 +2175,8 @@ void wmDefDrain() {
       } else {
         if (kind == u64(wmDefKindDrag)) {
           if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+            /* Mailbox win0/win1 = live Dart geoms before the cache blit
+             * so paint + chrome_key + hit-test share one origin. */
             wmGfxKick();
             final u64 dpx = osgfx_chrome_drag_step(oldG, nextG);
             /* Body travels with the cache/scanout move. A decorated
@@ -2270,25 +2464,50 @@ u64 wmDeGrab(u64 x, u64 y) {
   if (geomHit < u64(wmMaxWindows)) {
     hit = geomHit;
   }
-  if (hit < u64(wmMaxWindows)) {
-    if (wmIsPanel(hit) < u64(1)) {
-      if (wmWinOverlay(hit) < u64(1)) {
-        if (wmCloseHit(hit, x, y) > u64(0)) {
-          wmCloseWindow(hit);
-          return u64(1);
-        }
-        if (wmMaxHit(hit, x, y) > u64(0)) {
-          wmToggleMaxWindow(hit);
-          return u64(1);
-        }
-        if (wmMinHit(hit, x, y) > u64(0)) {
-          wmMinWindow(hit);
-          return u64(1);
-        }
-      }
-    }
+  return wmDeCsdButtons(hit, geomHit, x, y);
+}
+
+/// Fire close/max/min from live abs geom. Same layout paint uses.
+@bare
+u64 wmDeCsdButtons(u64 hit, u64 geomHit, u64 x, u64 y) {
+  wmCsdNote(hit, geomHit, x, y);
+  if (hit >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  if (wmIsPanel(hit) > u64(0)) {
+    return u64(0);
+  }
+  if (wmWinOverlay(hit) > u64(0)) {
+    return u64(0);
+  }
+  if (wmCloseHit(hit, x, y) > u64(0)) {
+    wmCloseWindow(hit);
+    return u64(1);
+  }
+  if (wmMaxHit(hit, x, y) > u64(0)) {
+    wmToggleMaxWindow(hit);
+    return u64(1);
+  }
+  if (wmMinHit(hit, x, y) > u64(0)) {
+    wmMinWindow(hit);
+    return u64(1);
   }
   return u64(0);
+}
+
+/// Left-up CSD: a press that missed the down-edge (busy / sticky grab)
+/// still closes when the pointer is on the live control disc.
+@bare
+u64 wmDeCsdRelease(u64 x, u64 y) {
+  if (wmDeOn() < u64(1)) {
+    return u64(0);
+  }
+  u64 hit = wmHit(x, y);
+  final u64 geomHit = wmDeGeomHit(x, y);
+  if (geomHit < u64(wmMaxWindows)) {
+    hit = geomHit;
+  }
+  return wmDeCsdButtons(hit, geomHit, x, y);
 }
 
 /// `'OSGFX SESSION CHROME'` -- 20 bytes. Same token as osgfx_session.c.

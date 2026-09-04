@@ -314,6 +314,11 @@ const int wmPageWDmgCumCons = 440;
 /// Sprite-only present seq. Independent of EvKind so pointer pairing
 /// cannot stall behind a leftover drag/menu/focus stamp.
 const int wmPageWSpriteSeq = 441;
+/// Close/reap high-water (Round 22). No new .bss — words in the WM page.
+const int wmPageWLifeShmHi = 442;
+const int wmPageWLifeCacheHi = 443;
+const int wmPageWLifeReap = 444;
+const int wmPageWLifeClose = 445;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;

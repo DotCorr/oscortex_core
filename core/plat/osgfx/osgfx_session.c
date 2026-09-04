@@ -48,7 +48,7 @@ enum {
   SESS_BTN_S = 18,
   SESS_BTN_R = 9,
   SESS_BTN_GAP = 8,
-  SESS_BTN_PAD_Y = 7,
+  SESS_BTN_PAD_Y = 7, /* lockstep wmBtnPadY — paint + Dart hit-test */
   SESS_CLOSE = 0x00D45050,
   SESS_MIN = 0x00D4A840,
   SESS_MAX = 0x0068B078,

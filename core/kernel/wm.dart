@@ -2463,6 +2463,12 @@ void wmReapOne(u64 i) {
   if (f1 == (i + u64(1))) {
     wmSeatFocusSet(u64(1), u64(wmMaxWindows));
   }
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWLaunch0) + i, u64(0));
+    wmPageSet(u64(wmPageWMax0) + i, u64(0));
+    wmPageSet(u64(wmPageWLifeReap),
+        wmPage(u64(wmPageWLifeReap)) + u64(1));
+  }
   uartWrite(Rodata.addressOf(wmStrReap), u64(10));
   uartPutHex(i, u64(1));
   uartWrite(Rodata.addressOf(wmStrR), u64(3));
@@ -3666,6 +3672,9 @@ void wmPointerTick() {
         wmGrab(x, y);
       }
     } else {
+      if (wasLeft > u64(0)) {
+        wmDeCsdRelease(x, y);
+      }
       wmSetMeta(u64(wmMetaDrag), u64(0));
     }
     wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);
@@ -3703,6 +3712,9 @@ void wmPointerTick() {
       wmGrab(x, y);
     }
   } else {
+    if (wasLeft > u64(0)) {
+      wmDeCsdRelease(x, y);
+    }
     wmSetMeta(u64(wmMetaDrag), u64(0));
   }
   wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);

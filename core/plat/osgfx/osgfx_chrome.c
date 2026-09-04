@@ -391,6 +391,43 @@ static void chrome_unpack_geom(uint64_t g, int *x, int *y, int *w, int *h) {
   *h = (int)(g & 0xffffu);
 }
 
+static uint64_t chrome_pack_geom(int x, int y, int w, int h) {
+  if (x < 0) {
+    x = 0;
+  }
+  if (y < 0) {
+    y = 0;
+  }
+  return ((uint64_t)(unsigned)x << 48) | ((uint64_t)(unsigned)y << 32) |
+         ((uint64_t)(unsigned)w << 16) | (uint64_t)(unsigned)h;
+}
+
+static uint64_t chrome_shift_geom(uint64_t g, int dx, int dy) {
+  int x;
+  int y;
+  int w;
+  int h;
+
+  if (g == 0) {
+    return 0;
+  }
+  chrome_unpack_geom(g, &x, &y, &w, &h);
+  return chrome_pack_geom(x + dx, y + dy, w, h);
+}
+
+static int chrome_geom_at(uint64_t g, int x, int y) {
+  int gx;
+  int gy;
+  int gw;
+  int gh;
+
+  if (g == 0) {
+    return 0;
+  }
+  chrome_unpack_geom(g, &gx, &gy, &gw, &gh);
+  return gx == x && gy == y;
+}
+
 /* Client-body span on scanout row [yy], or x1<=x0 if this row is chrome.
  * Top-corner insets stay cache-owned (title AA card). Bottom-corner
  * squares are a client hole so wmBlitRow coverage can close the curve
@@ -931,6 +968,10 @@ static uint64_t chrome_drag_apply(uint64_t old_g, uint64_t new_g) {
   int hh;
   int dx;
   int dy;
+  int sdx;
+  int sdy;
+  int old_cx;
+  int old_cy;
   uint64_t px;
 
   m = &osgfx_guest_cmd;
@@ -946,6 +987,11 @@ static uint64_t chrome_drag_apply(uint64_t old_g, uint64_t new_g) {
   }
   chrome_unpack_geom(old_g, &ox, &oy, &ow, &oh);
   chrome_unpack_geom(new_g, &nx, &ny, &nw, &nh);
+  sdx = nx - ox;
+  sdy = ny - oy;
+  /* Decorated old + wmBorder(3) is the content origin before this step. */
+  old_cx = ox + 3;
+  old_cy = oy + 3;
   if (ow < 1 || oh < 1 || nw < 1 || nh < 1) {
     return 0;
   }
@@ -1017,6 +1063,21 @@ static uint64_t chrome_drag_apply(uint64_t old_g, uint64_t new_g) {
     px = px + chrome_present_clip(m, nx, ny, nw, nh);
   }
   g_uncover0 = 0;
+  /* Cache blit moved the discs. Stale mailbox/stamp geoms would leave
+   * the vacated close/min/max hit targets live. Shift only the card
+   * whose content origin still matches the pre-move decorated origin. */
+  if (chrome_geom_at(osgfx_guest_cmd.win0, old_cx, old_cy)) {
+    osgfx_guest_cmd.win0 = chrome_shift_geom(osgfx_guest_cmd.win0, sdx, sdy);
+  }
+  if (chrome_geom_at(osgfx_guest_cmd.win1, old_cx, old_cy)) {
+    osgfx_guest_cmd.win1 = chrome_shift_geom(osgfx_guest_cmd.win1, sdx, sdy);
+  }
+  if (chrome_geom_at(g_stamp_win0, old_cx, old_cy)) {
+    g_stamp_win0 = chrome_shift_geom(g_stamp_win0, sdx, sdy);
+  }
+  if (chrome_geom_at(g_stamp_win1, old_cx, old_cy)) {
+    g_stamp_win1 = chrome_shift_geom(g_stamp_win1, sdx, sdy);
+  }
   pg[OSGFX_WMPAGE_W_CHROME_W] = m->w;
   pg[OSGFX_WMPAGE_W_CHROME_H] = m->h;
   pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);

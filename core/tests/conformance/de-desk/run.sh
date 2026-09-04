@@ -229,7 +229,25 @@ if geom < 0 or close < 0 or geom > close:
     raise SystemExit("wmDeGrab does not use title geom before CSD")
 if walk >= 0 and walk < close:
     raise SystemExit("CSD still walks every slot")
+if "wmDeCsdButtons(" not in body:
+    raise SystemExit("wmDeGrab does not share CSD buttons with release")
+if "wmCsdNote(" not in body:
+    raise SystemExit("CSD press is not instrumented")
 PY
+ck; grep -q 'wmAbsX(wI)' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "wmCloseX is not the absolute origin paint uses"
+ck; grep -q 'const int wmBtnPadY = 7' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "Dart title-control Y is not lockstep with SESS_BTN_PAD_Y"
+ck; grep -q 'SESS_BTN_PAD_Y = 7' "$CORE_DIR/plat/osgfx/osgfx_session.c" \
+  || fail "session CSD pad Y drifted"
+ck; grep -q 'chrome_shift_geom' "$CORE_DIR/plat/osgfx/osgfx_chrome.c" \
+  || fail "chrome cache move does not shift stamped control geom"
+ck; grep -q 'wmDeCsdRelease' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "left-up does not re-evaluate live CSD controls"
+ck; grep -q 'wmPageWChromeHave' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "close does not drop the chrome-cache key"
+ck; grep -q 'void wmLifeNote' "$CORE_DIR/kernel/wmde.dart" \
+  || fail "close does not report slot/SHM/cache reclaim"
 ck; grep -q 'wmIsleLeftW' "$CORE_DIR/kernel/wmde.dart" \
   || fail "task slots are not placed in the island gap"
 ck; grep -q 'wmSlotSkip' "$CORE_DIR/kernel/wmde.dart" \
