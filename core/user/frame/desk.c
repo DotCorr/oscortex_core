@@ -65,7 +65,7 @@ typedef unsigned int u32;
 
 /* The pixels one poll of the window table costs when nothing changed: none.
  * A repaint only happens when the table or the scanout rect moves. */
-#define YIELD_SPIN 40000UL
+#define YIELD_SPIN 8000UL
 #define MENU_W 160UL
 #define MENU_H 88UL
 #define MENU_PAGES 14UL
@@ -106,8 +106,7 @@ static char start_lab[] = "Start";
 static char clock_lab[] = "3:30 PM";
 static char date_lab[] = "Oct 30";
 static char stat_lab[] = "1 C";
-static char slot_lab0[] = "1";
-static char slot_lab1[] = "2";
+static char slot_stem[9];
 #define SLOT_X0 (LEFT_X + LEFT_W + 8UL)
 #define SLOT_W 72UL
 #define SLOT_H 28UL
@@ -314,11 +313,13 @@ static void frost_copy_out(u64 x, u64 y, u64 w, u64 h, u32 *cache) {
   volatile u32 *p = (volatile u32 *)pix_va;
   u64 yy = 0;
   while (yy < h) {
+    volatile u32 *src = p + (y + yy) * bar_w + x;
+    u32 *dst = cache + yy * w;
     u64 xx = 0;
     while (xx < w) {
       /* Preserve premultiplied alpha; dropping A turns transparent corners
        * into opaque black when this cached island is presented again. */
-      cache[yy * w + xx] = p[(y + yy) * bar_w + (x + xx)];
+      dst[xx] = src[xx];
       xx = xx + 1;
     }
     yy = yy + 1;
@@ -329,9 +330,11 @@ static void frost_copy_in(u64 x, u64 y, u64 w, u64 h, const u32 *cache) {
   volatile u32 *p = (volatile u32 *)pix_va;
   u64 yy = 0;
   while (yy < h) {
+    volatile u32 *dst = p + (y + yy) * bar_w + x;
+    const u32 *src = cache + yy * w;
     u64 xx = 0;
     while (xx < w) {
-      p[(y + yy) * bar_w + (x + xx)] = cache[yy * w + xx];
+      dst[xx] = src[xx];
       xx = xx + 1;
     }
     yy = yy + 1;
@@ -380,12 +383,31 @@ static void paint_slots(u64 tasks) {
           rgb = SLOT_FOCUS;
         }
         osxui_app_rrect(shm_h, sx, SLOT_Y, SLOT_W, SLOT_H, 8UL, rgb);
-        lab = slot_lab0;
-        if (n > 0) {
-          lab = slot_lab1;
+        {
+          u64 packed = osxui_app_name(i);
+          u64 k = 0;
+          u64 nn = 0;
+          while (k < 8UL) {
+            slot_stem[k] = (char)((packed >> (k * 8UL)) & 0xFFUL);
+            k = k + 1UL;
+          }
+          slot_stem[8] = 0;
+          while (nn < 8UL) {
+            if (slot_stem[nn] == 0) {
+              break;
+            }
+            nn = nn + 1UL;
+          }
+          if (nn == 0UL) {
+            slot_stem[0] = 'W';
+            slot_stem[1] = '0' + (char)n;
+            slot_stem[2] = 0;
+            nn = 2UL;
+          }
+          lab = slot_stem;
+          osxui_app_text(shm_h, sx + 6UL, SLOT_Y + 6UL, lab, nn,
+                         WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG);
         }
-        osxui_app_text(shm_h, sx + 10UL, SLOT_Y + 6UL, lab, 1,
-                       WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG);
         n = n + 1;
       }
     }

@@ -26,7 +26,7 @@ typedef unsigned int u32;
 #define PX 32UL
 #define PY 32UL
 
-#define YIELD_SPIN 8000000UL
+#define YIELD_SPIN 8000UL
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;

@@ -219,7 +219,7 @@ final List<u8> wmStrP = const [
   u8(0x20), u8(0x50), u8(0x20),
 ];
 
-/// `' C '` -- 3 bytes. Caption code (1 FILES, 2 SET).
+/// `' C '` -- 3 bytes. Caption code (1 FILES … 7 PING).
 @rodata
 final List<u8> wmStrC = const [
   u8(0x20), u8(0x43), u8(0x20),
@@ -1842,6 +1842,55 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   return (nx << u64(32)) | ny;
 }
 
+/// Caption mailbox: 1 FILES, 2 SET, 3 BROWSE, 4 PLAY, 5 STUDIO, 6 TAP, 7 PING.
+/// Discriminate on requested attach size (granted width after tile shrink
+/// is not unique). Fallback keeps the old FILES/SET width heuristic.
+@bare
+u64 wmCaptionFromReq(u64 reqW, u64 reqH) {
+  if (reqW == u64(400)) {
+    if (reqH == u64(280)) {
+      return u64(1);
+    }
+  }
+  if (reqW == u64(440)) {
+    if (reqH == u64(280)) {
+      return u64(2);
+    }
+  }
+  if (reqW == u64(128)) {
+    if (reqH == u64(128)) {
+      return u64(3);
+    }
+  }
+  if (reqW == u64(64)) {
+    if (reqH == u64(64)) {
+      return u64(4);
+    }
+  }
+  if (reqW == u64(200)) {
+    if (reqH == u64(140)) {
+      return u64(5);
+    }
+  }
+  if (reqW == u64(240)) {
+    if (reqH == u64(160)) {
+      return u64(6);
+    }
+  }
+  if (reqW == u64(160)) {
+    if (reqH == u64(120)) {
+      return u64(7);
+    }
+  }
+  if (reqH > (u64(wmChromeH) + u64(4))) {
+    if (reqW > u64(400)) {
+      return u64(2);
+    }
+    return u64(1);
+  }
+  return u64(0);
+}
+
 @bare
 void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 h = wmDesc(ptr, u64(wmDescHandle));
@@ -1955,15 +2004,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinOffsetW), off | resizable);
   wmSetWin(slot, u64(wmWinSeq), u64(0));
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
-  u64 cap = u64(0);
-  if (reqH > (u64(wmChromeH) + u64(4))) {
-    cap = u64(1);
-    // SET asks for 440. FILES asks for 400. Granted width after
-    // tile shrink is 333 and is not a discriminator.
-    if (reqW > u64(400)) {
-      cap = u64(2);
-    }
-  }
+  final u64 cap = wmCaptionFromReq(reqW, reqH);
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWMax0) + slot, u64(0));
     wmPageSet(u64(wmPageWLaunch0) + slot, cap);

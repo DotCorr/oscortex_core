@@ -172,6 +172,16 @@ CANON_CFLAGS="$(bash "$SCRIPT_DIR/oscortex-canon-cflags.sh" \
 export OSCORTEX_CANON_CFLAGS="$CANON_CFLAGS"
 # shellcheck disable=SC2206
 CANON_ARR=($CANON_CFLAGS)
+# Stable, remapped compile manifest (not a host-absolute command log).
+{
+  echo "canon_cflags$CANON_CFLAGS"
+  echo "core=/oscortex"
+  echo "dcdart=/dcdart"
+  echo "build=/oscortex-build"
+  echo "skia=/skia"
+  echo "prelude=../build/dcdart/core/runtime/dc-core-bare/prelude.dart"
+} >"$BUILD_DIR/CANON_CFLAGS.txt"
+printf '%s\n' "$CANON_CFLAGS" >"$BUILD_DIR/COMPILE.manifest"
 
 # ---------------------------------------------------------------------------
 # Step 0 — ONE ROOT FOR THE TOOLCHAIN. (ADR-0043, GAP-0003.)

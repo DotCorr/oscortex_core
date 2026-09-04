@@ -37,7 +37,7 @@ typedef unsigned int u32;
 #define FLIP_SCAN 0x14UL
 #define WIN_PAGES 38UL
 
-#define YIELD_SPIN 8000000UL
+#define YIELD_SPIN 8000UL
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;

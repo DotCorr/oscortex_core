@@ -198,12 +198,90 @@ final List<u8> wmStrWallMenu = const [
   u8(0x20), u8(0x4D), u8(0x45), u8(0x4E), u8(0x55),
 ];
 
-/// `'WM CTX FILE'` -- 11 bytes.
+/// `'WM CTX FILE'` -- 11 bytes. FILES body (kept for de-desk).
 @rodata
 final List<u8> wmStrCtxFile = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
   u8(0x46), u8(0x49), u8(0x4C), u8(0x45),
 ];
+
+/// `'WM CTX SET'` -- 10 bytes.
+@rodata
+final List<u8> wmStrCtxSet = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x53), u8(0x45), u8(0x54),
+];
+
+/// `'WM CTX BROWSE'` -- 13 bytes.
+@rodata
+final List<u8> wmStrCtxBrowse = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x42), u8(0x52), u8(0x4F), u8(0x57), u8(0x53), u8(0x45),
+];
+
+/// `'WM CTX PLAY'` -- 11 bytes.
+@rodata
+final List<u8> wmStrCtxPlay = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x50), u8(0x4C), u8(0x41), u8(0x59),
+];
+
+/// `'WM CTX STUDIO'` -- 13 bytes.
+@rodata
+final List<u8> wmStrCtxStudio = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x53), u8(0x54), u8(0x55), u8(0x44), u8(0x49), u8(0x4F),
+];
+
+/// `'WM CTX TAP'` -- 10 bytes.
+@rodata
+final List<u8> wmStrCtxTap = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x54), u8(0x41), u8(0x50),
+];
+
+/// `'WM CTX PING'` -- 11 bytes.
+@rodata
+final List<u8> wmStrCtxPing = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x54), u8(0x58), u8(0x20),
+  u8(0x50), u8(0x49), u8(0x4E), u8(0x47),
+];
+
+@bare
+void wmCtxClient(u64 cap) {
+  if (cap == u64(2)) {
+    uartWrite(Rodata.addressOf(wmStrCtxSet), u64(10));
+    uartNewline();
+    return;
+  }
+  if (cap == u64(3)) {
+    uartWrite(Rodata.addressOf(wmStrCtxBrowse), u64(13));
+    uartNewline();
+    return;
+  }
+  if (cap == u64(4)) {
+    uartWrite(Rodata.addressOf(wmStrCtxPlay), u64(11));
+    uartNewline();
+    return;
+  }
+  if (cap == u64(5)) {
+    uartWrite(Rodata.addressOf(wmStrCtxStudio), u64(13));
+    uartNewline();
+    return;
+  }
+  if (cap == u64(6)) {
+    uartWrite(Rodata.addressOf(wmStrCtxTap), u64(10));
+    uartNewline();
+    return;
+  }
+  if (cap == u64(7)) {
+    uartWrite(Rodata.addressOf(wmStrCtxPing), u64(11));
+    uartNewline();
+    return;
+  }
+  uartWrite(Rodata.addressOf(wmStrCtxFile), u64(11));
+  uartNewline();
+}
 
 /// `'WM CTX TITLE'` -- 12 bytes.
 @rodata
@@ -848,8 +926,11 @@ void wmContextShow(u64 x, u64 y) {
       return;
     }
     wmContextFocus(hit);
-    uartWrite(Rodata.addressOf(wmStrCtxFile), u64(11));
-    uartNewline();
+    u64 cap = u64(0);
+    if (wmPageAddr() > u64(0)) {
+      cap = wmPage(u64(wmPageWLaunch0) + hit);
+    }
+    wmCtxClient(cap);
     final u64 wx = wmAbsX(hit);
     final u64 wy = wmAbsY(hit);
     final u64 rx = x - wx;

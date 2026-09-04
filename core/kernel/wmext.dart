@@ -731,11 +731,11 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
       userSetFrame(frame, u64(userFrameRax), u64(0));
       return;
     }
-    u64 stem = Rodata.addressOf(wmStrSlot0);
-    if (slot != u64(0)) {
-      stem = Rodata.addressOf(wmStrSlot1);
+    u64 cap = u64(0);
+    if (wmPageAddr() > u64(0)) {
+      cap = wmPage(u64(wmPageWLaunch0) + slot);
     }
-    userSetFrame(frame, u64(userFrameRax), wmPack8(stem));
+    userSetFrame(frame, u64(userFrameRax), wmPack8(wmCapStem(cap)));
     return;
   }
   if (kind == u64(3)) {

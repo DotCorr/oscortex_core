@@ -257,7 +257,8 @@ const int wmPageWPresTick = 384;
 const int wmPageWEvToPres = 385;
 const int wmPageWEvSeq = 386;
 
-/// Mailbox win0/win1 caption codes (low 8 / next 8). 1 = FILES, 2 = SET.
+/// Mailbox win0/win1 caption codes (low 8 / next 8).
+/// 1 FILES, 2 SET, 3 BROWSE, 4 PLAY, 5 STUDIO, 6 TAP, 7 PING.
 const int wmPageWCapMail = 387;
 
 /// Deferred WM op (Round 14): IRQ enqueues, syscall drains.

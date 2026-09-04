@@ -486,17 +486,73 @@ final List<u8> wmStrStartTile = const [
   u8(0x53), u8(0x74), u8(0x61), u8(0x72), u8(0x74),
 ];
 
-/// `'W0'` -- 2 bytes. Taskbar slot 0 caption.
+/// `'W0'` -- 2 bytes. Taskbar slot 0 caption (unknown).
 @rodata
 final List<u8> wmStrSlot0 = const [
   u8(0x57), u8(0x30),
 ];
 
-/// `'W1'` -- 2 bytes. Taskbar slot 1 caption.
+/// `'W1'` -- 2 bytes. Taskbar slot 1 caption (unknown).
 @rodata
 final List<u8> wmStrSlot1 = const [
   u8(0x57), u8(0x31),
 ];
+
+/// Eight-byte zero-padded stems for WM_SCREEN_NAME / task pills.
+@rodata
+final List<u8> wmStrCapFiles = const [
+  u8(0x46), u8(0x49), u8(0x4C), u8(0x45), u8(0x53), u8(0), u8(0), u8(0),
+];
+@rodata
+final List<u8> wmStrCapSet = const [
+  u8(0x53), u8(0x45), u8(0x54), u8(0), u8(0), u8(0), u8(0), u8(0),
+];
+@rodata
+final List<u8> wmStrCapBrowse = const [
+  u8(0x42), u8(0x52), u8(0x4F), u8(0x57), u8(0x53), u8(0x45), u8(0), u8(0),
+];
+@rodata
+final List<u8> wmStrCapPlay = const [
+  u8(0x50), u8(0x4C), u8(0x41), u8(0x59), u8(0), u8(0), u8(0), u8(0),
+];
+@rodata
+final List<u8> wmStrCapStudio = const [
+  u8(0x53), u8(0x54), u8(0x55), u8(0x44), u8(0x49), u8(0x4F), u8(0), u8(0),
+];
+@rodata
+final List<u8> wmStrCapTap = const [
+  u8(0x54), u8(0x41), u8(0x50), u8(0), u8(0), u8(0), u8(0), u8(0),
+];
+@rodata
+final List<u8> wmStrCapPing = const [
+  u8(0x50), u8(0x49), u8(0x4E), u8(0x47), u8(0), u8(0), u8(0), u8(0),
+];
+
+@bare
+u64 wmCapStem(u64 cap) {
+  if (cap == u64(2)) {
+    return Rodata.addressOf(wmStrCapSet);
+  }
+  if (cap == u64(3)) {
+    return Rodata.addressOf(wmStrCapBrowse);
+  }
+  if (cap == u64(4)) {
+    return Rodata.addressOf(wmStrCapPlay);
+  }
+  if (cap == u64(5)) {
+    return Rodata.addressOf(wmStrCapStudio);
+  }
+  if (cap == u64(6)) {
+    return Rodata.addressOf(wmStrCapTap);
+  }
+  if (cap == u64(7)) {
+    return Rodata.addressOf(wmStrCapPing);
+  }
+  if (cap == u64(1)) {
+    return Rodata.addressOf(wmStrCapFiles);
+  }
+  return Rodata.addressOf(wmStrSlot0);
+}
 
 /// 1 if `wm de` is on.
 @bare

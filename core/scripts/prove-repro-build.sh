@@ -21,11 +21,25 @@ export OSMEDIA_FFMPEG="${OSMEDIA_FFMPEG:-0}"
 
 A="${OSCORTEX_REPRO_A:-/tmp/oscortex-repro-a}"
 B="${OSCORTEX_REPRO_B:-/tmp/oscortex-repro-b}"
+SKIA_TREE="$CORE_DIR/build/skia"
+[[ -f "$SKIA_TREE/out/guest-elf/libskia.a" || -f "$SKIA_TREE/out/guest-elf-graphite/libskia.a" ]] \
+  || fail "need a prebuilt guest libskia.a at $SKIA_TREE/out (do not clone Skia twice)"
+
+git -C "$REPO_DIR" worktree remove --force "$B/src" 2>/dev/null || true
 rm -rf "$A" "$B"
 mkdir -p "$A" "$B"
 # Same source tree, two BUILD_DIR spellings + a second worktree so CORE_DIR differs.
 git -C "$REPO_DIR" worktree add --detach "$B/src" HEAD >&2
-ln -s "$CORE_DIR/build/skia" "$B/src/core/build/skia" 2>/dev/null || true
+mkdir -p "$B/src/core/build"
+# Reuse the already-built guest Skia archive. A second Skia compile in
+# another tree would bake a different -I prefix into libskia.a; the
+# prefix-map under test is for oscortex C/C++ and a shared libskia.a.
+if [[ -e "$B/src/core/build/skia" && ! -L "$B/src/core/build/skia" ]]; then
+  rm -rf "$B/src/core/build/skia"
+fi
+ln -sfn "$SKIA_TREE" "$B/src/core/build/skia"
+[[ -L "$B/src/core/build/skia" ]] || fail "worktree skia is not a symlink"
+[[ -e "$B/src/core/build/skia/out" ]] || fail "symlink skia has no out/"
 
 build_one() {
   local dest="$1" core="$2"

@@ -19,7 +19,7 @@ typedef unsigned int u32;
 #define WIN_Y 80UL
 #define WIN_PAGES 4UL
 
-#define YIELD_SPIN 40000000UL
+#define YIELD_SPIN 8000UL
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;
@@ -43,6 +43,7 @@ static u64 desc[8] __attribute__((aligned(64))) = {0, 0, 0, 0, 0, 0, 0, 0};
 static volatile u64 marker = 0x00C0408800C04088UL;
 
 static const char msg_attach[] = "PLAY ATTACH\n";
+static const char msg_ready[] = "PLAY READY\n";
 
 void _start(void) {
   u64 h = sys1(SYS_SHMCREATE, WIN_PAGES);
@@ -63,6 +64,7 @@ void _start(void) {
     die(0xC0400003UL | (va << 32));
   }
   wr(msg_attach, sizeof(msg_attach) - 1);
+  wr(msg_ready, sizeof(msg_ready) - 1);
 
   if (marker != 0x00C0408800C04088UL) {
     die(0xC0400006UL);

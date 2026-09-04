@@ -877,6 +877,10 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
   if (w < 8 || h < 8) {
     return;
   }
+  /* PLAY is a 64×64 video surface (ADR-0196) — no session chrome. */
+  if (cap_code == 4 || h < 80) {
+    return;
+  }
   by = win_btn_y(y);
   bx = win_max_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MAX, SESS_MAX_RIM);
@@ -897,6 +901,18 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
       set_title_noted = 1;
       com1_puts("OSGFX TITLE SET\n");
     }
+  } else if (cap_code == 3) {
+    cap = "BROWSE";
+    cap_n = 6;
+  } else if (cap_code == 5) {
+    cap = "STUDIO";
+    cap_n = 6;
+  } else if (cap_code == 6) {
+    cap = "TAP";
+    cap_n = 3;
+  } else if (cap_code == 7) {
+    cap = "PING";
+    cap_n = 4;
   }
   i = SESS_TITLE_BAND;
   if (i > h) {
