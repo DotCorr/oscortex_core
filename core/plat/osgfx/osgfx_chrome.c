@@ -1543,6 +1543,73 @@ uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh) {
   return (uint64_t)(unsigned)rw * (uint64_t)(unsigned)rh;
 }
 
+uint64_t osgfx_chrome_vacate_geom(uint64_t old_g) {
+  const struct OsGfxGuestCmd *m;
+  uint64_t *pg;
+  uint32_t *buf;
+  uint32_t *fb;
+  uint32_t seed;
+  int ox;
+  int oy;
+  int ow;
+  int oh;
+  int ww;
+  int hh;
+  int pitch_px;
+  int r;
+
+  m = &osgfx_guest_cmd;
+  pg = chrome_page();
+  buf = chrome_buf(m, pg);
+  if (pg == 0 || buf == 0 || m->fb == 0 || old_g == 0) {
+    return 0;
+  }
+  ww = (int)m->w;
+  hh = (int)m->h;
+  if (ww < 8 || hh < 8) {
+    return 0;
+  }
+  chrome_unpack_geom(old_g, &ox, &oy, &ow, &oh);
+  if (ow < 1 || oh < 1) {
+    return 0;
+  }
+  seed = 0xD074A17u;
+  if (m->desk != 0) {
+    seed = (uint32_t)m->desk;
+  }
+  r = OSGFX_RADIUS;
+  /* Empty new rect: the whole old AABB is wallpaper. */
+  chrome_vacate(buf, ww, ww, hh, ox - r, oy - r, ow + r + r, oh + r + r, 0, 0,
+                0, 0, seed, 0);
+  fb = (uint32_t *)(uintptr_t)m->fb;
+  pitch_px = (int)(m->pitch / 4u);
+  if (pitch_px >= ww) {
+    chrome_vacate(fb, pitch_px, ww, hh, ox - r, oy - r, ow + r + r, oh + r + r,
+                  0, 0, 0, 0, seed, 0);
+  }
+  if (chrome_geom_at(m->win0, ox + 3, oy + 3) != 0 ||
+      chrome_geom_at(m->win0, ox, oy) != 0) {
+    osgfx_guest_cmd.win0 = 0;
+  }
+  if (chrome_geom_at(m->win1, ox + 3, oy + 3) != 0 ||
+      chrome_geom_at(m->win1, ox, oy) != 0) {
+    osgfx_guest_cmd.win1 = 0;
+  }
+  if (chrome_geom_at(g_stamp_win0, ox + 3, oy + 3) != 0 ||
+      chrome_geom_at(g_stamp_win0, ox, oy) != 0) {
+    g_stamp_win0 = 0;
+  }
+  if (chrome_geom_at(g_stamp_win1, ox + 3, oy + 3) != 0 ||
+      chrome_geom_at(g_stamp_win1, ox, oy) != 0) {
+    g_stamp_win1 = 0;
+  }
+  pg[OSGFX_WMPAGE_W_CHROME_W] = m->w;
+  pg[OSGFX_WMPAGE_W_CHROME_H] = m->h;
+  pg[OSGFX_WMPAGE_W_CHROME_HAVE] = chrome_key(m, pg);
+  chrome_note_mailbox(m);
+  return chrome_present_clip(m, ox - r, oy - r, ow + r + r, oh + r + r);
+}
+
 uint64_t osgfx_chrome_hit_restore(void) {
   return osgfx_chrome_hit_present(&osgfx_guest_cmd);
 }

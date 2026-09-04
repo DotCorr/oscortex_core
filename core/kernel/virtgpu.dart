@@ -1690,13 +1690,15 @@ u64 virtgpuNotifyAddr(u64 bus, u64 dev, u64 fn, u64 cfg) {
   return ntfy + (noff * mul);
 }
 
-/// Two-descriptor command that takes the next avail.idx as the slot
-/// and masks it into a size-64 ring. used.idx is only the wait
-/// target: after Venus the used count is already ahead of G5's
-/// old "used==2" assumption, and writing avail from used would
-/// drop in-flight commands. G5 cell flushes still pass heads 60/62.
+/// Kick a two-descriptor command. Returns the used.idx target
+/// (avail after this kick), or 0 if the queue is missing.
+/// Caller waits; [virtgpuRect] kicks TRANSFER then FLUSH and
+/// waits once so a drag step is not two full poll bounds.
 @bare
-u64 virtgpuSubmitCell(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 req, u64 reqlen, u64 resp, u64 kick) {
+u64 virtgpuSubmitCellKick(u64 qdesc, u64 qdrv, u64 naddr, u64 head, u64 req, u64 reqlen, u64 resp, u64 kick) {
+  if (qdesc < u64(1)) {
+    return u64(0);
+  }
   final u64 slot = virtgpuAvailIdx(qdrv);
   final u64 ring = slot & u64(63);
   virtgpuZero(resp, u64(24));
@@ -1710,22 +1712,48 @@ u64 virtgpuSubmitCell(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 re
   if (kick > u64(0)) {
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
-  // Full-screen TRANSFER of 1280×720 is a multi-megabyte DMA on
-  // host llvmpipe. One poll bound is enough for a glyph; four
-  // covers the first present after Venus init.
+  return slot + u64(1);
+}
+
+/// Wait until used.idx reaches [want], up to four poll bounds.
+/// Returns the last used.idx, or 0 after QTIMEOUT.
+@bare
+u64 virtgpuWaitWant(u64 qdev, u64 want) {
   u64 used = u64(0);
   u64 tries = u64(0);
   while (tries < u64(4)) {
-    used = virtgpuWaitUsed(qdev, slot + u64(1));
-    if (used >= (slot + u64(1))) {
+    used = virtgpuWaitUsed(qdev, want);
+    if (used >= want) {
       tries = u64(4);
     }
-    if (used < (slot + u64(1))) {
+    if (used < want) {
       tries = tries + u64(1);
     }
   }
-  if (used < (slot + u64(1))) {
+  if (used < want) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
+    return u64(0);
+  }
+  return used;
+}
+
+/// Two-descriptor command that takes the next avail.idx as the slot
+/// and masks it into a size-64 ring. used.idx is only the wait
+/// target: after Venus the used count is already ahead of G5's
+/// old "used==2" assumption, and writing avail from used would
+/// drop in-flight commands. G5 cell flushes still pass heads 60/62.
+@bare
+u64 virtgpuSubmitCell(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 req, u64 reqlen, u64 resp, u64 kick) {
+  final u64 want = virtgpuSubmitCellKick(
+      qdesc, qdrv, naddr, head, req, reqlen, resp, kick);
+  if (want < u64(1)) {
+    return u64(0);
+  }
+  // Full-screen TRANSFER of 1280×720 is a multi-megabyte DMA on
+  // host llvmpipe. One poll bound is enough for a glyph; four
+  // covers the first present after Venus init.
+  final u64 used = virtgpuWaitWant(qdev, want);
+  if (used < u64(1)) {
     return u64(0);
   }
   return virtgpuRamGet32(resp);
@@ -2034,23 +2062,39 @@ void virtgpuRect(u64 x, u64 y, u64 w, u64 h) {
   virtgpuRamPut32(req + u64(44), u64(0));
   virtgpuRamPut32(req + u64(48), rid);
   virtgpuRamPut32(req + u64(52), u64(0));
-  final u64 tXfer = virtgpuSubmitCell(
-      qdesc, qdrv, qdev, naddr, u64(virtgpuCellHeadXfer), req, u64(56), resp,
+  /* Second command pair lives in leftover 0x400 so TRANSFER and
+   * FLUSH can be in flight together. 0x800/0xA00 stay the xfer
+   * pair; meta at 0xC00 is untouched. */
+  final u64 reqF = qdesc + u64(0x400);
+  final u64 respF = qdesc + u64(0x440);
+  virtgpuPutHdr(reqF, u64(virtgpuTypeFlush));
+  virtgpuRamPut32(reqF + u64(24), x);
+  virtgpuRamPut32(reqF + u64(28), y);
+  virtgpuRamPut32(reqF + u64(32), w);
+  virtgpuRamPut32(reqF + u64(36), h);
+  virtgpuRamPut32(reqF + u64(40), rid);
+  virtgpuRamPut32(reqF + u64(44), u64(0));
+  final u64 wantX = virtgpuSubmitCellKick(
+      qdesc, qdrv, naddr, u64(virtgpuCellHeadXfer), req, u64(56), resp,
       u64(1));
+  if (wantX < u64(1)) {
+    return;
+  }
+  final u64 wantF = virtgpuSubmitCellKick(
+      qdesc, qdrv, naddr, u64(virtgpuCellHeadFlush), reqF, u64(48), respF,
+      u64(1));
+  if (wantF < u64(1)) {
+    return;
+  }
+  final u64 used = virtgpuWaitWant(qdev, wantF);
+  if (used < u64(1)) {
+    return;
+  }
+  final u64 tXfer = virtgpuRamGet32(resp);
   if (tXfer != u64(virtgpuRespOk)) {
     return;
   }
-
-  virtgpuPutHdr(req, u64(virtgpuTypeFlush));
-  virtgpuRamPut32(req + u64(24), x);
-  virtgpuRamPut32(req + u64(28), y);
-  virtgpuRamPut32(req + u64(32), w);
-  virtgpuRamPut32(req + u64(36), h);
-  virtgpuRamPut32(req + u64(40), rid);
-  virtgpuRamPut32(req + u64(44), u64(0));
-  final u64 tFlush = virtgpuSubmitCell(
-      qdesc, qdrv, qdev, naddr, u64(virtgpuCellHeadFlush), req, u64(48), resp,
-      u64(1));
+  final u64 tFlush = virtgpuRamGet32(respF);
   if (tFlush != u64(virtgpuRespOk)) {
     return;
   }

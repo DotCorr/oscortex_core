@@ -25,6 +25,10 @@ __attribute__((weak)) uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t n
   (void)new_g;
   return 0;
 }
+__attribute__((weak)) uint64_t osgfx_chrome_vacate_geom(uint64_t old_g) {
+  (void)old_g;
+  return 0;
+}
 __attribute__((weak)) uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m) {
   (void)m;
   return 0;

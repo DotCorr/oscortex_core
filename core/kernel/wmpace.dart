@@ -2161,8 +2161,10 @@ void wmPresentPair(u64 ax, u64 ay, u64 aw, u64 ah, u64 bx, u64 by, u64 bw,
   wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
 }
 
-/// Vacated strips + the entire new window. Host virtio overlap is not
-/// memmoved; transferring only the exposed edge would leave ghosts.
+/// GOP: guest FB is scanout, so chrome_drag_apply's memmove is enough —
+/// flush vacated/exposed strips + title on a small step.
+/// Virtio: host resource is not memmoved; one union TRANSFER+FLUSH
+/// (pipelined) keeps overlap correct without 3× queue waits.
 /// Software sit-in still uses [wmPresentPair] / [wmRepaintUnion2].
 @bare
 u64 wmPresentMove(u64 ox, u64 oy, u64 ow, u64 oh, u64 nx, u64 ny, u64 nw,
@@ -2170,52 +2172,113 @@ u64 wmPresentMove(u64 ox, u64 oy, u64 ow, u64 oh, u64 nx, u64 ny, u64 nw,
   u64 px = u64(0);
   u64 regs = u64(0);
   final u64 rad = u64(wmGfxRadius);
-  if (nx > ox) {
-    u64 vw = nx - ox;
-    if (vw > ow) {
-      vw = ow;
+  final u64 base = fbState(u64(fbStateBase));
+  u64 virt = u64(0);
+  if (base > u64(0)) {
+    if (base < u64(virtgpuRamCeil)) {
+      virt = u64(1);
     }
-    u64 vx = ox;
-    if (vx > rad) {
-      vx = vx - rad;
-      vw = vw + rad;
+  }
+  if (virt > u64(0)) {
+    u64 ux = ox;
+    u64 uy = oy;
+    u64 u1x = ox + ow;
+    u64 u1y = oy + oh;
+    if (nx < ux) {
+      ux = nx;
     }
-    px = px + wmPresentClipped(vx, oy, vw, oh);
+    if (ny < uy) {
+      uy = ny;
+    }
+    if ((nx + nw) > u1x) {
+      u1x = nx + nw;
+    }
+    if ((ny + nh) > u1y) {
+      u1y = ny + nh;
+    }
+    if (ux > rad) {
+      ux = ux - rad;
+    }
+    if (uy > rad) {
+      uy = uy - rad;
+    }
+    px = px + wmPresentClipped(ux, uy, (u1x - ux) + rad, (u1y - uy) + rad);
     regs = regs + u64(1);
   } else {
-    if (ox > nx) {
-      u64 vw = ox - nx;
+    if (nx > ox) {
+      u64 vw = nx - ox;
       if (vw > ow) {
         vw = ow;
       }
-      px = px + wmPresentClipped(nx + nw, oy, vw + rad, oh);
+      u64 vx = ox;
+      if (vx > rad) {
+        vx = vx - rad;
+        vw = vw + rad;
+      }
+      px = px + wmPresentClipped(vx, oy, vw, oh);
       regs = regs + u64(1);
+    } else {
+      if (ox > nx) {
+        u64 vw = ox - nx;
+        if (vw > ow) {
+          vw = ow;
+        }
+        px = px + wmPresentClipped(nx + nw, oy, vw + rad, oh);
+        regs = regs + u64(1);
+      }
     }
-  }
-  if (ny > oy) {
-    u64 vh = ny - oy;
-    if (vh > oh) {
-      vh = oh;
-    }
-    u64 vy = oy;
-    if (vy > rad) {
-      vy = vy - rad;
-      vh = vh + rad;
-    }
-    px = px + wmPresentClipped(ox, vy, ow, vh);
-    regs = regs + u64(1);
-  } else {
-    if (oy > ny) {
-      u64 vh = oy - ny;
+    if (ny > oy) {
+      u64 vh = ny - oy;
       if (vh > oh) {
         vh = oh;
       }
-      px = px + wmPresentClipped(ox, ny + nh, ow, vh + rad);
+      u64 vy = oy;
+      if (vy > rad) {
+        vy = vy - rad;
+        vh = vh + rad;
+      }
+      px = px + wmPresentClipped(ox, vy, ow, vh);
+      regs = regs + u64(1);
+    } else {
+      if (oy > ny) {
+        u64 vh = oy - ny;
+        if (vh > oh) {
+          vh = oh;
+        }
+        px = px + wmPresentClipped(ox, ny + nh, ow, vh + rad);
+        regs = regs + u64(1);
+      }
+    }
+    u64 adx = u64(0);
+    u64 ady = u64(0);
+    if (nx > ox) {
+      adx = nx - ox;
+    } else {
+      if (ox > nx) {
+        adx = ox - nx;
+      }
+    }
+    if (ny > oy) {
+      ady = ny - oy;
+    } else {
+      if (oy > ny) {
+        ady = oy - ny;
+      }
+    }
+    /* Guest FB already memmoved the overlap (chrome_drag_apply). */
+    if (adx < u64(24)) {
+      if (ady < u64(24)) {
+        px = px + wmPresentClipped(nx, ny, nw, u64(wmTitleH) + u64(4));
+        regs = regs + u64(1);
+      } else {
+        px = px + wmPresentClipped(nx, ny, nw, nh);
+        regs = regs + u64(1);
+      }
+    } else {
+      px = px + wmPresentClipped(nx, ny, nw, nh);
       regs = regs + u64(1);
     }
   }
-  px = px + wmPresentClipped(nx, ny, nw, nh);
-  regs = regs + u64(1);
   wmPageSet(u64(wmPageWDmgPx), px);
   wmPageSet(u64(wmPageWDmgRegs), regs);
   wmDmgAcc(px, regs, u64(0), u64(1));

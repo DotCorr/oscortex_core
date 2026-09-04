@@ -119,6 +119,7 @@ uint64_t osgfx_chrome_prep_rest(void);
 uint64_t osgfx_chrome_prep(uint64_t win0, uint64_t win1);
 uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh);
 uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g);
+uint64_t osgfx_chrome_vacate_geom(uint64_t old_g);
 void osgfx_session_blit_menu(uint32_t *fb, int pitch, int ww, int hh, uint64_t pop);
 void osgfx_guest_ack(void);
 void osgfx_chrome_glyph_count(int hit);

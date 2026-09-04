@@ -2134,13 +2134,15 @@ void wmCloseWindow(u64 wI) {
   if (wmPageAddr() > u64(0)) {
     wmPageSet(wmPageLaunchOf(wI), u64(0));
     wmPageSet(wmPageMaxOf(wI), u64(0));
-    wmPageSet(u64(wmPageWChromeHave), u64(0));
     wmVisClear(wI);
     wmDefClear(wI);
+    wmPageSet(wmPageHoldArmOf(wI), u64(0));
+    wmPageSet(wmPageHoldKickOf(wI), u64(0));
     wmPageSet(u64(wmPageWLifeClose),
         wmPage(u64(wmPageWLifeClose)) + u64(1));
   }
   wmSetWin(wI, u64(wmWinState), u64(wmWinFree));
+  wmSetWin(wI, u64(wmWinSeq), u64(0));
   if (wmMeta(u64(wmMetaLive)) > u64(0)) {
     wmSetMeta(u64(wmMetaLive), wmMeta(u64(wmMetaLive)) - u64(1));
   }
@@ -2160,7 +2162,24 @@ void wmCloseWindow(u64 wI) {
   uartNewline();
   procKillId(owner);
   wmLifeNote();
-  final u64 unused = wmRepaintRect(ox, oy, ow, oh);
+  /* Punch wallpaper into the live chrome cache + FB. Dropping HAVE
+   * forced the next commit down CPATH 3 and left a black vacated card. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxKick();
+    final u64 vacated = osgfx_chrome_vacate_geom(wmPackGeom(ox, oy, ow, oh));
+    if (vacated > u64(0)) {
+      wmOpBegin(u64(wmOpKindBody));
+      final u64 fpx = wmPresentClipped(ox, oy, ow, oh);
+      wmPublishFrameNoted(fpx);
+      wmPublishFrameLine(fpx, mouseState(u64(mouseWordX)),
+          mouseState(u64(mouseWordY)));
+      wmOpDone(fpx);
+    } else {
+      final u64 unused = wmRepaintRect(ox, oy, ow, oh);
+    }
+  } else {
+    final u64 unused = wmRepaintRect(ox, oy, ow, oh);
+  }
 }
 
 /// Minimises window [wI]: held, not painted.

@@ -1522,10 +1522,20 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
 }
 
 /// UART phase: 1 echo skip, 2 gfx damage, 3 session compose.
+/// Why on path 3: 1 empty HAVE (boot/mode), 2 HOLD pend.
 @bare
 void wmCommitPath(u64 path) {
+  wmCommitPathWhy(path, u64(0));
+}
+
+@bare
+void wmCommitPathWhy(u64 path, u64 why) {
   uartWrite(Rodata.addressOf(wmStrCPath), u64(9));
   uartPutHex(path, u64(1));
+  if (why > u64(0)) {
+    uartWrite(Rodata.addressOf(wmStrR), u64(3));
+    uartPutHex(why, u64(2));
+  }
   uartNewline();
 }
 
@@ -1589,23 +1599,22 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
       wmIfHoldEnd();
       return;
     }
-    /* Body/scroll damage after a layer blit: a chrome-sig flicker
-     * must not restamp 1.1 Mpx. HOLD (pend) and empty HAVE still
-     * take the session path. */
-    if (full < u64(1)) {
-      if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
-        if (wmPendGeomOf(slot) < u64(1)) {
-          wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
-          if ((dw * dh) > u64(2048)) {
-            wmCommitPath(u64(2));
-          }
-          wmIfHoldEnd();
-          return;
+    /* Live cache: honour a chrome-sig flicker and HOLD completion
+     * with the gfx arm. Session compose is boot/mode only (HAVE=0). */
+    if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
+      wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
+      if (full > u64(0)) {
+        wmCommitPath(u64(2));
+      } else {
+        if ((dw * dh) > u64(2048)) {
+          wmCommitPath(u64(2));
         }
       }
+      wmIfHoldEnd();
+      return;
     }
     wmCompose();
-    wmCommitPath(u64(3));
+    wmCommitPathWhy(u64(3), u64(1));
     wmVisMaybePublishAll();
     wmIfHoldEnd();
     return;
@@ -2259,9 +2268,6 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   }
   wmSetWin(slot, u64(wmWinSeq), seq);
   wmBumpMeta(u64(wmMetaCommits));
-  if (wmPendGeomOf(slot) > u64(0)) {
-    wmChromeInvalidate();
-  }
   wmDefDrain();
   uartWrite(Rodata.addressOf(wmStrCommit), u64(12));
   uartPutHex(slot, u64(1));

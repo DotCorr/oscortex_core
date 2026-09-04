@@ -28,6 +28,9 @@ external u64 osgfx_chrome_prep_rest();
 external u64 osgfx_chrome_drag_step(u64 oldG, u64 newG);
 
 @extern
+external u64 osgfx_chrome_vacate_geom(u64 oldG);
+
+@extern
 external u64 osgfx_chrome_hit_restore();
 
 @extern

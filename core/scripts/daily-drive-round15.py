@@ -459,14 +459,31 @@ def abs_xy(x, y):
     return x * 32767 // max(1, SCREEN_W - 1), y * 32767 // max(1, SCREEN_H - 1)
 
 
+def wait_token(ser, needle, timeout=0.008):
+    """Bounded UART ack. No fixed 30 ms sleep."""
+    t0 = time.time()
+    while (time.time() - t0) < timeout:
+        blob = ""
+        try:
+            blob = ser.read() or ""
+        except Exception:
+            blob = ""
+        if needle in blob:
+            return True
+        time.sleep(0.001)
+    return False
+
+
 def place(q, ser, x, y, slop=12):
-    """Bare motion does not print MOUSE ABS (virtab announces on button edge)."""
+    """Bare motion does not print MOUSE ABS (virtab announces on button edge).
+
+    Wait a DONE token or a bounded 8 ms timeout — no fixed 30 ms sleep.
+    """
     ax, ay = abs_xy(x, y)
     q.cmd("input-send-event", events=[
         {"type": "abs", "data": {"axis": "x", "value": ax}},
         {"type": "abs", "data": {"axis": "y", "value": ay}}])
-    ser.read()
-    time.sleep(0.03)
+    wait_token(ser, "WM DONE", timeout=0.008)
     return True
 
 
