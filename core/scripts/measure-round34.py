@@ -473,19 +473,50 @@ def fire_switcher_up(q):
     }])
 
 
-def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
+def serial_idle(ser_path, quiet=0.12, timeout=2.5):
+    if not ser_path:
+        time.sleep(quiet)
+        return
+    t0 = time.time()
+    last = -1
+    stable = time.time()
+    while (time.time() - t0) < timeout:
+        try:
+            size = os.path.getsize(ser_path)
+        except OSError:
+            size = 0
+        if size != last:
+            last = size
+            stable = time.time()
+        elif (time.time() - stable) >= quiet:
+            return
+        time.sleep(0.01)
+
+
+def overlay_match(ev, want_w, want_h, w_slop=8, h_slop=8):
+    if want_w and abs(ev["w"] - want_w) > w_slop:
+        return False
+    if want_h and abs(ev["h"] - want_h) > h_slop:
+        return False
+    return True
+
+
+def overlay_token_burst(q, ser, label, fire, dismiss, token, n,
+                        want_w=0, want_h=0, px=16182):
     walls = []
     px_tail = []
     paired = []
     t0 = time.time()
+    ser_path = getattr(ser, "path", None) or os.environ.get(
+        "DRIVE_SERIAL_FILE", "")
+    try:
+        dismiss()
+    except Exception:
+        pass
+    serial_idle(ser_path, quiet=0.18, timeout=3.0)
     for i in range(n):
-        try:
-            dismiss()
-        except Exception:
-            pass
-        time.sleep(0.04)
-        ser_path = getattr(ser, "path", None) or os.environ.get(
-            "DRIVE_SERIAL_FILE", "")
+        serial_idle(ser_path, quiet=0.08, timeout=1.2)
+        prev = last_done_opid(ser)
         off = 0
         if ser_path:
             try:
@@ -499,7 +530,8 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
             print(label, "inject", e)
             continue
         hit = None
-        while (time.time() - t_inj) < 1.2:
+        ev_hit = None
+        while (time.time() - t_inj) < 0.9:
             chunk = ""
             if ser_path:
                 try:
@@ -512,10 +544,20 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
                         off = size
                 except OSError:
                     chunk = ""
-            if token in chunk:
-                hit = True
+            if token and token in chunk:
+                hit = "token"
                 break
-            time.sleep(0.004)
+            for ev in done_events(ser):
+                if ev["opid"] <= prev:
+                    continue
+                if want_w or want_h:
+                    if overlay_match(ev, want_w, want_h):
+                        ev_hit = ev
+                        hit = "done"
+                        break
+            if hit:
+                break
+            time.sleep(0.002)
         wall = (time.time() - t_inj) * 1000.0
         if hit is None:
             print(label, i, "unpaired", wall)
@@ -523,16 +565,25 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
                 dismiss()
             except Exception:
                 pass
+            serial_idle(ser_path, quiet=0.1, timeout=0.8)
             continue
         walls.append(wall)
-        px_tail.append(174 * 93)
-        paired.append({"i": i, "wall_ms": round(wall, 2), "token": token})
-        print(label, i, "ms", round(wall, 2))
+        dirty = px
+        if ev_hit is not None:
+            dirty = ev_hit["px"]
+        px_tail.append(dirty)
+        paired.append({
+            "i": i, "wall_ms": round(wall, 2), "token": token,
+            "via": hit,
+            "w": ev_hit["w"] if ev_hit else want_w,
+            "h": ev_hit["h"] if ev_hit else want_h,
+        })
+        print(label, i, "ms", round(wall, 2), hit)
         try:
             dismiss()
         except Exception:
             pass
-        time.sleep(0.03)
+        time.sleep(0.05)
     return summarize(label, walls, px_tail, paired, time.time() - t0)
 
 
@@ -612,24 +663,52 @@ def main():
                  [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
                   for i in range(n_menu)],
                  KIND_MENU, btn="right")
+    serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.25, timeout=4.0)
     launcher = overlay_token_burst(
         q, ser, "launcher",
         fire=lambda: q.key("f4"),
         dismiss=lambda: q.key("esc"),
         token="WM LAUNCH SHOW",
-        n=max(30, int(os.environ.get("DRIVE_LAUNCH_N", "30"))))
+        n=max(30, int(os.environ.get("DRIVE_LAUNCH_N", "30"))),
+        want_w=280, want_h=0, px=280 * 196)
+    # Hold Alt; each sample is one Tab. Avoids even/odd unpaired SHOW.
+    fire_switcher_up(q)
+    time.sleep(0.08)
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": True, "key": {"type": "qcode", "data": "alt"}},
+    }])
+    time.sleep(0.04)
+
+    def tab_only():
+        q.cmd("input-send-event", events=[{
+            "type": "key",
+            "data": {"down": True, "key": {"type": "qcode", "data": "tab"}},
+        }])
+        q.cmd("input-send-event", events=[{
+            "type": "key",
+            "data": {"down": False, "key": {"type": "qcode", "data": "tab"}},
+        }])
+
     switcher = overlay_token_burst(
         q, ser, "switcher",
-        fire=lambda: fire_switcher(q),
-        dismiss=lambda: fire_switcher_up(q),
+        fire=tab_only,
+        dismiss=lambda: None,
         token="WM SWITCH SHOW",
-        n=max(30, int(os.environ.get("DRIVE_SWITCH_N", "30"))))
+        n=max(30, int(os.environ.get("DRIVE_SWITCH_N", "30"))),
+        want_w=0, want_h=88, px=400 * 88)
+    fire_switcher_up(q)
 
     dest_name = os.environ.get("OSCORTEX_PERF_OUT", "oscortex-round34-perf.json")
     phase = phase_counts(ser, phase0)
     payload = {
-        "round": 33,
-        "pairing": "strict WM DONE op+kind (not first SCAN/FRAME)",
+        "round": 34,
+        "overlay_aabb": {
+            "menu": {"w": 174, "h": 93},
+            "launcher": {"w": 280, "h": "76..244"},
+            "switcher": {"w": "80..528", "h": 88},
+        },
+        "pairing": "strict WM DONE op+kind + overlay W/H (not first SCAN/FRAME)",
         "token": "WM DONE <opid> K <kind> PX <px> R <res> U <used> X Y W H",
         "kinds": {
             "pointer": 1, "drag": 2, "body": 3,
