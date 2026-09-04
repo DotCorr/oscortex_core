@@ -376,6 +376,8 @@ const int wmOpKindSwitch = 8;
 /// Directory indices for the live app catalog (page 2, 24 rows).
 const int wmPageWCat0 = 600;
 const int wmDeCatMax = 24;
+/// `fatWrites()` as of the last catalog scan. Cache hit when equal.
+const int wmPageWCatGen = 624;
 const int wmHoldKickTicks = 50;
 const int wmHoldForceTicks = 80;
 const int wmHoldCancelTicks = 200;

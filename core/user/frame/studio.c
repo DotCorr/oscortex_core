@@ -478,6 +478,35 @@ static void studio_tab_go(u64 slot) {
   studio_caret_note();
 }
 
+static u64 studio_name_eq(const char *a, unsigned an, const char *b,
+                          unsigned bn) {
+  unsigned i;
+  if (an != bn) {
+    return 0;
+  }
+  i = 0;
+  while (i < an) {
+    if (a[i] != b[i]) {
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 1;
+}
+
+static u64 studio_tab_of_name(const char *name, unsigned nlen) {
+  u64 s = 0;
+  while (s < DOC_MAX) {
+    if (docs_used[s] > 0) {
+      if (studio_name_eq(docs_name[s], docs_nlen[s], name, nlen) > 0) {
+        return s;
+      }
+    }
+    s = s + 1;
+  }
+  return DOC_MAX;
+}
+
 static void studio_new_doc(void) {
   u64 slot = 0;
   unsigned n;
@@ -567,7 +596,8 @@ static void studio_poll_openwith(void) {
   }
   fd = sys2(SYS_OPEN, (u64)path_ow, 12);
   if (fd >= FILE_ERR_FLOOR) {
-    ow_cool = 64;
+    /* Missing mailbox: long backoff. Kernel no longer prints REFUSED. */
+    ow_cool = 256;
     return;
   }
   got = sys3(SYS_READ, fd, (u64)blob, 16);
@@ -619,6 +649,28 @@ static void studio_open_named(const char *name, unsigned nlen) {
   unsigned i;
   if (nlen < 1U) {
     return;
+  }
+  studio_doc_store();
+  {
+    u64 hit = studio_tab_of_name(name, nlen);
+    if (hit < DOC_MAX) {
+      studio_tab_go(hit);
+    } else {
+      u64 slot = 0;
+      while (slot < DOC_MAX) {
+        if (docs_used[slot] < 1) {
+          break;
+        }
+        slot = slot + 1;
+      }
+      if (slot < DOC_MAX) {
+        doc_cur = slot;
+        docs_used[slot] = 1;
+        if ((slot + 1) > doc_n) {
+          doc_n = slot + 1;
+        }
+      }
+    }
   }
   fd = sys2(SYS_OPEN, (u64)name, (u64)nlen);
   n = put(0, msg_openf);

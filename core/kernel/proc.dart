@@ -3533,6 +3533,11 @@ void procSysSpawn(u64 frame) {
     userSetFrame(frame, u64(userFrameRax), u64(spawnRetBadName));
     return;
   }
+  final u64 exist = wmFocusExistingStem();
+  if (exist < u64(procMax)) {
+    userSetFrame(frame, u64(userFrameRax), exist);
+    return;
+  }
   final u64 fs = fatLookup();
   if (fs > u64(fatErrOk)) {
     fatReportError(fs);

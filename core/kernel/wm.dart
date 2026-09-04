@@ -438,12 +438,15 @@ const int wmSysSurfaceNo = 23;
 
 /// Windows the compositor can hold at once.
 ///
-/// Twenty: DESK panel + three transient overlays + sixteen ordinary
-/// client slots (every dock app plus extra FILES/STUDIO documents).
-/// Overlays still attach as windows so hit-test and park stay one
-/// path; they no longer starve later dock icons. d2-compositor
-/// asserts this equals [shmMax].
+/// Twenty: DESK panel + sixteen ordinary client slots + three
+/// reserved overlay slots (17..19). Launcher/switcher/menu attach
+/// only in the reserved range so they do not consume ordinary
+/// client or SHM rows. d2-compositor asserts this equals [shmMax].
 const int wmMaxWindows = 20;
+/// Ordinary attach search: slots `0 .. wmClientSlots-1` (DESK + 16).
+const int wmClientSlots = 17;
+/// First reserved overlay slot. Three slots: launcher, switcher, menu.
+const int wmOverlaySlot0 = 17;
 
 /// Operations a descriptor's word 0 may carry.
 const int wmOpAttach = 1;
@@ -1872,10 +1875,24 @@ u64 wmWindowOfRegion(u64 id, u64 r) {
   return u64(wmMaxWindows);
 }
 
-/// The first free window slot, or [wmMaxWindows].
+/// The first free ordinary window slot, or [wmMaxWindows].
+/// Overlay-reserved slots are not offered to clients.
 @bare
 u64 wmFreeWindow() {
   u64 i = u64(0);
+  while (i < u64(wmClientSlots)) {
+    if (wmWindowHeld(i) < u64(1)) {
+      return i;
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// First free reserved overlay slot, or [wmMaxWindows].
+@bare
+u64 wmFreeOverlay() {
+  u64 i = u64(wmOverlaySlot0);
   while (i < u64(wmMaxWindows)) {
     if (wmWindowHeld(i) < u64(1)) {
       return i;
@@ -2176,7 +2193,12 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetTwice));
     return;
   }
-  final u64 slot = wmFreeWindow();
+  u64 slot = u64(wmMaxWindows);
+  if (wmGeomIsOverlay(w, hh) > u64(0)) {
+    slot = wmFreeOverlay();
+  } else {
+    slot = wmFreeWindow();
+  }
   if (slot >= u64(wmMaxWindows)) {
     wmRefuse(frame, u64(wmOpAttach), h, u64(wmRetNoSpace));
     return;
@@ -2793,6 +2815,37 @@ const int wmOverlayLaunchHMax = 244;
 const int wmOverlaySwitchH = 88;
 const int wmOverlaySwitchWMin = 80;
 const int wmOverlaySwitchWMax = 528;
+/// PLAY titled card is 280×200 — not a launcher overlay.
+const int wmPlayCardH = 200;
+
+/// 1 when ([ww],[hh]) is a DESK overlay AABB (menu / launcher / switcher).
+/// PLAY 280×200 is a titled client and must not take an overlay slot.
+@bare
+u64 wmGeomIsOverlay(u64 ww, u64 hh) {
+  if (ww == u64(wmOverlayMenuW)) {
+    if (hh == u64(wmOverlayMenuH)) {
+      return u64(1);
+    }
+  }
+  if (ww == u64(wmOverlayLaunchW)) {
+    if (hh == u64(wmPlayCardH)) {
+      return u64(0);
+    }
+    if (hh >= u64(wmOverlayLaunchHMin)) {
+      if (hh <= u64(wmOverlayLaunchHMax)) {
+        return u64(1);
+      }
+    }
+  }
+  if (hh == u64(wmOverlaySwitchH)) {
+    if (ww >= u64(wmOverlaySwitchWMin)) {
+      if (ww <= u64(wmOverlaySwitchWMax)) {
+        return u64(1);
+      }
+    }
+  }
+  return u64(0);
+}
 
 /// `'WM OVERLAY CLEAR'` -- 16 bytes.
 @rodata
@@ -2841,10 +2894,18 @@ void wmOverlayRestore() {
 }
 
 /// 1 for DESK's menu / launcher / switcher overlay. Unique sizes; not PLAY.
+/// Reserved overlay slots (17..19) are overlays even before geom settles.
 @bare
 u64 wmIsOverlay(u64 wI) {
   if (wmIsPanel(wI) > u64(0)) {
     return u64(0);
+  }
+  if (wI >= u64(wmOverlaySlot0)) {
+    if (wI < u64(wmMaxWindows)) {
+      if (wmWindowUsable(wI) > u64(0)) {
+        return u64(1);
+      }
+    }
   }
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
@@ -2852,26 +2913,7 @@ u64 wmIsOverlay(u64 wI) {
   final u64 g = wmWin(wI, u64(wmWinGeom));
   final u64 ww = wmGeomW(g);
   final u64 hh = wmGeomH(g);
-  if (ww == u64(wmOverlayMenuW)) {
-    if (hh == u64(wmOverlayMenuH)) {
-      return u64(1);
-    }
-  }
-  if (ww == u64(wmOverlayLaunchW)) {
-    if (hh >= u64(wmOverlayLaunchHMin)) {
-      if (hh <= u64(wmOverlayLaunchHMax)) {
-        return u64(1);
-      }
-    }
-  }
-  if (hh == u64(wmOverlaySwitchH)) {
-    if (ww >= u64(wmOverlaySwitchWMin)) {
-      if (ww <= u64(wmOverlaySwitchWMax)) {
-        return u64(1);
-      }
-    }
-  }
-  return u64(0);
+  return wmGeomIsOverlay(ww, hh);
 }
 
 @bare

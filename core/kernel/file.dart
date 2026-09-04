@@ -913,12 +913,52 @@ void fileCopyOut(u64 dst, u64 from, u64 n) {
 /// [ioctlRefuse] already prints (`IOCTL REFUSED <16 hex>`), and consistency
 /// with the module that already got this right is worth more than a shorter
 /// line. docs/decisions/0038-a-refusal-that-does-not-name-itself.md.
+
+/// 1 when the FAT name buffer is OPENWITH.DAT (handoff mailbox).
+@bare
+u64 fileNameIsOpenwith() {
+  final u64 e = fatNameBase();
+  if (fatU8(e) != u64(0x4F)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(1)) != u64(0x50)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(2)) != u64(0x45)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(3)) != u64(0x4E)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(4)) != u64(0x57)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(5)) != u64(0x49)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(6)) != u64(0x54)) {
+    return u64(0);
+  }
+  if (fatU8(e + u64(7)) != u64(0x48)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
 @bare
 void fileRefuse(u64 frame, u64 code) {
   fileBump(u64(fileMetaRefusals));
-  uartWrite(Rodata.addressOf(fileStrRefuseLine), u64(13));
-  uartPutHex(code, u64(16));
-  uartNewline();
+  u64 silent = u64(0);
+  if (code == u64(fileRetNotFound)) {
+    if (fileNameIsOpenwith() > u64(0)) {
+      silent = u64(1);
+    }
+  }
+  if (silent < u64(1)) {
+    uartWrite(Rodata.addressOf(fileStrRefuseLine), u64(13));
+    uartPutHex(code, u64(16));
+    uartNewline();
+  }
   userSetFrame(frame, u64(userFrameRax), code);
 }
 

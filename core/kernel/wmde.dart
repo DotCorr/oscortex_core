@@ -2172,9 +2172,29 @@ u64 wmDeElfMagicOk() {
   return u64(1);
 }
 
+/// Re-scan only when the FAT write generation moved or the cache is empty.
+/// Opening the launcher uses the cached model immediately.
+@bare
+void wmDeScanLaunchIfStale() {
+  if (wmPageAddr() > u64(0)) {
+    if (wmDeLaunchN() > u64(0)) {
+      if (wmPage(u64(wmPageWCatGen)) == fatWrites()) {
+        uartWrite(Rodata.addressOf(wmStrCatalog), u64(11));
+        uartPutHex(wmDeLaunchN(), u64(2));
+        uartNewline();
+        return;
+      }
+    }
+  }
+  wmDeScanLaunch();
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWCatGen), fatWrites());
+  }
+}
+
 /// Walks the FAT root and caches up to [wmDeLaunchMax] app ELF
-/// directory indices on the WM page. Re-scanned on every Start so a
-/// newly copied ELF appears without a reboot. Task context only.
+/// directory indices on the WM page. Re-scanned when [fatWrites]
+/// moves so a newly copied ELF appears without a reboot.
 @bare
 void wmDeScanLaunch() {
   u64 packed = u64(wmDeLevel);
@@ -2263,7 +2283,6 @@ void wmDeNameCopy(u64 src) {
 /// Opens the start popover. Uses the ELF list `wm de` already cached.
 @bare
 void wmDeStartShow() {
-  wmOverlayRestore();
   if (wmPopKind() > u64(0)) {
     if (wmPopIsCard(wmPopKind()) > u64(0)) {
       wmPopHide();
@@ -2271,7 +2290,7 @@ void wmDeStartShow() {
       wmDePopHide();
     }
   }
-  wmDeScanLaunch();
+  wmDeScanLaunchIfStale();
   wmLaunchReset();
   wmSetMeta(u64(wmMetaPop), u64(wmPopLaunch));
   wmSetMeta(u64(wmMetaPopXY),
@@ -2312,6 +2331,106 @@ void wmDePanelShow() {
   }
 }
 
+/// Single-instance caption from the FAT 8.3 name buffer. 0 = multi-instance
+/// (FILES and unknown names). SET=2 BROWSE=3 PLAY=4 STUDIO=5 TAP=6.
+@bare
+u64 wmFatStemCaption() {
+  final u64 e = fatNameBase();
+  final u64 b0 = fatU8(e);
+  final u64 b1 = fatU8(e + u64(1));
+  final u64 b2 = fatU8(e + u64(2));
+  final u64 b3 = fatU8(e + u64(3));
+  if (b0 == u64(0x53)) {
+    if (b1 == u64(0x45)) {
+      if (b2 == u64(0x54)) {
+        if (b3 == u64(0x20)) {
+          return u64(2);
+        }
+      }
+    }
+    if (b1 == u64(0x54)) {
+      if (b2 == u64(0x55)) {
+        if (b3 == u64(0x44)) {
+          if (fatU8(e + u64(4)) == u64(0x49)) {
+            if (fatU8(e + u64(5)) == u64(0x4F)) {
+              return u64(5);
+            }
+          }
+        }
+      }
+    }
+  }
+  if (b0 == u64(0x42)) {
+    if (b1 == u64(0x52)) {
+      if (b2 == u64(0x4F)) {
+        if (b3 == u64(0x57)) {
+          return u64(3);
+        }
+      }
+    }
+  }
+  if (b0 == u64(0x50)) {
+    if (b1 == u64(0x4C)) {
+      if (b2 == u64(0x41)) {
+        if (b3 == u64(0x59)) {
+          return u64(4);
+        }
+      }
+    }
+  }
+  if (b0 == u64(0x54)) {
+    if (b1 == u64(0x41)) {
+      if (b2 == u64(0x50)) {
+        if (b3 == u64(0x20)) {
+          return u64(6);
+        }
+      }
+    }
+  }
+  return u64(0);
+}
+
+/// Live ordinary window with attach caption [cap], or [wmMaxWindows].
+@bare
+u64 wmWindowOfCaption(u64 cap) {
+  if (cap < u64(1)) {
+    return u64(wmMaxWindows);
+  }
+  if (wmPageAddr() < u64(1)) {
+    return u64(wmMaxWindows);
+  }
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i) > u64(0)) {
+      if (wmIsPanel(i) < u64(1)) {
+        if (wmIsOverlay(i) < u64(1)) {
+          if (wmPage(wmPageLaunchOf(i)) == cap) {
+            return i;
+          }
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// Focus the existing single-instance window for the FAT name, or [procMax].
+@bare
+u64 wmFocusExistingStem() {
+  final u64 cap = wmFatStemCaption();
+  final u64 w = wmWindowOfCaption(cap);
+  if (w >= u64(wmMaxWindows)) {
+    return u64(procMax);
+  }
+  wmRestWindow(w);
+  wmFocusTo(w);
+  uartWrite(Rodata.addressOf(wmStrFocus), u64(9));
+  uartPutHex(w, u64(1));
+  uartNewline();
+  return procSlotOfId(wmWin(w, u64(wmWinOwner)));
+}
+
 /// Spawns the ELF cached at launch row [row] through the named load
 /// (same guts as syscall 26). No new syscall.
 @bare
@@ -2325,6 +2444,9 @@ void wmDeSpawnRow(u64 row) {
     return;
   }
   wmDeNameCopy(e);
+  if (wmFocusExistingStem() < u64(procMax)) {
+    return;
+  }
   final u64 fs = fatLookup();
   if (fs > u64(fatErrOk)) {
     fatReportError(fs);

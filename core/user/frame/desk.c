@@ -51,6 +51,7 @@ typedef unsigned int u32;
 #define ICON_GAP 8UL
 #define ICON_PAD 16UL
 #define ICON_N 6UL
+#define ICON_MAX 10UL
 #define RIGHT_W (ICON_PAD + ICON_N * ICON_S + (ICON_N - 1UL) * ICON_GAP + ICON_PAD)
 /* Frost island cache (ADR-0198). Regen only when the wallpaper key moves. */
 #define FROST_L_W LEFT_W
@@ -62,6 +63,10 @@ typedef unsigned int u32;
 #define ICO_MUSIC 0x006080E0UL
 #define ICO_PAPER 0x00F0F0F0UL
 #define ICO_TOOLS 0x003080C0UL
+#define ICO_EXTRA 0x00C07040UL
+#define O_WRITE 1UL
+#define FILE_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
+#define PINS_BYTES 8UL
 
 /* The pixels one poll of the window table costs when nothing changed: none.
  * A repaint only happens when the table or the scanout rect moves. */
@@ -111,11 +116,59 @@ static u64 menu_seq;
 static u64 overlay_w;
 static u64 overlay_h;
 static u64 right_x;
+static u64 icon_n;
+static u64 icon_vis;
+static u64 icon_off;
+static u64 right_w;
 static u64 frost_key;
 static u64 frost_regen;
 static u32 frost_left[FROST_L_W * FROST_ISLE_H];
 static u32 frost_right[FROST_R_W * FROST_ISLE_H];
 static u64 launched_mask;
+static unsigned char pin_blob[PINS_BYTES];
+static u64 extra_idx[ICON_MAX];
+static u64 extra_n;
+
+static u64 packed_core(u64 packed) {
+  u64 b0 = packed & 0xFFUL;
+  u64 b1 = (packed >> 8) & 0xFFUL;
+  u64 b2 = (packed >> 16) & 0xFFUL;
+  if (b0 == (u64)'S') {
+    if (b1 == (u64)'E') {
+      if (b2 == (u64)'T') {
+        return 1;
+      }
+    }
+    if (b1 == (u64)'T') {
+      if (b2 == (u64)'U') {
+        return 1;
+      }
+    }
+  }
+  if (b0 == (u64)'F') {
+    if (b1 == (u64)'I') {
+      return 1;
+    }
+  }
+  if (b0 == (u64)'B') {
+    if (b1 == (u64)'R') {
+      return 1;
+    }
+  }
+  if (b0 == (u64)'P') {
+    if (b1 == (u64)'L') {
+      return 1;
+    }
+  }
+  if (b0 == (u64)'T') {
+    if (b1 == (u64)'A') {
+      if (b2 == (u64)'P') {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
 
 static char start_lab[] = "Start";
 static char clock_lab[] = "3:30 PM";
@@ -142,6 +195,8 @@ static char name_tools[] = "TAP.ELF";
 static const char msg_ready[] = "DESK READY";
 static const char msg_strip[] = "DESK STRIP";
 static const char msg_dock[] = "DESK DOCK";
+static const char msg_pins[] = "DESK PINS";
+static const char path_pins[] = "PINS.DAT";
 static const char msg_menu[] = "DESK MENU";
 static const char msg_launch[] = "DESK LAUNCH ";
 
@@ -266,7 +321,59 @@ static void clear_bar(void) {
 }
 
 static void layout_right(void) {
-  right_x = bar_w - 16UL - RIGHT_W;
+  u64 i = 0UL;
+  extra_n = 0UL;
+  while (i < ICON_MAX) {
+    u64 packed = osxui_app_launch(i);
+    if (packed == 0UL) {
+      break;
+    }
+    if (packed_core(packed) < 1UL) {
+      extra_idx[extra_n] = i;
+      extra_n = extra_n + 1UL;
+    }
+    i = i + 1UL;
+  }
+  icon_n = ICON_N + extra_n;
+  if (icon_n > ICON_MAX) {
+    icon_n = ICON_MAX;
+  }
+  {
+    u64 room = 0UL;
+    u64 fit;
+    if (bar_w > (LEFT_X + LEFT_W + 48UL)) {
+      room = bar_w - (LEFT_X + LEFT_W + 48UL);
+    }
+    fit = room / (ICON_S + ICON_GAP);
+    if (fit < 1UL) {
+      fit = 1UL;
+    }
+    if (fit > ICON_N) {
+      fit = ICON_N;
+    }
+    if (bar_w < 1000UL) {
+      if (fit > 4UL) {
+        fit = 4UL;
+      }
+    }
+    if (fit > icon_n) {
+      fit = icon_n;
+    }
+    icon_vis = fit;
+  }
+  if ((icon_off + icon_vis) > icon_n) {
+    if (icon_n > icon_vis) {
+      icon_off = icon_n - icon_vis;
+    } else {
+      icon_off = 0UL;
+    }
+  }
+  right_w = ICON_PAD + icon_vis * ICON_S;
+  if (icon_vis > 1UL) {
+    right_w = right_w + (icon_vis - 1UL) * ICON_GAP;
+  }
+  right_w = right_w + ICON_PAD;
+  right_x = bar_w - 16UL - right_w;
   if (right_x < (LEFT_X + LEFT_W + 8UL)) {
     right_x = LEFT_X + LEFT_W + 8UL;
   }
@@ -321,10 +428,17 @@ static void paint_icon_glyph(u64 ix, u64 iy, u64 which) {
     osxui_app_rrect(shm_h, ix + 14UL, iy + 10UL, 3UL, 12UL, 1UL, 0x0040A060UL);
     return;
   }
-  /* Tools: crossed wrench bars. */
-  osxui_app_rrect(shm_h, ix + 8UL, iy + 8UL, 16UL, 5UL, 2UL, ICO_TOOLS);
-  osxui_app_rrect(shm_h, ix + 14UL, iy + 8UL, 5UL, 16UL, 2UL, ICO_TOOLS);
-  osxui_app_rrect(shm_h, ix + 8UL, iy + 19UL, 16UL, 5UL, 2UL, ICO_TOOLS);
+  if (which == 5UL) {
+    /* TAP tools: crossed wrench bars. */
+    osxui_app_rrect(shm_h, ix + 8UL, iy + 8UL, 16UL, 5UL, 2UL, ICO_TOOLS);
+    osxui_app_rrect(shm_h, ix + 14UL, iy + 8UL, 5UL, 16UL, 2UL, ICO_TOOLS);
+    osxui_app_rrect(shm_h, ix + 8UL, iy + 19UL, 16UL, 5UL, 2UL, ICO_TOOLS);
+    return;
+  }
+  /* Catalog extra: generic app diamond. */
+  osxui_app_rrect(shm_h, ix + pad, iy + pad, s - pad * 2UL, s - pad * 2UL, 6UL,
+                  ICO_EXTRA);
+  osxui_app_rrect(shm_h, cx - 3UL, cy - 3UL, 6UL, 6UL, 2UL, 0x00F4F6FAUL);
 }
 
 static void frost_copy_out(u64 x, u64 y, u64 w, u64 h, u32 *cache) {
@@ -364,16 +478,18 @@ static void paint_frost_islands(u64 wall_key) {
    * clear_bar on both cache hits and misses. This avoids square/orphan dock
    * ends while keeping the expensive wallpaper blur cached. */
   osxui_app_island_shadow(shm_h, LEFT_X, ISLAND_Y, LEFT_W, ISLAND_H);
-  osxui_app_island_shadow(shm_h, right_x, ISLAND_Y, RIGHT_W, ISLAND_H);
-  if (wall_key != 0UL && wall_key == frost_key) {
+  osxui_app_island_shadow(shm_h, right_x, ISLAND_Y, right_w, ISLAND_H);
+  if (wall_key != 0UL && wall_key == frost_key && right_w == FROST_R_W) {
     frost_copy_in(LEFT_X, ISLAND_Y, FROST_L_W, FROST_ISLE_H, frost_left);
     frost_copy_in(right_x, ISLAND_Y, FROST_R_W, FROST_ISLE_H, frost_right);
     return;
   }
   osxui_app_island(shm_h, LEFT_X, ISLAND_Y, LEFT_W, ISLAND_H);
-  osxui_app_island(shm_h, right_x, ISLAND_Y, RIGHT_W, ISLAND_H);
+  osxui_app_island(shm_h, right_x, ISLAND_Y, right_w, ISLAND_H);
   frost_copy_out(LEFT_X, ISLAND_Y, FROST_L_W, FROST_ISLE_H, frost_left);
-  frost_copy_out(right_x, ISLAND_Y, FROST_R_W, FROST_ISLE_H, frost_right);
+  if (right_w == FROST_R_W) {
+    frost_copy_out(right_x, ISLAND_Y, FROST_R_W, FROST_ISLE_H, frost_right);
+  }
   frost_key = wall_key;
   frost_regen = frost_regen + 1UL;
   {
@@ -470,10 +586,14 @@ static void paint_bar(u64 tasks, u64 tasks_hi) {
   osxui_app_rrect(shm_h, LEFT_X + HAM_OFF + 8UL, hy + 12UL, 20UL, 2UL, 1UL,
                   OSXUI_GLASS_FG);
   i = 0;
-  while (i < ICON_N) {
+  while (i < icon_vis) {
     ix = right_x + ICON_PAD + i * (ICON_S + ICON_GAP);
-    paint_icon_glyph(ix, ISLAND_Y + 4UL, i);
+    paint_icon_glyph(ix, ISLAND_Y + 4UL, icon_off + i);
     i = i + 1;
+  }
+  if (icon_n > icon_vis) {
+    ix = right_x + right_w - 10UL;
+    osxui_app_rrect(shm_h, ix, ISLAND_Y + 16UL, 5UL, 8UL, 1UL, OSXUI_GLASS_FG);
   }
   p = (volatile u32 *)pix_va;
   {
@@ -537,16 +657,100 @@ static u64 launch_nlen(u64 i) {
   return 7UL;
 }
 
+static void pins_default(void) {
+  pin_blob[0] = 0;
+  pin_blob[1] = 1;
+  pin_blob[2] = 2;
+  pin_blob[3] = 3;
+  pin_blob[4] = 4;
+  pin_blob[5] = 5;
+  pin_blob[6] = 0xFF;
+  pin_blob[7] = 0xFF;
+}
+
+static void pins_persist(void) {
+  u64 fd;
+  u64 got;
+  pins_default();
+  fd = sys3(SYS_OPEN, (u64)path_pins, 8, 0);
+  if (fd >= FILE_ERR_FLOOR) {
+    fd = sys3(SYS_OPEN, (u64)path_pins, 8, O_WRITE);
+    if (fd < FILE_ERR_FLOOR) {
+      sys3(SYS_FDWRITE, fd, (u64)pin_blob, PINS_BYTES);
+      sys1(SYS_CLOSE, fd);
+    }
+    wr(msg_pins, 9);
+    return;
+  }
+  got = sys3(SYS_READ, fd, (u64)pin_blob, PINS_BYTES);
+  sys1(SYS_CLOSE, fd);
+  if (got < 6UL) {
+    pins_default();
+    fd = sys3(SYS_OPEN, (u64)path_pins, 8, O_WRITE);
+    if (fd < FILE_ERR_FLOOR) {
+      sys3(SYS_FDWRITE, fd, (u64)pin_blob, PINS_BYTES);
+      sys1(SYS_CLOSE, fd);
+    }
+  }
+  wr(msg_pins, 9);
+}
+
+static void launch_packed(u64 packed) {
+  char nm[12];
+  u64 n = 0;
+  u64 i = 0;
+  u64 st;
+  u64 at;
+  while (i < 8UL) {
+    char c = (char)((packed >> (i * 8UL)) & 0xFFUL);
+    if (c != 0 && c != ' ') {
+      nm[n] = c;
+      n = n + 1;
+    }
+    i = i + 1;
+  }
+  if (n < 1UL) {
+    return;
+  }
+  nm[n] = '.';
+  n = n + 1;
+  nm[n] = 'E';
+  n = n + 1;
+  nm[n] = 'L';
+  n = n + 1;
+  nm[n] = 'F';
+  n = n + 1;
+  at = put(0, msg_launch);
+  i = 0;
+  while (i < n) {
+    line[at] = nm[i];
+    at = at + 1;
+    i = i + 1;
+  }
+  emit((unsigned)at);
+  st = sys3(SYS_SPAWN, (u64)nm, n, 0);
+  if (st < WM_RET_FLOOR) {
+    launched_mask = launched_mask | 1UL;
+  }
+}
+
 static void launch_icon(u64 i) {
   char *nm;
   u64 nlen;
   u64 st;
   u64 at;
-  if (i >= ICON_N) {
+  if (i >= icon_n) {
     return;
   }
-  /* Dock is spawn, not raise. A live stem used to return here and
-   * block the next FILES.ELF after the first client. */
+  if (i >= ICON_N) {
+    u64 ex = i - ICON_N;
+    if (ex < extra_n) {
+      launch_packed(osxui_app_launch(extra_idx[ex]));
+    }
+    return;
+  }
+  /* SET/STUDIO/BROWSE/PLAY/TAP: kernel focuses an existing instance.
+   * FILES stays multi-document (always spawn). */
   nm = launch_name(i);
   nlen = launch_nlen(i);
   at = put(0, msg_launch);
@@ -584,16 +788,38 @@ static void handle_press(u64 ev) {
   if (rx < right_x) {
     return;
   }
+  if (icon_n > icon_vis) {
+    if (rx < (right_x + ICON_PAD)) {
+      if (icon_off > 0UL) {
+        icon_off = icon_off - 1UL;
+        paint_bar(last_tasks, last_tasks_hi);
+        commit_all();
+      }
+      return;
+    }
+    {
+      u64 last_ix =
+          right_x + ICON_PAD + (icon_vis - 1UL) * (ICON_S + ICON_GAP) + ICON_S;
+      if (rx >= last_ix) {
+        if ((icon_off + icon_vis) < icon_n) {
+          icon_off = icon_off + 1UL;
+          paint_bar(last_tasks, last_tasks_hi);
+          commit_all();
+        }
+        return;
+      }
+    }
+  }
   i = 0;
-  while (i < ICON_N) {
+  while (i < icon_vis) {
     ix = right_x + ICON_PAD + i * (ICON_S + ICON_GAP);
     span = ICON_S + ICON_GAP;
-    if (i + 1UL >= ICON_N) {
+    if (i + 1UL >= icon_vis) {
       span = ICON_S + ICON_PAD;
     }
     if (rx >= ix) {
       if (rx < (ix + span)) {
-        launch_icon(i);
+        launch_icon(icon_off + i);
         return;
       }
     }
@@ -765,7 +991,7 @@ static void paint_desk_menu(u64 kind) {
     }
     vis = 0;
     i = 0;
-    while (i < ICON_N) {
+    while (i < ICON_MAX) {
       n = stem_into(stem, osxui_app_launch(i));
       if (n > 0) {
         if (launch_q_match(osxui_app_launch(i), q, qlen) > 0) {
@@ -1055,6 +1281,11 @@ void desk_main(u64 sp) {
   last_pop = 0;
   last_launch_sel = 0;
   last_pref = osxui_app_pref();
+  icon_n = ICON_N;
+  icon_vis = ICON_N;
+  icon_off = 0;
+  right_w = RIGHT_W;
+  pins_persist();
   wr(msg_ready, 10);
   wr(msg_strip, 10);
   wr(msg_dock, 9);
