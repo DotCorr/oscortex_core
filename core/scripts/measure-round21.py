@@ -154,21 +154,26 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
 
 
 def close_files(q, ser, dx=0):
-    """Close FILES by the traffic disc. After a +28 step the disc sits
-    next to SET's left AABB — click the disc's left half."""
-    cy = 56
-    xs = [d15.FILES_CLOSE_XY[0] + dx - 8, d15.FILES_CLOSE_XY[0] + dx,
-          d15.FILES_CLOSE_XY[0], 422 + dx + 9]
-    for cx in xs:
-        marked = ser.read()
-        d15.place(q, ser, cx, cy)
-        time.sleep(0.06)
-        d15.button(q, cx, cy, "left", True)
-        time.sleep(0.04)
-        d15.button(q, cx, cy, "left", False)
-        if d15.wait_mark(ser, "WM CLOSE", marked, 1.2):
-            return True
-    return False
+    """Close FILES via the title context pop (Close is row 0)."""
+    tx, ty = FILES_TITLE[0] + dx, FILES_TITLE[1]
+    marked = ser.read()
+    d15.place(q, ser, tx, ty)
+    time.sleep(0.08)
+    d15.button(q, tx, ty, "right", True)
+    time.sleep(0.04)
+    d15.button(q, tx, ty, "right", False)
+    if not (d15.wait_mark(ser, "WM CTX TITLE", marked, 1.5)
+            or d15.wait_mark(ser, "WM WIN MENU", marked, 0.8)):
+        return False
+    # Close row centre: pad 8 + 14 inside a ~28 px row.
+    cx, cy = tx + 36, ty + 22
+    marked = ser.read()
+    d15.place(q, ser, cx, cy)
+    time.sleep(0.06)
+    d15.button(q, cx, cy, "left", True)
+    time.sleep(0.04)
+    d15.button(q, cx, cy, "left", False)
+    return bool(d15.wait_mark(ser, "WM CLOSE", marked, 2.0))
 
 
 def launch_files(q, ser):
@@ -271,12 +276,21 @@ def files_open_proof(q, ser, relaunch=False):
     if not menu:
         menu = d15.wait_mark(ser, "WM CTX FILE", marked, 2)
     marked = ser.read()
+    # Click the Open row, then Enter if the pointer missed.
     d15.place(q, ser, OPEN_XY[0], OPEN_XY[1])
     time.sleep(0.12)
     d15.button(q, OPEN_XY[0], OPEN_XY[1], "left", True)
     time.sleep(0.05)
     d15.button(q, OPEN_XY[0], OPEN_XY[1], "left", False)
-    ok = d15.wait_mark(ser, "FILES OPEN", marked, 4)
+    ok = d15.wait_mark(ser, "FILES OPEN", marked, 1.5)
+    clicked = bool(ok)
+    if not ok:
+        marked = ser.read()
+        try:
+            q.key("ret")
+        except Exception:
+            pass
+        ok = d15.wait_mark(ser, "FILES OPEN", marked, 2.0)
     blob = ser.read()
     try:
         tail = open(ser.path).read()[-8000:]
@@ -289,6 +303,7 @@ def files_open_proof(q, ser, relaunch=False):
         "opened": bool(ok) and cat and (not none) and (not refused),
         "cat": bool(cat) and (not none),
         "menu": bool(menu),
+        "clicked": clicked,
         "refused": refused,
         "none": none,
         "launch": True,
