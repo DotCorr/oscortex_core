@@ -265,6 +265,15 @@ def main():
             g = wait_vis(ser, serial_path,
                          pred=lambda gg: gg[2] < 1000, timeout=5) or geom_now() or g
             tries += 1
+        if g is not None and g[2] >= 1000:
+            cx, cy = ctrl_of(g, "close")
+            d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
+            wait_files_gone(ser, serial_path, timeout=2.5)
+            n0 = vis_count(serial_path, ser.archive or "")
+            d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+                      "left", "FILES CSD", timeout=3)
+            g = wait_vis(ser, serial_path, n0=n0,
+                         pred=lambda gg: gg[2] < 1000, timeout=6)
         return g
 
     cycle = 0
