@@ -254,11 +254,16 @@ def main():
         if g is None:
             return None
         tries = 0
-        while g is not None and g[2] >= 1000 and tries < 3:
+        while g is not None and g[2] >= 1000 and tries < 4:
+            try:
+                q.key("esc")
+            except Exception:
+                pass
+            time.sleep(0.05)
             rx, ry = ctrl_of(g, "max")
             d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
             g = wait_vis(ser, serial_path,
-                         pred=lambda gg: gg[2] < 1000, timeout=4) or g
+                         pred=lambda gg: gg[2] < 1000, timeout=5) or geom_now() or g
             tries += 1
         return g
 
@@ -271,6 +276,7 @@ def main():
         geom = ensure_restored(geom)
         if geom is None or geom[2] >= 1000:
             dump("max-hold")
+            time.sleep(0.15)
             continue
         tx, ty = title_of(geom)
         d15.place(q, ser, tx, ty)

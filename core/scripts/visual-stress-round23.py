@@ -171,18 +171,30 @@ def main():
         d15.press(q, ser, SET_TITLE[0], SET_TITLE[1], "left", "WM DEFN",
                   timeout=2)
         focuses += 1
-        try:
-            d15.press(q, ser, 90, 400, "right", "WM WALL MENU", timeout=2)
-            menus += 1
-            q.key("esc")
-        except Exception as e:
-            faults.append("wall menu %s" % e)
-        try:
-            d15.press(q, ser, 70, 380, "right", "WM WALL MENU", timeout=2)
-            menus += 1
-            q.key("esc")
-        except Exception as e:
-            faults.append("wall menu2 %s" % e)
+        geom = live()
+        if geom is not None and geom[2] >= 1000:
+            mx, my = cs.ctrl_of(geom, "max")
+            try:
+                q.key("esc")
+            except Exception:
+                pass
+            d15.press(q, ser, mx, my, "left", "WM REQ", timeout=2)
+            cs.wait_vis(ser, serial_path, pred=lambda gg: gg[2] < 1000,
+                        timeout=4)
+            geom = live()
+        if geom is None or geom[2] < 1000:
+            try:
+                d15.press(q, ser, 90, 400, "right", "WM WALL MENU", timeout=2)
+                menus += 1
+                q.key("esc")
+            except Exception as e:
+                faults.append("wall menu %s" % e)
+            try:
+                d15.press(q, ser, 70, 380, "right", "WM WALL MENU", timeout=2)
+                menus += 1
+                q.key("esc")
+            except Exception as e:
+                faults.append("wall menu2 %s" % e)
         d15.place(q, ser, ftx, fty)
         d15.button(q, ftx, fty, "left", True)
         for dx in (0, 8, 16, 8, 0):
