@@ -1479,7 +1479,6 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
                 mouseState(u64(mouseWordY)));
             wmPageSet(u64(wmPageWPresented),
                 wmPage(u64(wmPageWPresented)) + u64(1));
-            wmDamageRect(rx, ry, rw, rh);
             final u64 dropped0 = wmMeta(u64(wmMetaDropped));
             final u64 pending0 = dropped0 & u64(wmPointerPending);
             wmSetMeta(u64(wmMetaDropped), dropped0 & u64(wmPointerDropMask));
