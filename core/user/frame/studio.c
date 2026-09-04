@@ -136,6 +136,7 @@ static const char msg_caret[] = "STUDIO CARET L ";
 static const char msg_ow[] = "STUDIO OPENWITH ";
 static const char msg_miss[] = "STUDIO ERR MISS ";
 static const char msg_bin[] = "STUDIO ERR BIN ";
+static unsigned ow_cool;
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;
@@ -560,16 +561,23 @@ static void studio_poll_openwith(void) {
   unsigned i;
   char name[16];
   unsigned char blob[16];
+  if (ow_cool > 0) {
+    ow_cool = ow_cool - 1;
+    return;
+  }
   fd = sys2(SYS_OPEN, (u64)path_ow, 12);
   if (fd >= FILE_ERR_FLOOR) {
+    ow_cool = 64;
     return;
   }
   got = sys3(SYS_READ, fd, (u64)blob, 16);
   sys2(SYS_CLOSE, fd, 0);
   if (got < 13) {
+    ow_cool = 16;
     return;
   }
   if (blob[12] != 1) {
+    ow_cool = 16;
     return;
   }
   nlen = 0;

@@ -94,6 +94,8 @@ open(sys.argv[2], 'wb').write(bytes.fromhex(hexs))
 " "$OUT/set-model.txt" "$OUT/FACTS.DAT" \
   || fail "could not plant FACTS.DAT"
 printf 'APP1.ELF\n' >"$OUT/APPS.TXT"
+printf 'note from files\n' >"$OUT/NOTE.TXT"
+python3 -c "open('$OUT/OPENWITH.DAT','wb').write(b' '*12+bytes([0xFF,0,0,0]))"
 
 PAIRS=(
   "FILES.ELF=$OUT/files/files.elf"
@@ -107,6 +109,8 @@ PAIRS=(
   "TAP.ELF=$OUT/apps/tap.elf"
   "APPS.TXT=$OUT/APPS.TXT"
   "APP1.ELF=$OUT/studio/app1.elf"
+  "NOTE.TXT=$OUT/NOTE.TXT"
+  "OPENWITH.DAT=$OUT/OPENWITH.DAT"
 )
 if [[ "$WANT_SURF" == 1 ]]; then
   bash "$FRAME2/build-progs.sh" "$OUT/frame2" "$CORE_DIR/kernel" \
@@ -133,6 +137,7 @@ import json, sys
 lay = json.load(open(sys.argv[1]))
 need = ['BROWSE.ELF', 'PLAY.ELF', 'TAP.ELF', 'FILES.ELF', 'SET.ELF',
         'PING.ELF', 'STUDIO.ELF', 'APP1.ELF', 'DESK.ELF',
+        'NOTE.TXT', 'OPENWITH.DAT',
         'VOID', 'GONE.DAT', 'MISS.DAT']
 miss = [n for n in need if n not in lay['order']]
 if miss:

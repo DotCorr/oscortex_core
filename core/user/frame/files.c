@@ -191,17 +191,21 @@ static unsigned folder_nlen;
 static char fwd_name[16];
 static unsigned fwd_nlen;
 #define HIST_MAX 8U
-static char hist_back[HIST_MAX][16];
+#define PATH_CAP 64U
+static char hist_back[HIST_MAX][PATH_CAP];
 static unsigned hist_blen[HIST_MAX];
 static u64 hist_bn;
-static char hist_fwd[HIST_MAX][16];
+static char hist_fwd[HIST_MAX][PATH_CAP];
 static unsigned hist_flen[HIST_MAX];
 static u64 hist_fn;
 static char hist_cur[16];
 static unsigned hist_clen;
+static char cur_path[PATH_CAP];
+static unsigned cur_plen;
 static u64 fwd_streak;
 static const char path_ow[] = "OPENWITH.DAT";
 static const char path_studio[] = "STUDIO.ELF";
+static const char new_body[] = "note\n";
 static const char path_gone[] = "GONE.DAT";
 static const char path_miss[] = "MISS.DAT";
 static const char msg_retry[] = "FILES RETRY";
@@ -630,10 +634,16 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
 #define SCAN_F5 0x3FUL
 /* Clip bytes live in the window region's unused prefix (SURF_OFFSET). */
 #define EDIT_MAX 12UL
-#define NAME_NEW "NEW.DAT"
+#define NAME_NEW "NEW.TXT"
 #define NAME_NEW_N 7UL
 #define NAME_DIR "NEWDIR"
 #define NAME_DIR_N 6UL
+#define NAME_DIR2 "NEWDI2"
+#define NAME_DIR2_N 6UL
+#define NAME_DIR3 "NEWDI3"
+#define NAME_DIR3_N 6UL
+#define NAME_DIR4 "NEWDI4"
+#define NAME_DIR4_N 6UL
 
 static u64 row_at_y(u64 y, u64 names) {
   u64 body_h = files_height;
@@ -853,6 +863,135 @@ static void files_remember_folder(const char *name, unsigned nlen) {
   hist_cur[nlen] = 0;
 }
 
+static void files_path_copy(char *dst, unsigned *dlen, const char *src,
+                            unsigned slen) {
+  unsigned i = 0;
+  if (slen >= PATH_CAP) {
+    slen = PATH_CAP - 1U;
+  }
+  while (i < slen) {
+    dst[i] = src[i];
+    i = i + 1;
+  }
+  dst[slen] = 0;
+  *dlen = slen;
+}
+
+static u64 files_path_same(const char *a, unsigned al, const char *b,
+                           unsigned bl) {
+  unsigned i = 0;
+  if (al != bl) {
+    return 0;
+  }
+  while (i < al) {
+    if (a[i] != b[i]) {
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 1;
+}
+
+static void files_path_append(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  if (nlen > 12U) {
+    nlen = 12U;
+  }
+  if (cur_plen > 0) {
+    if ((cur_plen + 1U + nlen) >= PATH_CAP) {
+      return;
+    }
+    cur_path[cur_plen] = '/';
+    cur_plen = cur_plen + 1;
+  } else if (nlen >= PATH_CAP) {
+    return;
+  }
+  while (i < nlen) {
+    cur_path[cur_plen] = name[i];
+    cur_plen = cur_plen + 1;
+    i = i + 1;
+  }
+  cur_path[cur_plen] = 0;
+}
+
+static void files_path_tail(void) {
+  unsigned i = cur_plen;
+  unsigned start = 0;
+  if (cur_plen < 1U) {
+    files_remember_folder("", 0);
+    return;
+  }
+  while (i > 0) {
+    i = i - 1;
+    if (cur_path[i] == '/') {
+      start = i + 1;
+      i = 0;
+    }
+  }
+  files_remember_folder(cur_path + start, cur_plen - start);
+}
+
+static void files_reset_cwd(void) {
+  u64 fd = sys2(SYS_OPEN, (u64)path_root, 5);
+  if (fd < ERR_FLOOR) {
+    sys1(SYS_CLOSE, fd);
+  }
+}
+
+static u64 files_walk_path(const char *path, unsigned plen) {
+  unsigned start = 0;
+  unsigned i = 0;
+  files_reset_cwd();
+  if (plen < 1U) {
+    in_folder = 0;
+    folder_nlen = 0;
+    hist_clen = 0;
+    hist_cur[0] = 0;
+    return files_load_listing(path_root, 5);
+  }
+  while (i <= plen) {
+    unsigned cut = 0;
+    if (i == plen) {
+      cut = 1;
+    } else if (path[i] == '/') {
+      cut = 1;
+    }
+    if (cut > 0) {
+      unsigned n = i - start;
+      if (n > 0) {
+        char comp[16];
+        unsigned k = 0;
+        if (n > 12U) {
+          n = 12U;
+        }
+        while (k < n) {
+          comp[k] = path[start + k];
+          k = k + 1;
+        }
+        comp[n] = 0;
+        if (i == plen) {
+          if (files_load_listing(comp, n) > 0) {
+            return 1;
+          }
+          in_folder = 1;
+          files_remember_folder(comp, n);
+          return 0;
+        }
+        {
+          u64 fd = sys2(SYS_OPEN, (u64)comp, (u64)n);
+          if (fd >= ERR_FLOOR) {
+            return 1;
+          }
+          sys1(SYS_CLOSE, fd);
+        }
+      }
+      start = i + 1;
+    }
+    i = i + 1;
+  }
+  return 1;
+}
+
 static void files_hist_note(void) {
   unsigned at = put(0, msg_hist);
   at = putdec(at, hist_bn);
@@ -861,81 +1000,49 @@ static void files_hist_note(void) {
   emit(at);
 }
 
-static void files_hist_push_back(const char *name, unsigned nlen) {
-  unsigned i = 0;
+static void files_hist_shift(char rows[HIST_MAX][PATH_CAP], unsigned *lens,
+                             u64 *n) {
+  unsigned s = 0;
+  if (*n < HIST_MAX) {
+    return;
+  }
+  while (s + 1U < HIST_MAX) {
+    unsigned k = 0;
+    while (k < PATH_CAP) {
+      rows[s][k] = rows[s + 1U][k];
+      k = k + 1;
+    }
+    lens[s] = lens[s + 1U];
+    s = s + 1;
+  }
+  *n = HIST_MAX - 1U;
+}
+
+static void files_hist_push_back(void) {
   if (hist_bn > 0) {
-    if (hist_blen[hist_bn - 1] == nlen) {
-      unsigned same = 1;
-      while (i < nlen) {
-        if (hist_back[hist_bn - 1][i] != name[i]) {
-          same = 0;
-        }
-        i = i + 1;
-      }
-      if (same > 0) {
-        return;
-      }
+    if (files_path_same(hist_back[hist_bn - 1], hist_blen[hist_bn - 1],
+                        cur_path, cur_plen) > 0) {
+      return;
     }
   }
-  if (hist_bn >= HIST_MAX) {
-    unsigned s = 0;
-    while (s + 1U < HIST_MAX) {
-      unsigned k = 0;
-      while (k < 16U) {
-        hist_back[s][k] = hist_back[s + 1U][k];
-        k = k + 1;
-      }
-      hist_blen[s] = hist_blen[s + 1U];
-      s = s + 1;
-    }
-    hist_bn = HIST_MAX - 1U;
-  }
-  i = 0;
-  if (nlen > 12U) {
-    nlen = 12U;
-  }
-  while (i < nlen) {
-    hist_back[hist_bn][i] = name[i];
-    i = i + 1;
-  }
-  hist_back[hist_bn][nlen] = 0;
-  hist_blen[hist_bn] = nlen;
+  files_hist_shift(hist_back, hist_blen, &hist_bn);
+  files_path_copy(hist_back[hist_bn], &hist_blen[hist_bn], cur_path, cur_plen);
   hist_bn = hist_bn + 1;
 }
 
-static void files_hist_push_fwd(const char *name, unsigned nlen) {
-  unsigned i = 0;
-  if (hist_fn >= HIST_MAX) {
-    unsigned s = 0;
-    while (s + 1U < HIST_MAX) {
-      unsigned k = 0;
-      while (k < 16U) {
-        hist_fwd[s][k] = hist_fwd[s + 1U][k];
-        k = k + 1;
-      }
-      hist_flen[s] = hist_flen[s + 1U];
-      s = s + 1;
-    }
-    hist_fn = HIST_MAX - 1U;
-  }
-  if (nlen > 12U) {
-    nlen = 12U;
-  }
-  while (i < nlen) {
-    hist_fwd[hist_fn][i] = name[i];
-    i = i + 1;
-  }
-  hist_fwd[hist_fn][nlen] = 0;
-  hist_flen[hist_fn] = nlen;
+static void files_hist_push_fwd(void) {
+  files_hist_shift(hist_fwd, hist_flen, &hist_fn);
+  files_path_copy(hist_fwd[hist_fn], &hist_flen[hist_fn], cur_path, cur_plen);
   hist_fn = hist_fn + 1;
 }
 
 static void files_hist_branch(const char *name, unsigned nlen) {
-  files_hist_push_back(hist_cur, hist_clen);
+  files_hist_push_back();
   hist_fn = 0;
   fwd_streak = 0;
   can_fwd = 0;
-  files_remember_folder(name, nlen);
+  files_path_append(name, nlen);
+  files_path_tail();
   files_hist_note();
 }
 
@@ -1006,27 +1113,16 @@ static u64 files_load_listing(const char *path, unsigned nlen) {
 }
 
 static void files_go_fwd(void) {
-  unsigned nlen;
   if (hist_fn < 1) {
     return;
   }
-  files_hist_push_back(hist_cur, hist_clen);
+  files_hist_push_back();
   hist_fn = hist_fn - 1;
-  nlen = hist_flen[hist_fn];
-  files_remember_folder(hist_fwd[hist_fn], nlen);
+  files_path_copy(cur_path, &cur_plen, hist_fwd[hist_fn], hist_flen[hist_fn]);
   can_fwd = hist_fn;
-  if (nlen < 1U) {
-    if (files_load_listing(path_root, 5) > 0) {
-      files_restore_root();
-    } else {
-      in_folder = 0;
-    }
-  } else {
-    if (files_load_listing(hist_cur, hist_clen) > 0) {
-      files_show_error();
-      return;
-    }
-    in_folder = 1;
+  if (files_walk_path(cur_path, cur_plen) > 0) {
+    files_show_error();
+    return;
   }
   fwd_streak = fwd_streak + 1;
   wr(msg_fwd, sizeof(msg_fwd) - 1);
@@ -1062,17 +1158,51 @@ static void files_do_refresh(void) {
 }
 
 static void files_reload_here(void) {
-  if (in_folder > 0 && folder_nlen > 0U) {
-    if (files_load_listing(folder_name, folder_nlen) > 0) {
-      files_show_error();
-      return;
-    }
-  } else {
-    if (files_load_listing(path_root, 5) > 0) {
-      files_show_error();
-      return;
-    }
+  if (files_walk_path(cur_path, cur_plen) > 0) {
+    files_show_error();
   }
+}
+
+static void files_select_name(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  while (i < (unsigned)files_names) {
+    if (same_bytes(dotted[i], dotlen[i], name, nlen) > 0) {
+      files_set_sel((u64)i);
+      return;
+    }
+    i = i + 1;
+  }
+}
+
+static u64 files_name_used(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  while (i < (unsigned)files_names) {
+    if (same_bytes(dotted[i], dotlen[i], name, nlen) > 0) {
+      return 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+static void files_pick_dir(const char **name, unsigned *nlen) {
+  if (files_name_used(NAME_DIR, (unsigned)NAME_DIR_N) < 1) {
+    *name = NAME_DIR;
+    *nlen = (unsigned)NAME_DIR_N;
+    return;
+  }
+  if (files_name_used(NAME_DIR2, (unsigned)NAME_DIR2_N) < 1) {
+    *name = NAME_DIR2;
+    *nlen = (unsigned)NAME_DIR2_N;
+    return;
+  }
+  if (files_name_used(NAME_DIR3, (unsigned)NAME_DIR3_N) < 1) {
+    *name = NAME_DIR3;
+    *nlen = (unsigned)NAME_DIR3_N;
+    return;
+  }
+  *name = NAME_DIR4;
+  *nlen = (unsigned)NAME_DIR4_N;
 }
 
 static void files_do_new(void) {
@@ -1087,23 +1217,28 @@ static void files_do_new(void) {
     wr(msg_ro, sizeof(msg_ro) - 1);
     return;
   }
+  sys3(SYS_FDWRITE, fd, (u64)new_body, 5);
   sys1(SYS_CLOSE, fd);
   at = put(0, msg_new);
   at = put(at, NAME_NEW);
   emit(at);
   files_reload_here();
+  files_select_name(NAME_NEW, (unsigned)NAME_NEW_N);
 }
 
 static void files_do_mkdir(void) {
   u64 r;
   unsigned at;
+  const char *dname;
+  unsigned dnlen;
   if (files_writable < 1) {
     wr(msg_ro, sizeof(msg_ro) - 1);
     return;
   }
-  r = sys2(SYS_MKDIR, (u64)NAME_DIR, NAME_DIR_N);
+  files_pick_dir(&dname, &dnlen);
+  r = sys2(SYS_MKDIR, (u64)dname, (u64)dnlen);
   at = put(0, msg_mkdir);
-  at = put(at, NAME_DIR);
+  at = put(at, dname);
   if (r >= ERR_FLOOR) {
     at = put(at, " ERR");
     emit(at);
@@ -1111,13 +1246,13 @@ static void files_do_mkdir(void) {
   }
   emit(at);
   at = put(0, msg_dir);
-  at = put(at, NAME_DIR);
+  at = put(at, dname);
   emit(at);
-  if (files_load_listing(NAME_DIR, (unsigned)NAME_DIR_N) > 0) {
+  if (files_load_listing(dname, dnlen) > 0) {
     files_show_empty();
     return;
   }
-  files_hist_branch(NAME_DIR, (unsigned)NAME_DIR_N);
+  files_hist_branch(dname, dnlen);
   in_folder = 1;
   files_repaint();
 }
@@ -1694,25 +1829,25 @@ static void files_restore_root(void) {
   scroll_off = 0;
   menu_on = 0;
   empty_noted = 0;
+  cur_plen = 0;
+  cur_path[0] = 0;
+  hist_clen = 0;
+  hist_cur[0] = 0;
+  folder_nlen = 0;
+  folder_name[0] = 0;
 }
 
 static void files_go_back(void) {
-  unsigned nlen;
   menu_on = 0;
   if (hist_bn < 1) {
     if (in_folder > 0) {
-      files_hist_push_fwd(hist_cur, hist_clen);
+      files_hist_push_fwd();
       can_fwd = hist_fn;
-      if (files_load_listing(path_root, 5) > 0) {
+      cur_plen = 0;
+      cur_path[0] = 0;
+      if (files_walk_path(cur_path, 0) > 0) {
         files_restore_root();
-      } else {
-        in_folder = 0;
-        files_err = 0;
       }
-      hist_clen = 0;
-      hist_cur[0] = 0;
-      folder_nlen = 0;
-      folder_name[0] = 0;
       fwd_streak = 0;
       wr(msg_back, sizeof(msg_back) - 1);
       files_hist_note();
@@ -1725,27 +1860,16 @@ static void files_go_back(void) {
     files_repaint();
     return;
   }
-  files_hist_push_fwd(hist_cur, hist_clen);
+  files_hist_push_fwd();
   hist_bn = hist_bn - 1;
-  nlen = hist_blen[hist_bn];
-  files_remember_folder(hist_back[hist_bn], nlen);
+  files_path_copy(cur_path, &cur_plen, hist_back[hist_bn], hist_blen[hist_bn]);
   can_fwd = hist_fn;
   fwd_streak = 0;
-  if (nlen < 1U) {
-    if (files_load_listing(path_root, 5) > 0) {
-      files_restore_root();
-    } else {
-      in_folder = 0;
-      files_err = 0;
-    }
-  } else {
-    if (files_load_listing(hist_cur, nlen) > 0) {
-      files_show_error();
-      return;
-    }
-    in_folder = 1;
-    files_err = 0;
+  if (files_walk_path(cur_path, cur_plen) > 0) {
+    files_show_error();
+    return;
   }
+  files_err = 0;
   wr(msg_back, sizeof(msg_back) - 1);
   files_hist_note();
   files_repaint();

@@ -23,6 +23,31 @@ def main():
                      int(open(os.path.join(RUN, "serial.port")).read()))
     t0 = time.time()
     n = 0
+    # Simultaneous dock launch: SET FILES BROWSE PLAY STUDIO TAP.
+    for i in range(6):
+        x = (d15.RIGHT_X + d15.ICON_PAD + i * (d15.ICON_S + d15.ICON_GAP)
+             + d15.ICON_S // 2)
+        d15.place(q, ser, x, d15.PANEL_Y)
+        d15.button(q, x, d15.PANEL_Y, "left", True)
+        time.sleep(0.03)
+        d15.button(q, x, d15.PANEL_Y, "left", False)
+        time.sleep(0.12)
+    # 100 close/reopen cycles on FILES (default geom close chip).
+    for i in range(100):
+        d15.place(q, ser, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1])
+        d15.button(q, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1],
+                   "left", True)
+        time.sleep(0.02)
+        d15.button(q, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1],
+                   "left", False)
+        time.sleep(0.04)
+        d15.place(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
+        d15.button(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+                   "left", True)
+        time.sleep(0.02)
+        d15.button(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+                   "left", False)
+        time.sleep(0.05)
     while time.time() - t0 < SECS:
         d15.place(q, ser, 90 + (n * 19) % 360, 70 + (n * 7) % 40)
         if n % 4 == 0:
@@ -67,6 +92,8 @@ def main():
         "qtimeout": "VIRTIO QTIMEOUT" in blob,
         "abort": "OSGFX ABORT" in blob,
         "tap_die": "TAP DIE " in blob,
+        "attach_refuse": "WM RET " in blob or "FILE REFUSED" in blob and blob.count("FILE REFUSED") > 200,
+        "close_reopen": 100,
         "cpath_compose": after.count("WM CPATH 3"),
         "cpath3_reasons": reasons[-12:],
         "done_n": after.count("WM DONE "),

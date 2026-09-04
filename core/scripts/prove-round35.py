@@ -150,9 +150,7 @@ def main():
     q.key("ret")
     files_mkdir = wait_tok(ser, "FILES MKDIR", marked_h, 2.5)
     files_dir = wait_tok(ser, "FILES DIR", marked_h, 2.5)
-    combo(q, "ctrl", "n")
-    wait_tok(ser, "FILES NEW", marked_h, 2.0)
-    # second folder inside first
+    # In-folder menu: Back Retry Open New Mkdir Refresh — 4 downs is Mkdir.
     fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
     click(q, fg[0] + 80, fg[1] + 80)
     time.sleep(0.08)
@@ -160,10 +158,11 @@ def main():
     d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
     d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
     wait_tok(ser, "FILES MENU", harvest(ser), 1.5)
-    for _ in range(5):
+    for _ in range(4):
         q.key("down")
     q.key("ret")
     wait_tok(ser, "FILES DIR", harvest(ser), 2.0)
+    wait_tok(ser, "FILES MKDIR", harvest(ser), 1.5)
     q.key("left")
     files_back1 = wait_tok(ser, "FILES BACK", harvest(ser), 1.5)
     q.key("left")
@@ -177,13 +176,15 @@ def main():
     files_hist = "FILES HIST " in harvest(ser)
     d15.shot(q, os.path.join(ART, "oscortex-round35-files-studio.png"))
 
-    # FILES -> STUDIO handoff: click a .TXT row and Open.
+    # Return to root, create NEW.TXT, Open → STUDIO.
+    q.key("left")
+    q.key("left")
+    time.sleep(0.15)
     marked_ow = harvest(ser)
     click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
-    time.sleep(0.15)
-    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
-    click(q, fg[0] + 80, fg[1] + 112)
-    time.sleep(0.08)
+    time.sleep(0.12)
+    combo(q, "ctrl", "n")
+    wait_tok(ser, "FILES NEW", marked_ow, 2.0)
     q.key("ret")
     handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 3.0)
     if not handoff:
@@ -191,8 +192,28 @@ def main():
         handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 2.0)
     studio_ow = wait_tok(ser, "STUDIO OPENWITH", marked_ow, 3.0)
     studio_open = wait_tok(ser, "STUDIO OPEN ", marked_ow, 2.0)
+    # STUDIO slice: new / find / tab / save-as / caret.
+    time.sleep(0.2)
+    combo(q, "ctrl", "n")
+    wait_tok(ser, "STUDIO NEW ", marked_ow, 1.5)
+    combo(q, "ctrl", "f")
+    wait_tok(ser, "STUDIO FIND ", marked_ow, 1.2)
+    combo(q, "ctrl", "tab")
+    wait_tok(ser, "STUDIO TAB ", marked_ow, 1.2)
+    combo(q, "ctrl", "a")
+    wait_tok(ser, "STUDIO SAVEAS ", marked_ow, 1.5)
+    q.key("right")
+    wait_tok(ser, "STUDIO CARET ", marked_ow, 1.2)
     studio_tab = "STUDIO TAB " in harvest(ser) or "STUDIO NEW " in harvest(ser)
     studio_caret = "STUDIO CARET " in harvest(ser)
+    # Binary refuse: Open FILES.ELF from root listing (row 0).
+    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
+    time.sleep(0.12)
+    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
+    click(q, fg[0] + 80, fg[1] + 48)
+    time.sleep(0.05)
+    q.key("ret")
+    wait_tok(ser, "FILES OPEN BIN ", marked_ow, 2.0)
 
     # SET persist: apply theme, close, relaunch (not focus-existing).
     marked_set = harvest(ser)

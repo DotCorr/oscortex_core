@@ -72,7 +72,7 @@ fi
 
 {
   echo "{"
-  echo "  \"round\": 34,"
+  echo "  \"round\": 35,"
   echo "  \"pass\": $pass,"
   echo "  \"fail\": $fail,"
   echo "  \"skip\": $skip,"
