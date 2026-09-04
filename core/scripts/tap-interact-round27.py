@@ -138,27 +138,30 @@ def main():
         raise SystemExit("tap-interact: no TAP window")
     slot, (x, y, w, h) = geom_row
     out["geom"] = {"slot": slot, "x": x, "y": y, "w": w, "h": h}
+    # Raise TAP, then click the control. UART can lag past 0.25s.
+    click(q, ser, x + w // 2, y + 10)
+    time.sleep(0.15)
     hx = x + CTL_X + CTL_W // 2
     hy = y + CTL_Y + CTL_H // 2
     mx = x + 12
     my = y + h - 12
     pre_hit = harvest(ser).count(HIT_LINE)
     click(q, ser, hx, hy)
-    time.sleep(0.25)
-    blob = harvest(ser)
-    out["hit"] = blob.count(HIT_LINE) > pre_hit or HIT_LINE in blob[-4000:]
+    out["hit"] = harvest(ser).count(HIT_LINE) > pre_hit
+    if not out["hit"]:
+        out["hit"] = bool(wait_tok(ser, HIT_LINE, timeout=6))
     if not out["hit"]:
         q.key("t")
-        time.sleep(0.3)
-        out["hit"] = harvest(ser).count(HIT_LINE) > pre_hit
+        out["hit"] = bool(wait_tok(ser, HIT_LINE, timeout=4))
     pre_miss = harvest(ser).count("TAP MISS")
     click(q, ser, mx, my)
-    time.sleep(0.2)
     out["miss"] = harvest(ser).count("TAP MISS") > pre_miss
+    if not out["miss"]:
+        out["miss"] = bool(wait_tok(ser, "TAP MISS", timeout=3))
     d15.press(q, ser, hx, hy, "right", "WM CTX TAP", timeout=4)
     out["ctx"] = "WM CTX TAP" in harvest(ser)
     q.key("esc")
-    time.sleep(0.1)
+    time.sleep(0.15)
     d15.shot(q, out["shot"], also=out["shot"])
     n_close = harvest(ser).count("WM CLOSE")
     try:
