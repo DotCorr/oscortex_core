@@ -709,6 +709,7 @@ static void do_move(unsigned pick, char *dest);
 static u64 write_copy(const char *src, unsigned slen, const char *dst,
                       unsigned dlen);
 static void do_file_open(u64 row);
+static u64 files_is_dir(u64 row);
 static void do_file_rename(u64 row);
 static void files_go_back(void);
 static void files_set_sel(u64 row);
@@ -977,13 +978,18 @@ static void files_do_mkdir(void) {
   files_reload_here();
   {
     u64 i = 0;
+    u64 hit = files_names;
     while (i < files_names) {
       if (same_bytes(dotted[i], dotlen[i], NAME_DIR, (unsigned)NAME_DIR_N) > 0) {
-        files_set_sel(i);
+        hit = i;
         i = files_names;
       } else {
         i = i + 1;
       }
+    }
+    if (hit < files_names) {
+      files_set_sel(hit);
+      do_file_open(hit);
     }
   }
 }
@@ -1453,25 +1459,43 @@ static char scan_letter(u64 scan) {
 
 static void files_type_sel(char letter) {
   u64 i;
+  u64 hit;
+  u64 dirhit;
   unsigned at;
   if (letter == 0 || files_names == 0) {
     return;
   }
   i = 0;
+  hit = files_names;
+  dirhit = files_names;
   while (i < files_names) {
     char c = dotted[i][0];
     if (c >= 'a' && c <= 'z') {
       c = (char)(c - ('a' - 'A'));
     }
     if (c == letter) {
-      at = put(0, msg_key);
-      line[at++] = letter;
-      emit(at);
-      files_set_sel(i);
-      files_repaint_body();
-      return;
+      if (hit == files_names) {
+        hit = i;
+      }
+      if (files_is_dir(i) > 0) {
+        dirhit = i;
+        i = files_names;
+      } else {
+        i = i + 1;
+      }
+    } else {
+      i = i + 1;
     }
-    i = i + 1;
+  }
+  if (dirhit < files_names) {
+    hit = dirhit;
+  }
+  if (hit < files_names) {
+    at = put(0, msg_key);
+    line[at++] = letter;
+    emit(at);
+    files_set_sel(hit);
+    files_repaint_body();
   }
 }
 
@@ -1635,6 +1659,9 @@ static void do_file_open(u64 row) {
       char saved[16];
       unsigned slen = dotlen[row];
       unsigned k = 0;
+      at = put(0, msg_dir);
+      at = put(at, dotted[row]);
+      emit(at);
       while (k < slen && k < 12U) {
         saved[k] = dotted[row][k];
         k = k + 1;

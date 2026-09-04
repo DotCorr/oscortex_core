@@ -231,16 +231,20 @@ def main():
             q.key("down")
         q.key("ret")
         files_mkdir = wait_tok(ser, "FILES MKDIR", marked2, 2.0)
-    time.sleep(0.15)
-    q.key("ret")
     files_dir = wait_tok(ser, "FILES DIR", marked2, 2.5)
     if not files_dir:
+        fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
+        click(q, fg[0] + 80, fg[1] + 80)
+        time.sleep(0.1)
         q.key("n")
         time.sleep(0.1)
         q.key("ret")
         files_dir = wait_tok(ser, "FILES DIR", marked2, 2.0)
     combo(q, "ctrl", "n")
     files_new_in = wait_tok(ser, "FILES NEW", marked2, 2.0)
+    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
+    click(q, fg[0] + 80, fg[1] + 80)
+    time.sleep(0.08)
     q.key("left")
     files_back2 = wait_tok(ser, "FILES BACK", marked2, 1.5)
     q.key("right")
@@ -273,8 +277,13 @@ def main():
     for line in theme_blob[len(marked3):].splitlines():
         if line.startswith("SET THEME"):
             theme_line = line.strip()
+    if not theme_line:
+        for line in theme_blob.splitlines():
+            if line.startswith("SET THEME"):
+                theme_line = line.strip()
     click(q, set_xy[0], set_xy[1])
     set_relaunch = wait_tok(ser, "SET READY", marked3, 4.0)
+    wait_tok(ser, "SET THEME", theme_blob, 2.0)
     relaunch_theme = ""
     for line in harvest(ser)[len(theme_blob):].splitlines():
         if line.startswith("SET THEME"):
@@ -283,17 +292,6 @@ def main():
         (not relaunch_theme) or relaunch_theme == theme_line)
     pref_ack = "WM PREF ACK" in harvest(ser) or "WM PREF" in harvest(ser)
     time.sleep(0.4)
-
-    browse_xy, play_xy, tap_xy = dock_xy(2), dock_xy(3), dock_xy(5)
-    marked_apps = harvest(ser)
-    click(q, browse_xy[0], browse_xy[1])
-    wait_tok(ser, "BROWSE READY", marked_apps, 3.0)
-    click(q, play_xy[0], play_xy[1])
-    wait_tok(ser, "PLAY READY", marked_apps, 3.0)
-    click(q, tap_xy[0], tap_xy[1])
-    wait_tok(ser, "TAP READY", marked_apps, 3.0)
-    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
-    wait_tok(ser, "FILES READY", marked_apps, 3.0)
 
     marked4 = harvest(ser)
     studio_xy = (
@@ -311,24 +309,43 @@ def main():
         click(q, stg[0] + 80, stg[1] + 140)
     else:
         click(q, 120, 180)
-    time.sleep(0.1)
+    time.sleep(0.12)
     q.key("a")
     q.key("ret")
     q.key("b")
-    combo(q, "ctrl", "s")
+    q.key("ret")
+    q.key("c")
+    key_edge(q, "ctrl", True)
+    key_edge(q, "s", True)
+    key_edge(q, "s", False)
+    key_edge(q, "ctrl", False)
     studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.5) or wait_tok(
         ser, "STUDIO2 SAVE", marked4, 1.0)
     if not studio_save:
         if stg:
             click(q, stg[0] + 80, stg[1] + 140)
         time.sleep(0.1)
-        combo(q, "ctrl", "s")
-        studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.0) or wait_tok(
-            ser, "STUDIO2 SAVE", marked4, 1.0)
+        q.key("f2")
+        studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.0)
+        if not studio_save:
+            combo(q, "ctrl", "s")
+            studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 1.5)
     combo(q, "ctrl", "o")
     studio_open = wait_tok(ser, "STUDIO OPEN", marked4, 2.0)
     q.key("down")
-    wait_tok(ser, "STUDIO SCROLL", marked4, 1.2)
+    q.key("down")
+    wait_tok(ser, "STUDIO SCROLL", marked4, 1.5)
+
+    browse_xy, play_xy, tap_xy = dock_xy(2), dock_xy(3), dock_xy(5)
+    marked_apps = harvest(ser)
+    click(q, browse_xy[0], browse_xy[1])
+    wait_tok(ser, "BROWSE READY", marked_apps, 3.0)
+    click(q, play_xy[0], play_xy[1])
+    wait_tok(ser, "PLAY READY", marked_apps, 3.0)
+    click(q, tap_xy[0], tap_xy[1])
+    wait_tok(ser, "TAP READY", marked_apps, 3.0)
+    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
+    wait_tok(ser, "FILES READY", marked_apps, 3.0)
     d15.shot(q, os.path.join(ART, "oscortex-round34-studio.png"))
     q.key("f4")
     wait_tok(ser, "WM LAUNCH SHOW", marked4, 1.5)

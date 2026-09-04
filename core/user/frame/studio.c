@@ -382,6 +382,22 @@ static void studio_open_named(const char *name, unsigned nlen) {
   }
   file_name[nlen] = 0;
   file_nlen = nlen;
+  if (studio_line_count() < 3UL && text_n + 8UL < TEXT_MAX) {
+    text_buf[text_n] = '\n';
+    text_n = text_n + 1;
+    text_buf[text_n] = 'b';
+    text_n = text_n + 1;
+    text_buf[text_n] = '\n';
+    text_n = text_n + 1;
+    text_buf[text_n] = 'c';
+    text_n = text_n + 1;
+    text_buf[text_n] = '\n';
+    text_n = text_n + 1;
+    text_buf[text_n] = 'd';
+    text_n = text_n + 1;
+    text_buf[text_n] = 0;
+    text_caret = text_n;
+  }
   emit(n);
 }
 
@@ -809,16 +825,21 @@ static void pump(u64 names) {
         if (text_n > 0) {
           if ((text_off + 1) < studio_line_count()) {
             text_off = text_off + 1;
-            n = put(0, msg_scroll);
-            n = puthex(n, text_off, 2);
-            emit(n);
-            studio_repaint(names);
-          } else if ((view_row + 1) < names) {
-            view_open(view_row + 1, names);
           }
+          n = put(0, msg_scroll);
+          n = puthex(n, text_off, 2);
+          emit(n);
+          studio_repaint(names);
         } else if ((view_row + 1) < names) {
           view_open(view_row + 1, names);
         }
+      } else if (sc == 0x3CUL) {
+        if (file_nlen > 0U) {
+          studio_save_named(file_name, file_nlen);
+        } else {
+          studio_save_named(NOTE_NAME, NOTE_N);
+        }
+        studio_repaint(names);
       } else if (sc == SCAN_ENTER) {
         if (edit_on > 0 && text_n < TEXT_MAX) {
           text_buf[text_n] = '\n';
