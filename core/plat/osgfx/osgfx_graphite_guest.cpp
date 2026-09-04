@@ -43,6 +43,7 @@ extern "C" void free(void *p);
 extern "C" unsigned long osgfx_heap_used(void);
 extern "C" unsigned long osgfx_heap_cap(void);
 extern "C" void osgfx_heap_frame_begin(void);
+extern "C" void osgfx_heap_watermark_seal(void);
 
 /* Token the harness greps in kernel.elf. Not a success claim. */
 extern "C" const char osgfx_graphite_door[] = "graphite-vk-try";
@@ -728,7 +729,7 @@ extern "C" int osgfx_graphite_try(void) {
        * (curve/pix/rrect/desk) can rewind. free() is a no-op; without
        * this the proofs leave ~2MiB dead and the first chrome paint
        * prints OSGFX OOM. */
-      osgfx_heap_frame_begin();
+      osgfx_heap_watermark_seal();
       /* Curved MakeRectXY first — host SPIR-V + ICD radius; no guest
        * AnalyticRRect SkSL (that path #GPs before CreateShaderModule). */
       com1_puts("OSGFX GRAPHITE CURVE A\n");

@@ -106,6 +106,7 @@ extern "C" __attribute__((weak)) uint32_t osgfx_graphite_desk_rgb(void) { return
 extern "C" __attribute__((weak)) void osgfx_graphite_rrect_note(void) {}
 extern "C" __attribute__((weak)) void osgfx_graphite_desk_note(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_frame_begin(void) {}
+extern "C" __attribute__((weak)) void osgfx_heap_watermark_seal(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_chrome_seal(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_client_begin(void) {}
 extern "C" __attribute__((weak)) void osgfx_heap_scratch_live(void) {}
@@ -1348,10 +1349,8 @@ __attribute__((noinline)) static void tick_body(void) {
     return;
   }
   /* MakeVulkan. Graphite .init_array #GPs on this image — not walked.
-   * graphite_try seals/rewinds its init proofs; call again so a chrome
-   * miss cannot sit on dead proof allocations. */
+   * Do not rewind here: a later tick would drop live chrome unique_ptrs. */
   (void)osgfx_graphite_try();
-  osgfx_heap_frame_begin();
   if (m->gen == last_gen) {
     return;
   }

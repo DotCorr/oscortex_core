@@ -7,7 +7,7 @@
 set -euo pipefail
 CORE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_DIR="$(cd "$CORE_DIR/.." && pwd)"
-RUN="$CORE_DIR/build/daily-drive-r28"
+RUN="${DRIVE_RUN:-$CORE_DIR/build/daily-drive-r28}"
 mkdir -p "$RUN"
 PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
 QMP=$(python3 "$PICKER")

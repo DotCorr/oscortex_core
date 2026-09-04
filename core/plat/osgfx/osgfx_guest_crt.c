@@ -128,6 +128,15 @@ void osgfx_heap_frame_begin(void) {
   }
 }
 
+/* Always set the rewind point to the live bump. Use after MakeVulkan
+ * so a prior empty frame_begin cannot rewind the Graphite context
+ * (that #GP'd as FAULT 0D OP FF50 on the first chrome miss). */
+void osgfx_heap_watermark_seal(void) {
+  heap_watermark = heap_used;
+  heap_chrome_mark = 0;
+  heap_reclaim_armed = 0;
+}
+
 void *memcpy(void *dst, const void *src, size_t n) {
   unsigned char *d = (unsigned char *)dst;
   const unsigned char *s = (const unsigned char *)src;
