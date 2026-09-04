@@ -68,6 +68,33 @@ final List<u8> wmStrKey = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x4B), u8(0x45), u8(0x59), u8(0x20),
 ];
 
+/// Launcher height from filtered row count. Search bar + rows + pad.
+@bare
+u64 wmLaunchBoxH() {
+  u64 n = wmLaunchFiltN();
+  if (n < u64(1)) {
+    n = u64(1);
+  }
+  if (n > u64(8)) {
+    n = u64(8);
+  }
+  return u64(wmLaunchSearchH) + (n * u64(wmLaunchRowPitch)) +
+      u64(wmLaunchHPad);
+}
+
+/// Switcher width from ordinary-client count. Cards + pad.
+@bare
+u64 wmSwitchBoxW() {
+  u64 n = wmSwitchCount();
+  if (n < u64(1)) {
+    n = u64(1);
+  }
+  if (n > u64(8)) {
+    n = u64(8);
+  }
+  return (n * u64(64)) + u64(wmSwitchWPad);
+}
+
 @bare
 u64 wmProdFold(u64 ch) {
   if (ch >= u64(0x61)) {
@@ -374,10 +401,10 @@ void wmMruDrop(u64 wI) {
 @bare
 u64 wmSwitchX() {
   final u64 sw = fbGeomWidth();
-  if (sw <= u64(wmSwitchW)) {
+  if (sw <= wmSwitchBoxW()) {
     return u64(8);
   }
-  return (sw - u64(wmSwitchW)) >> u64(1);
+  return (sw - wmSwitchBoxW()) >> u64(1);
 }
 
 @bare
@@ -401,7 +428,7 @@ u64 wmSwitchHit(u64 x, u64 y) {
   if (y < wmSwitchY()) {
     return u64(0);
   }
-  if (x >= (wmSwitchX() + u64(wmSwitchW))) {
+  if (x >= (wmSwitchX() + wmSwitchBoxW())) {
     return u64(0);
   }
   if (y >= (wmSwitchY() + u64(wmSwitchH))) {

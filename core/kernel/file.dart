@@ -299,6 +299,9 @@ const int fileSysUnlinkNo = 31;
 /// ([userFrameRcx]). 11 stays `fdwait`.
 const int fileSysRenameNo = 32;
 
+/// Round 34 — syscall 38, `mkdir(namePtr, nameLen)`.
+const int fileSysMkdirNo = 38;
+
 /// Descriptors per program. FOUR, and the number is a bound rather than a
 /// budget: a fifth `open` is [fileRetNoSlot] with nothing allocated and nothing
 /// leaked, and `m15-fileio`'s program opens five files to prove it.
@@ -370,6 +373,9 @@ const int fileMetaCreates = 14;
 const int fileMetaTruncs = 15;
 const int fileMetaFlushes = 16;
 
+/// Process cwd cluster. 0 is the root directory. Set when a
+/// subdirectory is opened as [fileFdDir]; cleared on `:ROOT`.
+const int fileMetaCwd = 17;
 const int fileMetaSpare17 = 17;
 const int fileMetaSpare18 = 18;
 const int fileMetaSpare19 = 19;
@@ -467,6 +473,10 @@ const int fileFdDevice = 3;
 /// and `fdwrite` keep refusing it as [fileRetBadMode]. No new `.bss`.
 /// `wmeventStore` stays last.
 const int fileFdRoot = 4;
+
+/// A descriptor over a subdirectory as 32-byte records. Same read shape
+/// as [fileFdRoot]; first cluster lives in [fileFdFirst].
+const int fileFdDir = 5;
 
 /// One `:ROOT` record is one FAT directory entry. Whole records only.
 const int fileRootRec = 32;
@@ -1155,6 +1165,9 @@ u64 fileRootSkip(u64 e) {
   if (c0 == u64(fatDirDeleted)) {
     return u64(1);
   }
+  if (c0 == u64(0x2E)) {
+    return u64(1);
+  }
   final u64 attr = fatU8(e + u64(fatDirOffAttr));
   if (attr == u64(fatAttrLongName)) {
     return u64(1);
@@ -1163,6 +1176,16 @@ u64 fileRootSkip(u64 e) {
     return u64(1);
   }
   return u64(0);
+}
+
+@bare
+u64 fileCwd() {
+  return fileMeta(u64(fileMetaCwd));
+}
+
+@bare
+void fileSetCwd(u64 c) {
+  fileSetMeta(u64(fileMetaCwd), c);
 }
 
 /// How many root entries [fileRootSkip] would keep, or bit 31 set if a
@@ -1239,6 +1262,161 @@ u64 fileRootFill(u64 first, u64 need) {
   return got;
 }
 
+/// How many listed entries live in the directory cluster chain [first].
+@bare
+u64 fileSubDirCount(u64 first) {
+  if (first < u64(fatFirstCluster)) {
+    return u64(0);
+  }
+  final u64 bound = fatMeta(u64(fatMetaClusters)) + u64(fatFirstCluster);
+  final u64 spc = fatMeta(u64(fatMetaSecPerClus));
+  u64 listed = u64(0);
+  u64 c = first;
+  u64 n = u64(0);
+  u64 stop = u64(0);
+  while (n < bound) {
+    if (stop > u64(0)) {
+      n = bound;
+    } else {
+      if (c < u64(fatFirstCluster)) {
+        return listed;
+      }
+      if (c >= bound) {
+        return listed;
+      }
+      u64 k = u64(0);
+      while (k < spc) {
+        if (stop > u64(0)) {
+          k = spc;
+        } else {
+          final u64 lba = fatClusterSector(c, k);
+          if (lba < u64(1)) {
+            return u64(0x80000000);
+          }
+          if (fatReadCached(lba) > u64(0)) {
+            return u64(0x80000000);
+          }
+          u64 j = u64(0);
+          while (j < u64(16)) {
+            if (stop > u64(0)) {
+              j = u64(16);
+            } else {
+              final u64 e = fatSectorBase() + (j << u64(5));
+              final u64 c0 = fatU8(e);
+              if (c0 == u64(fatDirFree)) {
+                stop = u64(1);
+              } else {
+                if (fileRootSkip(e) < u64(1)) {
+                  listed = listed + u64(1);
+                }
+                j = j + u64(1);
+              }
+            }
+          }
+          k = k + u64(1);
+        }
+      }
+      if (stop < u64(1)) {
+        final u64 nxt = fatEntry(c);
+        if (nxt >= u64(fatEocMin)) {
+          stop = u64(1);
+        } else {
+          c = nxt;
+        }
+      }
+      n = n + u64(1);
+    }
+  }
+  return listed;
+}
+
+/// Fills the bounce buffer with subdirectory records from cluster [first].
+@bare
+u64 fileSubDirFill(u64 first, u64 skip, u64 need) {
+  if (first < u64(fatFirstCluster)) {
+    return u64(0);
+  }
+  final u64 bound = fatMeta(u64(fatMetaClusters)) + u64(fatFirstCluster);
+  final u64 spc = fatMeta(u64(fatMetaSecPerClus));
+  u64 listed = u64(0);
+  u64 got = u64(0);
+  u64 c = first;
+  u64 n = u64(0);
+  u64 stop = u64(0);
+  while (n < bound) {
+    if (stop > u64(0)) {
+      n = bound;
+    } else {
+      if (got >= need) {
+        n = bound;
+      } else {
+        if (c < u64(fatFirstCluster)) {
+          return got;
+        }
+        if (c >= bound) {
+          return got;
+        }
+        u64 k = u64(0);
+        while (k < spc) {
+          if (stop > u64(0)) {
+            k = spc;
+          } else {
+            if (got >= need) {
+              k = spc;
+            } else {
+              final u64 lba = fatClusterSector(c, k);
+              if (lba < u64(1)) {
+                return u64(fileRetIo);
+              }
+              if (fatReadCached(lba) > u64(0)) {
+                return u64(fileRetIo);
+              }
+              u64 j = u64(0);
+              while (j < u64(16)) {
+                if (stop > u64(0)) {
+                  j = u64(16);
+                } else {
+                  if (got >= need) {
+                    j = u64(16);
+                  } else {
+                    final u64 e = fatSectorBase() + (j << u64(5));
+                    final u64 c0 = fatU8(e);
+                    if (c0 == u64(fatDirFree)) {
+                      stop = u64(1);
+                    } else {
+                      if (fileRootSkip(e) < u64(1)) {
+                        if (listed >= skip) {
+                          fileCopyEnt(got * u64(fileRootRec), e);
+                          got = got + u64(1);
+                        }
+                        listed = listed + u64(1);
+                      }
+                      j = j + u64(1);
+                    }
+                  }
+                }
+              }
+              k = k + u64(1);
+            }
+          }
+        }
+        if (stop < u64(1)) {
+          if (got < need) {
+            final u64 nxt = fatEntry(c);
+            if (nxt >= u64(fatEocMin)) {
+              stop = u64(1);
+            } else {
+              c = nxt;
+            }
+          }
+        }
+        n = n + u64(1);
+      }
+    }
+  }
+  return got;
+}
+
 /// Writes descriptor [fd] of [row]'s size and first cluster into its directory
 /// entry. Returns a `fatErr*` code. Does nothing at all for a read, device,
 /// or `:ROOT` descriptor.
@@ -1293,9 +1471,20 @@ u64 fileFlushFd(u64 row, u64 fd) {
 /// `open(name, O_WRITE)` on a read-only file destroyed it from ring 3.
 @bare
 u64 fileMakeEmpty() {
-  final u64 fs = fatLookup();
+  final u64 cwd = fileCwd();
+  u64 fs = u64(0);
+  if (cwd >= u64(fatFirstCluster)) {
+    fs = fatSubDirLookup(cwd);
+  } else {
+    fs = fatLookup();
+  }
   if (fs == u64(fatErrNotFound)) {
-    final u64 cr = fatDirCreate();
+    u64 cr = u64(0);
+    if (cwd >= u64(fatFirstCluster)) {
+      cr = fatSubDirCreate(cwd);
+    } else {
+      cr = fatDirCreate();
+    }
     if (cr > u64(fatErrOk)) {
       fileFatStatus(cr);
       if (cr == u64(fatErrNoDirSlot)) {
@@ -1717,6 +1906,7 @@ void fileSysOpen(u64 frame) {
     fileClearFd(row, rfd);
     fileSetFd(row, rfd, u64(fileFdSize), listed * u64(fileRootRec));
     fileSetFd(row, rfd, u64(fileFdState), u64(fileFdRoot));
+    fileSetCwd(u64(0));
     fileBump(u64(fileMetaOpens));
     fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) + u64(1));
     if (fileMeta(u64(fileMetaPeak)) < fileMeta(u64(fileMetaLive))) {
@@ -1765,7 +1955,35 @@ void fileSysOpen(u64 frame) {
     userSetFrame(frame, u64(userFrameRax), fd);
     return;
   }
-  final u64 fs = fatLookup();
+  u64 fs = u64(0);
+  final u64 cwd = fileCwd();
+  if (cwd >= u64(fatFirstCluster)) {
+    fs = fatSubDirLookup(cwd);
+  } else {
+    fs = fatLookup();
+  }
+  if (fs == u64(fatErrIsDir)) {
+    final u64 first = fatMeta(u64(fatMetaFileFirst));
+    final u64 listed = fileSubDirCount(first);
+    if ((listed & u64(0x80000000)) > u64(0)) {
+      fileFatStatus(u64(fatErrDiskDir));
+      fileRefuse(frame, u64(fileRetIo));
+      return;
+    }
+    fileClearFd(row, fd);
+    fileSetFd(row, fd, u64(fileFdFirst), first);
+    fileSetFd(row, fd, u64(fileFdSize), listed * u64(fileRootRec));
+    fileSetFd(row, fd, u64(fileFdEntry), fatMeta(u64(fatMetaFileEntry)));
+    fileSetFd(row, fd, u64(fileFdState), u64(fileFdDir));
+    fileSetCwd(first);
+    fileBump(u64(fileMetaOpens));
+    fileSetMeta(u64(fileMetaLive), fileMeta(u64(fileMetaLive)) + u64(1));
+    if (fileMeta(u64(fileMetaPeak)) < fileMeta(u64(fileMetaLive))) {
+      fileSetMeta(u64(fileMetaPeak), fileMeta(u64(fileMetaLive)));
+    }
+    userSetFrame(frame, u64(userFrameRax), fd);
+    return;
+  }
   if (fs > u64(fatErrOk)) {
     fileFatStatus(fs);
     fileRefuse(frame, fileFromFat(fs));
@@ -1821,6 +2039,56 @@ void fileSysRead(u64 frame) {
   // ADR-0100: a `:ROOT` descriptor is readable. Whole 32-byte records,
   // 0 at the end, same as a file. Synthesised from the directory so the
   // chain cache is not touched.
+  if (fileFd(row, fd, u64(fileFdState)) == u64(fileFdDir)) {
+    if (len < u64(1)) {
+      fileRefuse(frame, u64(fileRetBadLen));
+      return;
+    }
+    if (len > u64(fileReadMax)) {
+      fileRefuse(frame, u64(fileRetBadLen));
+      return;
+    }
+    if (fileOwnsWrite(dst, len) < u64(1)) {
+      fileRefuse(frame, u64(fileRetBadPtr));
+      return;
+    }
+    final u64 mt = fatMount();
+    if (mt > u64(fatErrOk)) {
+      fileFatStatus(mt);
+      fileRefuse(frame, fileFromFat(mt));
+      return;
+    }
+    final u64 size = fileFd(row, fd, u64(fileFdSize));
+    final u64 pos = fileFd(row, fd, u64(fileFdPos));
+    if (pos >= size) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    u64 want = len;
+    if ((size - pos) < want) {
+      want = size - pos;
+    }
+    want = want & u64(0xFFFFFFFFFFFFFFE0);
+    if (want < u64(fileRootRec)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    final u64 recFirst = pos >> u64(5);
+    final u64 need = want >> u64(5);
+    final u64 recs =
+        fileSubDirFill(fileFd(row, fd, u64(fileFdFirst)), recFirst, need);
+    if (recs == u64(fileRetIo)) {
+      fileFatStatus(u64(fatErrDiskDir));
+      fileRefuse(frame, u64(fileRetIo));
+      return;
+    }
+    final u64 done = recs * u64(fileRootRec);
+    fileCopyOut(dst, u64(0), done);
+    fileSetFd(row, fd, u64(fileFdPos), pos + done);
+    fileBump(u64(fileMetaReads));
+    userSetFrame(frame, u64(userFrameRax), done);
+    return;
+  }
   if (fileFd(row, fd, u64(fileFdState)) == u64(fileFdRoot)) {
     if (len < u64(1)) {
       fileRefuse(frame, u64(fileRetBadLen));
@@ -2064,7 +2332,12 @@ void fileSysUnlink(u64 frame) {
     fileRefuse(frame, u64(fileRetBadName));
     return;
   }
-  final u64 ur = fatUnlink();
+  u64 ur = u64(0);
+  if (fileCwd() >= u64(fatFirstCluster)) {
+    ur = fatUnlinkAt(fileCwd());
+  } else {
+    ur = fatUnlink();
+  }
   if (ur > u64(fatErrOk)) {
     fileFatStatus(ur);
     fileRefuse(frame, fileFromFat(ur));
@@ -2132,7 +2405,12 @@ void fileSysRename(u64 frame) {
     fileRefuse(frame, u64(fileRetBadName));
     return;
   }
-  final u64 src = fatDirFind();
+  u64 src = u64(0);
+  if (fileCwd() >= u64(fatFirstCluster)) {
+    src = fatSubDirFind(fileCwd());
+  } else {
+    src = fatDirFind();
+  }
   if (src > u64(fatErrOk)) {
     fileFatStatus(src);
     fileRefuse(frame, fileFromFat(src));
@@ -2159,7 +2437,12 @@ void fileSysRename(u64 frame) {
     fileRefuse(frame, u64(fileRetBadName));
     return;
   }
-  final u64 dest = fatDirFind();
+  u64 dest = u64(0);
+  if (fileCwd() >= u64(fatFirstCluster)) {
+    dest = fatSubDirFind(fileCwd());
+  } else {
+    dest = fatDirFind();
+  }
   u64 destEntry = fatMeta(u64(fatMetaRootEntries));
   u64 destFirst = u64(0);
   if (dest == u64(fatErrOk)) {
@@ -2182,6 +2465,63 @@ void fileSysRename(u64 frame) {
   if (rr > u64(fatErrOk)) {
     fileFatStatus(rr);
     fileRefuse(frame, fileFromFat(rr));
+    return;
+  }
+  userSetFrame(frame, u64(userFrameRax), u64(0));
+}
+
+/// Syscall 38 — `mkdir(namePtr, nameLen)`. Creates a root-directory folder.
+@bare
+void fileSysMkdir(u64 frame) {
+  final u64 row = fileOwnerRow();
+  if (row >= u64(fileRows)) {
+    fileRefuse(frame, u64(fileRetNoOwner));
+    return;
+  }
+  final u64 ptr = userFrame(frame, u64(userFrameRdi));
+  final u64 len = userFrame(frame, u64(userFrameRsi));
+  if (len < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (len > u64(fileNameMax)) {
+    fileRefuse(frame, u64(fileRetBadLen));
+    return;
+  }
+  if (elfOwns(ptr, len) < u64(1)) {
+    fileRefuse(frame, u64(fileRetBadPtr));
+    return;
+  }
+  final u64 buf = fileBufBase();
+  u64 i = u64(0);
+  while (i < len) {
+    Pointer<u8>.fromAddress(buf + i).value =
+        Pointer<u8>.fromAddress(ptr + i).value;
+    i = i + u64(1);
+  }
+  if (ioctlIsDevName(buf, len) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  if (fileIsRootName(buf, len) > u64(0)) {
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  final u64 pn = fatParseAt(buf, len);
+  if (pn > u64(fatErrOk)) {
+    fileFatStatus(pn);
+    fileRefuse(frame, u64(fileRetBadName));
+    return;
+  }
+  u64 mk = u64(0);
+  if (fileCwd() >= u64(fatFirstCluster)) {
+    mk = fatMkdirAt(fileCwd());
+  } else {
+    mk = fatMkdir();
+  }
+  if (mk > u64(fatErrOk)) {
+    fileFatStatus(mk);
+    fileRefuse(frame, fileFromFat(mk));
     return;
   }
   userSetFrame(frame, u64(userFrameRax), u64(0));

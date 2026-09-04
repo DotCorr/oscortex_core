@@ -1673,6 +1673,10 @@ void userSyscall(u64 frame) {
     fileSysRename(frame);
     return;
   }
+  if (no == u64(fileSysMkdirNo)) {
+    fileSysMkdir(frame);
+    return;
+  }
   // M20: `chanopen`, `chansend` and `chanrecv` (syscalls 13..15 -- 11 is
   // reserved for `fdwait` and 12 is `ioctl`, see docs/syscall-registry.md and
   // GAP-0213). Refused

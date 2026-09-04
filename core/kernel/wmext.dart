@@ -120,6 +120,13 @@ final List<u8> wmStrSeat = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x53), u8(0x45), u8(0x41), u8(0x54), u8(0x20),
 ];
 
+/// `'WM FOCUS G '` -- 11 bytes.
+@rodata
+final List<u8> wmStrFocusG = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x46), u8(0x4F), u8(0x43), u8(0x55),
+  u8(0x53), u8(0x20), u8(0x47), u8(0x20),
+];
+
 /// `' S '` -- 3 bytes.
 @rodata
 final List<u8> wmStrS = const [
@@ -560,8 +567,16 @@ void wmMoveOp(u64 frame, u64 ptr, u64 id) {
     return;
   }
   final u64 g = wmWin(slot, u64(wmWinGeom));
-  final u64 ww = wmGeomW(g);
-  final u64 hh = wmGeomH(g);
+  u64 ww = wmGeomW(g);
+  u64 hh = wmGeomH(g);
+  final u64 reqW = wmDesc(ptr, u64(wmDescArg4));
+  final u64 reqH = wmDesc(ptr, u64(wmDescArg5));
+  if (reqW > u64(0)) {
+    if (reqH > u64(0)) {
+      ww = reqW;
+      hh = reqH;
+    }
+  }
   final u64 p = wmWinParentOf(slot);
   if (p >= u64(wmMaxWindows)) {
     if (wmFits(nx, ny, ww, hh) < u64(1)) {
@@ -579,18 +594,21 @@ void wmMoveOp(u64 frame, u64 ptr, u64 id) {
   final u64 b = u64(wmBorder);
   final u64 ox = wmAbsX(slot) - b;
   final u64 oy = wmAbsY(slot) - b;
+  final u64 ow = wmGeomW(g);
+  final u64 oh = wmGeomH(g);
   wmSetWin(slot, u64(wmWinGeom), wmPackGeom(nx, ny, ww, hh));
   wmeventEnqueueConfigure(slot);
-  u64 px = wmRepaintRect(ox, oy, ww + b + b, hh + b + b);
-  px = px + wmRepaintWindow(slot);
+  u64 px = wmRepaintRect(ox, oy, ow + b + b, oh + b + b);
   if (wmIsOverlay(slot) > u64(0)) {
     if (wmOverlayParked(slot) > u64(0)) {
-      /* Hiding a client menu must also invalidate the retained session
-       * chrome. A rectangle repaint alone is later overwritten by the cached
-       * frame that still contains the menu, recreating the stale card. */
-      wmCompose();
-      px = fbGeomWidth() * fbGeomHeight();
+      /* Park: restore the exact previous overlay rect. A full compose
+       * was the hide hitch on the shared 420×220 AABB. */
+      px = ow * oh;
+    } else {
+      px = px + wmRepaintWindow(slot);
     }
+  } else {
+    px = px + wmRepaintWindow(slot);
   }
   // Children of this root: their abs moved; repaint them too.
   u64 i = u64(0);
@@ -821,6 +839,36 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
   if (kind == u64(10)) {
     userSetFrame(frame, u64(userFrameRax),
         wmSwitchAt(wmDesc(ptr, u64(wmDescY))));
+    return;
+  }
+  if (kind == u64(11)) {
+    final u64 packed = wmDesc(ptr, u64(wmDescHandle));
+    final u64 theme = packed & u64(0xFF);
+    final u64 accent = (packed >> u64(8)) & u64(0xFF);
+    final u64 wall = (packed >> u64(16)) & u64(0xFF);
+    if (theme > u64(2)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    if (accent > u64(3)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    if (wall > u64(3)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    wmPrefNote(theme, accent, wall);
+    if (wall > u64(0)) {
+      wmWallSetDesk(u64(0xA11E0001) + wall, wall & u64(3));
+    }
+    uartWrite(Rodata.addressOf(wmStrPref), u64(8));
+    uartPutHex(wmPage(u64(wmPageWPref)) & u64(0x00FFFFFF), u64(6));
+    uartNewline();
+    uartWrite(Rodata.addressOf(wmStrPrefAck), u64(12));
+    uartPutHex((wmPage(u64(wmPageWPref)) >> u64(24)) & u64(0xFF), u64(2));
+    uartNewline();
+    userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWPref)));
     return;
   }
   userSetFrame(frame, u64(userFrameRax), u64(0));

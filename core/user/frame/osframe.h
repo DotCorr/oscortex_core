@@ -67,6 +67,9 @@
 #ifndef SYS_RENAME
 #define SYS_RENAME 32
 #endif
+#ifndef SYS_MKDIR
+#define SYS_MKDIR 38
+#endif
 
 #ifndef SYS_SHMCREATE
 #define SYS_SHMCREATE 16
@@ -139,6 +142,7 @@
 #define WM_SCREEN_LAUNCH_SEL 8UL
 #define WM_SCREEN_PREF 9UL
 #define WM_SCREEN_SWITCH 10UL
+#define WM_SCREEN_PREF_SET 11UL
 #define WM_TASK_LIVE 0x80UL
 #define WM_TASK_PANEL 0x40UL
 #define WM_TASK_FOCUS 0x20UL

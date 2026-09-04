@@ -93,15 +93,22 @@ const int wmSlot0Color = 0x00586878;
 
 const int wmSlot1Color = 0x00485868;
 
-/// Start / spotlight popover. Edge-safe rounded overlay (Round 33).
-const int wmLaunchW = 420;
+/// Start / spotlight popover. Dynamic height; width lockstep with desk.c.
+const int wmLaunchW = 280;
 
-const int wmLaunchH = 220;
+/// Typical 6-row launcher height (search + rows + pad). Live size is
+/// [wmLaunchBoxH]. Kept as a const so de-* derive scripts still bind.
+const int wmLaunchH = 196;
 
-/// Alt-Tab switcher card. Same AABB as the DESK overlay.
-const int wmSwitchW = 420;
+const int wmLaunchHPad = 16;
 
-const int wmSwitchH = 220;
+/// Alt-Tab switcher card. Dynamic width; height lockstep with desk.c.
+const int wmSwitchWPad = 16;
+
+/// Typical 6-card switcher width. Live size is [wmSwitchBoxW].
+const int wmSwitchW = 400;
+
+const int wmSwitchH = 88;
 
 const int wmLaunchColor = 0x00C86828;
 
@@ -231,6 +238,13 @@ final List<u8> wmStrPrefPath = const [
 final List<u8> wmStrPref = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x46),
   u8(0x20),
+];
+
+/// `'WM PREF ACK '` -- 12 bytes.
+@rodata
+final List<u8> wmStrPrefAck = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x46),
+  u8(0x20), u8(0x41), u8(0x43), u8(0x4B), u8(0x20),
 ];
 
 /// `'WM CLOSE W '` -- 11 bytes.
@@ -1581,7 +1595,7 @@ u64 wmLaunchX() {
 @bare
 u64 wmLaunchY() {
   final u64 sh = fbGeomHeight();
-  u64 y = sh - u64(wmChromeH) - u64(wmLaunchH) - u64(8);
+  u64 y = sh - u64(wmChromeH) - wmLaunchBoxH() - u64(8);
   if (y < u64(8)) {
     y = u64(8);
   }
@@ -1615,7 +1629,7 @@ u64 wmLaunchHit(u64 x, u64 y) {
   if (x >= (wmLaunchX() + u64(wmLaunchW))) {
     return u64(0);
   }
-  if (y >= (wmLaunchY() + u64(wmLaunchH))) {
+  if (y >= (wmLaunchY() + wmLaunchBoxH())) {
     return u64(0);
   }
   return u64(1);
@@ -1650,7 +1664,7 @@ void wmDePopHide() {
   if (k == u64(wmPopLaunch)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
     wmPopDamageRestore(
-        wmLaunchX(), wmLaunchY(), u64(wmLaunchW), u64(wmLaunchH));
+        wmLaunchX(), wmLaunchY(), u64(wmLaunchW), wmLaunchBoxH());
   }
   if (k == u64(wmPopPanel)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
@@ -1659,7 +1673,7 @@ void wmDePopHide() {
   }
   if (k == u64(wmPopSwitch)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
-    wmPopDamageRestore(wmSwitchX(), wmSwitchY(), u64(wmSwitchW),
+    wmPopDamageRestore(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
         u64(wmSwitchH));
   }
 }
@@ -1681,7 +1695,7 @@ u64 wmLaunchDraw() {
   }
   final u64 ox = wmLaunchX();
   final u64 oy = wmLaunchY();
-  wmFillRect(ox, oy, u64(wmLaunchW), u64(wmLaunchH), u64(wmLaunchColor));
+  wmFillRect(ox, oy, u64(wmLaunchW), wmLaunchBoxH(), u64(wmLaunchColor));
   final u64 n = wmDeLaunchN();
   u64 i = u64(0);
   while (i < n) {
@@ -1706,7 +1720,7 @@ u64 wmLaunchDraw() {
     }
     i = i + u64(1);
   }
-  return u64(wmLaunchW) * u64(wmLaunchH);
+  return u64(wmLaunchW) * wmLaunchBoxH();
 }
 
 /// How many held windows (live or min).
@@ -2145,7 +2159,7 @@ void wmDePanelShow() {
   }
   wmSetMeta(u64(wmMetaPop), u64(wmPopPanel));
   wmSetMeta(u64(wmMetaPopXY),
-      ((fbGeomWidth() - u64(wmOverlayW) - u64(8)) << u64(32)) |
+      ((fbGeomWidth() - u64(wmPanelW) - u64(8)) << u64(32)) |
           wmPanelY());
   uartWrite(Rodata.addressOf(wmStrDeList), u64(11));
   uartPutHex(wmHeldCount(), u64(2));

@@ -55,9 +55,9 @@ export OSMEDIA_FFMPEG=0
 # Floor: Linux executes 147 portable checks. macOS adds two seven-check
 # hdiutil inspections (before and after the guest mutates the FAT image).
 # Keep each platform's anti-vacuity floor equal to the work it can execute.
-ASSERTIONS_REQUIRED=158
+ASSERTIONS_REQUIRED=164
 if command -v hdiutil >/dev/null 2>&1; then
-  ASSERTIONS_REQUIRED=172
+  ASSERTIONS_REQUIRED=178
 fi
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld x86_64-elf-readelf \
@@ -213,7 +213,19 @@ ck; grep -q 'files_retry' "$FILES_C" \
   || fail "files.c has no retry/recovery path"
 ck; grep -q 'GONE.DAT' "$FILES_C" \
   || fail "files.c has no GONE.DAT recovery name"
-echo "STRUCTURAL: pass  :ROOT in fileSysOpen, fdwrite copy, rename move, no help, fileStore 2560, wmeventStore last, wheel scroll, list sel"
+ck; grep -q 'SYS_MKDIR' "$FILES_C" \
+  || fail "files.c does not call SYS_MKDIR"
+ck; grep -q 'SYS_MKDIR 38' "$FRAME_H" \
+  || fail "osframe.h does not name SYS_MKDIR 38"
+ck; grep -q 'FILES MKDIR' "$FILES_C" \
+  || fail "files.c does not print FILES MKDIR"
+ck; grep -q 'u64 fatMkdir()' "$FAT_SRC" \
+  || fail "fat.dart has no fatMkdir"
+ck; grep -q 'const int fileFdDir = 5;' "$FILE_SRC" \
+  || fail "file.dart has no fileFdDir = 5"
+ck; grep -q 'files_load_listing' "$FILES_C" \
+  || fail "files.c has no listing reload"
+echo "STRUCTURAL: pass  :ROOT in fileSysOpen, fdwrite copy, rename move, mkdir 38, no help, fileStore 2560, wmeventStore last, wheel scroll, list sel"
 
 echo
 echo "=== PROGRAMS ==="

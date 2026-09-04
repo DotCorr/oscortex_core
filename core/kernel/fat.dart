@@ -1731,17 +1731,35 @@ u64 fatDirFind() {
 /// Subdirectories are [fatErrIsDir]. A missing name is [fatErrNotFound].
 @bare
 u64 fatUnlink() {
-  final u64 fs = fatDirFind();
+  return fatUnlinkAt(u64(0));
+}
+
+/// Unlink the name-buffer entry in [parent] (0 = root).
+@bare
+u64 fatUnlinkAt(u64 parent) {
+  final u64 fs = fatSubDirFind(parent);
   if (fs > u64(fatErrOk)) {
     return fs;
   }
-  final u64 entry = fatMeta(u64(fatMetaFileEntry));
+  final u64 packed = fatMeta(u64(fatMetaFileEntry));
   final u64 first = fatMeta(u64(fatMetaFileFirst));
-  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (entry >> u64(4));
-  if (fatReadCached(lba) > u64(0)) {
-    return u64(fatErrDiskDir);
+  final u64 hitParent = packed >> u64(16);
+  final u64 entry = packed & u64(0xFFFF);
+  u64 lba = u64(0);
+  u64 e = u64(0);
+  if (hitParent >= u64(fatFirstCluster)) {
+    e = fatSubDirSlot(hitParent, entry);
+    if (e < u64(1)) {
+      return u64(fatErrDiskDir);
+    }
+    lba = fatClusterSector(hitParent, entry >> u64(4));
+  } else {
+    lba = fatMeta(u64(fatMetaRootStart)) + (entry >> u64(4));
+    if (fatReadCached(lba) > u64(0)) {
+      return u64(fatErrDiskDir);
+    }
+    e = fatSectorBase() + ((entry & u64(15)) << u64(5));
   }
-  final u64 e = fatSectorBase() + ((entry & u64(15)) << u64(5));
   Pointer<u8>.fromAddress(e).value = u8(fatDirDeleted);
   final u64 w = fatWriteSector(lba, fatSectorBase());
   if (w > u64(fatErrOk)) {
@@ -1760,16 +1778,41 @@ u64 fatUnlink() {
 /// name's clusters. Same-entry is a no-op.
 @bare
 u64 fatRenameTo(u64 srcEntry, u64 destEntry, u64 destFirst) {
-  if (srcEntry >= fatMeta(u64(fatMetaRootEntries))) {
-    return u64(fatErrDiskDir);
+  final u64 srcParent = srcEntry >> u64(16);
+  final u64 srcIdx = srcEntry & u64(0xFFFF);
+  final u64 destParent = destEntry >> u64(16);
+  final u64 destIdx = destEntry & u64(0xFFFF);
+  final u64 rootN = fatMeta(u64(fatMetaRootEntries));
+  u64 destHit = u64(0);
+  if (destParent >= u64(fatFirstCluster)) {
+    destHit = u64(1);
+  } else {
+    if (destEntry < rootN) {
+      destHit = u64(1);
+    }
   }
-  if (destEntry < fatMeta(u64(fatMetaRootEntries))) {
+  if (srcParent < u64(fatFirstCluster)) {
+    if (srcIdx >= rootN) {
+      return u64(fatErrDiskDir);
+    }
+  }
+  if (destHit > u64(0)) {
     if (destEntry != srcEntry) {
-      final u64 dlba = fatMeta(u64(fatMetaRootStart)) + (destEntry >> u64(4));
-      if (fatReadCached(dlba) > u64(0)) {
-        return u64(fatErrDiskDir);
+      u64 dlba = u64(0);
+      u64 de = u64(0);
+      if (destParent >= u64(fatFirstCluster)) {
+        de = fatSubDirSlot(destParent, destIdx);
+        if (de < u64(1)) {
+          return u64(fatErrDiskDir);
+        }
+        dlba = fatClusterSector(destParent, destIdx >> u64(4));
+      } else {
+        dlba = fatMeta(u64(fatMetaRootStart)) + (destIdx >> u64(4));
+        if (fatReadCached(dlba) > u64(0)) {
+          return u64(fatErrDiskDir);
+        }
+        de = fatSectorBase() + ((destIdx & u64(15)) << u64(5));
       }
-      final u64 de = fatSectorBase() + ((destEntry & u64(15)) << u64(5));
       Pointer<u8>.fromAddress(de).value = u8(fatDirDeleted);
       final u64 dw = fatWriteSector(dlba, fatSectorBase());
       if (dw > u64(fatErrOk)) {
@@ -1786,11 +1829,21 @@ u64 fatRenameTo(u64 srcEntry, u64 destEntry, u64 destFirst) {
   if (fatNameLegal() < u64(1)) {
     return u64(fatErrBadName);
   }
-  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (srcEntry >> u64(4));
-  if (fatReadCached(lba) > u64(0)) {
-    return u64(fatErrDiskDir);
+  u64 lba = u64(0);
+  u64 e = u64(0);
+  if (srcParent >= u64(fatFirstCluster)) {
+    e = fatSubDirSlot(srcParent, srcIdx);
+    if (e < u64(1)) {
+      return u64(fatErrDiskDir);
+    }
+    lba = fatClusterSector(srcParent, srcIdx >> u64(4));
+  } else {
+    lba = fatMeta(u64(fatMetaRootStart)) + (srcIdx >> u64(4));
+    if (fatReadCached(lba) > u64(0)) {
+      return u64(fatErrDiskDir);
+    }
+    e = fatSectorBase() + ((srcIdx & u64(15)) << u64(5));
   }
-  final u64 e = fatSectorBase() + ((srcEntry & u64(15)) << u64(5));
   if (fatU8(e) == u64(fatDirDeleted)) {
     return u64(fatErrNotFound);
   }
@@ -2242,14 +2295,19 @@ void fatDirName(u64 e) {
 /// timestamps, the FAT32 high cluster word — exactly as it found them.
 @bare
 u64 fatDirWrite(u64 i, u64 first, u64 bytes) {
-  if (i >= fatMeta(u64(fatMetaRootEntries))) {
+  final u64 parent = i >> u64(16);
+  final u64 idx = i & u64(0xFFFF);
+  if (parent >= u64(fatFirstCluster)) {
+    return fatSubDirWrite(parent, idx, first, bytes);
+  }
+  if (idx >= fatMeta(u64(fatMetaRootEntries))) {
     return u64(fatErrDiskDir);
   }
-  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (i >> u64(4));
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (idx >> u64(4));
   if (fatReadCached(lba) > u64(0)) {
     return u64(fatErrDiskDir);
   }
-  final u64 e = fatSectorBase() + ((i & u64(15)) << u64(5));
+  final u64 e = fatSectorBase() + ((idx & u64(15)) << u64(5));
   fatPut16(e + u64(fatDirOffCluster), first);
   fatPut32(e + u64(fatDirOffSize), bytes);
   return fatWriteSector(lba, fatSectorBase());
@@ -2450,6 +2508,412 @@ u64 fatDirCreate() {
   fatSetMeta(u64(fatMetaFileBytes), u64(0));
   if (wasEnd == u64(fatDirFree)) {
     return fatDirTerminate(i + u64(1));
+  }
+  return u64(fatErrOk);
+}
+
+/// Writes `.` or `..` at [e] in the sector buffer. [dots] 0 is `.`, 1 is `..`.
+@bare
+void fatDirPlantDot(u64 e, u64 cluster, u64 dots) {
+  fatDirBlank(e);
+  Pointer<u8>.fromAddress(e).value = u8(0x2E);
+  if (dots > u64(0)) {
+    Pointer<u8>.fromAddress(e + u64(1)).value = u8(0x2E);
+  }
+  u64 i = dots + u64(1);
+  while (i < u64(fatNameBytes)) {
+    Pointer<u8>.fromAddress(e + i).value = u8(0x20);
+    i = i + u64(1);
+  }
+  Pointer<u8>.fromAddress(e + u64(fatDirOffAttr)).value = u8(fatAttrDirectory);
+  fatPut16(e + u64(fatDirOffCluster), cluster);
+}
+
+/// Zeroes directory cluster [c] and plants `.` / `..` in its first sector.
+@bare
+u64 fatZeroDirCluster(u64 c) {
+  return fatZeroDirClusterAt(c, u64(0));
+}
+
+/// Zeroes directory cluster [c] and plants `.` / `..`. [parent] is the
+/// cluster `..` names; 0 means the volume root.
+@bare
+u64 fatZeroDirClusterAt(u64 c, u64 parent) {
+  final u64 spc = fatMeta(u64(fatMetaSecPerClus));
+  u64 k = u64(0);
+  while (k < spc) {
+    final u64 lba = fatClusterSector(c, k);
+    if (lba < u64(1)) {
+      return u64(fatErrDiskWrite);
+    }
+    u64 i = u64(0);
+    while (i < u64(fatSectorBytes)) {
+      Pointer<u8>.fromAddress(fatSectorBase() + i).value = u8(0);
+      i = i + u64(1);
+    }
+    if (k < u64(1)) {
+      fatDirPlantDot(fatSectorBase(), c, u64(0));
+      fatDirPlantDot(fatSectorBase() + u64(32), parent, u64(1));
+    }
+    final u64 w = fatWriteSector(lba, fatSectorBase());
+    if (w > u64(fatErrOk)) {
+      return w;
+    }
+    k = k + u64(1);
+  }
+  return u64(fatErrOk);
+}
+
+/// Creates a root-directory folder for the name already in the name buffer.
+/// Duplicate file is [fatErrBadName], duplicate dir is [fatErrIsDir],
+/// full volume [fatErrFull], full root [fatErrNoDirSlot].
+@bare
+u64 fatMkdir() {
+  if (fatNameLegal() < u64(1)) {
+    return u64(fatErrBadName);
+  }
+  final u64 hit = fatDirFind();
+  if (hit == u64(fatErrOk)) {
+    return u64(fatErrBadName);
+  }
+  if (hit == u64(fatErrIsDir)) {
+    return u64(fatErrIsDir);
+  }
+  if (hit != u64(fatErrNotFound)) {
+    return hit;
+  }
+  final u64 c = fatAlloc(u64(0));
+  if (c < u64(fatFirstCluster)) {
+    if (c < u64(1)) {
+      return u64(fatErrFull);
+    }
+    return u64(fatErrDiskWrite);
+  }
+  final u64 z = fatZeroDirCluster(c);
+  if (z > u64(fatErrOk)) {
+    final u64 unused = fatTruncate(c);
+    return z;
+  }
+  final u64 n = fatMeta(u64(fatMetaRootEntries));
+  final u64 i = fatDirFreeSlot();
+  if (i > n) {
+    final u64 unused2 = fatTruncate(c);
+    return u64(fatErrDiskDir);
+  }
+  if (i == n) {
+    final u64 unused3 = fatTruncate(c);
+    return u64(fatErrNoDirSlot);
+  }
+  final u64 lba = fatMeta(u64(fatMetaRootStart)) + (i >> u64(4));
+  if (fatReadCached(lba) > u64(0)) {
+    final u64 unused4 = fatTruncate(c);
+    return u64(fatErrDiskDir);
+  }
+  final u64 e = fatSectorBase() + ((i & u64(15)) << u64(5));
+  final u64 wasEnd = fatU8(e);
+  fatDirBlank(e);
+  fatDirName(e);
+  Pointer<u8>.fromAddress(e + u64(fatDirOffAttr)).value = u8(fatAttrDirectory);
+  fatPut16(e + u64(fatDirOffCluster), c);
+  fatPut32(e + u64(fatDirOffSize), u64(0));
+  final u64 w = fatWriteSector(lba, fatSectorBase());
+  if (w > u64(fatErrOk)) {
+    final u64 unused5 = fatTruncate(c);
+    return w;
+  }
+  fatSetMeta(u64(fatMetaFileEntry), i);
+  fatSetMeta(u64(fatMetaFileAttr), u64(fatAttrDirectory));
+  fatSetMeta(u64(fatMetaFileFirst), c);
+  fatSetMeta(u64(fatMetaFileBytes), u64(0));
+  if (wasEnd == u64(fatDirFree)) {
+    return fatDirTerminate(i + u64(1));
+  }
+  return u64(fatErrOk);
+}
+
+/// Packs a subdirectory parent cluster into the high 16 bits of an
+/// entry index. Root entries stay below 512 and are unchanged.
+@bare
+u64 fatPackEnt(u64 parent, u64 idx) {
+  if (parent < u64(fatFirstCluster)) {
+    return idx;
+  }
+  return (parent << u64(16)) | (idx & u64(0xFFFF));
+}
+
+/// How many 32-byte slots the first cluster of [parent] holds.
+@bare
+u64 fatSubDirCap(u64 parent) {
+  if (parent < u64(fatFirstCluster)) {
+    return u64(0);
+  }
+  return fatMeta(u64(fatMetaSecPerClus)) << u64(4);
+}
+
+/// Address of directory slot [idx] in the first cluster of [parent].
+@bare
+u64 fatSubDirSlot(u64 parent, u64 idx) {
+  final u64 spc = fatMeta(u64(fatMetaSecPerClus));
+  final u64 sec = idx >> u64(4);
+  if (sec >= spc) {
+    return u64(0);
+  }
+  final u64 lba = fatClusterSector(parent, sec);
+  if (lba < u64(1)) {
+    return u64(0);
+  }
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(0);
+  }
+  return fatSectorBase() + ((idx & u64(15)) << u64(5));
+}
+
+/// Finds the name-buffer entry in subdirectory [parent].
+@bare
+u64 fatSubDirFind(u64 parent) {
+  fatSetMeta(u64(fatMetaOpen), u64(0));
+  final u64 m = fatMount();
+  if (m > u64(fatErrOk)) {
+    return m;
+  }
+  if (parent < u64(fatFirstCluster)) {
+    return fatDirFind();
+  }
+  final u64 n = fatSubDirCap(parent);
+  u64 i = u64(0);
+  while (i < n) {
+    final u64 e = fatSubDirSlot(parent, i);
+    if (e < u64(1)) {
+      return u64(fatErrDiskDir);
+    }
+    final u64 c0 = fatU8(e);
+    if (c0 == u64(fatDirFree)) {
+      i = n;
+    } else {
+      u64 hit = u64(0);
+      if (c0 != u64(fatDirDeleted)) {
+        final u64 attr = fatU8(e + u64(fatDirOffAttr));
+        if (attr != u64(fatAttrLongName)) {
+          if ((attr & u64(fatAttrVolumeId)) < u64(1)) {
+            if (fatNameEq(e) > u64(0)) {
+              hit = u64(1);
+              fatSetMeta(u64(fatMetaFileAttr), attr);
+              fatSetMeta(u64(fatMetaFileEntry), fatPackEnt(parent, i));
+              fatSetMeta(u64(fatMetaFileFirst),
+                  fatU16(e + u64(fatDirOffCluster)));
+              fatSetMeta(u64(fatMetaFileBytes), fatU32(e + u64(fatDirOffSize)));
+            }
+          }
+        }
+      }
+      if (hit > u64(0)) {
+        if ((fatMeta(u64(fatMetaFileAttr)) & u64(fatAttrDirectory)) > u64(0)) {
+          return u64(fatErrIsDir);
+        }
+        return u64(fatErrOk);
+      }
+      i = i + u64(1);
+    }
+  }
+  return u64(fatErrNotFound);
+}
+
+/// [fatLookup] for a file that lives in subdirectory [parent].
+@bare
+u64 fatSubDirLookup(u64 parent) {
+  final u64 fs = fatSubDirFind(parent);
+  if (fs == u64(fatErrIsDir)) {
+    return fs;
+  }
+  if (fs > u64(fatErrOk)) {
+    return fs;
+  }
+  if (fatMeta(u64(fatMetaFileFirst)) < u64(fatFirstCluster)) {
+    return u64(fatErrEmpty);
+  }
+  if (fatMeta(u64(fatMetaFileBytes)) < u64(1)) {
+    return u64(fatErrEmpty);
+  }
+  final u64 ch = fatBuildChain(fatMeta(u64(fatMetaFileFirst)),
+      fatMeta(u64(fatMetaFileBytes)));
+  if (ch > u64(fatErrOk)) {
+    return ch;
+  }
+  fatSetMeta(u64(fatMetaOpen), u64(1));
+  return u64(fatErrOk);
+}
+
+/// First free or deleted slot in the first cluster of [parent].
+@bare
+u64 fatSubDirFreeSlot(u64 parent) {
+  final u64 n = fatSubDirCap(parent);
+  u64 i = u64(0);
+  while (i < n) {
+    final u64 e = fatSubDirSlot(parent, i);
+    if (e < u64(1)) {
+      return n + u64(1);
+    }
+    final u64 c0 = fatU8(e);
+    if (c0 == u64(fatDirFree)) {
+      return i;
+    }
+    if (c0 == u64(fatDirDeleted)) {
+      return i;
+    }
+    i = i + u64(1);
+  }
+  return n;
+}
+
+/// Writes size/first into packed-or-root entry [i].
+@bare
+u64 fatSubDirWrite(u64 parent, u64 idx, u64 first, u64 bytes) {
+  final u64 e = fatSubDirSlot(parent, idx);
+  if (e < u64(1)) {
+    return u64(fatErrDiskDir);
+  }
+  fatPut16(e + u64(fatDirOffCluster), first);
+  fatPut32(e + u64(fatDirOffSize), bytes);
+  final u64 lba = fatClusterSector(parent, idx >> u64(4));
+  return fatWriteSector(lba, fatSectorBase());
+}
+
+/// Creates a file dirent in subdirectory [parent].
+@bare
+u64 fatSubDirCreate(u64 parent) {
+  if (fatNameLegal() < u64(1)) {
+    return u64(fatErrBadName);
+  }
+  if (parent < u64(fatFirstCluster)) {
+    return fatDirCreate();
+  }
+  final u64 hit = fatSubDirFind(parent);
+  if (hit == u64(fatErrOk)) {
+    return u64(fatErrBadName);
+  }
+  if (hit == u64(fatErrIsDir)) {
+    return u64(fatErrIsDir);
+  }
+  if (hit != u64(fatErrNotFound)) {
+    return hit;
+  }
+  final u64 n = fatSubDirCap(parent);
+  final u64 i = fatSubDirFreeSlot(parent);
+  if (i > n) {
+    return u64(fatErrDiskDir);
+  }
+  if (i == n) {
+    return u64(fatErrNoDirSlot);
+  }
+  final u64 e = fatSubDirSlot(parent, i);
+  if (e < u64(1)) {
+    return u64(fatErrDiskDir);
+  }
+  final u64 wasEnd = fatU8(e);
+  fatDirBlank(e);
+  fatDirName(e);
+  Pointer<u8>.fromAddress(e + u64(fatDirOffAttr)).value = u8(fatAttrArchive);
+  final u64 lba = fatClusterSector(parent, i >> u64(4));
+  final u64 w = fatWriteSector(lba, fatSectorBase());
+  if (w > u64(fatErrOk)) {
+    return w;
+  }
+  fatSetMeta(u64(fatMetaFileEntry), fatPackEnt(parent, i));
+  fatSetMeta(u64(fatMetaFileAttr), u64(fatAttrArchive));
+  fatSetMeta(u64(fatMetaFileFirst), u64(0));
+  fatSetMeta(u64(fatMetaFileBytes), u64(0));
+  if (wasEnd == u64(fatDirFree)) {
+    final u64 nxt = i + u64(1);
+    if (nxt < n) {
+      final u64 ne = fatSubDirSlot(parent, nxt);
+      if (ne < u64(1)) {
+        return u64(fatErrDiskDir);
+      }
+      if (fatU8(ne) != u64(fatDirFree)) {
+        fatDirBlank(ne);
+        final u64 nlba = fatClusterSector(parent, nxt >> u64(4));
+        return fatWriteSector(nlba, fatSectorBase());
+      }
+    }
+  }
+  return u64(fatErrOk);
+}
+
+/// mkdir inside subdirectory [parent]. Root parent uses [fatMkdir].
+@bare
+u64 fatMkdirAt(u64 parent) {
+  if (parent < u64(fatFirstCluster)) {
+    return fatMkdir();
+  }
+  if (fatNameLegal() < u64(1)) {
+    return u64(fatErrBadName);
+  }
+  final u64 hit = fatSubDirFind(parent);
+  if (hit == u64(fatErrOk)) {
+    return u64(fatErrBadName);
+  }
+  if (hit == u64(fatErrIsDir)) {
+    return u64(fatErrIsDir);
+  }
+  if (hit != u64(fatErrNotFound)) {
+    return hit;
+  }
+  final u64 c = fatAlloc(u64(0));
+  if (c < u64(fatFirstCluster)) {
+    if (c < u64(1)) {
+      return u64(fatErrFull);
+    }
+    return u64(fatErrDiskWrite);
+  }
+  final u64 z = fatZeroDirClusterAt(c, parent);
+  if (z > u64(fatErrOk)) {
+    final u64 unused = fatTruncate(c);
+    return z;
+  }
+  final u64 n = fatSubDirCap(parent);
+  final u64 i = fatSubDirFreeSlot(parent);
+  if (i > n) {
+    final u64 unused2 = fatTruncate(c);
+    return u64(fatErrDiskDir);
+  }
+  if (i == n) {
+    final u64 unused3 = fatTruncate(c);
+    return u64(fatErrNoDirSlot);
+  }
+  final u64 e = fatSubDirSlot(parent, i);
+  if (e < u64(1)) {
+    final u64 unused4 = fatTruncate(c);
+    return u64(fatErrDiskDir);
+  }
+  final u64 wasEnd = fatU8(e);
+  fatDirBlank(e);
+  fatDirName(e);
+  Pointer<u8>.fromAddress(e + u64(fatDirOffAttr)).value = u8(fatAttrDirectory);
+  fatPut16(e + u64(fatDirOffCluster), c);
+  fatPut32(e + u64(fatDirOffSize), u64(0));
+  final u64 lba = fatClusterSector(parent, i >> u64(4));
+  final u64 w = fatWriteSector(lba, fatSectorBase());
+  if (w > u64(fatErrOk)) {
+    final u64 unused5 = fatTruncate(c);
+    return w;
+  }
+  fatSetMeta(u64(fatMetaFileEntry), fatPackEnt(parent, i));
+  fatSetMeta(u64(fatMetaFileAttr), u64(fatAttrDirectory));
+  fatSetMeta(u64(fatMetaFileFirst), c);
+  fatSetMeta(u64(fatMetaFileBytes), u64(0));
+  if (wasEnd == u64(fatDirFree)) {
+    final u64 nxt = i + u64(1);
+    if (nxt < n) {
+      final u64 ne = fatSubDirSlot(parent, nxt);
+      if (ne < u64(1)) {
+        return u64(fatErrDiskDir);
+      }
+      if (fatU8(ne) != u64(fatDirFree)) {
+        fatDirBlank(ne);
+        final u64 nlba = fatClusterSector(parent, nxt >> u64(4));
+        return fatWriteSector(nlba, fatSectorBase());
+      }
+    }
   }
   return u64(fatErrOk);
 }

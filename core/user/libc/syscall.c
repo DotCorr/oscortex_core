@@ -134,6 +134,10 @@ unsigned long rename(const char *old, const char *newname) {
                    (unsigned long)newname, strlen(newname));
 }
 
+unsigned long mkdir(const char *name) {
+  return sys_call(SYS_MKDIR, (unsigned long)name, strlen(name));
+}
+
 /* ---------------------------------------------------------------------------
  * S0 (ADR-0033) — `ioctl`, syscall 12.
  *

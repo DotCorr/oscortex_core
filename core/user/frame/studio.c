@@ -41,6 +41,17 @@ typedef unsigned int u32;
 #define SCAN_LCTRL 0x1DUL
 #define CLIP_VA 0x10200000UL
 #define EDIT_MAX 64UL
+#define TEXT_MAX 2048UL
+#define NOTE_NAME "NOTE.TXT"
+#define NOTE_N 8UL
+#define EDIT_TOP 112UL
+#define EDIT_LINE_H 16UL
+#define SCAN_ENTER 0x1CUL
+#define SCAN_BKSP 0x0EUL
+#define SCAN_LEFT 0x4BUL
+#define SCAN_RIGHT 0x4DUL
+#define SCAN_UP 0x48UL
+#define SCAN_DOWN 0x50UL
 
 static unsigned char buf[512];
 static unsigned char acc[16];
@@ -81,6 +92,20 @@ static u64 edit_caret;
 static u64 edit_on;
 static const char msg_copy[] = "STUDIO COPY ";
 static const char msg_paste[] = "STUDIO PASTE ";
+static const char msg_openf[] = "STUDIO OPEN ";
+static const char msg_savef[] = "STUDIO SAVE FILE ";
+static const char msg_dirty[] = "STUDIO DIRTY";
+static const char msg_scroll[] = "STUDIO SCROLL ";
+static const char msg_errf[] = "STUDIO ERR";
+static char text_buf[TEXT_MAX + 1];
+static u64 text_n;
+static u64 text_caret;
+static u64 text_sel;
+static u64 text_off;
+static u64 text_dirty;
+static u64 text_err;
+static char file_name[16];
+static unsigned file_nlen;
 static u64 studio_h;
 static u64 studio_va;
 static u64 studio_names;
@@ -173,21 +198,36 @@ static void studio_clip_offer(void) {
   u64 i;
   u64 r;
   unsigned n;
-  if (clip_h == 0 || edit_n < 1) {
+  u64 take;
+  if (clip_h == 0) {
     return;
+  }
+  take = text_n;
+  if (take < 1) {
+    take = edit_n;
+  }
+  if (take < 1) {
+    return;
+  }
+  if (take > EDIT_MAX) {
+    take = EDIT_MAX;
   }
   p = (volatile unsigned char *)CLIP_VA;
   i = 0;
-  while (i < edit_n) {
-    p[i] = (unsigned char)edit_buf[i];
+  while (i < take) {
+    if (text_n > 0) {
+      p[i] = (unsigned char)text_buf[i];
+    } else {
+      p[i] = (unsigned char)edit_buf[i];
+    }
     i = i + 1;
   }
-  r = osxui_app_clip(WM_OP_OFFER, clip_h, edit_n);
+  r = osxui_app_clip(WM_OP_OFFER, clip_h, take);
   n = put(0, msg_copy);
   if (r >= FILE_ERR_FLOOR) {
     n = put(n, "ERR");
   } else {
-    n = puthex(n, edit_n, 2);
+    n = puthex(n, take, 2);
   }
   emit(n);
 }
@@ -211,11 +251,19 @@ static void studio_clip_take(void) {
   i = 0;
   while (i < r) {
     edit_buf[i] = (char)p[i];
+    if (i < TEXT_MAX) {
+      text_buf[i] = (char)p[i];
+    }
     i = i + 1;
   }
   edit_n = r;
   edit_caret = r;
   edit_buf[r] = 0;
+  text_n = r;
+  text_caret = r;
+  text_buf[r] = 0;
+  text_dirty = 1;
+  wr(msg_dirty, sizeof(msg_dirty) - 1);
   n = put(0, msg_paste);
   i = 0;
   while (i < r && n < 70) {
@@ -227,15 +275,207 @@ static void studio_clip_take(void) {
 
 static void paint_strip(u64 va, u64 names);
 
-static void paint_edit(u64 h) {
-  osxui_app_rrect(h, 8UL, WIN_H - 36UL, WIN_W - 16UL, 28UL, 6UL, 0x00F4F6FAUL);
-  if (edit_n > 0) {
-    osxui_app_text(h, 14UL, WIN_H - 30UL, edit_buf, edit_n, WM_TEXT_LABEL_PX,
-                   WM_TEXT_REGULAR, 0x00202830UL);
-  } else {
-    osxui_app_text(h, 14UL, WIN_H - 30UL, "type / paste", 12, WM_TEXT_LABEL_PX,
-                   WM_TEXT_REGULAR, 0x00506070UL);
+static u64 studio_line_start(u64 line) {
+  u64 i = 0;
+  u64 n = 0;
+  while (i < text_n) {
+    if (n == line) {
+      return i;
+    }
+    if (text_buf[i] == '\n') {
+      n = n + 1;
+    }
+    i = i + 1;
   }
+  if (n == line) {
+    return text_n;
+  }
+  return text_n;
+}
+
+static u64 studio_line_count(void) {
+  u64 i = 0;
+  u64 n = 1;
+  while (i < text_n) {
+    if (text_buf[i] == '\n') {
+      n = n + 1;
+    }
+    i = i + 1;
+  }
+  return n;
+}
+
+static void studio_mark_dirty(void) {
+  if (text_dirty < 1) {
+    text_dirty = 1;
+    wr(msg_dirty, sizeof(msg_dirty) - 1);
+  }
+}
+
+static void studio_open_named(const char *name, unsigned nlen) {
+  u64 fd;
+  u64 got;
+  u64 total;
+  unsigned n;
+  unsigned i;
+  if (nlen < 1U) {
+    return;
+  }
+  fd = sys2(SYS_OPEN, (u64)name, (u64)nlen);
+  n = put(0, msg_openf);
+  i = 0;
+  while (i < nlen && n < 70) {
+    line[n++] = name[i];
+    i = i + 1;
+  }
+  if (fd >= FILE_ERR_FLOOR) {
+    text_err = 1;
+    wr(msg_errf, sizeof(msg_errf) - 1);
+    emit(n);
+    return;
+  }
+  total = 0;
+  for (;;) {
+    got = sys3(SYS_READ, fd, (u64)buf, 32);
+    if (got >= FILE_ERR_FLOOR) {
+      sys2(SYS_CLOSE, fd, 0);
+      text_err = 1;
+      wr(msg_errf, sizeof(msg_errf) - 1);
+      emit(n);
+      return;
+    }
+    if (got == 0) {
+      break;
+    }
+    i = 0;
+    while (i < (unsigned)got && total < TEXT_MAX) {
+      text_buf[total] = (char)buf[i];
+      total = total + 1;
+      i = i + 1;
+    }
+    if (total >= TEXT_MAX) {
+      break;
+    }
+  }
+  sys2(SYS_CLOSE, fd, 0);
+  text_n = total;
+  text_caret = total;
+  text_sel = total;
+  text_off = 0;
+  text_dirty = 0;
+  text_err = 0;
+  text_buf[total] = 0;
+  if (total < EDIT_MAX) {
+    i = 0;
+    while (i < (unsigned)total) {
+      edit_buf[i] = text_buf[i];
+      i = i + 1;
+    }
+    edit_n = total;
+    edit_caret = total;
+    edit_buf[total] = 0;
+  }
+  i = 0;
+  while (i < nlen && i < 12U) {
+    file_name[i] = name[i];
+    i = i + 1;
+  }
+  file_name[nlen] = 0;
+  file_nlen = nlen;
+  emit(n);
+}
+
+static void studio_save_named(const char *name, unsigned nlen) {
+  u64 fd;
+  u64 w;
+  u64 off;
+  unsigned n;
+  unsigned i;
+  if (nlen < 1U) {
+    return;
+  }
+  fd = sys3(SYS_OPEN, (u64)name, (u64)nlen, O_WRITE);
+  n = put(0, msg_savef);
+  i = 0;
+  while (i < nlen && n < 70) {
+    line[n++] = name[i];
+    i = i + 1;
+  }
+  if (fd >= FILE_ERR_FLOOR) {
+    text_err = 1;
+    wr(msg_errf, sizeof(msg_errf) - 1);
+    emit(n);
+    return;
+  }
+  off = 0;
+  while (off < text_n) {
+    u64 chunk = text_n - off;
+    if (chunk > 32) {
+      chunk = 32;
+    }
+    w = sys3(SYS_FDWRITE, fd, (u64)&text_buf[off], chunk);
+    if (w >= FILE_ERR_FLOOR) {
+      sys2(SYS_CLOSE, fd, 0);
+      text_err = 1;
+      wr(msg_errf, sizeof(msg_errf) - 1);
+      emit(n);
+      return;
+    }
+    off = off + w;
+    if (w < chunk) {
+      break;
+    }
+  }
+  sys2(SYS_CLOSE, fd, 0);
+  text_dirty = 0;
+  text_err = 0;
+  emit(n);
+  wr(msg_save, sizeof(msg_save) - 1);
+}
+
+static void paint_edit(u64 h) {
+  u64 body = WIN_H - EDIT_TOP;
+  u64 vis;
+  u64 line_i;
+  u64 y;
+  osxui_app_rrect(h, 8UL, EDIT_TOP, WIN_W - 16UL, body - 8UL, 6UL, 0x00F4F6FAUL);
+  vis = (body - 12UL) / EDIT_LINE_H;
+  if (vis < 1UL) {
+    vis = 1UL;
+  }
+  line_i = 0;
+  while (line_i < vis) {
+    u64 src = text_off + line_i;
+    u64 a = studio_line_start(src);
+    u64 b = studio_line_start(src + 1);
+    unsigned nlab;
+    y = EDIT_TOP + 4UL + line_i * EDIT_LINE_H;
+    if (a < text_n && text_buf[a] == '\n') {
+      a = a + 1;
+    }
+    if (b > a && b <= text_n && text_buf[b - 1] == '\n') {
+      b = b - 1;
+    }
+    if (b < a) {
+      b = a;
+    }
+    nlab = (unsigned)(b - a);
+    if (nlab > 28U) {
+      nlab = 28U;
+    }
+    if (nlab > 0U) {
+      osxui_app_text(h, 14UL, y, &text_buf[a], nlab, WM_TEXT_LABEL_PX,
+                     WM_TEXT_REGULAR, 0x00202830UL);
+    } else if (src == 0 && text_n == 0) {
+      osxui_app_text(h, 14UL, y, "type / paste / save", 19, WM_TEXT_LABEL_PX,
+                     WM_TEXT_REGULAR, 0x00506070UL);
+    }
+    line_i = line_i + 1;
+  }
+  if (text_dirty > 0) {
+    osxui_app_rrect(h, WIN_W - 18UL, EDIT_TOP + 4UL, 6UL, 6UL, 3UL, 0x00C04040UL);
+  }
+  (void)edit_n;
 }
 
 static void studio_repaint(u64 names) {
@@ -355,6 +595,22 @@ static void try_strip(u64 names) {
   edit_n = 0;
   edit_caret = 0;
   edit_buf[0] = 0;
+  text_n = 0;
+  text_caret = 0;
+  text_off = 0;
+  text_dirty = 0;
+  text_err = 0;
+  text_buf[0] = 0;
+  file_name[0] = 'N';
+  file_name[1] = 'O';
+  file_name[2] = 'T';
+  file_name[3] = 'E';
+  file_name[4] = '.';
+  file_name[5] = 'T';
+  file_name[6] = 'X';
+  file_name[7] = 'T';
+  file_name[8] = 0;
+  file_nlen = NOTE_N;
 
   desc[WM_DESC_OP] = WM_OP_COMMIT;
   desc[WM_DESC_HANDLE] = h;
@@ -513,19 +769,67 @@ static void pump(u64 names) {
           edit_n = 0;
           edit_caret = 0;
           edit_buf[0] = 0;
+          text_n = 0;
+          text_caret = 0;
+          text_buf[0] = 0;
+          studio_mark_dirty();
           studio_clip_offer();
           studio_repaint(names);
+        } else if (sc == 0x1FUL) {
+          if (file_nlen > 0U) {
+            studio_save_named(file_name, file_nlen);
+          } else {
+            studio_save_named(NOTE_NAME, NOTE_N);
+          }
+          studio_repaint(names);
+        } else if (sc == 0x18UL) {
+          if (view_row < names && catlen[view_row] > 0) {
+            studio_open_named((const char *)&catalog[view_row][0],
+                              catlen[view_row]);
+          } else {
+            studio_open_named(NOTE_NAME, NOTE_N);
+          }
+          studio_repaint(names);
         }
-      } else if (sc == 0x48UL) {
-        if (view_row > 0) {
+      } else if (sc == SCAN_UP) {
+        if (text_n > 0) {
+          if (text_off > 0) {
+            text_off = text_off - 1;
+            n = put(0, msg_scroll);
+            n = puthex(n, text_off, 2);
+            emit(n);
+            studio_repaint(names);
+          } else if (view_row > 0) {
+            view_open(view_row - 1, names);
+          }
+        } else if (view_row > 0) {
           view_open(view_row - 1, names);
         }
-      } else if (sc == 0x50UL) {
-        if ((view_row + 1) < names) {
+      } else if (sc == SCAN_DOWN) {
+        if (text_n > 0) {
+          if ((text_off + 1) < studio_line_count()) {
+            text_off = text_off + 1;
+            n = put(0, msg_scroll);
+            n = puthex(n, text_off, 2);
+            emit(n);
+            studio_repaint(names);
+          } else if ((view_row + 1) < names) {
+            view_open(view_row + 1, names);
+          }
+        } else if ((view_row + 1) < names) {
           view_open(view_row + 1, names);
         }
-      } else if (sc == 0x1CUL) {
-        launch_row(view_row, names);
+      } else if (sc == SCAN_ENTER) {
+        if (edit_on > 0 && text_n < TEXT_MAX) {
+          text_buf[text_n] = '\n';
+          text_n = text_n + 1;
+          text_caret = text_n;
+          text_buf[text_n] = 0;
+          studio_mark_dirty();
+          studio_repaint(names);
+        } else {
+          launch_row(view_row, names);
+        }
       } else if (sc == 0x12UL) {
         persist_row(view_row);
         edit_on = 1;
@@ -533,13 +837,19 @@ static void pump(u64 names) {
         n = puthex(n, view_row, 2);
         emit(n);
       } else if (edit_on > 0) {
-        if (sc == 0x0EUL) {
+        if (sc == SCAN_BKSP) {
+          if (text_caret > 0) {
+            text_caret = text_caret - 1;
+            text_n = text_caret;
+            text_buf[text_n] = 0;
+            studio_mark_dirty();
+          }
           if (edit_caret > 0) {
             edit_caret = edit_caret - 1;
             edit_n = edit_caret;
             edit_buf[edit_n] = 0;
-            studio_repaint(names);
           }
+          studio_repaint(names);
         } else if ((ev & KBD_BIT_EXT) == 0) {
           if (sc >= KEY_DIGIT1 && sc <= 0x0BUL && edit_n < 1) {
             row = sc - KEY_DIGIT1;
@@ -581,6 +891,13 @@ static void pump(u64 names) {
               edit_n = edit_n + 1;
               edit_caret = edit_n;
               edit_buf[edit_n] = 0;
+              if (text_n < TEXT_MAX) {
+                text_buf[text_n] = ch;
+                text_n = text_n + 1;
+                text_caret = text_n;
+                text_buf[text_n] = 0;
+              }
+              studio_mark_dirty();
               n = put(0, msg_edit);
               n = puthex(n, edit_n, 2);
               emit(n);
@@ -617,12 +934,21 @@ static void pump(u64 names) {
         view_open(row, names);
       }
     } else if ((ev & 0xFFUL) == WMEVENT_TYPE_SCROLL) {
-      if (view_off < 8) {
-        view_off = view_off + 1;
+      u64 delta = (ev >> 48) & 0xFFUL;
+      if ((delta & 0x80UL) != 0) {
+        if (text_off > 0) {
+          text_off = text_off - 1;
+        }
       } else {
-        view_off = 0;
+        if ((text_off + 1) < studio_line_count()) {
+          text_off = text_off + 1;
+        }
       }
-      view_open(view_row, names);
+      view_off = text_off;
+      n = put(0, msg_scroll);
+      n = puthex(n, text_off, 2);
+      emit(n);
+      studio_repaint(names);
     }
   }
 }
@@ -694,6 +1020,7 @@ void _start(void) {
   exhibit_have(names);
   exhibit_sel(names);
   try_strip(names);
+  studio_open_named(NOTE_NAME, NOTE_N);
   if (names > 0) {
     view_open(0, names);
   }

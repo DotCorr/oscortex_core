@@ -51,8 +51,9 @@ and that a duplicate merges clean, builds clean, boots clean, and mis-dispatches
 | 35 | `shmshrink` | `shmSysShrinkNo` | `core/kernel/shm.dart` | *(none)* | 0156 |
 | 36 | `mprotect` | `shmSysMprotectNo` | `core/kernel/shm.dart` | *(none)* | 0163 |
 | 37 | `shmfile` | `shmSysFileNo` | `core/kernel/shm.dart` | *(none)* | 0164 |
+| 38 | `mkdir` | `fileSysMkdirNo` | `core/kernel/file.dart` | `SYS_MKDIR` | 0199 |
 
-**Thirty-three syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
+**Thirty-five syscalls, and the numbers are not contiguous.** 11 is `fdwait`'s and `fdwait` is not built,
 so the allocated set is 0-10 and 12-16. **That gap is the registry working, not a bug in it**:
 `ioctl` was implemented after `fdwait` was named and took the next free number rather than the next
 number, and M20's three channel calls did the same thing again on the next merge -- they had claimed

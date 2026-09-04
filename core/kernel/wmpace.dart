@@ -362,6 +362,8 @@ const int wmPageWMru = 503;
 const int wmPageWSwitch = 504;
 /// SET theme:8 | accent:8 | wall:8 | gen:8. Survives app close.
 const int wmPageWPref = 505;
+/// Focus generation token. Bumped on every seat-0 focus change.
+const int wmPageWFocusGen = 506;
 const int wmOpKindPtr = 1;
 const int wmOpKindDrag = 2;
 const int wmOpKindBody = 3;

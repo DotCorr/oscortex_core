@@ -495,6 +495,11 @@ static void write_pref(void) {
   }
   sys3(SYS_FDWRITE, fd, (u64)pref_blob, PREF_BYTES);
   sys1(SYS_CLOSE, fd);
+  {
+    u64 packed = ((u64)pref_theme) | (((u64)pref_accent) << 8) |
+                 (((u64)pref_wall) << 16);
+    (void)osxui_app_pref_set(packed);
+  }
 }
 
 static void load_pref(void) {

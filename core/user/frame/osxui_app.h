@@ -403,6 +403,19 @@ static inline unsigned long osxui_app_pref(void) {
   return r;
 }
 
+static inline unsigned long osxui_app_pref_set(unsigned long packed) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = packed;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_PREF_SET;
+  osxui_app_desc[OSXUI_APP_XY] = 0;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
 static inline unsigned long osxui_app_switch_at(unsigned long vis) {
   unsigned long r;
   osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
@@ -439,6 +452,20 @@ static inline void osxui_app_move(unsigned long h, unsigned long x,
   osxui_app_desc[WM_DESC_Y] = y;
   osxui_app_desc[WM_DESC_W] = 0;
   osxui_app_desc[WM_DESC_H] = 0;
+  osxui_app_desc[WM_DESC_STRIDE] = 0;
+  osxui_app_desc[WM_DESC_OFFSET] = 0;
+  (void)osxui_app_call();
+}
+
+static inline void osxui_app_place(unsigned long h, unsigned long x,
+                                   unsigned long y, unsigned long w,
+                                   unsigned long ht) {
+  osxui_app_desc[WM_DESC_OP] = WM_OP_MOVE;
+  osxui_app_desc[WM_DESC_HANDLE] = h;
+  osxui_app_desc[WM_DESC_X] = x;
+  osxui_app_desc[WM_DESC_Y] = y;
+  osxui_app_desc[WM_DESC_W] = w;
+  osxui_app_desc[WM_DESC_H] = ht;
   osxui_app_desc[WM_DESC_STRIDE] = 0;
   osxui_app_desc[WM_DESC_OFFSET] = 0;
   (void)osxui_app_call();

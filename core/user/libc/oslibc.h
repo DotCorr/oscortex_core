@@ -152,6 +152,7 @@ typedef unsigned long uintptr_t;
  * THIRTY-ONE and THIRTY-TWO. 11 stays fdwait. 30 is futex. */
 #define SYS_UNLINK 31
 #define SYS_RENAME 32
+#define SYS_MKDIR 38
 
 /* S0 (ADR-0033). `core/kernel/ioctl.dart`'s `ioctlSysNo`.
  *
@@ -353,7 +354,7 @@ unsigned long who(void);
  *
  *     M16 ADDED A WRITE PATH AND IT IS NARROW ON PURPOSE. open() grew a mode,
  *     fdwrite() appends, close() flushes the directory entry, and that is all:
- *     no writing at an offset, no unlink, no rename, no mkdir. GAP-0127 is the
+ *     no writing at an offset. unlink/rename are APP4; mkdir is syscall 38.
  *     accounting and GAP-0122 is what M15 left, narrowed item by item.
  * ------------------------------------------------------------------------- */
 

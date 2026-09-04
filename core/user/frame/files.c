@@ -169,7 +169,7 @@ static u64 edit_on;
 static const char msg_del[] = "FILES DEL ";
 static const char msg_del_conf[] = "FILES DEL CONFIRM";
 static const char msg_new[] = "FILES NEW ";
-static const char msg_nodir[] = "FILES NO DIR";
+static const char msg_mkdir[] = "FILES MKDIR ";
 static const char msg_paste[] = "FILES PASTE ";
 static const char msg_refresh[] = "FILES REFRESH";
 static const char msg_fwd[] = "FILES FWD";
@@ -182,6 +182,10 @@ static u64 files_err;
 static u64 empty_noted;
 static u64 root_names;
 static u64 in_folder;
+static char folder_name[16];
+static unsigned folder_nlen;
+static char fwd_name[16];
+static unsigned fwd_nlen;
 static const char path_gone[] = "GONE.DAT";
 static const char path_miss[] = "MISS.DAT";
 static const char msg_retry[] = "FILES RETRY";
@@ -604,14 +608,16 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
 }
 
 #define FILE_MENU_W 168UL
-#define FILE_MENU_H 128UL
-#define FILE_MENU_ROWS 5UL
+#define FILE_MENU_H 152UL
+#define FILE_MENU_ROWS 6UL
 #define SCAN_LCTRL 0x1DUL
 #define SCAN_F5 0x3FUL
 /* Clip bytes live in the window region's unused prefix (SURF_OFFSET). */
 #define EDIT_MAX 12UL
 #define NAME_NEW "NEW.DAT"
 #define NAME_NEW_N 7UL
+#define NAME_DIR "NEWDIR"
+#define NAME_DIR_N 6UL
 
 static u64 row_at_y(u64 y, u64 names) {
   u64 body_h = files_height;
@@ -707,7 +713,10 @@ static void do_file_rename(u64 row);
 static void files_go_back(void);
 static void files_retry(void);
 static void files_show_empty(void);
+static void files_show_error(void);
 static void files_repaint(void);
+static u64 files_load_listing(const char *path, unsigned nlen);
+static void emit_name(const char *s, unsigned n);
 
 static void files_probe_writable(void) {
   if (files_writable > 0) {
@@ -801,13 +810,94 @@ static void files_edit_from_sel(void) {
   edit_buf[i] = 0;
 }
 
+static void files_remember_folder(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  if (nlen > 12U) {
+    nlen = 12U;
+  }
+  while (i < nlen) {
+    folder_name[i] = name[i];
+    fwd_name[i] = name[i];
+    i = i + 1;
+  }
+  folder_name[nlen] = 0;
+  fwd_name[nlen] = 0;
+  folder_nlen = nlen;
+  fwd_nlen = nlen;
+}
+
+static u64 files_load_listing(const char *path, unsigned nlen) {
+  u64 fd;
+  u64 got;
+  u64 names;
+  unsigned i;
+  unsigned n;
+  if (nlen < 1U) {
+    return 1;
+  }
+  fd = sys2(SYS_OPEN, (u64)path, (u64)nlen);
+  if (fd >= ERR_FLOOR) {
+    return 1;
+  }
+  names = 0;
+  for (;;) {
+    got = sys3(SYS_READ, fd, (u64)buf, CHUNK);
+    if (got >= ERR_FLOOR) {
+      sys1(SYS_CLOSE, fd);
+      return 1;
+    }
+    if (got == 0) {
+      break;
+    }
+    i = 0;
+    while (i + REC <= (unsigned)got) {
+      if (names < CAT_MAX) {
+        unsigned k;
+        unsigned skip = 0;
+        for (k = 0; k < 32; k++) {
+          recs[names][k] = buf[i + k];
+        }
+        if (recs[names][0] == (unsigned char)'.') {
+          skip = 1;
+        }
+        if (skip < 1) {
+          n = fmt83(recs[names], dotted[names]);
+          dotlen[names] = n;
+          emit_name(dotted[names], n);
+          names = names + 1;
+        }
+      }
+      i = i + (unsigned)REC;
+    }
+  }
+  sys1(SYS_CLOSE, fd);
+  files_names = names;
+  files_err = 0;
+  list_sel = 0;
+  scroll_off = 0;
+  empty_noted = 0;
+  n = put(0, msg_count);
+  n = putdec(n, names);
+  emit(n);
+  return 0;
+}
+
 static void files_go_fwd(void) {
   if (can_fwd < 1) {
     return;
   }
+  if (fwd_nlen < 1U) {
+    return;
+  }
+  if (files_load_listing(fwd_name, fwd_nlen) > 0) {
+    files_show_error();
+    return;
+  }
+  files_remember_folder(fwd_name, fwd_nlen);
+  in_folder = 1;
   can_fwd = 0;
   wr(msg_fwd, sizeof(msg_fwd) - 1);
-  files_show_empty();
+  files_repaint();
 }
 
 static void files_do_refresh(void) {
@@ -817,11 +907,35 @@ static void files_do_refresh(void) {
       files_retry();
       return;
     }
-    files_show_empty();
+    if (folder_nlen > 0U) {
+      if (files_load_listing(folder_name, folder_nlen) > 0) {
+        files_show_error();
+        return;
+      }
+    }
+    files_repaint();
+    return;
+  }
+  if (files_load_listing(path_root, 5) > 0) {
+    files_show_error();
     return;
   }
   empty_noted = 0;
   files_repaint();
+}
+
+static void files_reload_here(void) {
+  if (in_folder > 0 && folder_nlen > 0U) {
+    if (files_load_listing(folder_name, folder_nlen) > 0) {
+      files_show_error();
+      return;
+    }
+  } else {
+    if (files_load_listing(path_root, 5) > 0) {
+      files_show_error();
+      return;
+    }
+  }
 }
 
 static void files_do_new(void) {
@@ -840,16 +954,26 @@ static void files_do_new(void) {
   at = put(0, msg_new);
   at = put(at, NAME_NEW);
   emit(at);
-  if (files_names < CAT_MAX) {
-    unsigned k = 0;
-    while (k < NAME_NEW_N) {
-      dotted[files_names][k] = NAME_NEW[k];
-      k = k + 1;
-    }
-    dotted[files_names][NAME_NEW_N] = 0;
-    dotlen[files_names] = (unsigned)NAME_NEW_N;
-    files_names = files_names + 1;
+  files_reload_here();
+}
+
+static void files_do_mkdir(void) {
+  u64 r;
+  unsigned at;
+  if (files_writable < 1) {
+    wr(msg_ro, sizeof(msg_ro) - 1);
+    return;
   }
+  r = sys2(SYS_MKDIR, (u64)NAME_DIR, NAME_DIR_N);
+  at = put(0, msg_mkdir);
+  at = put(at, NAME_DIR);
+  if (r >= ERR_FLOOR) {
+    at = put(at, " ERR");
+    emit(at);
+    return;
+  }
+  emit(at);
+  files_reload_here();
 }
 
 static void files_do_delete(u64 row) {
@@ -877,28 +1001,7 @@ static void files_do_delete(u64 row) {
     return;
   }
   emit(at);
-  if (row + 1UL < files_names) {
-    u64 j = row;
-    while (j + 1UL < files_names) {
-      unsigned k = 0;
-      while (k < 16U) {
-        dotted[j][k] = dotted[j + 1UL][k];
-        k = k + 1;
-      }
-      dotlen[j] = dotlen[j + 1UL];
-      j = j + 1;
-    }
-  }
-  if (files_names > 0) {
-    files_names = files_names - 1;
-  }
-  if (list_sel >= files_names) {
-    if (files_names > 0) {
-      list_sel = files_names - 1;
-    } else {
-      list_sel = 0;
-    }
-  }
+  files_reload_here();
 }
 
 static void files_do_paste(void) {
@@ -936,11 +1039,13 @@ static void files_do_paste(void) {
     (void)sys4(SYS_RENAME, (u64)dotted[cut_row], (u64)dotlen[cut_row],
                (u64)dest_ren, (u64)dlen);
     cut_row = CAT_MAX;
+    files_reload_here();
     return;
   }
   dlen = dest_from(got, (unsigned)n, dest_copy, ext_pst);
   wrote = write_copy(got, (unsigned)n, dest_copy, dlen);
   (void)wrote;
+  files_reload_here();
 }
 
 static void files_menu_run(u64 row) {
@@ -949,7 +1054,13 @@ static void files_menu_run(u64 row) {
       files_go_back();
     } else if (row == 1) {
       files_retry();
+    } else if (row == 2) {
+      do_file_open(menu_row);
+    } else if (row == 3) {
+      files_do_new();
     } else if (row == 4) {
+      files_do_mkdir();
+    } else if (row == 5) {
       files_do_refresh();
     }
     return;
@@ -975,6 +1086,10 @@ static void files_menu_run(u64 row) {
   }
   if (row == 4) {
     files_do_new();
+    return;
+  }
+  if (row == 5) {
+    files_do_mkdir();
   }
 }
 
@@ -1005,13 +1120,27 @@ static void paint_file_menu(void) {
       } else if (row == 1) {
         lab = "Retry";
         nlab = 5;
+      } else if (row == 2) {
+        lab = "Open";
+        nlab = 4;
+        if (menu_row >= files_names) {
+          enabled = 0;
+        }
+      } else if (row == 3) {
+        lab = "New File";
+        nlab = 8;
+        if (files_writable < 1) {
+          enabled = 0;
+        }
       } else if (row == 4) {
+        lab = "New Folder";
+        nlab = 10;
+        if (files_writable < 1) {
+          enabled = 0;
+        }
+      } else {
         lab = "Refresh";
         nlab = 7;
-      } else {
-        lab = "—";
-        nlab = 1;
-        enabled = 0;
       }
     } else {
       if (row == 0) {
@@ -1042,9 +1171,15 @@ static void paint_file_menu(void) {
         if (menu_row >= files_names || files_writable < 1) {
           enabled = 0;
         }
-      } else {
+      } else if (row == 4) {
         lab = "New File";
         nlab = 8;
+        if (files_writable < 1) {
+          enabled = 0;
+        }
+      } else {
+        lab = "New Folder";
+        nlab = 10;
         if (files_writable < 1) {
           enabled = 0;
         }
@@ -1343,7 +1478,7 @@ static u64 files_plant_skip(u64 row) {
     return 1;
   }
   if (files_is_dir(row) > 0) {
-    return 1;
+    return 0;
   }
   if (dotlen[row] == 8) {
     if (same_bytes(dotted[row], 8, path_gone, 8) > 0) {
@@ -1401,7 +1536,21 @@ static void files_go_back(void) {
   menu_on = 0;
   if (in_folder > 0) {
     can_fwd = 1;
-    files_restore_root();
+    if (folder_nlen > 0U) {
+      unsigned i = 0;
+      while (i < folder_nlen) {
+        fwd_name[i] = folder_name[i];
+        i = i + 1;
+      }
+      fwd_name[folder_nlen] = 0;
+      fwd_nlen = folder_nlen;
+    }
+    if (files_load_listing(path_root, 5) > 0) {
+      files_restore_root();
+    } else {
+      in_folder = 0;
+      files_err = 0;
+    }
     wr(msg_back, sizeof(msg_back) - 1);
     files_repaint();
     return;
@@ -1447,17 +1596,46 @@ static void do_file_open(u64 row) {
     return;
   }
   if (files_is_dir(row) > 0) {
+    char saved[16];
+    unsigned slen = dotlen[row];
+    unsigned k = 0;
     at = put(0, msg_dir);
     at = put(at, dotted[row]);
     emit(at);
-    files_show_empty();
+    while (k < slen && k < 12U) {
+      saved[k] = dotted[row][k];
+      k = k + 1;
+    }
+    saved[slen] = 0;
+    if (files_load_listing(saved, slen) > 0) {
+      files_show_error();
+      return;
+    }
+    files_remember_folder(saved, slen);
+    in_folder = 1;
     can_fwd = 0;
+    files_repaint();
     return;
   }
   fd = sys2(SYS_OPEN, (u64)dotted[row], (u64)dotlen[row]);
   if (fd >= ERR_FLOOR) {
     if (fd == FILE_RET_ISDIR) {
-      files_show_empty();
+      char saved[16];
+      unsigned slen = dotlen[row];
+      unsigned k = 0;
+      while (k < slen && k < 12U) {
+        saved[k] = dotted[row][k];
+        k = k + 1;
+      }
+      saved[slen] = 0;
+      if (files_load_listing(saved, slen) > 0) {
+        files_show_empty();
+        return;
+      }
+      files_remember_folder(saved, slen);
+      in_folder = 1;
+      can_fwd = 0;
+      files_repaint();
       return;
     }
     files_show_error();
@@ -2291,7 +2469,6 @@ void files_main(u64 sp) {
   if (files_writable < 1) {
     files_probe_writable();
   }
-  wr(msg_nodir, sizeof(msg_nodir) - 1);
   cut_row = CAT_MAX;
   files_edit_from_sel();
 

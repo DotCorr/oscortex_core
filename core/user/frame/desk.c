@@ -66,14 +66,19 @@ typedef unsigned int u32;
 /* The pixels one poll of the window table costs when nothing changed: none.
  * A repaint only happens when the table or the scanout rect moves. */
 #define YIELD_SPIN 8000UL
-#define MENU_W 420UL
-#define MENU_H 220UL
-#define MENU_PAGES 91UL
+#define MENU_W 174UL
+#define MENU_H 93UL
+#define LAUNCH_W 280UL
 #define LAUNCH_SEARCH_H 36UL
 #define LAUNCH_ROW_H 24UL
+#define LAUNCH_PAD 16UL
 #define SWITCH_CARD_W 56UL
 #define SWITCH_CARD_H 72UL
+#define SWITCH_H 88UL
 #define SWITCH_PAD 12UL
+#define OVERLAY_MAX_W 280UL
+#define OVERLAY_MAX_H 244UL
+#define MENU_PAGES 17UL
 
 /* osxui_button_fb's in-ELF retest (ADR-0192 §5). Linked for real now:
  * osxui.c + osxui_fb.c, not the weak no-op in osgfx_glyph.c. */
@@ -103,6 +108,8 @@ static u64 menu_h;
 static u64 menu_va;
 static u64 menu_on;
 static u64 menu_seq;
+static u64 overlay_w;
+static u64 overlay_h;
 static u64 right_x;
 static u64 frost_key;
 static u64 frost_regen;
@@ -632,11 +639,13 @@ static void attach_menu(void) {
   desc[WM_DESC_HANDLE] = menu_h;
   desc[WM_DESC_X] = 8;
   desc[WM_DESC_Y] = 8;
-  desc[WM_DESC_W] = MENU_W;
-  desc[WM_DESC_H] = MENU_H;
+  desc[WM_DESC_W] = OVERLAY_MAX_W;
+  desc[WM_DESC_H] = OVERLAY_MAX_H;
   desc[WM_DESC_STRIDE] = 0;
   desc[WM_DESC_OFFSET] = 0;
   menu_va = sys1(SYS_WMSURFACE, (u64)&desc[0]);
+  overlay_w = OVERLAY_MAX_W;
+  overlay_h = OVERLAY_MAX_H;
   if (menu_va >= WM_RET_FLOOR) {
     menu_h = 0;
     menu_va = 0;
@@ -663,8 +672,8 @@ static void commit_menu(void) {
   desc[WM_DESC_HANDLE] = menu_h;
   desc[WM_DESC_X] = 0;
   desc[WM_DESC_Y] = 0;
-  desc[WM_DESC_W] = MENU_W;
-  desc[WM_DESC_H] = MENU_H;
+  desc[WM_DESC_W] = overlay_w;
+  desc[WM_DESC_H] = overlay_h;
   desc[WM_DESC_STRIDE] = menu_seq;
   desc[WM_DESC_OFFSET] = 0;
   (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
@@ -725,7 +734,7 @@ static void paint_desk_menu(u64 kind) {
   u64 rgb;
   u64 cx;
   u64 slot;
-  osxui_app_menu_card(menu_h, MENU_W, MENU_H);
+  osxui_app_menu_card(menu_h, overlay_w, overlay_h);
   if (kind == 1UL) {
     osxui_app_menu_row(menu_h, MENU_W, 0, OSXUI_MENU_ROW0, "Regen", 5);
     osxui_app_menu_row(menu_h, MENU_W, 1, OSXUI_MENU_ROW1, "Image", 5);
@@ -742,7 +751,7 @@ static void paint_desk_menu(u64 kind) {
       i = i + 1;
     }
     qbuf[8] = 0;
-    osxui_app_rrect(menu_h, 8UL, 8UL, MENU_W - 16UL, LAUNCH_SEARCH_H - 8UL, 8UL,
+    osxui_app_rrect(menu_h, 8UL, 8UL, LAUNCH_W - 16UL, LAUNCH_SEARCH_H - 8UL, 8UL,
                     0x00FFFFFFUL);
     if (qlen > 0UL) {
       if (qlen > 8UL) {
@@ -768,7 +777,7 @@ static void paint_desk_menu(u64 kind) {
           if (vis == sel) {
             rgb = 0x00D0E4F8UL;
           }
-          osxui_app_rrect(menu_h, 8UL, ry, MENU_W - 16UL, LAUNCH_ROW_H - 4UL,
+          osxui_app_rrect(menu_h, 8UL, ry, LAUNCH_W - 16UL, LAUNCH_ROW_H - 4UL,
                           6UL, rgb);
           osxui_app_text(menu_h, 16UL, ry + 2UL, stem, n, WM_TEXT_LABEL_PX,
                          WM_TEXT_REGULAR, OSXUI_MENU_FG);
@@ -799,7 +808,7 @@ static void paint_desk_menu(u64 kind) {
       }
       n = stem_into(stem, osxui_app_name(slot));
       cx = SWITCH_PAD + vis * (SWITCH_CARD_W + 8UL);
-      if ((cx + SWITCH_CARD_W) > MENU_W) {
+      if ((cx + SWITCH_CARD_W) > overlay_w) {
         break;
       }
       rgb = OSXUI_MENU_ROW0;
@@ -835,6 +844,50 @@ static void paint_desk_menu(u64 kind) {
   }
 }
 
+static u64 launch_box_h(void) {
+  u64 packed = osxui_app_launch_sel();
+  u64 n = (packed >> 8) & 0xFFUL;
+  if (n < 1UL) {
+    n = 1UL;
+  }
+  if (n > 8UL) {
+    n = 8UL;
+  }
+  return LAUNCH_SEARCH_H + n * LAUNCH_ROW_H + LAUNCH_PAD;
+}
+
+static u64 switch_box_w(void) {
+  u64 n = 0;
+  u64 i = 0;
+  while (i < 8UL) {
+    if (osxui_app_switch_at(i) < 8UL) {
+      n = n + 1UL;
+    } else {
+      break;
+    }
+    i = i + 1UL;
+  }
+  if (n < 1UL) {
+    n = 1UL;
+  }
+  return n * (SWITCH_CARD_W + 8UL) + SWITCH_PAD;
+}
+
+static void overlay_size_for(u64 kind) {
+  if (kind == 2UL) {
+    overlay_w = LAUNCH_W;
+    overlay_h = launch_box_h();
+    return;
+  }
+  if (kind == 6UL) {
+    overlay_w = switch_box_w();
+    overlay_h = SWITCH_H;
+    return;
+  }
+  overlay_w = MENU_W;
+  overlay_h = MENU_H;
+}
+
 static void sync_menu(u64 pop) {
   u64 kind = OSXUI_POP_KIND(pop);
   u64 px = OSXUI_POP_X(pop);
@@ -844,10 +897,8 @@ static void sync_menu(u64 pop) {
   }
   if (kind == 0) {
     if (menu_on != 0) {
-      /* Park off the visible desk. wmFits refuses y>=height, so the
-       * compositor's overlay restore (wmOverlayRestore) is what clears
-       * leftover pixels; this move only stops the next compose blit. */
-      osxui_app_move(menu_h, 8, 8);
+      /* Park off the visible desk. Restore uses the last exact geom. */
+      osxui_app_place(menu_h, 8, 8, overlay_w, overlay_h);
       {
         u64 at = put(0, msg_menu);
         at = put(at, " 0");
@@ -857,7 +908,8 @@ static void sync_menu(u64 pop) {
     menu_on = 0;
     return;
   }
-  osxui_app_move(menu_h, px, py);
+  overlay_size_for(kind);
+  osxui_app_place(menu_h, px, py, overlay_w, overlay_h);
   paint_desk_menu(kind);
   commit_menu();
   if (menu_on != kind) {

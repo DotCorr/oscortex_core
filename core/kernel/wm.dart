@@ -784,6 +784,14 @@ void wmFocusChromeDamage(u64 wI) {
 
 @bare
 void wmFocusTo(u64 wI) {
+  if (wI < u64(wmMaxWindows)) {
+    if (wmIsPanel(wI) > u64(0)) {
+      return;
+    }
+    if (wmIsOverlay(wI) > u64(0)) {
+      return;
+    }
+  }
   final u64 oldRaw = wmFocusLive();
   u64 old = u64(wmMaxWindows);
   if (oldRaw > u64(0)) {
@@ -791,6 +799,20 @@ void wmFocusTo(u64 wI) {
   }
   wmLatStamp(u64(wmLatKindFocus));
   wmSeatFocusSet(u64(0), wI);
+  if (wmPageAddr() > u64(0)) {
+    final u64 gen =
+        (wmPage(u64(wmPageWFocusGen)) + u64(1)) & u64(0xFFFFFFFF);
+    wmPageSet(u64(wmPageWFocusGen), gen);
+    uartWrite(Rodata.addressOf(wmStrFocusG), u64(11));
+    uartPutHex(gen, u64(4));
+    uartWrite(Rodata.addressOf(wmStrW), u64(3));
+    if (wI < u64(wmMaxWindows)) {
+      uartPutHex(wI, u64(1));
+    } else {
+      uartPutHex(u64(0xF), u64(1));
+    }
+    uartNewline();
+  }
   wmMruTouch(wI);
   /* Ring colour is a C-side cache patch. Kick so focus_only runs, then
    * dirty only title/border — not a 1280×720 session tick. */
@@ -2295,7 +2317,10 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   }
   wmSetWin(slot, u64(wmWinSeq), seq);
   wmBumpMeta(u64(wmMetaCommits));
-  wmDefDrain();
+  /* Overlay present must not flush an unrelated deferred drag/focus. */
+  if (wmIsOverlay(slot) < u64(1)) {
+    wmDefDrain();
+  }
   uartWrite(Rodata.addressOf(wmStrCommit), u64(12));
   uartPutHex(slot, u64(1));
   uartWrite(Rodata.addressOf(wmStrSeq), u64(5));
@@ -2757,10 +2782,16 @@ u64 wmDecoY(u64 wI) {
   return y - u64(wmBorder);
 }
 
-/// DESK menu card size — lockstep with desk.c MENU_W / MENU_H (ADR-0195).
-/// Round 33: one overlay covers launcher (420×220) and switcher.
-const int wmOverlayW = 420;
-const int wmOverlayH = 220;
+/// DESK overlay sizes — lockstep with desk.c. Distinct AABBs so restore
+/// and present are not a giant common 420×220 card. PLAY is 64×64.
+const int wmOverlayMenuW = 174;
+const int wmOverlayMenuH = 93;
+const int wmOverlayLaunchW = 280;
+const int wmOverlayLaunchHMin = 76;
+const int wmOverlayLaunchHMax = 244;
+const int wmOverlaySwitchH = 88;
+const int wmOverlaySwitchWMin = 80;
+const int wmOverlaySwitchWMax = 528;
 
 /// `'WM OVERLAY CLEAR'` -- 16 bytes.
 @rodata
@@ -2808,7 +2839,7 @@ void wmOverlayRestore() {
   }
 }
 
-/// 1 for DESK's menu overlay (ADR-0195 / ADR-0196).
+/// 1 for DESK's menu / launcher / switcher overlay. Unique sizes; not PLAY.
 @bare
 u64 wmIsOverlay(u64 wI) {
   if (wmIsPanel(wI) > u64(0)) {
@@ -2818,13 +2849,28 @@ u64 wmIsOverlay(u64 wI) {
     return u64(0);
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  if (wmGeomW(g) != u64(wmOverlayW)) {
-    return u64(0);
+  final u64 ww = wmGeomW(g);
+  final u64 hh = wmGeomH(g);
+  if (ww == u64(wmOverlayMenuW)) {
+    if (hh == u64(wmOverlayMenuH)) {
+      return u64(1);
+    }
   }
-  if (wmGeomH(g) != u64(wmOverlayH)) {
-    return u64(0);
+  if (ww == u64(wmOverlayLaunchW)) {
+    if (hh >= u64(wmOverlayLaunchHMin)) {
+      if (hh <= u64(wmOverlayLaunchHMax)) {
+        return u64(1);
+      }
+    }
   }
-  return u64(1);
+  if (hh == u64(wmOverlaySwitchH)) {
+    if (ww >= u64(wmOverlaySwitchWMin)) {
+      if (ww <= u64(wmOverlaySwitchWMax)) {
+        return u64(1);
+      }
+    }
+  }
+  return u64(0);
 }
 
 @bare
@@ -3546,10 +3592,12 @@ void wmGrab(u64 x, u64 y) {
     }
   }
   if (hit >= u64(wmMaxWindows)) {
-    // D9: a desktop click returns the keyboard to the shell. Focus
-    // is the last [wmHit] window until it dies or this path runs.
-    // ADR-0142: under `wm de` that is also a leave.
-    wmFocusTo(u64(wmMaxWindows));
+    /* Keep the last ordinary client. Clearing to 0 parks keys in the
+     * shell drain; overlay / launcher shortcuts need a live popper. */
+    return;
+  }
+  if (wmIsOverlay(hit) > u64(0)) {
+    wmeventEnqueue(hit, x, y);
     return;
   }
   u64 title = u64(0);
