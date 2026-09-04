@@ -59,6 +59,21 @@ def main():
         oom))
     if oom:
         raise SystemExit("boot-sit-in: OSGFX OOM during sit-in")
+    # Fresh attach: FILES at default title/geom for R31 proof.
+    d15.place(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
+    time.sleep(0.05)
+    d15.button(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1], "left", True)
+    time.sleep(0.04)
+    d15.button(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1], "left", False)
+    t1 = time.time()
+    while time.time() - t1 < 4.0:
+        blob = open(os.path.join(RUN, "serial.txt"), encoding="latin-1",
+                    errors="replace").read()
+        if "FILES SLOT" in blob or "FILES CSD" in blob:
+            print("boot-sit-in: FILES attached")
+            return
+        time.sleep(0.1)
+    print("boot-sit-in: WARN no FILES token (measure will dock-click)")
 
 
 if __name__ == "__main__":
