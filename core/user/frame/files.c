@@ -978,7 +978,7 @@ static void files_do_mkdir(void) {
   {
     u64 i = 0;
     while (i < files_names) {
-      if (same_bytes(dotted[i], dotlen[i], NAME_DIR, NAME_DIR_N) > 0) {
+      if (same_bytes(dotted[i], dotlen[i], NAME_DIR, (unsigned)NAME_DIR_N) > 0) {
         files_set_sel(i);
         i = files_names;
       } else {
