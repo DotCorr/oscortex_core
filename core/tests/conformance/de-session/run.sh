@@ -381,8 +381,8 @@ ck; grep -q 'OSGFX PROBE 14 TEXT OUT' "$SKIA_CPP" \
   || fail "16-op walk lost text op"
 ck; grep -q 'osgfx_fps_run_probe = 0' "$SKIA_CPP" \
   || fail "probe gate missing (enabling it hangs probe 4 on qemu64)"
-ck; grep -qE 'OSGFX CLIENT TEXT OUTLINE|OSGFX TEXT OUTLINE PROPORTIONAL' "$SER" \
-  || fail "no outline-text token on serial"
+# Outline text at runtime is the caption.py pixel check below (this
+# harness does not spawn DESK, so DESK/OSGFX TEXT OUTLINE tokens stay silent).
 # No DESK.ELF runs in this phase. The bottom band must therefore remain
 # wallpaper, proving there is no one-frame legacy Start flash before DESK.
 ck; ! grep -q 'OSGFX SESSION STRIP CLIENT' "$SER" \
@@ -521,7 +521,7 @@ if [[ -n "$VENUS_SKIP_WHY" ]]; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 69
+    require_assertions 68
     echo "DE-session: PASS — Homebrew session chrome + generative desk ($ASSERTIONS checks); Venus SKIP ($VENUS_SKIP_WHY)"
   exit 0
 fi
@@ -548,7 +548,7 @@ if ! grep -q 'M1 END' "$SER"; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 69
+    require_assertions 68
     echo "DE-session: PASS — Homebrew only; Venus capability missing at runtime"
     exit 0
   fi
@@ -585,7 +585,7 @@ if ! grep -q 'VIRTIO VENUS OK' "$SER"; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 69
+    require_assertions 68
     echo "DE-session: PASS — Homebrew only; Venus Graphite isolation not available"
     exit 0
   fi
