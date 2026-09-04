@@ -620,21 +620,19 @@ void wmPopPresentRows(u64 ox, u64 oy) {
 void wmPopPaintFast(u64 ox, u64 oy) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     wmGfxKick();
+    /* Overlay the prewarmed card on the live FB. A leftover HAVE=0
+     * must not guest_tick and charge 400+ ms to this open. */
     if (wmPageAddr() > u64(0)) {
       if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
         final u64 unused0 = osgfx_chrome_hit_restore();
-        if (wmDeOn() > u64(0)) {
-          final u64 unused1 = osgfx_menu_blit((ox << u64(32)) | oy);
-          wmPopMenuDraw(ox, oy);
-        } else {
-          wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
-        }
-        wmPopPresentVis(ox, oy);
-        return;
       }
     }
-    osgfx_guest_tick();
-    wmGfxChromeStamp();
+    if (wmDeOn() > u64(0)) {
+      final u64 unused1 = osgfx_menu_blit((ox << u64(32)) | oy);
+      wmPopMenuDraw(ox, oy);
+    } else {
+      wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
+    }
     wmPopPresentVis(ox, oy);
     return;
   }

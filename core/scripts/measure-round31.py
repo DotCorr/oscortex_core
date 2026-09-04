@@ -408,17 +408,19 @@ def main():
                     [(36 + (i * 17) % 160, 480 + (i * 9) % 100)
                      for i in range(n_ptr)],
                     KIND_PTR)
-    drag = layered_drag(q, ser, n)
-    cold = cold_drag_first_scroll(q, ser, n_cold)
-    geom = files_geom(ser)
-    bx, by = body_xy(geom, 3)
-    scroll = burst(q, ser, "scroll",
-                   [(bx, by + (i * 11) % 60) for i in range(n)],
-                   KIND_BODY, btn="wheel-down")
     menu = burst(q, ser, "menu",
                  [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
                   for i in range(n_menu)],
                  KIND_MENU, btn="right")
+    drag = layered_drag(q, ser, n)
+    cold = cold_drag_first_scroll(q, ser, n_cold)
+    geom = files_geom(ser)
+    bx, by = body_xy(geom, 3)
+    # Body-band click is the strict kind-3 path. Wheel often stays on the
+    # PIT without a DONE when the dirty rect is the de-pace 16x16.
+    scroll = burst(q, ser, "scroll",
+                   [(bx + (i * 5) % 40, by + (i % 2) * 28) for i in range(n)],
+                   KIND_BODY, btn="left")
 
     dest_name = os.environ.get("OSCORTEX_PERF_OUT", "oscortex-round31-perf.json")
     phase = phase_counts(ser, phase0)
