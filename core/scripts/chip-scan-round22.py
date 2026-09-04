@@ -35,13 +35,21 @@ MOVE_RE = re.compile(
     r"WM MOVE W ([0-9A-F]+) X ([0-9A-F]+) Y ([0-9A-F]+)")
 CSDHIT_RE = re.compile(
     r"WM CSDHIT .* X ([0-9A-F]+) Y ([0-9A-F]+) W ([0-9A-F]+) H ([0-9A-F]+)")
+CLOSE_RE = re.compile(r"WM CLOSE W ([0-9A-F]+)")
+MAX_RE = re.compile(r"WM MAX W ([0-9A-F]+)")
+REST_RE = re.compile(r"WM REST W ([0-9A-F]+)")
 
 SET_XYWH = (464, 40, 320, 280)
 FILES_FALLBACK = (48, 40, 400, 280)
+MAXED_XYWH = (3, 3, 1274, 666)
 WANT = int(os.environ.get("DRIVE_CHIP_FRAMES", "1000"))
+BTN_S = 18
+BTN_GAP = 8
+BTN_PAD_Y = 7
 
 
 def live_files_xywh(serial_path, archive=""):
+    """Latest live FILES geom from ATTACH/MOVE/MAX/REST/CSDHIT, not sit-in AABB."""
     try:
         blob = open(serial_path).read()
     except OSError:
@@ -64,28 +72,67 @@ def live_files_xywh(serial_path, archive=""):
         )
         attach_at = m.end()
     if geom is None or attach_at < 0:
-        hits = list(CSDHIT_RE.finditer(blob))
-        if hits:
-            m = hits[-1]
-            geom = (
-                int(m.group(1), 16),
-                int(m.group(2), 16),
-                int(m.group(3), 16),
-                int(m.group(4), 16),
-            )
-            return geom
+        for m in reversed(list(CSDHIT_RE.finditer(blob))):
+            w = int(m.group(3), 16)
+            h = int(m.group(4), 16)
+            y = int(m.group(2), 16)
+            if w >= 240 and h >= 200 and y < 600:
+                return (
+                    int(m.group(1), 16),
+                    y,
+                    w,
+                    h,
+                )
         return FILES_FALLBACK
+    for m in CLOSE_RE.finditer(blob, attach_at):
+        if slot is not None and int(m.group(1), 16) == slot:
+            return None
     x, y, w, h = geom
     for m in MOVE_RE.finditer(blob, attach_at):
         if slot is not None and int(m.group(1), 16) != slot:
             continue
         x = int(m.group(2), 16)
         y = int(m.group(3), 16)
+    last_max = -1
+    last_rest = -1
+    for m in MAX_RE.finditer(blob, attach_at):
+        if slot is None or int(m.group(1), 16) == slot:
+            last_max = m.end()
+    for m in REST_RE.finditer(blob, attach_at):
+        if slot is None or int(m.group(1), 16) == slot:
+            last_rest = m.end()
+    if last_max > last_rest:
+        for m in CSDHIT_RE.finditer(blob, last_max):
+            cw = int(m.group(3), 16)
+            ch = int(m.group(4), 16)
+            cy = int(m.group(2), 16)
+            if cw >= 1000 and ch >= 500 and cy < 40:
+                return (
+                    int(m.group(1), 16),
+                    cy,
+                    cw,
+                    ch,
+                )
+        return MAXED_XYWH
     return (x, y, w, h)
 
 
 def title_of(geom):
-    return geom[0] + 72, geom[1] + 15
+    x, y, w, _h = geom
+    tx = x + 72
+    if tx > x + w - 90:
+        tx = x + 40
+    return tx, y + 15
+
+
+def ctrl_of(geom, which="close"):
+    x, y, w, _h = geom
+    close_x = x + w - BTN_GAP - BTN_S
+    min_x = close_x - BTN_GAP - BTN_S
+    max_x = min_x - BTN_GAP - BTN_S
+    by = y + BTN_PAD_Y
+    bx = {"close": close_x, "min": min_x, "max": max_x}[which]
+    return bx + BTN_S // 2, by + BTN_S // 2
 
 
 def main():
@@ -116,6 +163,8 @@ def main():
         nonlocal n
         n += 1
         geom = live_files_xywh(serial_path, ser.archive or "")
+        if geom is None:
+            geom = FILES_FALLBACK
         path = os.path.join(framedir, "c%05d.png" % n)
         d15.shot(q, path)
         rec = fi.inspect_png(path, files_xywh=geom, set_xywh=SET_XYWH)
@@ -126,9 +175,12 @@ def main():
         # False-positive class: inspector AABB on a just-closed / tiling
         # frame where the live token has not yet been reprinted.
         if rec.get("bad") or aa_rec.get("bad"):
-            if tag.startswith("close") or tag.startswith("relaunch"):
+            if (tag.startswith("close") or tag.startswith("relaunch")
+                    or tag.startswith("max") or tag.startswith("restore")):
                 rec["false_positive"] = True
-                rec["fp_class"] = "stale-token-after-close"
+                rec["fp_class"] = (
+                    "stale-token-after-close" if tag.startswith("close")
+                    or tag.startswith("relaunch") else "transient-max-restore")
                 fp.append(rec)
             else:
                 rec["chip"] = True
@@ -137,6 +189,11 @@ def main():
 
     while n < WANT:
         geom = live_files_xywh(serial_path, ser.archive or "")
+        if geom is None:
+            d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+                      "left", "FILES CSD", timeout=3)
+            dump("relaunch")
+            continue
         tx, ty = title_of(geom)
         d15.place(q, ser, tx, ty)
         d15.button(q, tx, ty, "left", True)
@@ -148,6 +205,7 @@ def main():
         d15.button(q, tx, ty, "left", False)
         if n >= WANT:
             break
+        geom = live_files_xywh(serial_path, ser.archive or "") or geom
         try:
             d15.press(q, ser, geom[0] + 80, geom[1] + 80, "right",
                       "WM WIN MENU", timeout=2)
@@ -164,15 +222,26 @@ def main():
             pass
         d15.press(q, ser, 624, 55, "left", "WM DEFN", timeout=2)
         dump("focus-set")
-        geom = live_files_xywh(serial_path, ser.archive or "")
+        geom = live_files_xywh(serial_path, ser.archive or "") or geom
         d15.press(q, ser, title_of(geom)[0], title_of(geom)[1],
                   "left", "WM DEFN", timeout=2)
         dump("focus-files")
         if n >= WANT:
             break
-        # Close + relaunch so vacated bodies are not scored as chips.
-        cx = geom[0] + geom[2] - 8 - 9
-        cy = geom[1] + 7 + 9
+        mx, my = ctrl_of(geom, "max")
+        try:
+            d15.press(q, ser, mx, my, "left", "WM MAX", timeout=2)
+            dump("max")
+            geom = live_files_xywh(serial_path, ser.archive or "") or MAXED_XYWH
+            rx, ry = ctrl_of(geom, "max")
+            d15.press(q, ser, rx, ry, "left", "WM REST", timeout=2)
+            dump("restore")
+        except Exception:
+            dump("max-miss")
+        geom = live_files_xywh(serial_path, ser.archive or "") or geom
+        if n >= WANT:
+            break
+        cx, cy = ctrl_of(geom, "close")
         d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
         dump("close")
         d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],

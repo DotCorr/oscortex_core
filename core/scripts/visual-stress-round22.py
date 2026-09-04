@@ -27,11 +27,16 @@ aa = importlib.util.module_from_spec(aa_spec)
 aa_spec.loader.exec_module(aa)
 inspect_aa = aa.inspect_png
 
+cs_spec = importlib.util.spec_from_file_location(
+    "chip22", os.path.join(HERE, "chip-scan-round22.py"))
+cs = importlib.util.module_from_spec(cs_spec)
+cs_spec.loader.exec_module(cs)
+
 STRESS_SECS = float(os.environ.get("DRIVE_STRESS_SECS", "300"))
 BURST = int(os.environ.get("DRIVE_BURST", "4"))
-SET_TITLE = (624, 55)
+SET_XYWH = (464, 40, 320, 280)
+SET_TITLE = (464 + 72, 40 + 15)
 SET_CARD0 = (464 + 132 + 44, 40 + 84 + 16)
-FILES_TITLE = (120, 55)
 
 
 def burst_shots(q, folder, tag, files_xywh, set_xywh):
@@ -100,15 +105,23 @@ def main():
         d15.wait_mark(ser, "SET READY", ser.read(), 8)
         time.sleep(0.3)
 
-    files_xywh = (48, 40, 400, 280)
-    set_xywh = (464, 40, 320, 280)
+    files_xywh = cs.live_files_xywh(serial_path, ser.archive or "") or (801, 40, 320, 280)
+    set_xywh = SET_XYWH
     all_recs = []
     bad = []
     menus = 0
     focuses = 0
+    faults = []
+
+    def live():
+        nonlocal files_xywh
+        g = cs.live_files_xywh(serial_path, ser.archive or "")
+        if g is not None:
+            files_xywh = g
+        return files_xywh
 
     def take(tag):
-        recs = burst_shots(q, frames_dir, tag, files_xywh, set_xywh)
+        recs = burst_shots(q, frames_dir, tag, live(), set_xywh)
         all_recs.extend(recs)
         for r in recs:
             if r["bad"]:
@@ -126,14 +139,16 @@ def main():
     n = 0
     while time.time() - t0 < STRESS_SECS or menus < 100 or focuses < 100:
         n += 1
-        d15.press(q, ser, FILES_TITLE[0], FILES_TITLE[1], "left", "WM DEFN",
-                  timeout=2)
+        geom = live()
+        ftx, fty = cs.title_of(geom)
+        d15.press(q, ser, ftx, fty, "left", "WM DEFN", timeout=2)
         focuses += 1
         d15.press(q, ser, SET_TITLE[0], SET_TITLE[1], "left", "WM DEFN",
                   timeout=2)
         focuses += 1
         try:
-            d15.press(q, ser, 200, 180, "right", "WM WIN MENU", timeout=2)
+            d15.press(q, ser, geom[0] + 80, geom[1] + 80, "right",
+                      "WM WIN MENU", timeout=2)
             menus += 1
             q.key("esc")
         except Exception:
@@ -144,11 +159,23 @@ def main():
             q.key("esc")
         except Exception:
             pass
-        d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", True)
+        d15.place(q, ser, ftx, fty)
+        d15.button(q, ftx, fty, "left", True)
         for dx in (0, 24, 48, 24, 0):
-            d15.place(q, ser, FILES_TITLE[0] + dx, FILES_TITLE[1])
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
+            d15.place(q, ser, ftx + dx, fty)
+        d15.button(q, ftx, fty, "left", False)
+        if n % 6 == 0:
+            geom = live()
+            mx, my = cs.ctrl_of(geom, "max")
+            try:
+                d15.press(q, ser, mx, my, "left", "WM MAX", timeout=2)
+                take("loop-max")
+                geom = live()
+                rx, ry = cs.ctrl_of(geom, "max")
+                d15.press(q, ser, rx, ry, "left", "WM REST", timeout=2)
+                take("loop-rest")
+            except Exception as e:
+                faults.append("max/rest %s" % e)
         if n <= 3 or n % 8 == 0:
             take("loop-%d" % n)
         if time.time() - t0 > STRESS_SECS + 60:
@@ -164,11 +191,13 @@ def main():
         q.key("esc")
     except Exception:
         pass
-    d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
-    d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", True)
-    d15.place(q, ser, FILES_TITLE[0] + 40, FILES_TITLE[1])
+    geom = live()
+    ftx, fty = cs.title_of(geom)
+    d15.place(q, ser, ftx, fty)
+    d15.button(q, ftx, fty, "left", True)
+    d15.place(q, ser, ftx + 40, fty)
     d15.shot(q, shots["drag"], os.path.join(outdir, "smooth-drag.png"))
-    d15.button(q, FILES_TITLE[0] + 40, FILES_TITLE[1], "left", False)
+    d15.button(q, ftx + 40, fty, "left", False)
 
     final_aa = inspect_aa(shots["menu"], files_xywh=files_xywh, set_xywh=set_xywh)
     final_int = inspect_png(shots["menu"], files_xywh=files_xywh,
@@ -182,13 +211,15 @@ def main():
     time.sleep(0.3)
 
     payload = {
-        "round": 21,
+        "round": 22,
         "frames": len(all_recs),
         "bad": len(bad),
         "stress_secs": round(time.time() - t0, 1),
         "loops": n,
         "menus": menus,
         "focuses": focuses,
+        "faults": faults,
+        "files_xywh": list(files_xywh),
         "bad_frames": bad[:12],
         "corner_aa": final_aa,
         "integrity": final_int,

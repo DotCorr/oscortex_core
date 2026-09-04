@@ -13,10 +13,14 @@ spec = importlib.util.spec_from_file_location(
 d15 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(d15)
 
-SET_TITLE = (624, 55)
+cs_spec = importlib.util.spec_from_file_location(
+    "chip22", os.path.join(HERE, "chip-scan-round22.py"))
+cs = importlib.util.module_from_spec(cs_spec)
+cs_spec.loader.exec_module(cs)
+
+SET_TITLE = (464 + 72, 40 + 15)
 SET_CARD0 = (464 + 132 + 44, 40 + 84 + 16)
 SET_CARD1 = (464 + 228 + 44, 40 + 84 + 16)
-FILES_TITLE = (120, 55)
 
 
 def main():
@@ -61,21 +65,24 @@ def main():
         dump("pointer")
         time.sleep(dt * 0.4)
     for _lp in range(loops):
-        d15.press(q, ser, d15.FILES_BODY_XY[0], d15.FILES_BODY_XY[1],
-                  "right", "WM WIN MENU", timeout=3)
+        geom = cs.live_files_xywh(serial_path, ser.archive or "") or (801, 40, 320, 280)
+        d15.press(q, ser, geom[0] + 80, geom[1] + 80, "right",
+                  "WM WIN MENU", timeout=3)
         for _ in range(2):
             dump("menu")
             time.sleep(dt)
         q.key("esc")
         time.sleep(0.06)
         dump("menu-off")
-        d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", True)
+        geom = cs.live_files_xywh(serial_path, ser.archive or "") or (801, 40, 320, 280)
+        ftx, fty = cs.title_of(geom)
+        d15.place(q, ser, ftx, fty)
+        d15.button(q, ftx, fty, "left", True)
         for dx in (0, 16, 32, 48, 64, 48, 32, 16, 0):
-            d15.place(q, ser, FILES_TITLE[0] + dx, FILES_TITLE[1])
+            d15.place(q, ser, ftx + dx, fty)
             dump("drag")
             time.sleep(dt * 0.4)
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
+        d15.button(q, ftx + dx, fty, "left", False)
         dump("drag-end")
         d15.press(q, ser, SET_TITLE[0], SET_TITLE[1], "left", "WM DEFN",
                   timeout=3)
@@ -86,7 +93,7 @@ def main():
         d15.press(q, ser, SET_CARD1[0], SET_CARD1[1], "left", "SET CARD",
                   timeout=2)
         dump("card1")
-        d15.press(q, ser, FILES_TITLE[0], FILES_TITLE[1], "left", "WM DEFN",
+        d15.press(q, ser, ftx, fty, "left", "WM DEFN",
                   timeout=3)
         dump("files-focus")
 

@@ -204,7 +204,7 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
             "p50": pct(walls, 0.50),
             "p95": pct(walls, 0.95),
             "max": round(max(walls), 1) if walls else None,
-            "samples": [round(x, 1) for x in walls[:24]],
+            "samples": [round(x, 1) for x in walls],
         },
         "guest_present_ms": {
             "n": len(presents),
@@ -398,7 +398,9 @@ def main():
     # launch→drag→close first-drags. Not a separate session.
     pointer_pts = [(80 + (i * 17) % 900, 360 + (i * 11) % 200)
                    for i in range(int(os.environ.get("DRIVE_PTR_N", "100")))]
-    menu_pts = [(200 + (i * 23) % 700, 120 + (i * 13) % 240)
+    # Wallpaper-only: FILES-body right-clicks emit FILES CFG and stall
+    # pair_inject waiting for PHZ PAINT E that never arrives (~450ms).
+    menu_pts = [(70 + (i * 19) % 180, 380 + (i * 11) % 160)
                 for i in range(int(os.environ.get("DRIVE_MENU_N", "100")))]
     if os.environ.get("DRIVE_SKIP_LAT", "0") == "1":
         pointer = {"n": 0, "event_present_ms": {"n": 0, "p50": None, "p95": None, "max": None, "samples": []}}
@@ -406,7 +408,20 @@ def main():
     else:
         pointer = collect(q, ser, "pointer", pointer_pts, want_opid=False)
         menu = collect(q, ser, "menu", menu_pts, btn="right", want_opid=True)
-    life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
+    if os.environ.get("DRIVE_SKIP_LIFE", "0") == "1":
+        prev = {}
+        try:
+            prev = json.load(open(os.path.join(art, "oscortex-round22-lifecycle.json")))
+        except (OSError, ValueError):
+            prev = {}
+        life = prev.get("lifecycle") or {
+            "n": 0, "fresh_relaunches": 0, "closed": 0, "geoms": [],
+            "lockstep": None,
+            "event_present_ms": {"n": 0, "p50": None, "p95": None, "max": None, "samples": []},
+            "guest_present_ms": {"n": 0, "p50": None, "p95": None, "max": None},
+        }
+    else:
+        life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
 
     blob = harvest(ser)
     hits = parse_csdhits(blob)
