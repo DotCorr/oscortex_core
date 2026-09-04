@@ -115,10 +115,10 @@ if "wmPendGeomOf" not in commit:
 if "wmPageWChromeHave" not in commit:
     raise SystemExit("HOLD compose does not refuse an empty chrome cache")
 wm_commit = fn(wm, "wmCommit")
-if "wmChromeInvalidate" not in wm_commit:
-    raise SystemExit("HOLD commit does not invalidate chrome for sibling titles")
-if "wmPendGeomOf" not in wm_commit:
-    raise SystemExit("HOLD commit does not consult pending before chrome invalidate")
+if "wmChromeInvalidate" in wm_commit:
+    raise SystemExit("HOLD commit still drops HAVE (session CPATH 3 on max)")
+if "wmComposeCommit" not in wm_commit:
+    raise SystemExit("HOLD commit does not compose")
 
 resize = fn(wm, "wmResizeStep")
 if "wmPendArm" not in resize:
@@ -147,8 +147,12 @@ if "wmPageWDefPres" not in drag:
 commit = fn(wm, "wmComposeCommit")
 if "wmCommitPath" not in commit:
     raise SystemExit("compose commit has no CPATH phase log")
-if "full < u64(1)" not in commit:
-    raise SystemExit("body/scroll after drag still forces a session compose")
+if "wmCommitPathWhy" not in commit:
+    raise SystemExit("compose commit has no CPATH 3 reason")
+if "wmPage(u64(wmPageWChromeHave))" not in commit:
+    raise SystemExit("live HAVE still falls through to session compose")
+if "wmComposeCommitGfx" not in commit:
+    raise SystemExit("live HAVE does not take the gfx CPATH")
 
 mail = fn(gfx, "wmGfxMail")
 if "wmViewGeom" not in mail:

@@ -47,8 +47,10 @@ if "chrome_shift_geom" not in chrome or "old_cx" not in chrome:
 if "wmDeCsdRelease" not in wmde or "wmDeCsdRelease" not in wm:
     raise SystemExit("pointer up does not call wmDeCsdRelease")
 close_fn = wmde[wmde.index("void wmCloseWindow"):wmde.index("void wmMinWindow")]
-if "wmPageWChromeHave" not in close_fn:
-    raise SystemExit("wmCloseWindow does not invalidate chrome cache")
+if "osgfx_chrome_vacate_geom" not in close_fn:
+    raise SystemExit("wmCloseWindow does not vacate the closed card")
+if "wmPageWChromeHave" in close_fn:
+    raise SystemExit("wmCloseWindow still drops HAVE (vacated/black card)")
 if "wmLifeNote" not in close_fn:
     raise SystemExit("wmCloseWindow does not report reclaim")
 if "wmPageLaunchOf" not in close_fn and "wmPageWLaunch0" not in close_fn:
