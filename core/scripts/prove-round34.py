@@ -95,12 +95,24 @@ def main():
     os.makedirs(ART, exist_ok=True)
 
     marked = harvest(ser)
+    q.key("esc")
+    time.sleep(0.15)
+    marked = harvest(ser)
     q.key("f4")
     launch_show = wait_tok(ser, "WM LAUNCH SHOW", marked, 3.0)
+    if not launch_show:
+        q.key("esc")
+        time.sleep(0.1)
+        marked = harvest(ser)
+        q.key("f4")
+        launch_show = wait_tok(ser, "WM LAUNCH SHOW", marked, 3.0)
     wait_tok(ser, "DESK MENU 2", marked, 2.0)
     t0 = time.time()
     q.key("f")
     filt = wait_tok(ser, "WM LAUNCH FILT", marked, 2.5)
+    if not filt:
+        q.key("f")
+        filt = wait_tok(ser, "WM LAUNCH FILT", marked, 1.5)
     launch_ms = (time.time() - t0) * 1000.0
     time.sleep(0.25)
     d15.shot(q, os.path.join(ART, "oscortex-round34-launcher.png"))
@@ -202,10 +214,19 @@ def main():
     d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
     d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
     wait_tok(ser, "FILES MENU", marked2, 2.0)
-    for _ in range(5):
-        q.key("down")
-    q.key("ret")
+    click(q, fg[0] + 80 + 40, fg[1] + 80 + 4 + 5 * 24 + 12)
     files_mkdir = wait_tok(ser, "FILES MKDIR", marked2, 2.5)
+    if not files_mkdir:
+        click(q, fg[0] + 80, fg[1] + 80)
+        time.sleep(0.08)
+        d15.place(q, ser, fg[0] + 80, fg[1] + 80)
+        d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
+        d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
+        wait_tok(ser, "FILES MENU", harvest(ser), 1.5)
+        for _ in range(5):
+            q.key("down")
+        q.key("ret")
+        files_mkdir = wait_tok(ser, "FILES MKDIR", marked2, 2.0)
     time.sleep(0.15)
     q.key("ret")
     files_dir = wait_tok(ser, "FILES DIR", marked2, 2.5)
@@ -293,6 +314,13 @@ def main():
     combo(q, "ctrl", "s")
     studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.5) or wait_tok(
         ser, "STUDIO2 SAVE", marked4, 1.0)
+    if not studio_save:
+        if stg:
+            click(q, stg[0] + 80, stg[1] + 140)
+        time.sleep(0.1)
+        combo(q, "ctrl", "s")
+        studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.0) or wait_tok(
+            ser, "STUDIO2 SAVE", marked4, 1.0)
     combo(q, "ctrl", "o")
     studio_open = wait_tok(ser, "STUDIO OPEN", marked4, 2.0)
     q.key("down")
