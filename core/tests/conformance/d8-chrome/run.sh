@@ -81,7 +81,7 @@ ck; [[ "$CH_COLOR" -ne "$DESK" ]] \
 ck; [[ "$CH_META" -eq 19 ]] || fail "wmMetaChrome is $CH_META, expected spare word 19"
 ck; [[ "$CH_META" -lt "$META_WORDS" ]] \
   || fail "wmMetaChrome $CH_META is not inside the $META_WORDS-word meta block"
-ck; [[ "$STORE" -eq 704 ]] || fail "wmStoreBytes is $STORE, expected 704 — chrome must not grow the block"
+ck; [[ "$STORE" -eq 1472 ]] || fail "wmStoreBytes is $STORE, expected 1472 — chrome must not grow the block"
 
 CH_PX=$(( FB_W * CH_H ))
 CH_Y0=$(( FB_H - CH_H ))
@@ -199,7 +199,7 @@ TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
 # this check actually makes -- chrome must not add a block -- is enforced
 # directly below by the "every byte is inside a named block" census.
 EXPECT_BSS=37600
-ck; [[ "$WM_SIZE" -eq 704 ]] || fail "the image has wmStore ${WM_SIZE:-missing}, expected 704"
+ck; [[ "$WM_SIZE" -eq 1472 ]] || fail "the image has wmStore ${WM_SIZE:-missing}, expected 1472"
 ck; [[ "$TOTAL_BSS" -eq "$EXPECT_BSS" ]] \
   || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected $EXPECT_BSS — ADR-0109's 23264, plus four authorised growths that all sit BELOW this milestone: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536 and pmmBoundMib to 256), shmStore +4096 (the bit-plane must describe exactly pmmMaxFrames), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB, vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words). See GAP-0053's ledger. Chrome itself must still add nothing"
 # Anti-anonymity: every byte of the Dart .bss must belong to a NAMED block,

@@ -65,14 +65,11 @@ part of 'kmain.dart';
 
 /// How many regions can exist at once.
 ///
-/// **Four.** Sit-in Start lists four named ELFs; a session that already
-/// holds two resident surfaces must still be able to spawn SET or
-/// STUDIO (ADR-0109). The window is two page-directory entries
-/// ([vmShmPages] 1024) so one process can hold dock + a native-max
-/// FILES body. First-fit is per address space (per-client windows):
-/// other processes may reuse the same VA. Four regions still share
-/// the slot table.
-const int shmMax = 8;
+/// **Twenty.** Matches [wmMaxWindows]: DESK + three overlays + sixteen
+/// ordinary clients. First-fit is per address space, so the 1024-page
+/// window is not tiled by slot and raising the global table does not
+/// grow VA. Other processes may reuse the same VA.
+const int shmMax = 20;
 
 /// Pages of window address space reserved per region SLOT, whatever the region
 /// in it actually asked for.
@@ -120,7 +117,7 @@ const int shmRegBytes = 64;
 /// table there is millions of volatile loads. A bit-plane makes the test in
 /// `freeFrame` ONE BIT-TEST, which is the same operation `pmmAllocatable`
 /// already does on the same path.
-const int shmPlaneOffset = 640; // 128 + 8 * 64
+const int shmPlaneOffset = 1408; // 128 + 20 * 64
 const int shmPlaneBytes = 8192;
 
 /// Frames the plane can describe: `shmPlaneBytes * 8`. Equal to `pmmMaxFrames`,
@@ -129,8 +126,8 @@ const int shmPlaneBytes = 8192;
 /// memory.
 const int shmPlaneFrames = 65536;
 
-/// 128 + 8 * 64 + 8192.
-const int shmStoreBytes = 8832;
+/// 128 + 20 * 64 + 8192.
+const int shmStoreBytes = 9600;
 
 // Global counter words.
 const int shmMetaCreates = 0;

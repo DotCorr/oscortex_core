@@ -145,7 +145,7 @@ const int wmPopLaunch = 2;
 
 const int wmPopPanel = 3;
 
-const int wmDeLaunchMax = 6;
+const int wmDeLaunchMax = 24;
 
 /// 8.3 stem inset on a launch row. Leaves the row-centre colour probe
 /// (de-sitfat / de-chrome) on the band.
@@ -245,6 +245,20 @@ final List<u8> wmStrPref = const [
 final List<u8> wmStrPrefAck = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x46),
   u8(0x20), u8(0x41), u8(0x43), u8(0x4B), u8(0x20),
+];
+
+/// `'WM PREF BAD'` -- 11 bytes. Malformed CHROME.DAT.
+@rodata
+final List<u8> wmStrPrefBad = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x46),
+  u8(0x20), u8(0x42), u8(0x41), u8(0x44),
+];
+
+/// `'WM CATALOG '` -- 11 bytes.
+@rodata
+final List<u8> wmStrCatalog = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x41), u8(0x54), u8(0x41),
+  u8(0x4C), u8(0x4F), u8(0x47), u8(0x20),
 ];
 
 /// `'WM CLOSE W '` -- 11 bytes.
@@ -623,8 +637,13 @@ u64 wmDeLaunchN() {
 /// Directory index of launch row [row], or 0xFF if empty.
 @bare
 u64 wmDeLaunchIdx(u64 row) {
-  return (wmMeta(u64(wmMetaChrome)) >> (u64(16) + (row << u64(3)))) &
-      u64(0xFF);
+  if (row >= u64(wmDeLaunchMax)) {
+    return u64(0xFF);
+  }
+  if (wmPageAddr() < u64(1)) {
+    return u64(0xFF);
+  }
+  return wmPage(u64(wmPageWCat0) + row) & u64(0xFFFF);
 }
 
 /// 1 if window [wI] is held (live or minimised). Low byte is the
@@ -2003,6 +2022,46 @@ void wmDePrefLoad() {
   final u64 theme = fatU8(base + u64(1));
   final u64 accent = fatU8(base + u64(2));
   final u64 wall = fatU8(base + u64(3));
+  if (fatFileBytes() >= u64(8)) {
+    final u64 c0 = fatU8(base + u64(4));
+    final u64 c1 = fatU8(base + u64(5));
+    final u64 m0 = fatU8(base + u64(6));
+    final u64 m1 = fatU8(base + u64(7));
+    final u64 sum = chrome + theme + accent + wall + u64(0x43) + u64(0x44);
+    u64 bad = u64(0);
+    if (m0 != u64(0x43)) {
+      bad = u64(1);
+    }
+    if (m1 != u64(0x44)) {
+      bad = u64(1);
+    }
+    if ((sum & u64(0xFF)) != c0) {
+      bad = u64(1);
+    }
+    if (((sum >> u64(8)) & u64(0xFF)) != c1) {
+      bad = u64(1);
+    }
+    if (bad > u64(0)) {
+      uartWrite(Rodata.addressOf(wmStrPrefBad), u64(11));
+      uartNewline();
+      return;
+    }
+  }
+  if (theme > u64(2)) {
+    uartWrite(Rodata.addressOf(wmStrPrefBad), u64(11));
+    uartNewline();
+    return;
+  }
+  if (accent > u64(3)) {
+    uartWrite(Rodata.addressOf(wmStrPrefBad), u64(11));
+    uartNewline();
+    return;
+  }
+  if (wall > u64(3)) {
+    uartWrite(Rodata.addressOf(wmStrPrefBad), u64(11));
+    uartNewline();
+    return;
+  }
   u64 prev = u64(0);
   if (wmPageAddr() > u64(0)) {
     prev = wmPage(u64(wmPageWPref)) & u64(0x00FFFFFF);
@@ -2066,8 +2125,56 @@ void wmDePrefApply() {
   wmDePrefLoad();
 }
 
-/// Walks the FAT root and caches up to [wmDeLaunchMax] ELF directory
-/// indices in the chrome word. Task context only (`wm de`).
+/// 1 when directory entry [e] is DESK.ELF (the already-running shell).
+@bare
+u64 wmDeNameIsDesk(u64 e) {
+  if (Pointer<u8>.fromAddress(e).value != u8(0x44)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(e + u64(1)).value != u8(0x45)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(e + u64(2)).value != u8(0x53)) {
+    return u64(0);
+  }
+  if (Pointer<u8>.fromAddress(e + u64(3)).value != u8(0x4B)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// 1 when the FAT name currently selected is a real ELF image.
+@bare
+u64 wmDeElfMagicOk() {
+  if (fatFileBytes() < u64(4)) {
+    return u64(0);
+  }
+  final u64 lba = fatFileSector(u64(0));
+  if (lba < u64(1)) {
+    return u64(0);
+  }
+  if (fatReadCached(lba) > u64(0)) {
+    return u64(0);
+  }
+  final u64 base = fatSectorBase();
+  if (fatU8(base) != u64(0x7F)) {
+    return u64(0);
+  }
+  if (fatU8(base + u64(1)) != u64(0x45)) {
+    return u64(0);
+  }
+  if (fatU8(base + u64(2)) != u64(0x4C)) {
+    return u64(0);
+  }
+  if (fatU8(base + u64(3)) != u64(0x46)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// Walks the FAT root and caches up to [wmDeLaunchMax] app ELF
+/// directory indices on the WM page. Re-scanned on every Start so a
+/// newly copied ELF appears without a reboot. Task context only.
 @bare
 void wmDeScanLaunch() {
   u64 packed = u64(wmDeLevel);
@@ -2102,7 +2209,9 @@ void wmDeScanLaunch() {
                         u8(0x4C)) {
                       if (Pointer<u8>.fromAddress(e + u64(10)).value ==
                           u8(0x46)) {
-                        keep = u64(1);
+                        if (wmDeNameIsDesk(e) < u64(1)) {
+                          keep = u64(1);
+                        }
                       }
                     }
                   }
@@ -2111,7 +2220,20 @@ void wmDeScanLaunch() {
             }
           }
           if (keep > u64(0)) {
-            packed = packed | (i << (u64(16) + (n << u64(3))));
+            wmDeNameCopy(e);
+            final u64 fs = fatLookup();
+            if (fs > u64(fatErrOk)) {
+              keep = u64(0);
+            } else {
+              if (wmDeElfMagicOk() < u64(1)) {
+                keep = u64(0);
+              }
+            }
+          }
+          if (keep > u64(0)) {
+            if (wmPageAddr() > u64(0)) {
+              wmPageSet(u64(wmPageWCat0) + n, i);
+            }
             n = n + u64(1);
           }
           i = i + u64(1);
@@ -2121,6 +2243,9 @@ void wmDeScanLaunch() {
   }
   packed = packed | (n << u64(8));
   wmSetMeta(u64(wmMetaChrome), packed);
+  uartWrite(Rodata.addressOf(wmStrCatalog), u64(11));
+  uartPutHex(n, u64(2));
+  uartNewline();
 }
 
 /// Copies 11 name bytes from [src] into the FAT name buffer.
@@ -2146,6 +2271,7 @@ void wmDeStartShow() {
       wmDePopHide();
     }
   }
+  wmDeScanLaunch();
   wmLaunchReset();
   wmSetMeta(u64(wmMetaPop), u64(wmPopLaunch));
   wmSetMeta(u64(wmMetaPopXY),
@@ -2160,6 +2286,8 @@ void wmDeStartShow() {
   if (wmPanelStrip() < u64(1)) {
     final u64 unused = wmLaunchDraw();
   }
+  wmOverlayPresentKind(wmLaunchX(), wmLaunchY(), u64(wmLaunchW),
+      wmLaunchBoxH(), u64(wmOpKindLaunch));
 }
 
 /// Opens the reflection panel and prints the live list.

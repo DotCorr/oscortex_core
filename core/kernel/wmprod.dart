@@ -527,6 +527,8 @@ void wmSwitchShow() {
   uartWrite(Rodata.addressOf(wmStrSwitchShow), u64(15));
   uartPutHex(n, u64(2));
   uartNewline();
+  wmOverlayPresentKind(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
+      u64(wmSwitchH), u64(wmOpKindSwitch));
 }
 
 @bare
@@ -554,6 +556,8 @@ void wmSwitchCycle() {
   uartWrite(Rodata.addressOf(wmStrSwitchShow), u64(15));
   uartPutHex(n, u64(2));
   uartNewline();
+  wmOverlayPresentKind(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
+      u64(wmSwitchH), u64(wmOpKindSwitch));
 }
 
 @bare

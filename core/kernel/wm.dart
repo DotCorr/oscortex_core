@@ -438,11 +438,12 @@ const int wmSysSurfaceNo = 23;
 
 /// Windows the compositor can hold at once.
 ///
-/// **Four, and the number is DERIVED rather than picked.** A window's
-/// pixels live in a shared region and [shmMax] is 4 (ADR-0109), so four
-/// windows is the most that can simultaneously exist on this machine.
-/// d2-compositor asserts the two numbers stay equal.
-const int wmMaxWindows = 8;
+/// Twenty: DESK panel + three transient overlays + sixteen ordinary
+/// client slots (every dock app plus extra FILES/STUDIO documents).
+/// Overlays still attach as windows so hit-test and park stay one
+/// path; they no longer starve later dock icons. d2-compositor
+/// asserts this equals [shmMax].
+const int wmMaxWindows = 20;
 
 /// Operations a descriptor's word 0 may carry.
 const int wmOpAttach = 1;
@@ -566,7 +567,7 @@ const int wmMetaBytes = 192;
 const int wmWinWords = 8;
 const int wmWinBytes = 64;
 const int wmWinOffset = 192;
-const int wmStoreBytes = 704; // 192 + 8 * 64
+const int wmStoreBytes = 1472; // 192 + 20 * 64
 
 @bss
 final Bss wmStore = const Bss(bytes: wmStoreBytes);

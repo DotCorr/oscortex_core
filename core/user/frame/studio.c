@@ -109,6 +109,34 @@ static unsigned file_nlen;
 static u64 studio_h;
 static u64 studio_va;
 static u64 studio_names;
+#define DOC_MAX 4U
+#define RECENT_MAX 6U
+#define FIND_MAX 16U
+static char docs_name[DOC_MAX][16];
+static unsigned docs_nlen[DOC_MAX];
+static char docs_text[DOC_MAX][TEXT_MAX + 1];
+static u64 docs_len[DOC_MAX];
+static u64 docs_caret[DOC_MAX];
+static u64 docs_dirty[DOC_MAX];
+static u64 docs_used[DOC_MAX];
+static u64 doc_cur;
+static u64 doc_n;
+static char recent_name[RECENT_MAX][16];
+static unsigned recent_nlen[RECENT_MAX];
+static u64 recent_n;
+static char find_buf[FIND_MAX + 1];
+static u64 find_n;
+static u64 find_on;
+static u64 find_at;
+static const char path_ow[] = "OPENWITH.DAT";
+static const char msg_tab[] = "STUDIO TAB ";
+static const char msg_new[] = "STUDIO NEW ";
+static const char msg_saveas[] = "STUDIO SAVEAS ";
+static const char msg_find[] = "STUDIO FIND ";
+static const char msg_caret[] = "STUDIO CARET L ";
+static const char msg_ow[] = "STUDIO OPENWITH ";
+static const char msg_miss[] = "STUDIO ERR MISS ";
+static const char msg_bin[] = "STUDIO ERR BIN ";
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;
@@ -305,11 +333,275 @@ static u64 studio_line_count(void) {
   return n;
 }
 
+static void studio_open_named(const char *name, unsigned nlen);
+
 static void studio_mark_dirty(void) {
   if (text_dirty < 1) {
     text_dirty = 1;
     wr(msg_dirty, sizeof(msg_dirty) - 1);
   }
+  if (doc_cur < DOC_MAX) {
+    docs_dirty[doc_cur] = 1;
+  }
+}
+
+static void studio_caret_note(void) {
+  u64 i = 0;
+  u64 line = 1;
+  u64 col = 1;
+  unsigned n;
+  while (i < text_caret && i < text_n) {
+    if (text_buf[i] == '\n') {
+      line = line + 1;
+      col = 1;
+    } else {
+      col = col + 1;
+    }
+    i = i + 1;
+  }
+  n = put(0, msg_caret);
+  n = putdec(n, line);
+  n = put(n, " C ");
+  n = putdec(n, col);
+  emit(n);
+}
+
+static void studio_recent_add(const char *name, unsigned nlen) {
+  u64 i;
+  if (nlen < 1U) {
+    return;
+  }
+  if (nlen > 12U) {
+    nlen = 12U;
+  }
+  i = recent_n;
+  if (i > 0) {
+    i = i - 1;
+    if (recent_nlen[i] == nlen) {
+      unsigned k = 0;
+      unsigned same = 1;
+      while (k < nlen) {
+        if (recent_name[i][k] != name[k]) {
+          same = 0;
+        }
+        k = k + 1;
+      }
+      if (same > 0) {
+        return;
+      }
+    }
+  }
+  if (recent_n >= RECENT_MAX) {
+    u64 s = 0;
+    while (s + 1 < RECENT_MAX) {
+      unsigned k = 0;
+      while (k < 16U) {
+        recent_name[s][k] = recent_name[s + 1][k];
+        k = k + 1;
+      }
+      recent_nlen[s] = recent_nlen[s + 1];
+      s = s + 1;
+    }
+    recent_n = RECENT_MAX - 1;
+  }
+  i = 0;
+  while (i < nlen) {
+    recent_name[recent_n][i] = name[i];
+    i = i + 1;
+  }
+  recent_name[recent_n][nlen] = 0;
+  recent_nlen[recent_n] = nlen;
+  recent_n = recent_n + 1;
+}
+
+static void studio_doc_store(void) {
+  u64 i;
+  if (doc_cur >= DOC_MAX) {
+    return;
+  }
+  i = 0;
+  while (i < text_n && i < TEXT_MAX) {
+    docs_text[doc_cur][i] = text_buf[i];
+    i = i + 1;
+  }
+  docs_text[doc_cur][text_n] = 0;
+  docs_len[doc_cur] = text_n;
+  docs_caret[doc_cur] = text_caret;
+  docs_dirty[doc_cur] = text_dirty;
+  docs_used[doc_cur] = 1;
+  i = 0;
+  while (i < file_nlen && i < 12U) {
+    docs_name[doc_cur][i] = file_name[i];
+    i = i + 1;
+  }
+  docs_name[doc_cur][file_nlen] = 0;
+  docs_nlen[doc_cur] = file_nlen;
+}
+
+static void studio_doc_load(u64 slot) {
+  u64 i;
+  if (slot >= DOC_MAX) {
+    return;
+  }
+  doc_cur = slot;
+  text_n = docs_len[slot];
+  text_caret = docs_caret[slot];
+  text_dirty = docs_dirty[slot];
+  i = 0;
+  while (i < text_n && i < TEXT_MAX) {
+    text_buf[i] = docs_text[slot][i];
+    i = i + 1;
+  }
+  text_buf[text_n] = 0;
+  file_nlen = docs_nlen[slot];
+  i = 0;
+  while (i < file_nlen) {
+    file_name[i] = docs_name[slot][i];
+    i = i + 1;
+  }
+  file_name[file_nlen] = 0;
+}
+
+static void studio_tab_go(u64 slot) {
+  unsigned n;
+  if (slot >= DOC_MAX) {
+    return;
+  }
+  if (docs_used[slot] < 1) {
+    return;
+  }
+  studio_doc_store();
+  studio_doc_load(slot);
+  n = put(0, msg_tab);
+  n = putdec(n, slot);
+  emit(n);
+  studio_caret_note();
+}
+
+static void studio_new_doc(void) {
+  u64 slot = 0;
+  unsigned n;
+  studio_doc_store();
+  while (slot < DOC_MAX) {
+    if (docs_used[slot] < 1) {
+      break;
+    }
+    slot = slot + 1;
+  }
+  if (slot >= DOC_MAX) {
+    slot = 0;
+  }
+  doc_cur = slot;
+  text_n = 0;
+  text_caret = 0;
+  text_off = 0;
+  text_dirty = 0;
+  text_buf[0] = 0;
+  file_nlen = 7;
+  file_name[0] = 'N';
+  file_name[1] = 'E';
+  file_name[2] = 'W';
+  file_name[3] = '.';
+  file_name[4] = 'T';
+  file_name[5] = 'X';
+  file_name[6] = 'T';
+  file_name[7] = 0;
+  docs_used[slot] = 1;
+  if (slot + 1 > doc_n) {
+    doc_n = slot + 1;
+  }
+  studio_doc_store();
+  n = put(0, msg_new);
+  n = putdec(n, slot);
+  emit(n);
+}
+
+static void studio_find_next(void) {
+  u64 i;
+  unsigned n;
+  if (find_n < 1) {
+    return;
+  }
+  i = find_at + 1;
+  if (i >= text_n) {
+    i = 0;
+  }
+  while (i < text_n) {
+    u64 k = 0;
+    u64 ok = 1;
+    while (k < find_n) {
+      if ((i + k) >= text_n) {
+        ok = 0;
+      } else if (text_buf[i + k] != find_buf[k]) {
+        ok = 0;
+      }
+      k = k + 1;
+    }
+    if (ok > 0) {
+      find_at = i;
+      text_caret = i;
+      text_sel = i + find_n;
+      n = put(0, msg_find);
+      n = putdec(n, i);
+      emit(n);
+      studio_caret_note();
+      return;
+    }
+    i = i + 1;
+  }
+  n = put(0, msg_find);
+  n = put(n, "0");
+  emit(n);
+}
+
+static void studio_poll_openwith(void) {
+  u64 fd;
+  u64 got;
+  unsigned nlen;
+  unsigned i;
+  char name[16];
+  unsigned char blob[16];
+  fd = sys2(SYS_OPEN, (u64)path_ow, 12);
+  if (fd >= FILE_ERR_FLOOR) {
+    return;
+  }
+  got = sys3(SYS_READ, fd, (u64)blob, 16);
+  sys2(SYS_CLOSE, fd, 0);
+  if (got < 13) {
+    return;
+  }
+  if (blob[12] != 1) {
+    return;
+  }
+  nlen = 0;
+  i = 0;
+  while (i < 12U) {
+    if (blob[i] == (unsigned char)' ') {
+      if (nlen > 0) {
+        i = 12;
+      } else {
+        i = i + 1;
+      }
+    } else {
+      name[nlen] = (char)blob[i];
+      nlen = nlen + 1;
+      i = i + 1;
+    }
+  }
+  name[nlen] = 0;
+  blob[12] = 0xFF;
+  fd = sys3(SYS_OPEN, (u64)path_ow, 12, O_WRITE);
+  if (fd < FILE_ERR_FLOOR) {
+    sys3(SYS_FDWRITE, fd, (u64)blob, 16);
+    sys2(SYS_CLOSE, fd, 0);
+  }
+  if (nlen < 1U) {
+    return;
+  }
+  i = put(0, msg_ow);
+  i = put(i, name);
+  emit(i);
+  studio_open_named(name, nlen);
 }
 
 static void studio_open_named(const char *name, unsigned nlen) {
@@ -331,6 +623,15 @@ static void studio_open_named(const char *name, unsigned nlen) {
   if (fd >= FILE_ERR_FLOOR) {
     text_err = 1;
     wr(msg_errf, sizeof(msg_errf) - 1);
+    {
+      unsigned m = put(0, msg_miss);
+      unsigned k = 0;
+      while (k < nlen && m < 70) {
+        line[m++] = name[k];
+        k = k + 1;
+      }
+      emit(m);
+    }
     i = 0;
     while (i < nlen && i < 12U) {
       file_name[i] = name[i];
@@ -384,6 +685,27 @@ static void studio_open_named(const char *name, unsigned nlen) {
     }
   }
   sys2(SYS_CLOSE, fd, 0);
+  {
+    unsigned k = 0;
+    unsigned bin = 0;
+    while (k < (unsigned)total) {
+      if (text_buf[k] == 0) {
+        bin = 1;
+      }
+      k = k + 1;
+    }
+    if (bin > 0) {
+      unsigned m = put(0, msg_bin);
+      unsigned j = 0;
+      while (j < nlen && m < 70) {
+        line[m++] = name[j];
+        j = j + 1;
+      }
+      emit(m);
+      wr(msg_errf, sizeof(msg_errf) - 1);
+      text_err = 1;
+    }
+  }
   text_n = total;
   text_caret = total;
   text_sel = total;
@@ -424,6 +746,13 @@ static void studio_open_named(const char *name, unsigned nlen) {
     text_buf[text_n] = 0;
     text_caret = text_n;
   }
+  studio_recent_add(name, nlen);
+  studio_doc_store();
+  if (doc_n < 1) {
+    doc_n = 1;
+    docs_used[0] = 1;
+  }
+  studio_caret_note();
   emit(n);
 }
 
@@ -471,8 +800,21 @@ static void studio_save_named(const char *name, unsigned nlen) {
   sys2(SYS_CLOSE, fd, 0);
   text_dirty = 0;
   text_err = 0;
+  if (doc_cur < DOC_MAX) {
+    docs_dirty[doc_cur] = 0;
+  }
+  studio_recent_add(name, nlen);
   emit(n);
   wr(msg_save, sizeof(msg_save) - 1);
+  {
+    unsigned a = put(0, msg_saveas);
+    unsigned k = 0;
+    while (k < nlen && a < 70) {
+      line[a++] = name[k];
+      k = k + 1;
+    }
+    emit(a);
+  }
 }
 
 static void paint_edit(u64 h) {
@@ -790,6 +1132,7 @@ static void pump(u64 names) {
   u64 body;
   unsigned n;
 
+  studio_poll_openwith();
   ev = sys1(SYS_KBDEVENT, KBD_OP_POP);
   if (ev != KBD_EMPTY) {
     if ((ev & KBD_BIT_BREAK) != 0) {
@@ -804,6 +1147,32 @@ static void pump(u64 names) {
         studio_ctrl = 0;
         if (sc == 0x2EUL) {
           studio_clip_offer();
+        } else if (sc == 0x31UL) {
+          studio_new_doc();
+          studio_repaint(names);
+        } else if (sc == 0x21UL) {
+          if (edit_n > 0) {
+            unsigned k = 0;
+            while (k < edit_n && k < FIND_MAX) {
+              find_buf[k] = edit_buf[k];
+              k = k + 1;
+            }
+            find_n = k;
+            find_buf[k] = 0;
+            find_at = 0;
+          }
+          studio_find_next();
+          studio_repaint(names);
+        } else if (sc == 0x1EUL) {
+          studio_save_named("AS.TXT", 6);
+          studio_repaint(names);
+        } else if (sc == 0x0FUL) {
+          u64 next = doc_cur + 1;
+          if (next >= doc_n) {
+            next = 0;
+          }
+          studio_tab_go(next);
+          studio_repaint(names);
         } else if (sc == 0x2FUL) {
           studio_clip_take();
           studio_repaint(names);
@@ -1067,7 +1436,10 @@ void _start(void) {
   exhibit_have(names);
   exhibit_sel(names);
   try_strip(names);
-  studio_open_named(NOTE_NAME, NOTE_N);
+  studio_poll_openwith();
+  if (file_nlen < 1U) {
+    studio_open_named(NOTE_NAME, NOTE_N);
+  }
   if (names > 0) {
     view_open(0, names);
   }

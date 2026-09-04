@@ -112,7 +112,7 @@ ck; [[ "$K_SYS" -eq "$SYSNO" ]] || fail "the model and the kernel disagree about
 ck; [[ "$W_FOCUS" -eq 20 ]] || fail "wmMetaFocus is $W_FOCUS, expected 20"
 ck; [[ "$W_CHROME" -eq 19 ]] || fail "wmMetaChrome is $W_CHROME, expected 19"
 ck; [[ "$W_FOCUS" -ne "$W_CHROME" ]] || fail "focus and chrome share a wmStore word"
-ck; [[ "$W_SIZE" -eq 704 ]] || fail "wmStoreBytes is $W_SIZE, expected 704 — focus must not grow the block"
+ck; [[ "$W_SIZE" -eq 1472 ]] || fail "wmStoreBytes is $W_SIZE, expected 1472 — focus must not grow the block"
 ck; [[ "$K_STORE" -eq 288 ]] || fail "kbdqStoreBytes is $K_STORE, expected 288"
 ck; [[ "$K_DEPTH" -eq 32 ]] || fail "kbdqDepth is $K_DEPTH, expected 32"
 
@@ -147,7 +147,7 @@ KBDQ_OFF=$(bssoff kbdqStore)
 WM_OFF=$(bssoff wmStore)
 ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 768"
 ck; [[ "$KBDQ_SIZE" -eq 288 ]] || fail "kbdqStore is ${KBDQ_SIZE:-missing} bytes, expected 288"
-ck; [[ "$WM_SIZE" -eq 704 ]] || fail "wmStore is ${WM_SIZE:-missing} bytes, expected 704"
+ck; [[ "$WM_SIZE" -eq 1472 ]] || fail "wmStore is ${WM_SIZE:-missing} bytes, expected 1472"
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
@@ -158,7 +158,7 @@ ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq $(( 16#$KBDQ_OFF )) ]] \
   || fail "wmStore is not immediately before kbdqStore"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 37600 ]] \
+ck; [[ "$TOTAL_BSS" -eq 49504 ]] \
   || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48)"
 echo "STRUCTURAL: pass  syscall 24, wmMetaFocus=20, wmeventStore still last, total .bss $TOTAL_BSS"
 

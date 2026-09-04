@@ -59,7 +59,7 @@ ck; grep -q 'wmOpTake = 4' "$CORE_DIR/kernel/wmext.dart" || fail "wmOpTake missi
 ck; grep -q 'shmMetaClipReg = 9' "$CORE_DIR/kernel/shm.dart" || fail "clip meta missing"
 ck; grep -q 'part .wmext.dart.' "$CORE_DIR/kernel/kmain.dart" || fail "wmext not in kmain"
 STORE=$(awk '/^const int wmStoreBytes = /{print $5}' "$CORE_DIR/kernel/wm.dart" | tr -d ';')
-ck; [[ "$STORE" -eq 704 ]] || fail "wmStoreBytes is $STORE, expected 704"
+ck; [[ "$STORE" -eq 1472 ]] || fail "wmStoreBytes is $STORE, expected 1472"
 LAST_BSS=$(x86_64-elf-objdump -t "$CORE_DIR/build/kmain.o" \
   | awk '$4==".bss" && $6!=".bss" {print $1,$6}' | sort | tail -1 | awk '{print $2}')
 ck; [[ "$LAST_BSS" == "wmeventStore" ]] || fail "last .bss is $LAST_BSS"

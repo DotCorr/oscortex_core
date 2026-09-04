@@ -23,7 +23,7 @@ echo "$BUILD_OUT"; ck; [[ $BUILD_STATUS -eq 0 ]] || fail "build"
 ck; grep -q 'wmWinScaleOf' "$CORE_DIR/kernel/wmext.dart" || fail "scale helper"
 ck; grep -q 'wmWinScaleShift' "$CORE_DIR/kernel/wmext.dart" || fail "scale shift"
 STORE=$(awk '/^const int wmStoreBytes = /{print $5}' "$CORE_DIR/kernel/wm.dart" | tr -d ';')
-ck; [[ "$STORE" -eq 704 ]] || fail "wmStore $STORE"
+ck; [[ "$STORE" -eq 1472 ]] || fail "wmStore $STORE"
 
 capture BP_OUT BP -- bash "$SCRIPT_DIR/build-progs.sh" "$WORKDIR"; ck; [[ $BP -eq 0 ]] || fail "progs"
 python3 "$SCRIPT_DIR/make-image.py" "$WORKDIR/scale.img" "$WORKDIR/prog.elf" || fail "image"

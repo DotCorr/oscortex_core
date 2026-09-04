@@ -173,6 +173,10 @@ static const char msg_mkdir[] = "FILES MKDIR ";
 static const char msg_paste[] = "FILES PASTE ";
 static const char msg_refresh[] = "FILES REFRESH";
 static const char msg_fwd[] = "FILES FWD";
+static const char msg_fwd2[] = "FILES FWD2";
+static const char msg_hist[] = "FILES HIST ";
+static const char msg_ow[] = "FILES OPEN STUDIO ";
+static const char msg_bin[] = "FILES OPEN BIN ";
 static const char msg_ro[] = "FILES RO";
 static const char msg_clip[] = "FILES CLIP ";
 static const char msg_field[] = "FILES FIELD ";
@@ -186,6 +190,18 @@ static char folder_name[16];
 static unsigned folder_nlen;
 static char fwd_name[16];
 static unsigned fwd_nlen;
+#define HIST_MAX 8U
+static char hist_back[HIST_MAX][16];
+static unsigned hist_blen[HIST_MAX];
+static u64 hist_bn;
+static char hist_fwd[HIST_MAX][16];
+static unsigned hist_flen[HIST_MAX];
+static u64 hist_fn;
+static char hist_cur[16];
+static unsigned hist_clen;
+static u64 fwd_streak;
+static const char path_ow[] = "OPENWITH.DAT";
+static const char path_studio[] = "STUDIO.ELF";
 static const char path_gone[] = "GONE.DAT";
 static const char path_miss[] = "MISS.DAT";
 static const char msg_retry[] = "FILES RETRY";
@@ -709,6 +725,7 @@ static void do_move(unsigned pick, char *dest);
 static u64 write_copy(const char *src, unsigned slen, const char *dst,
                       unsigned dlen);
 static void do_file_open(u64 row);
+static u64 files_handoff_text(const char *name, unsigned nlen);
 static u64 files_is_dir(u64 row);
 static void do_file_rename(u64 row);
 static void files_go_back(void);
@@ -826,6 +843,99 @@ static void files_remember_folder(const char *name, unsigned nlen) {
   fwd_name[nlen] = 0;
   folder_nlen = nlen;
   fwd_nlen = nlen;
+  hist_clen = nlen;
+  i = 0;
+  while (i < nlen) {
+    hist_cur[i] = name[i];
+    i = i + 1;
+  }
+  hist_cur[nlen] = 0;
+}
+
+static void files_hist_note(void) {
+  unsigned at = put(0, msg_hist);
+  at = putdec(at, hist_bn);
+  line[at++] = ' ';
+  at = putdec(at, hist_fn);
+  emit(at);
+}
+
+static void files_hist_push_back(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  if (hist_bn > 0) {
+    if (hist_blen[hist_bn - 1] == nlen) {
+      unsigned same = 1;
+      while (i < nlen) {
+        if (hist_back[hist_bn - 1][i] != name[i]) {
+          same = 0;
+        }
+        i = i + 1;
+      }
+      if (same > 0) {
+        return;
+      }
+    }
+  }
+  if (hist_bn >= HIST_MAX) {
+    unsigned s = 0;
+    while (s + 1U < HIST_MAX) {
+      unsigned k = 0;
+      while (k < 16U) {
+        hist_back[s][k] = hist_back[s + 1U][k];
+        k = k + 1;
+      }
+      hist_blen[s] = hist_blen[s + 1U];
+      s = s + 1;
+    }
+    hist_bn = HIST_MAX - 1U;
+  }
+  i = 0;
+  if (nlen > 12U) {
+    nlen = 12U;
+  }
+  while (i < nlen) {
+    hist_back[hist_bn][i] = name[i];
+    i = i + 1;
+  }
+  hist_back[hist_bn][nlen] = 0;
+  hist_blen[hist_bn] = nlen;
+  hist_bn = hist_bn + 1;
+}
+
+static void files_hist_push_fwd(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  if (hist_fn >= HIST_MAX) {
+    unsigned s = 0;
+    while (s + 1U < HIST_MAX) {
+      unsigned k = 0;
+      while (k < 16U) {
+        hist_fwd[s][k] = hist_fwd[s + 1U][k];
+        k = k + 1;
+      }
+      hist_flen[s] = hist_flen[s + 1U];
+      s = s + 1;
+    }
+    hist_fn = HIST_MAX - 1U;
+  }
+  if (nlen > 12U) {
+    nlen = 12U;
+  }
+  while (i < nlen) {
+    hist_fwd[hist_fn][i] = name[i];
+    i = i + 1;
+  }
+  hist_fwd[hist_fn][nlen] = 0;
+  hist_flen[hist_fn] = nlen;
+  hist_fn = hist_fn + 1;
+}
+
+static void files_hist_branch(const char *name, unsigned nlen) {
+  files_hist_push_back(hist_cur, hist_clen);
+  hist_fn = 0;
+  fwd_streak = 0;
+  can_fwd = 0;
+  files_remember_folder(name, nlen);
+  files_hist_note();
 }
 
 static u64 files_load_listing(const char *path, unsigned nlen) {
@@ -895,20 +1005,34 @@ static u64 files_load_listing(const char *path, unsigned nlen) {
 }
 
 static void files_go_fwd(void) {
-  if (can_fwd < 1) {
+  unsigned nlen;
+  if (hist_fn < 1) {
     return;
   }
-  if (fwd_nlen < 1U) {
-    return;
+  files_hist_push_back(hist_cur, hist_clen);
+  hist_fn = hist_fn - 1;
+  nlen = hist_flen[hist_fn];
+  files_remember_folder(hist_fwd[hist_fn], nlen);
+  can_fwd = hist_fn;
+  if (nlen < 1U) {
+    if (files_load_listing(path_root, 5) > 0) {
+      files_restore_root();
+    } else {
+      in_folder = 0;
+    }
+  } else {
+    if (files_load_listing(hist_cur, hist_clen) > 0) {
+      files_show_error();
+      return;
+    }
+    in_folder = 1;
   }
-  if (files_load_listing(fwd_name, fwd_nlen) > 0) {
-    files_show_error();
-    return;
-  }
-  files_remember_folder(fwd_name, fwd_nlen);
-  in_folder = 1;
-  can_fwd = 0;
+  fwd_streak = fwd_streak + 1;
   wr(msg_fwd, sizeof(msg_fwd) - 1);
+  if (fwd_streak > 1) {
+    wr(msg_fwd2, sizeof(msg_fwd2) - 1);
+  }
+  files_hist_note();
   files_repaint();
 }
 
@@ -992,9 +1116,8 @@ static void files_do_mkdir(void) {
     files_show_empty();
     return;
   }
-  files_remember_folder(NAME_DIR, (unsigned)NAME_DIR_N);
+  files_hist_branch(NAME_DIR, (unsigned)NAME_DIR_N);
   in_folder = 1;
-  can_fwd = 0;
   files_repaint();
 }
 
@@ -1573,31 +1696,57 @@ static void files_restore_root(void) {
 }
 
 static void files_go_back(void) {
+  unsigned nlen;
   menu_on = 0;
-  if (in_folder > 0) {
-    can_fwd = 1;
-    if (folder_nlen > 0U) {
-      unsigned i = 0;
-      while (i < folder_nlen) {
-        fwd_name[i] = folder_name[i];
-        i = i + 1;
+  if (hist_bn < 1) {
+    if (in_folder > 0) {
+      files_hist_push_fwd(hist_cur, hist_clen);
+      can_fwd = hist_fn;
+      if (files_load_listing(path_root, 5) > 0) {
+        files_restore_root();
+      } else {
+        in_folder = 0;
+        files_err = 0;
       }
-      fwd_name[folder_nlen] = 0;
-      fwd_nlen = folder_nlen;
+      hist_clen = 0;
+      hist_cur[0] = 0;
+      folder_nlen = 0;
+      folder_name[0] = 0;
+      fwd_streak = 0;
+      wr(msg_back, sizeof(msg_back) - 1);
+      files_hist_note();
+      files_repaint();
+      return;
     }
+    list_sel = 0;
+    scroll_off = 0;
+    wr(msg_back, sizeof(msg_back) - 1);
+    files_repaint();
+    return;
+  }
+  files_hist_push_fwd(hist_cur, hist_clen);
+  hist_bn = hist_bn - 1;
+  nlen = hist_blen[hist_bn];
+  files_remember_folder(hist_back[hist_bn], nlen);
+  can_fwd = hist_fn;
+  fwd_streak = 0;
+  if (nlen < 1U) {
     if (files_load_listing(path_root, 5) > 0) {
       files_restore_root();
     } else {
       in_folder = 0;
       files_err = 0;
     }
-    wr(msg_back, sizeof(msg_back) - 1);
-    files_repaint();
-    return;
+  } else {
+    if (files_load_listing(hist_cur, nlen) > 0) {
+      files_show_error();
+      return;
+    }
+    in_folder = 1;
+    files_err = 0;
   }
-  list_sel = 0;
-  scroll_off = 0;
   wr(msg_back, sizeof(msg_back) - 1);
+  files_hist_note();
   files_repaint();
 }
 
@@ -1627,6 +1776,116 @@ static void files_retry(void) {
   files_repaint();
 }
 
+static u64 files_name_is_text(const char *name, unsigned nlen) {
+  unsigned i = 0;
+  unsigned dot = 0xFFU;
+  while (i < nlen) {
+    if (name[i] == '.') {
+      dot = i;
+    }
+    i = i + 1;
+  }
+  if (dot == 0xFFU) {
+    return 0;
+  }
+  if (nlen - dot == 2U) {
+    char e = name[dot + 1];
+    if (e == 'C' || e == 'c' || e == 'H' || e == 'h') {
+      return 1;
+    }
+  }
+  if (nlen - dot == 4U) {
+    char a = name[dot + 1];
+    char b = name[dot + 2];
+    char c = name[dot + 3];
+    if ((a == 'T' || a == 't') && (b == 'X' || b == 'x') &&
+        (c == 'T' || c == 't')) {
+      return 1;
+    }
+    if ((a == 'M' || a == 'm') && (b == 'D' || b == 'd')) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static u64 files_sniff_text(const char *name, unsigned nlen) {
+  u64 fd;
+  u64 got;
+  unsigned i;
+  unsigned bad = 0;
+  fd = sys2(SYS_OPEN, (u64)name, (u64)nlen);
+  if (fd >= ERR_FLOOR) {
+    return 0;
+  }
+  got = sys3(SYS_READ, fd, (u64)buf, CHUNK);
+  sys1(SYS_CLOSE, fd);
+  if (got >= ERR_FLOOR) {
+    return 0;
+  }
+  if (got < 1) {
+    return 1;
+  }
+  i = 0;
+  while (i < (unsigned)got) {
+    unsigned char ch = buf[i];
+    if (ch == 0) {
+      return 0;
+    }
+    if (ch < 9) {
+      bad = bad + 1;
+    } else if (ch > 126) {
+      bad = bad + 1;
+    }
+    i = i + 1;
+  }
+  if (bad * 4U > (unsigned)got) {
+    return 0;
+  }
+  return 1;
+}
+
+static u64 files_handoff_text(const char *name, unsigned nlen) {
+  unsigned char blob[16];
+  unsigned i;
+  u64 fd;
+  u64 st;
+  unsigned at;
+  if (files_name_is_text(name, nlen) < 1) {
+    if (files_sniff_text(name, nlen) < 1) {
+      at = put(0, msg_bin);
+      at = put(at, name);
+      emit(at);
+      return 0;
+    }
+  }
+  i = 0;
+  while (i < 16U) {
+    blob[i] = (unsigned char)' ';
+    i = i + 1;
+  }
+  i = 0;
+  while (i < nlen && i < 12U) {
+    blob[i] = (unsigned char)name[i];
+    i = i + 1;
+  }
+  blob[12] = 1;
+  fd = sys3(SYS_OPEN, (u64)path_ow, 12, MODE_WRITE);
+  if (fd >= ERR_FLOOR) {
+    return 0;
+  }
+  sys3(SYS_FDWRITE, fd, (u64)blob, 16);
+  sys1(SYS_CLOSE, fd);
+  at = put(0, msg_ow);
+  at = put(at, name);
+  emit(at);
+  st = sys3(SYS_SPAWN, (u64)path_studio, 10, 0);
+  if (st >= ERR_FLOOR) {
+    return 0;
+  }
+  return 1;
+}
+
 static void do_file_open(u64 row) {
   unsigned at;
   u64 fd;
@@ -1651,9 +1910,8 @@ static void do_file_open(u64 row) {
       files_show_error();
       return;
     }
-    files_remember_folder(saved, slen);
+    files_hist_branch(saved, slen);
     in_folder = 1;
-    can_fwd = 0;
     files_repaint();
     return;
   }
@@ -1675,9 +1933,8 @@ static void do_file_open(u64 row) {
         files_show_empty();
         return;
       }
-      files_remember_folder(saved, slen);
+      files_hist_branch(saved, slen);
       in_folder = 1;
-      can_fwd = 0;
       files_repaint();
       return;
     }
@@ -1685,6 +1942,9 @@ static void do_file_open(u64 row) {
     return;
   }
   sys1(SYS_CLOSE, fd);
+  if (files_handoff_text(dotted[row], dotlen[row]) > 0) {
+    return;
+  }
   cat_file(dotted[row], dotlen[row]);
   at = put(0, msg_fopen);
   at = put(at, dotted[row]);

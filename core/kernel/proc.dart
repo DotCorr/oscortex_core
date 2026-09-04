@@ -77,17 +77,16 @@ part of 'kmain.dart';
 // a pair that stopped agreeing fails before a boot does.
 // ---------------------------------------------------------------------------
 
-/// How many processes can exist at once. EIGHT, and it is a capacity rather than
-/// a design limit: a fifth `procCreate` is refused by name (`procErrNoSlot`) and
-/// says so, which is the difference between a bounded table and a table that
-/// overruns. Raising it is `procStoreBytes` and one number in `kdata.S`.
-const int procMax = 8;
+/// How many processes can exist at once. SIXTEEN: DESK plus every dock
+/// app plus extra FILES/STUDIO documents. A seventeenth `procCreate` is
+/// refused by name (`procErrNoSlot`). Raising it is `procStoreBytes`.
+const int procMax = 16;
 
 /// `procMax`, and `procMax - 1`, as their own literals. `@bare` DCDart has no
 /// `>=` or `<=` (GAP-0023), so a half-open bound needs the number on each side
 /// of the comparison and `dcc` will not fold `procMax - 1` inside `u64(...)`.
-const int procMaxSlot = 7;
-const int procMaxWrap = 9;
+const int procMaxSlot = 15;
+const int procMaxWrap = 17;
 
 /// The whole donated block, and the three regions inside it. See `proc_store`
 /// in `core/boot/kdata.S`.
@@ -102,10 +101,10 @@ const int procMaxWrap = 9;
 /// functions, and the seam is still three call sites. The cost is that every
 /// harness that subtracts this block out of the kernel's `.bss` total moves by
 /// 64 bytes, and each of those numbers is spelled out in ADR-0022 §4.
-const int procStoreBytes = 8320;
+const int procStoreBytes = 16512;
 const int procHeadWords = 16;
 const int procTableOffset = 128;
-const int procFxOffset = 4224;
+const int procFxOffset = 8320;
 
 /// One slot: 512 bytes, 64 `u64` words.
 const int procSlotBytes = 512;

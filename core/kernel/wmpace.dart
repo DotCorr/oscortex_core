@@ -335,6 +335,7 @@ const int wmPageWHoldKick0 = 462;
 const int wmPageWCsdArmed = 466;
 /// Slots 4–7 live past the four-wide banks at 370/378/446 so a
 /// DESK + six dock apps do not smash paint/scratch/event words.
+/// Slots 8–19 live on the second WM page (words 512+).
 const int wmPageWLaunchHi = 467;
 const int wmPageWMaxHi = 471;
 const int wmPageWVisHi = 475;
@@ -370,6 +371,11 @@ const int wmOpKindBody = 3;
 const int wmOpKindMenu = 4;
 const int wmOpKindMenuHide = 5;
 const int wmOpKindMenuRow = 6;
+const int wmOpKindLaunch = 7;
+const int wmOpKindSwitch = 8;
+/// Directory indices for the live app catalog (page 2, 24 rows).
+const int wmPageWCat0 = 600;
+const int wmDeCatMax = 24;
 const int wmHoldKickTicks = 50;
 const int wmHoldForceTicks = 80;
 const int wmHoldCancelTicks = 200;
@@ -781,12 +787,35 @@ void wmPageSet(u64 i, u64 v) {
 }
 
 /// Slot 0–3 stay on the original four-wide bank; 4–7 use the hi bank.
+/// Slots 8–19 use 12-wide banks on the second WM page (word 512+).
 @bare
 u64 wmPageSlotWord(u64 lo, u64 hi, u64 slot) {
   if (slot < u64(4)) {
     return lo + slot;
   }
-  return hi + (slot - u64(4));
+  if (slot < u64(8)) {
+    return hi + (slot - u64(4));
+  }
+  u64 bank = u64(0);
+  if (lo == u64(wmPageWMax0)) {
+    bank = u64(1);
+  }
+  if (lo == u64(wmPageWVis0)) {
+    bank = u64(2);
+  }
+  if (lo == u64(wmPageWPend0)) {
+    bank = u64(3);
+  }
+  if (lo == u64(wmPageWVisGen0)) {
+    bank = u64(4);
+  }
+  if (lo == u64(wmPageWHoldArm0)) {
+    bank = u64(5);
+  }
+  if (lo == u64(wmPageWHoldKick0)) {
+    bank = u64(6);
+  }
+  return u64(512) + (bank * u64(12)) + (slot - u64(8));
 }
 
 @bare
@@ -932,6 +961,21 @@ void wmOpDone(u64 px) {
   wmPageSet(u64(wmPageWOpHave), u64(0));
 }
 
+/// Present-level overlay sample: op id + kind through WM DONE, not UART wall.
+@bare
+void wmOverlayPresentKind(u64 x, u64 y, u64 w, u64 h, u64 kind) {
+  wmOpBegin(kind);
+  wmOpNoteRect(x, y, w, h);
+  final u64 px = wmPresentClipped(x, y, w, h);
+  wmPublishFrameNoted(px);
+  wmPublishFrameLine(
+      px, mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+  }
+  wmOpDone(px);
+}
+
 /// Stamps the PIT tick and kind of an input that must present.
 @bare
 void wmLatStamp(u64 kind) {
@@ -1029,11 +1073,12 @@ u64 wmPageEnsure() {
       return u64(1);
     }
   }
-  final u64 f = allocFrame();
+  final u64 f = wmRunAlloc(u64(2));
   if (f < u64(1)) {
     return u64(0);
   }
   vmZeroFrame(f);
+  vmZeroFrame(f + u64(4096));
   Pointer<u64>.fromAddress(f + u64(wmPageWMagic << 3)).value =
       u64(wmPageMagic);
   Pointer<u64>.fromAddress(kernel_data_start() + u64(wmPageMailOff)).value = f;

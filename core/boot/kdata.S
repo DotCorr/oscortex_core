@@ -264,7 +264,7 @@ user_resume_ok_addr:
  * mutable statics a four-line rewrite instead of an audit.
  * `tests/conformance/m14-fat/run.sh` counts the call sites. */
 /* uint64_t file_store_addr(void) -- base of the file-descriptor
- * block (3584 bytes: 9 rows). See file.dart fileStoreBytes.
+ * block (5760 bytes: 17 rows). See file.dart fileStoreBytes.
  *
  * ONE accessor for THREE regions, and THREE call sites in
  * `core/kernel/file.dart` and nowhere else. Same rule, same reason, sixth

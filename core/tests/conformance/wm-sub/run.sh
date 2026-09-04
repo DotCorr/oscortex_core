@@ -30,7 +30,7 @@ echo "=== STRUCTURAL ==="
 ck; grep -q 'wmOpSub = 5' "$CORE_DIR/kernel/wmext.dart" || fail "wmOpSub missing"
 ck; grep -q 'wmAbsX' "$CORE_DIR/kernel/wmext.dart" || fail "wmAbsX missing"
 STORE=$(awk '/^const int wmStoreBytes = /{print $5}' "$CORE_DIR/kernel/wm.dart" | tr -d ';')
-ck; [[ "$STORE" -eq 704 ]] || fail "wmStoreBytes $STORE"
+ck; [[ "$STORE" -eq 1472 ]] || fail "wmStoreBytes $STORE"
 ck; grep -E '^\| 11 \|' "$CORE_DIR/docs/syscall-registry.md" | grep -q fdwait || fail "fdwait"
 echo "STRUCTURAL: pass"
 

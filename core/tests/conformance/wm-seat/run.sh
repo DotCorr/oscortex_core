@@ -20,7 +20,7 @@ capture_sh BO BS -- "bash '$CORE_DIR/scripts/build-kernel.sh' 2>&1"; echo "$BO";
 ck; grep -q 'wmOpSeat = 6' "$CORE_DIR/kernel/wmext.dart" || fail "wmOpSeat"
 ck; grep -q 'wmSeatCount = 2' "$CORE_DIR/kernel/wmext.dart" || fail "wmSeatCount"
 STORE=$(awk '/^const int wmStoreBytes = /{print $5}' "$CORE_DIR/kernel/wm.dart" | tr -d ';')
-ck; [[ "$STORE" -eq 704 ]] || fail "wmStore"
+ck; [[ "$STORE" -eq 1472 ]] || fail "wmStore"
 ck; grep -E '^\| 11 \|' "$CORE_DIR/docs/syscall-registry.md" | grep -q fdwait || fail "fdwait"
 
 # single prog

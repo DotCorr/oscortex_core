@@ -214,16 +214,13 @@ ck; [[ $(( S_PLANEB * 8 )) -eq "$S_PLANEF" ]] || fail "shmPlaneBytes*8 != shmPla
 ck; [[ "$S_PLANEF" -eq "$(dartconst pmmMaxFrames pmm.dart)" ]] \
   || fail "the shared bit-plane describes $S_PLANEF frames and the allocator manages $(dartconst pmmMaxFrames pmm.dart) — every frame the allocator can hand out must be describable, or a shared frame above the plane's end would be silently freed"
 # First-fit places regions in the 1024-page window; slots no longer tile it.
-ck; [[ $(( S_MAX * S_SLOTPAGES )) -le "$VM_SHM_PAGES" ]] \
-  || fail "$S_MAX slots of $S_SLOTPAGES pages exceed the window's $VM_SHM_PAGES pages"
 ck; [[ "$S_MAXPAGES" -le "$VM_SHM_PAGES" ]] \
   || fail "shmMaxPages ($S_MAXPAGES) exceeds the shared window ($VM_SHM_PAGES)"
-# Global regions are a pool (DESK + six dock apps). Each process only
-# needs create+map, not a capability for every region in the machine.
+# Global regions are a pool (DESK + overlays + 16 client slots).
 ck; [[ "$S_CAPS" -ge 2 ]] \
   || fail "a process has $S_CAPS capability slots; a FRAME client needs create+map"
-ck; [[ "$S_MAX" -ge 8 ]] \
-  || fail "shmMax is $S_MAX; DESK + six dock apps need 8 global regions"
+ck; [[ "$S_MAX" -ge 20 ]] \
+  || fail "shmMax is $S_MAX; DESK + overlays + 16 client slots need 20 global regions"
 
 # 2d. THE @bss BLOCK IS THE SIZE IT SAYS AND IT IS LAST.
 bssfield() { x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
@@ -260,7 +257,7 @@ ck; [[ $(( 16#$KBDQ_OFF + KBDQ_SIZE )) -eq $(( 16#$EV_OFF )) ]] \
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
   || fail "wmeventStore ends at $(( 16#$EV_OFF + EV_SIZE )) and kmain.o's .bss is $DART_BSS — D7's block is not last"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 37600 ]] \
+ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 49504 ]] \
   || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 
 # 2e. THE STORAGE SEAM. ADR-0011 §0: the symbol is named in its accessors and

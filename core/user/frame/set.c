@@ -48,7 +48,9 @@ typedef unsigned int u32;
 
 #define YIELD_SPIN 8000UL
 #define O_WRITE 1UL
-#define PREF_BYTES 4UL
+#define PREF_BYTES 8UL
+#define PREF_MAGIC0 0x43U
+#define PREF_MAGIC1 0x44U
 #define FILE_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
 
 #define PAGE_APPEAR 0UL
@@ -481,14 +483,26 @@ static void emit_toggle(u64 on) {
   emit(n);
 }
 
-static unsigned char pref_blob[4];
+static unsigned char pref_blob[8];
+
+static unsigned pref_csum(void) {
+  return (unsigned)pref_blob[0] + (unsigned)pref_blob[1] +
+         (unsigned)pref_blob[2] + (unsigned)pref_blob[3] + PREF_MAGIC0 +
+         PREF_MAGIC1;
+}
 
 static void write_pref(void) {
   u64 fd;
+  unsigned sum;
   pref_blob[0] = pref_on;
   pref_blob[1] = pref_theme;
   pref_blob[2] = pref_accent;
   pref_blob[3] = pref_wall;
+  sum = pref_csum();
+  pref_blob[4] = (unsigned char)(sum & 0xFFU);
+  pref_blob[5] = (unsigned char)((sum >> 8) & 0xFFU);
+  pref_blob[6] = (unsigned char)PREF_MAGIC0;
+  pref_blob[7] = (unsigned char)PREF_MAGIC1;
   fd = sys3(SYS_OPEN, (u64)path_pref, 10, O_WRITE);
   if (fd >= FILE_ERR_FLOOR) {
     return;
@@ -510,19 +524,37 @@ static void load_pref(void) {
   }
   got = sys3(SYS_READ, fd, (u64)pref_blob, PREF_BYTES);
   sys1(SYS_CLOSE, fd);
-  if (got < 1) {
+  if (got < 4) {
+    return;
+  }
+  if (got >= 8) {
+    unsigned sum = pref_csum();
+    if (pref_blob[6] != (unsigned char)PREF_MAGIC0) {
+      return;
+    }
+    if (pref_blob[7] != (unsigned char)PREF_MAGIC1) {
+      return;
+    }
+    if (pref_blob[4] != (unsigned char)(sum & 0xFFU)) {
+      return;
+    }
+    if (pref_blob[5] != (unsigned char)((sum >> 8) & 0xFFU)) {
+      return;
+    }
+  }
+  if (pref_blob[1] > 2) {
+    return;
+  }
+  if (pref_blob[2] > 3) {
+    return;
+  }
+  if (pref_blob[3] > 3) {
     return;
   }
   pref_on = pref_blob[0];
-  if (got > 1) {
-    pref_theme = pref_blob[1];
-  }
-  if (got > 2) {
-    pref_accent = pref_blob[2];
-  }
-  if (got > 3) {
-    pref_wall = pref_blob[3];
-  }
+  pref_theme = pref_blob[1];
+  pref_accent = pref_blob[2];
+  pref_wall = pref_blob[3];
   theme_sel = (u64)pref_theme;
   if (pref_on > 0) {
     armed = 1;

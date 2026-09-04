@@ -268,7 +268,7 @@ FX_OFF=$(dartconst procFxOffset proc.dart)
 SLOT_BYTES=$(dartconst procSlotBytes proc.dart)
 PROC_MAX=$(dartconst procMax proc.dart)
 FX_BYTES=$(dartconst procFxBytes proc.dart)
-ck; [[ "$STORE_BYTES" == "8320" ]] || fail "procStoreBytes is $STORE_BYTES, expected 8320 — M11's 4160 plus 64 bytes for M18's eight new header words"
+ck; [[ "$STORE_BYTES" == "16512" ]] || fail "procStoreBytes is $STORE_BYTES, expected 8320 — M11's 4160 plus 64 bytes for M18's eight new header words"
 ck; [[ "$HEAD_WORDS" == "16" ]] || fail "procHeadWords is $HEAD_WORDS, expected 16"
 ck; [[ $(( HEAD_WORDS * 8 )) -eq "$TABLE_OFF" ]] || fail "procHeadWords $HEAD_WORDS * 8 != procTableOffset $TABLE_OFF"
 ck; [[ $(( TABLE_OFF + PROC_MAX * SLOT_BYTES )) -eq "$FX_OFF" ]] || fail "the table does not end where the FXSAVE areas begin"

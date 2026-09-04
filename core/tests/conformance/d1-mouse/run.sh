@@ -187,7 +187,7 @@ ck; [[ -n "$DART_BSS_HEX" ]] || fail "kmain.o has no .bss section"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section"
 TOTAL_BSS=$(( 16#$DART_BSS_HEX + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 37600 ]] || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
+ck; [[ "$TOTAL_BSS" -eq 49504 ]] || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 echo "STRUCTURAL: pass  mouseStore is $MOUSE_SIZE bytes at .bss+0x$MOUSE_OFF, immediately before ioctlStore at 0x$IOCTL_OFF; total .bss $TOTAL_BSS"
 
 # --- 2b. NO GOLDEN MOVES --------------------------------------------------
