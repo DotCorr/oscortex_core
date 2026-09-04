@@ -286,7 +286,9 @@ def cold_drag_first_scroll(q, ser, n=32):
         except Exception as e:
             print("cold", "inject", e)
             continue
-        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=True)
+        # Body damage publishes its own FRAME (not 640). Do not skip_ptr
+        # or a sprite present after the click steals the wait.
+        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=False)
         if got is None:
             print("cold unpaired", bx, by, "prev", g0, "geom", geom)
             continue
@@ -314,6 +316,13 @@ def cold_drag_first_scroll(q, ser, n=32):
         phases.append(rec)
         print("cold", i, "ms", rec["wall_ms"], "px", px, "cpath",
               rec["release_cpath"], "path", kind)
+        # Walk back before the clamp so the next title grab stays live.
+        if geom[0] > 360:
+            d15.place(q, ser, tx, ty)
+            d15.button(q, tx, ty, "left", True)
+            d15.place(q, ser, max(60, tx - 80), ty)
+            d15.button(q, max(60, tx - 80), ty, "left", False)
+            wait_mark(ser, DRAGEND_RE, len(harvest(ser)) - 80, timeout=0.2)
     out = summarize("cold_first_scroll", walls, px_tail, paired,
                     time.time() - t0)
     out["cycles"] = phases
@@ -351,6 +360,11 @@ def main():
     n = max(30, int(os.environ.get("DRIVE_N", "32")))
     n_cold = max(30, int(os.environ.get("DRIVE_COLD_N", "32")))
 
+    for i in range(6):
+        try:
+            d15.place(q, ser, 40 + i * 12, 500)
+        except Exception:
+            pass
     pointer = burst(q, ser, "pointer",
                     [(36 + (i * 17) % 160, 480 + (i * 9) % 100)
                      for i in range(n_ptr)])

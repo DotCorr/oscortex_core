@@ -1462,6 +1462,34 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     }
   }
   if (wmPaced() > u64(0)) {
+    /* Body/scroll: publish this rect now. Queuing for the clock let a
+     * later 640-px pointer FRAME steal the pair and left virtio SCAN
+     * stale until the next layer blit. Full-surface still paces. */
+    if (full < u64(1)) {
+      if (rw > u64(0)) {
+        if (rh > u64(0)) {
+          final u64 p0 = wmPresentClipped(rx, ry, rw, rh);
+          wmPageSet(u64(wmPageWDmgPx), p0);
+          wmDmgAcc(p0, u64(1), u64(0), u64(1));
+          wmPointerPlace(
+              mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+          wmPublishFrameNoted(px);
+          wmPublishFrameLine(px, mouseState(u64(mouseWordX)),
+              mouseState(u64(mouseWordY)));
+          wmPageSet(u64(wmPageWPresented),
+              wmPage(u64(wmPageWPresented)) + u64(1));
+          final u64 dropped0 = wmMeta(u64(wmMetaDropped));
+          final u64 pending0 = dropped0 & u64(wmPointerPending);
+          wmSetMeta(u64(wmMetaDropped), dropped0 & u64(wmPointerDropMask));
+          wmSetMeta(u64(wmMetaBusy), u64(0));
+          wmVisMaybePublish(slot);
+          if (pending0 > u64(0)) {
+            wmPointerTick();
+          }
+          return;
+        }
+      }
+    }
     wmDamageRect(rx, ry, rw, rh);
     wmPointerPlace(
         mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
