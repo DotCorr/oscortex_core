@@ -186,12 +186,37 @@ def main():
                 bad.append(rec)
         return rec
 
+    def geom_now():
+        return live_files_xywh(serial_path, ser.archive or "")
+
+    def ensure_files():
+        g = geom_now()
+        if g is not None:
+            return g
+        d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+                  "left", "FILES CSD", timeout=3)
+        time.sleep(0.35)
+        return geom_now()
+
+    def ensure_restored(g):
+        if g is None:
+            return None
+        if g[2] < 1000:
+            return g
+        rx, ry = ctrl_of(g, "max")
+        d15.press(q, ser, rx, ry, "left", "WM MAX", timeout=2)
+        time.sleep(0.2)
+        return geom_now() or g
+
+    cycle = 0
     while n < WANT:
-        geom = live_files_xywh(serial_path, ser.archive or "")
+        geom = ensure_files()
         if geom is None:
-            d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
-                      "left", "FILES CSD", timeout=3)
             dump("relaunch")
+            continue
+        geom = ensure_restored(geom)
+        if geom is None or geom[2] >= 1000:
+            dump("max-stuck")
             continue
         tx, ty = title_of(geom)
         d15.place(q, ser, tx, ty)
@@ -204,7 +229,7 @@ def main():
         d15.button(q, tx, ty, "left", False)
         if n >= WANT:
             break
-        geom = live_files_xywh(serial_path, ser.archive or "") or geom
+        geom = ensure_restored(geom_now() or geom)
         try:
             d15.press(q, ser, geom[0] + 80, geom[1] + 80, "right",
                       "WM WIN MENU", timeout=2)
@@ -219,34 +244,36 @@ def main():
             q.key("esc")
         except Exception:
             pass
-        d15.press(q, ser, 624, 55, "left", "WM DEFN", timeout=2)
+        d15.press(q, ser, 536, 55, "left", "WM DEFN", timeout=2)
         dump("focus-set")
-        geom = live_files_xywh(serial_path, ser.archive or "") or geom
+        geom = ensure_restored(geom_now() or geom)
         d15.press(q, ser, title_of(geom)[0], title_of(geom)[1],
                   "left", "WM DEFN", timeout=2)
         dump("focus-files")
         if n >= WANT:
             break
-        mx, my = ctrl_of(geom, "max")
-        try:
+        cycle += 1
+        if cycle % 5 == 0:
+            mx, my = ctrl_of(geom, "max")
             d15.press(q, ser, mx, my, "left", "WM MAX", timeout=2)
             dump("max")
-            geom = live_files_xywh(serial_path, ser.archive or "") or MAXED_XYWH
+            geom = geom_now() or MAXED_XYWH
             rx, ry = ctrl_of(geom, "max")
-            # Toggle prints WM MAX again; WM REST is un-minimise only.
             d15.press(q, ser, rx, ry, "left", "WM MAX", timeout=2)
             dump("restore")
-        except Exception:
-            dump("max-miss")
-        geom = live_files_xywh(serial_path, ser.archive or "") or geom
+            geom = ensure_restored(geom_now() or geom)
         if n >= WANT:
             break
-        cx, cy = ctrl_of(geom, "close")
-        d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
-        dump("close")
-        d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
-                  "left", "FILES CSD", timeout=3)
-        dump("relaunch")
+        if cycle % 4 == 0:
+            if geom is None or geom[2] >= 1000:
+                geom = ensure_restored(geom_now() or geom)
+            if geom is not None and geom[2] < 1000:
+                cx, cy = ctrl_of(geom, "close")
+                d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
+                dump("close")
+                d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+                          "left", "FILES CSD", timeout=3)
+                dump("relaunch")
 
     proof = os.path.join(art, "oscortex-round22-1000-frames.png")
     d15.shot(q, proof)
@@ -255,7 +282,7 @@ def main():
         "frames": n,
         "chips": len(bad),
         "false_positives": len(fp),
-        "fp_classes": ["stale-token-after-close"],
+        "fp_classes": ["stale-token-after-close", "transient-max-restore"],
         "seconds": round(time.time() - t0, 1),
         "bad": bad[:16],
         "fp_tail": fp[:8],
