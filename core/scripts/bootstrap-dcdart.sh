@@ -106,6 +106,19 @@ if [[ "$need_clone" == 1 ]]; then
   echo "$IDENTITY" >"$MARKER"
 fi
 
+# DCDart's compiler cannot resolve packages until the gitignored
+# dart-lang/sdk sparse vendor exists. That step is itself pinned
+# (tag 3.12.2 / commit d684a576…) and lives in the public tree.
+# Run it on the bootstrap dest only — never on a user checkout.
+VENDOR_SH="$DEST/core/scripts/vendor-frontend.sh"
+[[ -f "$VENDOR_SH" ]] || fail "bootstrapped tree missing vendor-frontend.sh"
+if [[ ! -f "$DEST/core/dcc/.dart_tool/package_config.json" ]]; then
+  say "restoring gitignored frontend vendor + pub get (DCDart vendor-frontend.sh)"
+  bash "$VENDOR_SH" >&2 || fail "vendor-frontend.sh failed on bootstrapped tree"
+fi
+[[ -f "$DEST/core/dcc/.dart_tool/package_config.json" ]] \
+  || fail "vendor-frontend did not produce core/dcc package_config.json"
+
 # Expected tree: the four patched files must match recorded SHA256s.
 i=0
 while [[ $i -lt ${EXPECTED_N} ]]; do

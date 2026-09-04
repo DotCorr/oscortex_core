@@ -34,5 +34,12 @@
     "core/runtime/dc-core-bare/prelude.dart": "d0b4c1af1a9974c0500289b8cc2b8148ddf7bcac0e1104ea199d17e8cf3913de"
   },
   "compat_probe": "core/scripts/verify-dcdart-compat.sh",
+  "vendor_frontend": {
+    "script": "core/scripts/vendor-frontend.sh",
+    "upstream": "https://github.com/dart-lang/sdk.git",
+    "tag": "3.12.2",
+    "pinned_commit": "d684a576a6aa954ae107a03b2b4e1d61c3bebe93",
+    "note": "DCDart gitignores core/frontend/vendor; a reachable clone cannot compile until this pinned script runs inside the bootstrap dest"
+  },
   "identity": "df3d053+0001-volatile-compiler-used"
 }
