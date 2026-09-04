@@ -175,7 +175,7 @@ if "wmPageMaxOf" not in cancel and "wmPageWMax0" not in cancel:
     raise SystemExit("HOLD cancel does not restash restore geom")
 
 arm = fn(wmde, "wmPendArm")
-if "wmPageWHoldArm0" not in arm:
+if "wmPageHoldArmOf" not in arm and "wmPageWHoldArm0" not in arm:
     raise SystemExit("wmPendArm does not stamp the watchdog arm tick")
 
 if "wmHoldWatch();" not in pace and "wmHoldWatch()" not in pace:
