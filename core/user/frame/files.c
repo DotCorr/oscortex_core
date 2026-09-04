@@ -39,7 +39,7 @@ typedef unsigned int u32;
 #define CHUNK 512UL
 #define REC 32UL
 #define NAME_MAX 12U
-#define CAT_MAX 16U
+#define CAT_MAX 24U
 #define WIN_W 400UL
 #define WIN_H 280UL
 /* Native 1280×720 maximize: origin (border,border), dock 48, border 3.
@@ -1169,7 +1169,7 @@ static void files_select_name(const char *name, unsigned nlen) {
   while (i < (unsigned)files_names) {
     if (same_bytes(dotted[i], dotlen[i], name, nlen) > 0) {
       files_set_sel((u64)i);
-      at = put(0, "FILES SEL ");
+      at = put(0, "FILES PICK ");
       at = put(at, name);
       emit(at);
       return;

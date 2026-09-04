@@ -109,20 +109,12 @@ def main():
     click(q, 36, 500)
     time.sleep(0.1)
 
-    # Dock-launch every app once so all-apps has DESK+six clients.
-    for i in range(6):
-        x, y = dock_xy(i)
-        click(q, x, y)
-        time.sleep(0.18)
-
     marked = harvest(ser)
     q.key("f4")
     launch_show = wait_tok(ser, "WM LAUNCH SHOW", marked, 3.0)
     catalog = wait_tok(ser, "WM CATALOG ", marked, 2.0) or (
         "WM CATALOG " in harvest(ser))
     done7 = wait_tok(ser, " K 07 ", marked, 2.0)
-    time.sleep(0.2)
-    d15.shot(q, os.path.join(ART, "oscortex-round35-all-apps.png"))
     q.key("esc")
     time.sleep(0.1)
 
@@ -139,11 +131,12 @@ def main():
     q.key("esc")
     time.sleep(0.1)
 
-    # FILES history: root -> folder -> folder, back x2, forward x2.
-    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
-    wait_tok(ser, "FILES READY", harvest(ser), 3.0)
+    # FILES history: raise the sit-in FILES (do not dock-spawn another).
     fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or (
         48, 40, 400, 280)
+    click(q, fg[0] + 80, fg[1] + 16)
+    time.sleep(0.12)
+    wait_tok(ser, "FILES", harvest(ser), 1.0)
     click(q, fg[0] + 80, fg[1] + 80)
     time.sleep(0.08)
     marked_h = harvest(ser)
@@ -190,14 +183,18 @@ def main():
     click(q, fg[0] + 80, fg[1] + 80)
     time.sleep(0.1)
     marked_ow = harvest(ser)
-    combo(q, "ctrl", "n")
-    wait_tok(ser, "FILES NEW", marked_ow, 2.0)
-    wait_tok(ser, "FILES SEL ", marked_ow, 1.2)
+    # NOTE.TXT is planted at root row 11 (GONE/MISS also listed).
+    for _ in range(11):
+        q.key("down")
+        time.sleep(0.03)
     q.key("ret")
     handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 3.0)
     if not handoff:
-        combo(q, "ctrl", "o")
-        handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 2.0)
+        combo(q, "ctrl", "n")
+        wait_tok(ser, "FILES NEW", marked_ow, 1.5)
+        wait_tok(ser, "FILES PICK ", marked_ow, 1.0)
+        q.key("ret")
+        handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 2.5)
     studio_ow = wait_tok(ser, "STUDIO OPENWITH", marked_ow, 3.0)
     studio_open = wait_tok(ser, "STUDIO OPEN ", marked_ow, 2.0)
     # STUDIO slice: new / find / tab / save-as / caret.
@@ -220,21 +217,31 @@ def main():
     q.key("ret")
     wait_tok(ser, "FILES OPEN BIN ", marked_ow, 2.0)
 
+    # Now launch the rest of the dock so the all-apps shot is populated.
+    for i in (0, 2, 3, 4, 5):
+        x, y = dock_xy(i)
+        click(q, x, y)
+        time.sleep(0.2)
+    time.sleep(0.25)
+    d15.shot(q, os.path.join(ART, "oscortex-round35-all-apps.png"))
+
     # SET persist: apply theme, close, relaunch (not focus-existing).
     marked_set = harvest(ser)
     click(q, dock_xy(0)[0], dock_xy(0)[1])
     wait_tok(ser, "SET READY", marked_set, 4.0) or wait_tok(
         ser, "SET CSD", marked_set, 2.0)
-    time.sleep(0.25)
+    time.sleep(0.35)
     sg = cs.live_set_xywh(os.path.join(RUN, "serial.txt"), "") or (
         180, 48, 440, 280)
+    click(q, sg[0] + 80, sg[1] + 16)
+    time.sleep(0.12)
     click(q, sg[0] + 40, sg[1] + 32 + 80)
     time.sleep(0.1)
     cx, cy = set_card_xy(sg, 1)
     click(q, cx, cy)
-    set_theme = wait_tok(ser, "SET THEME 1", marked_set, 2.5) or wait_tok(
-        ser, "SET THEME", marked_set, 1.5) or wait_tok(
-        ser, "SET CARD", marked_set, 1.5)
+    set_theme = wait_tok(ser, "SET CARD 1", marked_set, 2.5) or wait_tok(
+        ser, "SET THEME 1", marked_set, 1.5) or wait_tok(
+        ser, "SET THEME", marked_set, 1.2)
     cx3, cy3 = set_card_xy(sg, 3)
     click(q, cx3, cy3)
     wait_tok(ser, "SET ACCENT", marked_set, 1.5)
@@ -248,15 +255,21 @@ def main():
     for line in harvest(ser)[len(marked_set):].splitlines():
         if "SET THEME" in line or "WM PREF " in line:
             theme_line = line.strip()
-    # True close: Alt-F4 on focused SET.
-    key_edge(q, "alt", False)
-    time.sleep(0.05)
-    key_edge(q, "alt", True)
-    time.sleep(0.04)
-    key_edge(q, "f4", True)
-    key_edge(q, "f4", False)
-    key_edge(q, "alt", False)
+    # True close: CSD close disc on the live SET geom (not Alt-F4 / focus).
+    sg = cs.live_set_xywh(os.path.join(RUN, "serial.txt"), "") or sg
+    close_x = int(sg[0] + sg[2] - 17)
+    close_y = int(sg[1] + 17)
+    click(q, close_x, close_y)
     closed = wait_tok(ser, "WM CLOSE", harvest(ser), 2.5)
+    if not closed:
+        key_edge(q, "alt", False)
+        time.sleep(0.04)
+        key_edge(q, "alt", True)
+        time.sleep(0.04)
+        key_edge(q, "f4", True)
+        key_edge(q, "f4", False)
+        key_edge(q, "alt", False)
+        closed = wait_tok(ser, "WM CLOSE", harvest(ser), 1.5)
     time.sleep(0.2)
     marked_rl = harvest(ser)
     click(q, dock_xy(0)[0], dock_xy(0)[1])
