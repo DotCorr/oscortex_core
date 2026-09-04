@@ -83,7 +83,7 @@ typedef unsigned int u32;
 #define SWITCH_PAD 12UL
 #define OVERLAY_MAX_W 280UL
 #define OVERLAY_MAX_H 244UL
-#define MENU_PAGES 17UL
+#define MENU_PAGES 68UL
 
 /* osxui_button_fb's in-ELF retest (ADR-0192 §5). Linked for real now:
  * osxui.c + osxui_fb.c, not the weak no-op in osgfx_glyph.c. */

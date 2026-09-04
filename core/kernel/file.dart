@@ -916,6 +916,39 @@ void fileCopyOut(u64 dst, u64 from, u64 n) {
 
 /// 1 when the FAT name buffer is OPENWITH.DAT (handoff mailbox).
 @bare
+u64 fileNameIsMailbox() {
+  final u64 e = fatNameBase();
+  if (fatU8(e) == u64(0x4F)) {
+    if (fatU8(e + u64(1)) == u64(0x50)) {
+      if (fatU8(e + u64(2)) == u64(0x45)) {
+        if (fatU8(e + u64(3)) == u64(0x4E)) {
+          if (fatU8(e + u64(4)) == u64(0x57)) {
+            if (fatU8(e + u64(5)) == u64(0x49)) {
+              if (fatU8(e + u64(6)) == u64(0x54)) {
+                if (fatU8(e + u64(7)) == u64(0x48)) {
+                  return u64(1);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if (fatU8(e) == u64(0x50)) {
+    if (fatU8(e + u64(1)) == u64(0x49)) {
+      if (fatU8(e + u64(2)) == u64(0x4E)) {
+        if (fatU8(e + u64(3)) == u64(0x53)) {
+          return u64(1);
+        }
+      }
+    }
+  }
+  return u64(0);
+}
+
+/// 1 when the FAT name buffer is OPENWITH.DAT (handoff mailbox).
+@bare
 u64 fileNameIsOpenwith() {
   final u64 e = fatNameBase();
   if (fatU8(e) != u64(0x4F)) {
@@ -950,7 +983,7 @@ void fileRefuse(u64 frame, u64 code) {
   fileBump(u64(fileMetaRefusals));
   u64 silent = u64(0);
   if (code == u64(fileRetNotFound)) {
-    if (fileNameIsOpenwith() > u64(0)) {
+    if (fileNameIsMailbox() > u64(0)) {
       silent = u64(1);
     }
   }

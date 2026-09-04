@@ -96,6 +96,7 @@ open(sys.argv[2], 'wb').write(bytes.fromhex(hexs))
 printf 'APP1.ELF\n' >"$OUT/APPS.TXT"
 printf 'note from files\n' >"$OUT/NOTE.TXT"
 python3 -c "open('$OUT/OPENWITH.DAT','wb').write(b' '*12+bytes([0xFF,0,0,0]))"
+python3 -c "open('$OUT/PINS.DAT','wb').write(bytes([0,1,2,3,4,5,0xFF,0xFF]))"
 
 PAIRS=(
   "FILES.ELF=$OUT/files/files.elf"
@@ -111,6 +112,7 @@ PAIRS=(
   "APP1.ELF=$OUT/studio/app1.elf"
   "NOTE.TXT=$OUT/NOTE.TXT"
   "OPENWITH.DAT=$OUT/OPENWITH.DAT"
+  "PINS.DAT=$OUT/PINS.DAT"
 )
 if [[ "$WANT_SURF" == 1 ]]; then
   bash "$FRAME2/build-progs.sh" "$OUT/frame2" "$CORE_DIR/kernel" \
