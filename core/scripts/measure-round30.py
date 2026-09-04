@@ -79,7 +79,7 @@ def first_after(ser, prev_pos, want_kind=None):
 
 
 def wait_pair(ser, prev, timeout=3.0, skip_ptr=False, skip_full=False,
-              prefer_scan=False):
+              prefer_scan=False, skip_layer=False):
     t0 = time.time()
     while (time.time() - t0) < timeout:
         got = first_after(ser, prev, want_kind=("scan" if prefer_scan else None))
@@ -91,6 +91,10 @@ def wait_pair(ser, prev, timeout=3.0, skip_ptr=False, skip_full=False,
                 prev = pos
                 continue
             if skip_full and px >= FULL_PX:
+                prev = pos
+                continue
+            # Drag old∪new AABB (2×406×286) is not the first body click.
+            if skip_layer and px == 232232:
                 prev = pos
                 continue
             return kind, gen, px, w, h, (time.time() - t0) * 1000.0
@@ -225,8 +229,10 @@ def title_xy(geom):
 
 def body_xy(geom, i=0):
     x, y, w, h = geom
+    # Stay on the first visible rows so sel union is 1–2 bands, not a
+    # 6-row commit that is not the cold hitch under test.
     bx = x + 40 + (i * 11) % max(8, w - 80)
-    by = y + 80 + (i * 13) % max(8, h - 120)
+    by = y + 80 + (i % 2) * 28
     return bx, by
 
 
@@ -285,7 +291,7 @@ def cold_drag_first_scroll(q, ser, n=32):
         # Drain a leftover session FRAME so the click pair is the body.
         settle = last_pos(ser)
         t_settle = time.time()
-        while (time.time() - t_settle) < 0.04:
+        while (time.time() - t_settle) < 0.10:
             got = first_after(ser, settle)
             if got is None:
                 time.sleep(0.004)
@@ -304,7 +310,8 @@ def cold_drag_first_scroll(q, ser, n=32):
             continue
         # Body rect (~99200), not the 640 sprite and not a leftover
         # 1.1 Mpx session FRAME that crossed the inject.
-        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=True, skip_full=True)
+        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=True, skip_full=True,
+                        skip_layer=True)
         if got is None:
             print("cold unpaired", bx, by, "prev", g0, "geom", geom)
             continue
