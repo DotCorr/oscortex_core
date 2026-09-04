@@ -762,6 +762,8 @@ static void launch_icon(u64 i) {
   }
 }
 
+static void commit_all(void);
+
 static void handle_press(u64 ev) {
   u64 rx;
   u64 ry;
