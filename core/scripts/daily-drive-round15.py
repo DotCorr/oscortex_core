@@ -638,6 +638,27 @@ def press(q, ser, x, y, btn, token, timeout=4.0):
     return bool(got)
 
 
+def shot_virtio_backing(q, path):
+    """gtk,gl=on has no QMP surface. Dump the armed virtio-gpu backing."""
+    run = os.environ.get("DRIVE_RUN", "")
+    serial = os.path.join(run, "serial.txt") if run else ""
+    blob = ""
+    if serial and os.path.isfile(serial):
+        blob = open(serial, encoding="latin-1", errors="replace").read()
+    m = re.search(r"FB VIRTIO [0-9A-Fa-f]+x[0-9A-Fa-f]+ AT ([0-9A-Fa-f]+)", blob)
+    if not m:
+        return False
+    addr = int(m.group(1), 16)
+    rawp = os.path.abspath(path) + ".bgrx"
+    q.cmd("pmemsave", val=addr, size=1280 * 720 * 4, filename=rawp)
+    data = open(rawp, "rb").read(1280 * 720 * 4)
+    if len(data) < 1280 * 720 * 4:
+        return False
+    from PIL import Image
+    Image.frombytes("RGB", (1280, 720), data, "raw", "BGRX").save(path)
+    return True
+
+
 def shot(q, path, also=None):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     last = None
@@ -655,6 +676,17 @@ def shot(q, path, also=None):
         except (OSError, SystemExit) as e:
             last = e
             time.sleep(0.4)
+    try:
+        if shot_virtio_backing(q, path):
+            print("shot", path, "bytes", os.path.getsize(path), "via virtio backing")
+            if also and also != path:
+                try:
+                    copy_file(path, also)
+                except OSError as e:
+                    print("WARN: fallback shot copy failed:", e)
+            return
+    except (OSError, SystemExit) as e:
+        last = e
     raise SystemExit("screendump failed: %s" % last)
 
 
