@@ -549,10 +549,13 @@ countof() { grep -cE -- "$1" "$SER" | tr -d ' '; }
 
 ck; havere '^WM ON BASE [0-9A-F]{8} PITCH [0-9A-F]{8} BG [0-9A-F]{8}$'
 # TWO ATTACHES, in two different window slots, from two different regions.
-ck; [[ "$(countof '^WM ATTACH W [01] R [01] GEN ')" -eq 2 ]] \
-  || fail "$(countof '^WM ATTACH W [01] R [01] GEN ') surfaces attached, expected 2"
-ck; havere "^WM ATTACH W 0 R 0 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define A_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
-ck; havere "^WM ATTACH W 1 R 1 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define B_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
+# Attach grew P (owner), C (caption), Q (requested width) so identity
+# probes can name a surface; R/GEN/X are unchanged. Matching the old
+# `W n R n GEN` adjacency was a vacuous 0 against live lines.
+ck; [[ "$(countof '^WM ATTACH W [01] P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R [01] GEN ')" -eq 2 ]] \
+  || fail "$(countof '^WM ATTACH W [01] P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R [01] GEN ') surfaces attached, expected 2"
+ck; havere "^WM ATTACH W 0 P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R 0 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define A_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
+ck; havere "^WM ATTACH W 1 P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R 1 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define B_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
 # THREE COMMITS: two full-surface presents, then D6's 16x16.
 ck; [[ "$(countof '^WM COMMIT W [01] SEQ ')" -eq 3 ]] \
   || fail "$(countof '^WM COMMIT W [01] SEQ ') commits, expected 3"

@@ -791,7 +791,7 @@ ck; grep -q "SHM DROP R 0 REFS 0001 MAPS 0001" "$SERT" \
 ck; grep -q "SHM DROP R 0 REFS 0000 MAPS 0000" "$SERT" \
   || fail "the consumer's shmdrop did not take the region to zero references"
 ck; grep -q "SHM DEAD R 0 GEN 00000001 FREED 0000000$WANT_FRAMES" "$SERT" \
-  || fail "the region did not return $WANT_FRAMES frames when it died ($WANT_PAGES pages plus its frame-vector page). Got: $(grep -oE 'SHM DEAD.*' "$SERT" | head -1)"
+  || fail "the region did not return $WANT_FRAMES frames when it died ($WANT_PAGES pages plus two vector frames). Got: $(grep -oE 'SHM DEAD.*' "$SERT" | head -1)"
 capture_sh KILL_OUT KILL_STATUS -- "python3 - '$SERT' '$MODEL' <<'PY'
 import json, re, sys
 t = open(sys.argv[1]).read()

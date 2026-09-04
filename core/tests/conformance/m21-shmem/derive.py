@@ -113,8 +113,10 @@ def main():
         "consumer_hash": "%016X" % consumer_hash(),
         "producer_pages": [["%016X" % va, w, x] for va, w, x in expected_pages(True)],
         "consumer_pages": [["%016X" % va, w, x] for va, w, x in expected_pages(False)],
-        # 4 region pages + 1 frame-vector page.
-        "frames_per_region": PAGES + 1,
+        # 4 region pages + 2 vector frames (page-0 PAs + link/metadata).
+        # shmVecAlloc always takes two frames; shmRegionDestroy counts
+        # pages plus 2 when shmVec1 is live (not pages+1).
+        "frames_per_region": PAGES + 2,
     }
     if producer_hash() == consumer_hash():
         raise SystemExit("derive: the two hashes are equal; one exit status "
