@@ -1185,12 +1185,18 @@ static void files_on_event(u64 ev) {
         scroll_off = scroll_off + magnitude;
       }
     }
-    menu_on = 0;
+    /* Keep an open context menu. Residual virtio wheel after a
+     * harness scroll used to clear menu_on so Open at (364,196)
+     * selected row 4 instead (FILES SEL 04). */
     at = put(0, msg_scroll);
     at = puthex(at, scroll_off, 2);
     emit(at);
-    if (dirty > 0 || scroll_off != before) {
+    if (scroll_off != before) {
       files_repaint_body();
+    } else {
+      if (dirty > 0) {
+        files_repaint_body();
+      }
     }
     return;
   }

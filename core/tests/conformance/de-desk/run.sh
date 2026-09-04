@@ -56,7 +56,7 @@ export OSGFX_SKIA=1
 export OSGFX_CRT=0
 export OSMEDIA_FFMPEG=0
 
-ASSERTIONS_REQUIRED=211
+ASSERTIONS_REQUIRED=212
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-ld; do
   ck; command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found"
@@ -264,6 +264,8 @@ ck; grep -q 'files_show_error' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES has no unavailable-path sit-in"
 ck; grep -q 'GONE.DAT' "$CORE_DIR/user/frame/files.c" \
   || fail "FILES has no recovery plant name"
+ck; grep -q 'Residual virtio wheel' "$CORE_DIR/user/frame/files.c" \
+  || fail "FILES scroll still dismisses the Open menu"
 ck; grep -q 'VOID=:dir' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
   || fail "sit-in FAT does not plant an empty folder"
 ck; grep -q 'MISS.DAT=:miss' "$CORE_DIR/tests/conformance/de-sitfat/build-disk.sh" \
