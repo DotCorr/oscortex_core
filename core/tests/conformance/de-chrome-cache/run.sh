@@ -173,9 +173,13 @@ if irq_hits:
 de = open(os.path.join(root, "wmde.dart"), encoding="utf-8").read()
 if "wmIfHoldBegin(u64(wmIfReasonPrep))" not in de:
     raise SystemExit("wmIdlePrep no longer holds IF/busy around chrome prep")
-if "wmDrawLiveClients" not in de:
-    raise SystemExit("drain prep present does not redraw every live client")
+# HOLD (Round 23/24): max drain must not prep_present or redraw every
+# live client — that punched wallpaper holes and blitted uncommitted
+# bodies. Client COMMIT + compose publishes VIS.
+if "osgfx_chrome_prep_present" in de[de.find("void wmDefDrain"):de.find("void wmToggleMaxWindow")]:
+    raise SystemExit("max drain still punches wallpaper via prep_present")
 print("chrome API: Dart may call prep/prep_rest/prep_present only; IRQ files clean")
+print("drain prep present does not redraw every live client")
 PY
 
 # THE WORD TABLE HAS ONE C OWNER PER REGION.

@@ -161,8 +161,8 @@ if "wmHoldKick" not in watch:
     raise SystemExit("watchdog does not re-enqueue a stuck HOLD")
 if "wmHoldCancel" not in watch:
     raise SystemExit("watchdog has no timeout cancel")
-if "wmCompose" not in watch:
-    raise SystemExit("watchdog does not force compose after COMMIT")
+if "wmVisMaybePublish" not in watch:
+    raise SystemExit("watchdog does not publish VIS after COMMIT")
 
 cancel = fn(wmde, "wmHoldCancel")
 if "wmStrHoldTo" not in cancel:

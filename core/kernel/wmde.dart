@@ -1078,10 +1078,8 @@ void wmHoldWatch() {
         }
         if (wmWin(i, u64(wmWinSeq)) > u64(0)) {
           if (age > u64(wmHoldForceTicks)) {
-            wmChromeInvalidate();
-            if (wmActive() > u64(0)) {
-              wmCompose();
-            }
+            /* Commit already ran in syscall context. Do not Skia-compose
+             * from the PIT tick (ADR-0172). Publish VIS if geom matches. */
             wmVisMaybePublish(i);
           }
         } else {
