@@ -501,7 +501,7 @@ compile time and (b) small:
 |---|---|---|
 | `pmmStore` | 4672 | 32768 frames, 64 ledger entries |
 | `procStore` | 4224 | **4 processes** (`procMaxSlot = 3`) |
-| `fileStore` | 2560 | **20 file descriptors** (`fileRows = 5` × `fileMaxFds = 4`) |
+| `fileStore` | 3584 | **36 file descriptors** (`fileRows = 9` × `fileMaxFds = 4`) |
 | `fatStore` | 1824 | 256-entry cluster chain, one sector buffer |
 | `argsStore` | 256 | 8 arguments, 128 bytes |
 | `vmStore`, `userStore`, `elfStore` | 128 each | — |
