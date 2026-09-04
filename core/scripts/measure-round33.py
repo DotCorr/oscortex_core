@@ -484,7 +484,14 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
         except Exception:
             pass
         time.sleep(0.04)
-        marked = harvest(ser)
+        ser_path = getattr(ser, "path", None) or os.environ.get(
+            "DRIVE_SERIAL_FILE", "")
+        off = 0
+        if ser_path:
+            try:
+                off = os.path.getsize(ser_path)
+            except OSError:
+                off = 0
         t_inj = time.time()
         try:
             fire()
@@ -493,8 +500,19 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
             continue
         hit = None
         while (time.time() - t_inj) < 1.2:
-            blob = harvest(ser)
-            if blob[len(marked):].find(token) >= 0:
+            chunk = ""
+            if ser_path:
+                try:
+                    size = os.path.getsize(ser_path)
+                    if size > off:
+                        with open(ser_path, "rb") as f:
+                            f.seek(off)
+                            chunk = f.read(size - off).decode(
+                                "latin-1", "replace")
+                        off = size
+                except OSError:
+                    chunk = ""
+            if token in chunk:
                 hit = True
                 break
             time.sleep(0.004)
