@@ -319,6 +319,12 @@ const int wmPageWLifeShmHi = 442;
 const int wmPageWLifeCacheHi = 443;
 const int wmPageWLifeReap = 444;
 const int wmPageWLifeClose = 445;
+/// Round 23: committed (visible) vs pending geom. No new .bss.
+/// Vis is what scanout and hit-test use. Pend is the client-requested
+/// size while seq==0 (HOLD). Generation advances only on VIS publish.
+const int wmPageWVis0 = 446;
+const int wmPageWPend0 = 450;
+const int wmPageWVisGen0 = 454;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
@@ -1364,7 +1370,7 @@ u64 wmGfxChromeSig() {
     u64 g = u64(0);
     if (wmWindowHeld(i) > u64(0)) {
       if (wmWinOverlay(i) < u64(1)) {
-        g = wmWin(i, u64(wmWinGeom)) | u64(1);
+        g = wmViewGeom(i) | u64(1);
       }
     }
     s = s ^ (g << (i & u64(3)));

@@ -336,10 +336,10 @@ void wmGfxKick() {
           if (wmIsOverlay(i) < u64(1)) {
             if (win0Slot >= u64(wmMaxWindows)) {
               win0Slot = i;
-              win0 = wmWin(i, u64(wmWinGeom));
+              win0 = wmViewGeom(i);
             } else if (win1Slot >= u64(wmMaxWindows)) {
               win1Slot = i;
-              win1 = wmWin(i, u64(wmWinGeom));
+              win1 = wmViewGeom(i);
             }
           }
         }

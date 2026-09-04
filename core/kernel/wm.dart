@@ -938,7 +938,7 @@ u64 wmUnderWallpaper(u64 x, u64 y) {
 /// integer scale (ADR-0185).
 @bare
 void wmBlitRow(u64 wI, u64 py) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 x = wmAbsX(wI);
   final u64 y = wmAbsY(wI);
   final u64 w = wmGeomW(g);
@@ -1081,7 +1081,7 @@ u64 wmDrawWindow(u64 wI, u64 focus) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 x = wmAbsX(wI);
   final u64 y = wmAbsY(wI);
   final u64 w = wmGeomW(g);
@@ -1417,6 +1417,11 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     final u64 pending = dropped & u64(wmPointerPending);
     wmSetMeta(u64(wmMetaDropped), dropped & u64(wmPointerDropMask));
     wmSetMeta(u64(wmMetaBusy), u64(0));
+    if (full > u64(0)) {
+      wmVisMaybePublishAll();
+    } else {
+      wmVisMaybePublish(slot);
+    }
     if (pending > u64(0)) {
       wmPointerTick();
     }
@@ -1424,6 +1429,11 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
   wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
   wmPublishFrame(px);
+  if (full > u64(0)) {
+    wmVisMaybePublishAll();
+  } else {
+    wmVisMaybePublish(slot);
+  }
 }
 
 /// A commit's composition pass. [full] is 1 when the damage is the whole
@@ -1468,6 +1478,7 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
       return;
     }
     wmCompose();
+    wmVisMaybePublishAll();
     wmIfHoldEnd();
     return;
   }
@@ -1517,6 +1528,11 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     }
   }
   wmPublishFrame(px);
+  if (full > u64(0)) {
+    wmVisMaybePublishAll();
+  } else {
+    wmVisMaybePublish(slot);
+  }
   wmIfHoldEnd();
 }
 
@@ -1945,6 +1961,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWMax0) + slot, u64(0));
     wmPageSet(u64(wmPageWLaunch0) + slot, cap);
+    wmVisClear(slot);
     wmDefClear(slot);
   }
   // THE NEWEST SURFACE IS ON TOP. That is the whole of this compositor's
@@ -2491,7 +2508,7 @@ final List<u8> wmStrPtrSkia = const [
 /// Decorated origin X — 0 for panels (ADR-0192).
 @bare
 u64 wmDecoX(u64 wI) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 x = wmGeomX(g);
   if (wmIsPanel(wI) > u64(0)) {
     return u64(0);
@@ -2505,7 +2522,7 @@ u64 wmDecoX(u64 wI) {
 /// Decorated origin Y — 0 for panels.
 @bare
 u64 wmDecoY(u64 wI) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 y = wmGeomY(g);
   if (wmIsPanel(wI) > u64(0)) {
     return u64(0);
@@ -2602,7 +2619,7 @@ u64 wmGfxCornerHole(u64 wI, u64 x, u64 y) {
   if (wmIsPanel(wI) > u64(0)) {
     return u64(0);
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 wx = wmAbsX(wI);
   final u64 wy = wmAbsY(wI);
   final u64 ww = wmGeomW(g);
@@ -2828,7 +2845,7 @@ u64 wmWindowPixel(u64 wI, u64 x, u64 y, u64 focus) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(wmNoPixel);
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 wx = wmAbsX(wI);
   final u64 wy = wmAbsY(wI);
   final u64 ww = wmGeomW(g);
@@ -3512,28 +3529,14 @@ void wmResizeStep(u64 x, u64 y) {
       return;
     }
   }
-  final u64 b = u64(wmBorder);
-  final u64 rx = ox - b;
-  final u64 ry = oy - b;
-  final u64 rw = ow + b + b;
-  final u64 rh = oh + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
   wmSetWin(wI, u64(wmWinSeq), u64(0));
   wmeventEnqueueConfigure(wI);
-  /* Compose old∪new once. Two independent repaints exposed an intermediate
-   * frame and reused the damage scratch with two different extents. */
+  /* Size change needs a client body. HOLD: scanout stays on VIS until
+   * COMMIT + compose. Do not union-blit old∪new (partial body). */
+  wmPendArm(wI, wmPackGeom(ox, oy, nw, nh));
   u64 px = u64(0);
-  if (wmPageAddr() > u64(0)) {
-    wmDefEnqueue(u64(wmDefKindDrag), wI,
-        wmPackGeom(rx, ry, rw, rh),
-        wmPackGeom(ox - b, oy - b, nw + b + b, nh + b + b));
-    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
-  } else {
-    px = wmRepaintUnion2(
-        rx, ry, rw, rh, ox - b, oy - b, nw + b + b, nh + b + b);
-    wmSetMeta(
-        u64(wmMetaRectPixels), px | u64(wmRectComposePending));
-  }
+  wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
   uartWrite(Rodata.addressOf(wmStrResize), u64(12));
   uartPutHex(wI, u64(1));
   uartWrite(Rodata.addressOf(wmStrW), u64(3));

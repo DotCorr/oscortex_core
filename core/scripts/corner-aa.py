@@ -189,15 +189,14 @@ def title_seam(pix, x, y, cw, ch, r, th=32):
 
 def inspect_png(path, files_xywh=None, set_xywh=None, r=18):
     w, h, pix = load_rgb(path)
-    if files_xywh is None:
-        files_xywh = (48, 40, 400, 280)
     if set_xywh is None:
         # 1280 tiles SET to the right of FILES; 800×600 overlaps it.
         set_xywh = (584, 40, 320, 280) if w >= 1200 else (180, 48, 440, 280)
     recs = []
-    fx, fy, fw, fh = files_xywh
     sx, sy, sw, sh = set_xywh
-    recs.append(inspect_card(pix, w, h, fx, fy, fw, fh, r, "files"))
+    if files_xywh:
+        fx, fy, fw, fh = files_xywh
+        recs.append(inspect_card(pix, w, h, fx, fy, fw, fh, r, "files"))
     recs.append(inspect_card(pix, w, h, sx, sy, sw, sh, r, "set"))
     for rec in recs:
         seam = title_seam(pix, rec["rect"][0], rec["rect"][1], rec["rect"][2],

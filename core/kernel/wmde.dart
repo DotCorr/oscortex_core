@@ -321,11 +321,31 @@ final List<u8> wmStrMax = const [
   u8(0x57), u8(0x20),
 ];
 
-/// `'WM HOLD W '` -- 10 bytes. Geom published; body blit suppressed
-/// until the client's next COMMIT (atomic max/restore).
+/// `'WM HOLD W '` -- 10 bytes. Request is pending; scanout stays on VIS.
 @rodata
 final List<u8> wmStrHold = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x48), u8(0x4F), u8(0x4C), u8(0x44),
+  u8(0x20), u8(0x57), u8(0x20),
+];
+
+/// `'WM REQ W '` -- 9 bytes. Requested/logical geom (client configure).
+@rodata
+final List<u8> wmStrReq = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x52), u8(0x45), u8(0x51),
+  u8(0x20), u8(0x57), u8(0x20),
+];
+
+/// `'WM PEND W '` -- 10 bytes. Not visible; hit-test stays on VIS.
+@rodata
+final List<u8> wmStrPendTok = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x45), u8(0x4E), u8(0x44),
+  u8(0x20), u8(0x57), u8(0x20),
+];
+
+/// `'WM VIS W '` -- 9 bytes. Committed present generation + AABB.
+@rodata
+final List<u8> wmStrVis = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x56), u8(0x49), u8(0x53),
   u8(0x20), u8(0x57), u8(0x20),
 ];
 
@@ -538,7 +558,7 @@ u64 wmWindowRegionLive(u64 wI) {
 /// (`win_close_x`) so a cache blit cannot leave the vacated disc live.
 @bare
 u64 wmCloseX(u64 wI) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   return wmAbsX(wI) + wmGeomW(g) - u64(wmBtnGap) - u64(wmBtnS);
 }
 
@@ -558,7 +578,7 @@ u64 wmMaxX(u64 wI) {
 /// [wmBtnPadY] matches SESS_BTN_PAD_Y. Absolute Y matches [wmTitleHit].
 @bare
 u64 wmBtnY(u64 wI) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   u64 y = wmAbsY(wI) + u64(wmBtnPadY);
   u64 th = u64(wmTitleH);
   if (th > wmGeomH(g)) {
@@ -663,7 +683,7 @@ void wmCsdNote(u64 hit, u64 geomHit, u64 x, u64 y) {
     slot = geomHit;
   }
   if (slot < u64(wmMaxWindows)) {
-    final u64 g = wmWin(slot, u64(wmWinGeom));
+    final u64 g = wmViewGeom(slot);
     gx = wmAbsX(slot);
     gy = wmAbsY(slot);
     gw = wmGeomW(g);
@@ -739,6 +759,158 @@ void wmLifeNote() {
   uartWrite(Rodata.addressOf(wmStrC), u64(3));
   uartPutHex(closes, u64(4));
   uartNewline();
+}
+
+/// Packed geom the compositor last presented for [wI], or requested if
+/// none has been published yet.
+@bare
+u64 wmVisGeom(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  if (wmPageAddr() < u64(1)) {
+    return wmWin(wI, u64(wmWinGeom));
+  }
+  final u64 v = wmPage(u64(wmPageWVis0) + wI);
+  if (v < u64(1)) {
+    return wmWin(wI, u64(wmWinGeom));
+  }
+  return v;
+}
+
+/// Pending requested geom, or 0 when scanout matches the client.
+@bare
+u64 wmPendGeomOf(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  if (wmPageAddr() < u64(1)) {
+    return u64(0);
+  }
+  return wmPage(u64(wmPageWPend0) + wI);
+}
+
+/// Hit-test / chrome / blit destination: VIS while a HOLD is open
+/// (pend set and client seq==0). After COMMIT, the requested geom.
+@bare
+u64 wmViewGeom(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  final u64 pend = wmPendGeomOf(wI);
+  if (pend > u64(0)) {
+    if (wmWin(wI, u64(wmWinSeq)) < u64(1)) {
+      return wmVisGeom(wI);
+    }
+  }
+  return wmWin(wI, u64(wmWinGeom));
+}
+
+@bare
+void wmGeomNote(u64 hdr, u64 hdrN, u64 wI, u64 g, u64 gen) {
+  uartWrite(hdr, hdrN);
+  uartPutHex(wI, u64(1));
+  uartWrite(Rodata.addressOf(wmStrX), u64(3));
+  uartPutHex(wmGeomX(g), u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(wmGeomY(g), u64(4));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(wmGeomW(g), u64(4));
+  uartWrite(Rodata.addressOf(wmStrH), u64(3));
+  uartPutHex(wmGeomH(g), u64(4));
+  uartWrite(Rodata.addressOf(wmLatStrG), u64(3));
+  uartPutHex(gen, u64(4));
+  uartNewline();
+}
+
+/// Arm HOLD: client is configured to [next]; scanout+hit-test stay on VIS.
+@bare
+void wmPendArm(u64 wI, u64 next) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  final u64 vis = wmVisGeom(wI);
+  if (vis < u64(1)) {
+    wmPageSet(u64(wmPageWVis0) + wI, wmWin(wI, u64(wmWinGeom)));
+  }
+  wmPageSet(u64(wmPageWPend0) + wI, next);
+  final u64 gen = wmPage(u64(wmPageWVisGen0) + wI);
+  wmGeomNote(Rodata.addressOf(wmStrReq), u64(9), wI, next, gen);
+  wmGeomNote(Rodata.addressOf(wmStrPendTok), u64(10), wI, next, gen);
+}
+
+/// Atomic publish after body+CSD are on scanout.
+@bare
+void wmVisPublish(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  wmPageSet(u64(wmPageWVis0) + wI, g);
+  wmPageSet(u64(wmPageWPend0) + wI, u64(0));
+  final u64 gen = wmPage(u64(wmPageWVisGen0) + wI) + u64(1);
+  wmPageSet(u64(wmPageWVisGen0) + wI, gen);
+  wmGeomNote(Rodata.addressOf(wmStrVis), u64(9), wI, g, gen);
+}
+
+@bare
+void wmVisClear(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWVis0) + wI, u64(0));
+  wmPageSet(u64(wmPageWPend0) + wI, u64(0));
+}
+
+/// Publish VIS when scanout now matches requested geom (first present,
+/// HOLD complete, or translate-only move). Same geom + no pend is a
+/// body-only commit and must not bump the generation.
+@bare
+void wmVisMaybePublish(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  if (wmWin(wI, u64(wmWinSeq)) < u64(1)) {
+    return;
+  }
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 raw = wmPage(u64(wmPageWVis0) + wI);
+  final u64 pend = wmPage(u64(wmPageWPend0) + wI);
+  if (pend > u64(0)) {
+    wmVisPublish(wI);
+    return;
+  }
+  if (raw < u64(1)) {
+    wmVisPublish(wI);
+    return;
+  }
+  if (raw != g) {
+    wmVisPublish(wI);
+  }
+}
+
+@bare
+void wmVisMaybePublishAll() {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    wmVisMaybePublish(i);
+    i = i + u64(1);
+  }
 }
 
 /// Start-button origin Y (taskbar top).
@@ -932,7 +1104,7 @@ void wmTitleLabelDraw(u64 wI) {
   if (fbState(u64(fbStateBase)) < u64(1)) {
     return;
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 x = wmGeomX(g) + u64(wmTitlePadX);
   final u64 y = wmGeomY(g) + u64(wmTitlePadY);
   if ((x + (u64(wmTitleStemN) * u64(8))) >= wmMinX(wI)) {
@@ -985,7 +1157,7 @@ u64 wmTitleLabelPixel(u64 wI, u64 x, u64 y) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     return u64(wmNoPixel);
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 ox = wmGeomX(g) + u64(wmTitlePadX);
   final u64 oy = wmGeomY(g) + u64(wmTitlePadY);
   if (x < ox) {
@@ -1707,6 +1879,7 @@ void wmCloseWindow(u64 wI) {
     wmPageSet(u64(wmPageWLaunch0) + wI, u64(0));
     wmPageSet(u64(wmPageWMax0) + wI, u64(0));
     wmPageSet(u64(wmPageWChromeHave), u64(0));
+    wmVisClear(wI);
     wmDefClear(wI);
     wmPageSet(u64(wmPageWLifeClose),
         wmPage(u64(wmPageWLifeClose)) + u64(1));
@@ -2091,70 +2264,21 @@ void wmDefDrain() {
     }
   }
   if (kind == u64(wmDefKindMax)) {
-    final u64 b = u64(wmBorder);
-    u64 ux = wmGeomX(oldG) - b;
-    u64 uy = wmGeomY(oldG) - b;
-    u64 uw = wmGeomW(oldG) + b + b;
-    u64 uh = wmGeomH(oldG) + b + b;
-    final u64 nx = wmGeomX(nextG) - b;
-    final u64 ny = wmGeomY(nextG) - b;
-    final u64 nw = wmGeomW(nextG) + b + b;
-    final u64 nh = wmGeomH(nextG) + b + b;
-    if (nx < ux) {
-      ux = nx;
+    /* HOLD: keep the last presented AABB on scanout. prep_present
+     * punches wallpaper holes at old∪new; Seq0 lets blit paint an
+     * uncommitted body. Client COMMIT + compose publishes VIS. */
+    wmPageSet(u64(wmPageWDefOp), u64(0));
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      wmPointerPlace(
+          mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
     }
-    if (ny < uy) {
-      uy = ny;
-    }
-    if ((nx + nw) > (ux + uw)) {
-      uw = (nx + nw) - ux;
-    }
-    if ((ny + nh) > (uy + uh)) {
-      uh = (ny + nh) - uy;
-    }
-    u64 which = u64(1);
-    if (wmPage(u64(wmPageWMax0) + slot) > u64(0)) {
-      which = u64(0);
-    }
-    final u64 have = wmPage(u64(wmPageWPrepHave));
-    u64 ready = u64(0);
-    if (which == u64(0)) {
-      if ((have & u64(1)) > u64(0)) {
-        ready = u64(1);
-      }
-    } else {
-      if ((have & u64(2)) > u64(0)) {
-        ready = u64(1);
-      }
-    }
-    if (ready > u64(0)) {
-      wmGfxKick();
-      wmSessionOwedClear();
-      wmPageSet(u64(wmPageWDefOp), packed | (u64(wmDefFlagSeq0) << u64(16)));
-      final u64 xy = (ux << u64(32)) | uy;
-      final u64 wh = (uw << u64(32)) | uh;
-      final u64 px = osgfx_chrome_prep_present(which, xy, wh);
-      osgfx_guest_ack();
-      /* Prep copies wallpaper into every client hole. Redraw all
-       * titled surfaces, not only the max/restore slot, or SET's
-       * body stays teal until a later full compose. */
-      wmDrawLiveClients(slot);
-      wmDamageRect(ux, uy, uw, uh);
-    } else {
-      /* Prep not ready: keep the previous frame. Client COMMIT presents. */
-      wmPageSet(u64(wmPageWDefOp), u64(0));
-      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        wmPointerPlace(
-            mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
-      }
-      wmSetMeta(u64(wmMetaBusy), u64(0));
-      wmPageSet(u64(wmPageWDefUw), u64(0));
-      uartWrite(Rodata.addressOf(wmStrDefCommit), u64(15));
-      uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
-      uartNewline();
-      wmIfHoldEnd();
-      return;
-    }
+    wmSetMeta(u64(wmMetaBusy), u64(0));
+    wmPageSet(u64(wmPageWDefUw), u64(0));
+    uartWrite(Rodata.addressOf(wmStrDefCommit), u64(15));
+    uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
+    uartNewline();
+    wmIfHoldEnd();
+    return;
   } else {
     if (kind == u64(wmDefKindFocus)) {
       /* Rings are a HIT overlay from wmFocusTo. A decorated wmRepaintWindow
@@ -2201,6 +2325,9 @@ void wmDefDrain() {
           /* Discrete old/new already on scanout. Do not leave an AABB
            * for the pointer path to inherit. */
           wmDamageClear();
+          if (slot < u64(wmMaxWindows)) {
+            wmVisMaybePublish(slot);
+          }
         }
       }
     }
@@ -2257,20 +2384,18 @@ void wmToggleMaxWindow(u64 wI) {
     uartNewline();
     return;
   }
-  /* A live compose holds the framebuffer. Publish geom only when idle
-   * so the in-flight painter does not tear against the new size. */
-  if (wmMeta(u64(wmMetaBusy)) < u64(1)) {
-    wmSetWin(wI, u64(wmWinGeom), next);
-    wmSetWin(wI, u64(wmWinSeq), u64(0));
-    wmSetMeta(u64(wmMetaTop), wI);
-    wmeventEnqueueConfigure(wI);
-  }
+  /* Requested geom for the client. VIS/hit-test stay on the last
+   * presented AABB until COMMIT + compose publishes the generation. */
+  wmSetWin(wI, u64(wmWinGeom), next);
+  wmSetWin(wI, u64(wmWinSeq), u64(0));
+  wmSetMeta(u64(wmMetaTop), wI);
+  wmeventEnqueueConfigure(wI);
+  wmPendArm(wI, next);
   uartWrite(Rodata.addressOf(wmStrHold), u64(10));
   uartPutHex(wI, u64(1));
   uartNewline();
   uartWrite(Rodata.addressOf(wmStrPhzMax), u64(10));
   uartNewline();
-  /* IRQ captures final geom only. Compose waits for a syscall drain. */
   wmDefEnqueue(u64(wmDefKindMax), wI, old, next);
   if (wmMeta(u64(wmMetaBusy)) > u64(0)) {
     final u64 op = wmPage(u64(wmPageWDefOp));
@@ -2295,7 +2420,7 @@ u64 wmResizeHit(u64 wI, u64 x, u64 y) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 wx = wmGeomX(g);
   final u64 wy = wmGeomY(g);
   final u64 ww = wmGeomW(g);

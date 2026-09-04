@@ -104,7 +104,7 @@ u64 wmTitleDraw(u64 wI) {
   if (wmMeta(u64(wmMetaChrome)) > u64(0)) {
     if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
       if (wmWindowUsable(wI) > u64(0)) {
-        final u64 g = wmWin(wI, u64(wmWinGeom));
+        final u64 g = wmViewGeom(wI);
         final u64 x = wmAbsX(wI);
         final u64 y = wmAbsY(wI);
         final u64 w = wmGeomW(g);
@@ -129,7 +129,7 @@ u64 wmTitlePixel(u64 wI, u64 x, u64 y) {
   u64 c = u64(wmNoPixel);
   if (wmMeta(u64(wmMetaChrome)) > u64(0)) {
     if (wmWindowUsable(wI) > u64(0)) {
-      final u64 g = wmWin(wI, u64(wmWinGeom));
+      final u64 g = wmViewGeom(wI);
       final u64 wx = wmAbsX(wI);
       final u64 wy = wmAbsY(wI);
       final u64 ww = wmGeomW(g);
@@ -173,7 +173,7 @@ u64 wmTitleHit(u64 wI, u64 x, u64 y) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 wx = wmAbsX(wI);
   final u64 wy = wmAbsY(wI);
   final u64 ww = wmGeomW(g);

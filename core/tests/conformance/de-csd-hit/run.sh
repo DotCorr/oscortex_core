@@ -28,10 +28,14 @@ def fn(src, name):
 
 close_x = fn(wmde, "wmCloseX")
 btn_y = fn(wmde, "wmBtnY")
+if "wmViewGeom" not in close_x:
+    raise SystemExit("wmCloseX does not use view/visible geom")
 if "wmAbsX(wI)" not in close_x:
     raise SystemExit("wmCloseX does not use wmAbsX")
 if "wmGeomX(g)" in close_x and "wmAbsX" not in close_x:
     raise SystemExit("wmCloseX still uses packed geom X only")
+if "wmViewGeom" not in btn_y:
+    raise SystemExit("wmBtnY does not use view/visible geom")
 if "wmAbsY(wI)" not in btn_y and "wmAbsY(" not in btn_y:
     raise SystemExit("wmBtnY does not use wmAbsY")
 if "wmBtnPadY" not in btn_y:

@@ -177,7 +177,7 @@ u64 wmWinResizableOf(u64 wI) {
 /// Absolute screen X: walk one parent (no deep trees this rung).
 @bare
 u64 wmAbsX(u64 wI) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 x = wmGeomX(g);
   final u64 p = wmWinParentOf(wI);
   if (p >= u64(wmMaxWindows)) {
@@ -186,13 +186,13 @@ u64 wmAbsX(u64 wI) {
   if (wmWindowUsable(p) < u64(1)) {
     return x;
   }
-  return wmGeomX(wmWin(p, u64(wmWinGeom))) + x;
+  return wmGeomX(wmViewGeom(p)) + x;
 }
 
 /// Absolute screen Y.
 @bare
 u64 wmAbsY(u64 wI) {
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  final u64 g = wmViewGeom(wI);
   final u64 y = wmGeomY(g);
   final u64 p = wmWinParentOf(wI);
   if (p >= u64(wmMaxWindows)) {
@@ -201,7 +201,7 @@ u64 wmAbsY(u64 wI) {
   if (wmWindowUsable(p) < u64(1)) {
     return y;
   }
-  return wmGeomY(wmWin(p, u64(wmWinGeom))) + y;
+  return wmGeomY(wmViewGeom(p)) + y;
 }
 
 /// 1 if [child] may take [parent] without a cycle (parent is root or
@@ -601,6 +601,7 @@ void wmMoveOp(u64 frame, u64 ptr, u64 id) {
     i = i + u64(1);
   }
   wmBumpMeta(u64(wmMetaMoves));
+  wmVisMaybePublish(slot);
   uartWrite(Rodata.addressOf(wmStrMove), u64(10));
   uartPutHex(slot, u64(1));
   uartWrite(Rodata.addressOf(wmStrX), u64(3));
