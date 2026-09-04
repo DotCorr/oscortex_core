@@ -834,17 +834,17 @@ def main():
             "drag_not_232232": drag["dirty_px_p50"] < 232232,
             "launcher_n": launcher["n"] >= 30,
             "switcher_n": switcher["n"] >= 30,
-            "launcher_p95": (launcher["event_present_ms_warm"]["p95"]
-                             or launcher["event_present_ms"]["p95"]
+            "launcher_p95": (launcher.get("warm_p95_ms")
+                             or launcher.get("p95_ms")
                              or 999) < 100,
-            "launcher_max": (launcher["event_present_ms_warm"]["max"]
-                             or launcher["event_present_ms"]["max"]
+            "launcher_max": (launcher.get("warm_max_ms")
+                             or launcher.get("max_ms")
                              or 999) < 150,
-            "switcher_p95": (switcher["event_present_ms_warm"]["p95"]
-                             or switcher["event_present_ms"]["p95"]
+            "switcher_p95": (switcher.get("warm_p95_ms")
+                             or switcher.get("p95_ms")
                              or 999) < 100,
-            "switcher_max": (switcher["event_present_ms_warm"]["max"]
-                             or switcher["event_present_ms"]["max"]
+            "switcher_max": (switcher.get("warm_max_ms")
+                             or switcher.get("max_ms")
                              or 999) < 150,
         },
     }
@@ -892,9 +892,11 @@ def main():
         "menu_p95": menu["event_present_ms"]["p95"],
         "menu_max": menu["event_present_ms"]["max"],
         "launcher_n": launcher["n"],
-        "launcher_p95": launcher["event_present_ms"]["p95"],
+        "launcher_p95": launcher.get("warm_p95_ms", launcher.get("p95_ms")),
+        "launcher_hits": launcher.get("hits"),
         "switcher_n": switcher["n"],
-        "switcher_p95": switcher["event_present_ms"]["p95"],
+        "switcher_p95": switcher.get("warm_p95_ms", switcher.get("p95_ms")),
+        "switcher_hits": switcher.get("hits"),
         "pointer_dirty_p50": pointer["dirty_px_p50"],
         "drag_dirty_p50": drag["dirty_px_p50"],
         "menu_dirty_p50": menu["dirty_px_p50"],
