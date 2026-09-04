@@ -250,11 +250,18 @@ isr_common:
 
     call isrDispatch
 
+    /* Save/restore MXCSR + x87 so Graphite/FFmpeg C++ ticks cannot
+       leak SSE state into the interrupted context (m11 fxsave fence).
+       RSP is 16-aligned here (see comment above); fxsave needs 16. */
+    subq $512, %rsp
+    fxsave (%rsp)
     /* osgfx trampoline. Mailbox is zero unless `wm gfx`. */
     call osgfx_guest_tick
     call wmSessionRestore
     /* decoder mailbox. Zero unless hidden `play`. */
     call osmedia_guest_tick
+    fxrstor (%rsp)
+    addq $512, %rsp
 
     popq %r15
     popq %r14
