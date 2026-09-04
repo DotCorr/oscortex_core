@@ -3521,9 +3521,16 @@ void wmGrab(u64 x, u64 y) {
   // that blit is not folded into first-move latency.
   u64 px = u64(0);
   if (wmPageAddr() > u64(0)) {
-    wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
-        wmWin(hit, u64(wmWinGeom)));
-    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      wmDefEnqueue(u64(wmDefKindFocus), hit, wmWin(hit, u64(wmWinGeom)),
+          wmWin(hit, u64(wmWinGeom)));
+      wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+    } else {
+      px = wmRepaintWindow(was);
+      px = px + wmRepaintWindow(hit);
+      wmSetMeta(
+          u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+    }
   } else {
     px = wmRepaintWindow(was);
     px = px + wmRepaintWindow(hit);
@@ -3716,10 +3723,19 @@ void wmDragStep(u64 x, u64 y) {
   wmeventEnqueueConfigure(wI);
   u64 px = u64(0);
   if (wmPageAddr() > u64(0)) {
-    wmDefEnqueue(u64(wmDefKindDrag), wI,
-        wmPackGeom(ox, oy, ow, oh),
-        wmPackGeom(cx - b, cy - b, ow, oh));
-    wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      wmDefEnqueue(u64(wmDefKindDrag), wI,
+          wmPackGeom(ox, oy, ow, oh),
+          wmPackGeom(cx - b, cy - b, ow, oh));
+      wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+    } else {
+      /* Software sit-in (d2): page exists after `wm on`, but idle
+       * drain is gfx/DE-only. Paint now or MOVE is a ghost geom. */
+      px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+      wmVisMaybePublish(wI);
+      wmSetMeta(
+          u64(wmMetaRectPixels), px | u64(wmRectComposePending));
+    }
   } else {
     px = wmRepaintUnion2(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
     wmSetMeta(

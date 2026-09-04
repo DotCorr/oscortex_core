@@ -323,7 +323,12 @@ def main():
     if args.no_quit:
         print("comp-drive: leaving QEMU running (--no-quit)")
         return 0
-    qmp.cmd("quit")
+    # QEMU 8.2 std-vga can reset the QMP socket on quit after screendump
+    # ("multiboot knows VBE. we don't"). Dumps are already on disk.
+    try:
+        qmp.cmd("quit")
+    except (ConnectionResetError, OSError, BrokenPipeError):
+        print("comp-drive: QEMU reset QMP on quit; dumps already written")
     return 0
 
 

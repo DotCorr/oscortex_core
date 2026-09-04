@@ -677,8 +677,10 @@ void wmPopHide() {
     wmLatStamp(u64(wmLatKindMenu));
     wmSetMeta(u64(wmMetaPop), u64(0));
     if (wmPageAddr() > u64(0)) {
-      final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
-      wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, u64(0));
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
+        wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, u64(0));
+      }
     }
     if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
       wmGfxKick();
@@ -687,9 +689,7 @@ void wmPopHide() {
       wmPopPresentVis(ox, oy);
       wmLatNotePresent();
     } else {
-      if (wmPageAddr() < u64(1)) {
-        wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
-      }
+      wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
     }
   }
 }
@@ -842,10 +842,13 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
       uartNewline();
     }
   }
-  /* IRQ: state + enqueue. Paint in drain (surface/tick). */
+  /* IRQ: gfx/DE enqueue for paced drain. Software sit-in paints now
+   * — idle drain is gfx-only, and osxui1 has a page after `wm on`. */
   if (wmPageAddr() > u64(0)) {
-    final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
-    wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
+      wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
+    }
   }
   /* Present both sides even when drain last-wins coalesces hide. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
@@ -855,9 +858,7 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
     wmPopPresentVis(ox, oy);
     wmLatNotePresent();
   } else {
-    if (wmPageAddr() < u64(1)) {
-      wmPopPaintCard();
-    }
+    wmPopPaintCard();
   }
 }
 
