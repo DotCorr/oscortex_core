@@ -173,8 +173,12 @@ def first_drags(q, ser, n=22):
             time.sleep(0.35)
         d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
         time.sleep(0.08)
+        marked = ser.read()
         d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", True)
-        time.sleep(0.12)
+        # Split focus raise from the first move. Wait for the raise
+        # drain so first-drag LAT is the step, not the cold DrawWindow.
+        d15.wait_mark(ser, "WM DEFN COMMIT", marked, 1.5)
+        time.sleep(0.05)
         nx = FILES_TITLE[0] + 28
         ny = FILES_TITLE[1]
         ax, ay = d15.abs_xy(nx, ny)

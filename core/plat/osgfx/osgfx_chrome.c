@@ -635,6 +635,7 @@ static void chrome_blit(uint32_t *fb, int pitch, const uint32_t *src, int w,
 
 static uint64_t chrome_present_clip(const struct OsGfxGuestCmd *m, int x, int y,
                                     int rw, int rh);
+static void chrome_idle_prep(const struct OsGfxGuestCmd *m);
 
 /* Blits the cached frame to the scanout. Returns pixels, or 0 if it declined.
  *
@@ -705,6 +706,7 @@ uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m) {
       pg[OSGFX_WMPAGE_W_DESK_BLITS] = pg[OSGFX_WMPAGE_W_DESK_BLITS] + 1;
     }
   }
+  chrome_idle_prep(m);
   return 1;
 }
 
@@ -912,7 +914,7 @@ static void chrome_vacate(uint32_t *fb, int pitch_px, int ww, int hh, int ox,
 
 /* Discrete old/new drag. No session MISS, no giant AABB. Mailbox already
  * holds the live geom (Dart kicked). Returns transferred cache pixels. */
-uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
+static uint64_t chrome_drag_apply(uint64_t old_g, uint64_t new_g) {
   const struct OsGfxGuestCmd *m;
   uint64_t *pg;
   uint32_t *buf;
@@ -952,6 +954,18 @@ uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
     seed = (uint32_t)m->desk;
   }
   chrome_move_rect(buf, ww, ww, hh, ox, oy, nx, ny, ow, oh);
+  {
+    uint32_t *fb;
+    int pitch_px;
+    int bh;
+    fb = (uint32_t *)(uintptr_t)m->fb;
+    pitch_px = (int)(m->pitch / 4u);
+    bh = oh - OSGFX_TITLE_H;
+    if (bh > 0 && pitch_px >= ww) {
+      chrome_move_rect(fb, pitch_px, ww, hh, ox, oy + OSGFX_TITLE_H, nx,
+                       ny + OSGFX_TITLE_H, ow, bh);
+    }
+  }
   /* Radius fringe lives outside the strict window AABB. Filling only
    * x,y,w,h left AA/shadow chips on the vacated side. */
   chrome_vacate(buf, ww, ww, hh, ox - OSGFX_RADIUS, oy - OSGFX_RADIUS,
@@ -1010,6 +1024,10 @@ uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
   return px;
 }
 
+uint64_t osgfx_chrome_drag_step(uint64_t old_g, uint64_t new_g) {
+  return chrome_drag_apply(old_g, new_g);
+}
+
 /* Translate drag leaf primitives once on an already-presented frame.
  * Not a synthetic drag: no drag_step, no visible geom change. */
 static void chrome_idle_prep(const struct OsGfxGuestCmd *m) {
@@ -1057,11 +1075,17 @@ static void chrome_idle_prep(const struct OsGfxGuestCmd *m) {
   if (ww < 16 || wh < 16) {
     return;
   }
-  chrome_move_rect(buf, w, w, h, wx, wy, wx + 1, wy, 16, 16);
-  chrome_move_rect(buf, w, w, h, wx + 1, wy, wx, wy, 16, 16);
-  chrome_vacate(buf, w, w, h, wx, wy, ww, wh, wx, wy, ww, wh, seed);
-  (void)chrome_present_clip(m, wx, wy, ww, OSGFX_TITLE_H + 4);
-  (void)chrome_present_clip(m, wx, wy, 24, wh);
+  /* Same apply the live drag path uses. Identical geom: no visible move. */
+  (void)chrome_drag_apply(m->win0, m->win0);
+  {
+    uint64_t shifted;
+    /* dx>=24 takes the AABB present, the first-user-step cold path. */
+    shifted = ((uint64_t)(unsigned)(wx + 32) << 48) |
+              ((uint64_t)(unsigned)wy << 32) |
+              ((uint64_t)(unsigned)ww << 16) | (uint64_t)(unsigned)wh;
+    (void)chrome_drag_apply(m->win0, shifted);
+    (void)chrome_drag_apply(shifted, m->win0);
+  }
   win_ready = 1;
 }
 

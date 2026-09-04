@@ -1985,9 +1985,8 @@ void wmDefDrain() {
           if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
             wmGfxKick();
             final u64 dpx = osgfx_chrome_drag_step(oldG, nextG);
-            if (slot < u64(wmMaxWindows)) {
-              final u64 body = wmDrawWindow(slot, u64(1));
-            }
+            /* Body travels with the cache/scanout move. A decorated
+             * DrawWindow here was the 200 ms first-step TCG. */
             wmPageSet(u64(wmPageWDmgPx), dpx);
             wmDmgAcc(dpx, u64(2), u64(0), u64(1));
             wmGfxChromeStamp();

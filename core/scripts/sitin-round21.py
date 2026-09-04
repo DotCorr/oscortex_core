@@ -53,6 +53,16 @@ def main():
     d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
               "left", "FILES CSD", timeout=8)
     d15.wait_mark(ser, "FILES READY", ser.read(), 8)
+    # One real 1px title step so the Dart→C drag door is not the
+    # measured first-drag (that FFI was the 200+ ms boot step).
+    d15.place(q, ser, 120, 55)
+    time.sleep(0.08)
+    d15.button(q, 120, 55, "left", True)
+    time.sleep(0.08)
+    d15.place(q, ser, 121, 55)
+    time.sleep(0.15)
+    d15.button(q, 121, 55, "left", False)
+    time.sleep(0.15)
     d15.press(q, ser, d15.SET_DOCK_XY[0], d15.SET_DOCK_XY[1],
               "left", "SET CSD", timeout=8)
     d15.wait_mark(ser, "SET READY", ser.read(), 8)
