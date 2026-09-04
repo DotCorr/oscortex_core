@@ -558,8 +558,8 @@ u64 wmWindowRegionLive(u64 wI) {
 /// (`win_close_x`) so a cache blit cannot leave the vacated disc live.
 @bare
 u64 wmCloseX(u64 wI) {
-  final u64 g = wmViewGeom(wI);
-  return wmAbsX(wI) + wmGeomW(g) - u64(wmBtnGap) - u64(wmBtnS);
+  final u64 g = wmHitGeom(wI);
+  return wmHitAbsX(wI) + wmGeomW(g) - u64(wmBtnGap) - u64(wmBtnS);
 }
 
 /// Min-button origin X for window [wI].
@@ -578,14 +578,14 @@ u64 wmMaxX(u64 wI) {
 /// [wmBtnPadY] matches SESS_BTN_PAD_Y. Absolute Y matches [wmTitleHit].
 @bare
 u64 wmBtnY(u64 wI) {
-  final u64 g = wmViewGeom(wI);
-  u64 y = wmAbsY(wI) + u64(wmBtnPadY);
+  final u64 g = wmHitGeom(wI);
+  u64 y = wmHitAbsY(wI) + u64(wmBtnPadY);
   u64 th = u64(wmTitleH);
   if (th > wmGeomH(g)) {
     th = wmGeomH(g);
   }
-  if (y + u64(wmBtnS) > wmAbsY(wI) + th) {
-    y = wmAbsY(wI);
+  if (y + u64(wmBtnS) > wmHitAbsY(wI) + th) {
+    y = wmHitAbsY(wI);
   }
   return y;
 }
@@ -790,8 +790,10 @@ u64 wmPendGeomOf(u64 wI) {
   return wmPage(u64(wmPageWPend0) + wI);
 }
 
-/// Hit-test / chrome / blit destination: VIS while a HOLD is open
-/// (pend set and client seq==0). After COMMIT, the requested geom.
+/// Compose / blit destination: VIS while a size HOLD is open (pend set
+/// and client seq==0). After COMMIT the client buffer matches requested,
+/// so paint uses that AABB. Hit-test must not follow this jump — see
+/// [wmHitGeom].
 @bare
 u64 wmViewGeom(u64 wI) {
   if (wI >= u64(wmMaxWindows)) {
@@ -804,6 +806,49 @@ u64 wmViewGeom(u64 wI) {
     }
   }
   return wmWin(wI, u64(wmWinGeom));
+}
+
+/// Hit-test / focus / CSD controls: last presented AABB while a HOLD
+/// is armed, including the COMMIT-to-publish window. Input must not
+/// jump to the pending size before VIS + generation publish.
+@bare
+u64 wmHitGeom(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  if (wmPendGeomOf(wI) > u64(0)) {
+    return wmVisGeom(wI);
+  }
+  return wmWin(wI, u64(wmWinGeom));
+}
+
+/// Absolute origin of [wmHitGeom] (one parent, same as [wmAbsX]).
+@bare
+u64 wmHitAbsX(u64 wI) {
+  final u64 g = wmHitGeom(wI);
+  final u64 x = wmGeomX(g);
+  final u64 p = wmWinParentOf(wI);
+  if (p >= u64(wmMaxWindows)) {
+    return x;
+  }
+  if (wmWindowUsable(p) < u64(1)) {
+    return x;
+  }
+  return wmGeomX(wmHitGeom(p)) + x;
+}
+
+@bare
+u64 wmHitAbsY(u64 wI) {
+  final u64 g = wmHitGeom(wI);
+  final u64 y = wmGeomY(g);
+  final u64 p = wmWinParentOf(wI);
+  if (p >= u64(wmMaxWindows)) {
+    return y;
+  }
+  if (wmWindowUsable(p) < u64(1)) {
+    return y;
+  }
+  return wmGeomY(wmHitGeom(p)) + y;
 }
 
 @bare
@@ -869,6 +914,9 @@ void wmVisClear(u64 wI) {
   }
   wmPageSet(u64(wmPageWVis0) + wI, u64(0));
   wmPageSet(u64(wmPageWPend0) + wI, u64(0));
+  final u64 gen = wmPage(u64(wmPageWVisGen0) + wI) + u64(1);
+  wmPageSet(u64(wmPageWVisGen0) + wI, gen);
+  wmGeomNote(Rodata.addressOf(wmStrVis), u64(9), wI, u64(0), gen);
 }
 
 /// Publish VIS when scanout now matches requested geom (first present,
@@ -1878,7 +1926,11 @@ void wmCloseWindow(u64 wI) {
     return;
   }
   final u64 owner = wmWin(wI, u64(wmWinOwner));
-  final u64 g = wmWin(wI, u64(wmWinGeom));
+  /* Uncover the last presented AABB, not the pending max size. */
+  u64 g = wmVisGeom(wI);
+  if (g < u64(1)) {
+    g = wmWin(wI, u64(wmWinGeom));
+  }
   final u64 b = u64(wmBorder);
   final u64 ox = wmGeomX(g) - b;
   final u64 oy = wmGeomY(g) - b;
@@ -2308,35 +2360,46 @@ void wmDefDrain() {
         wmPopDrainPaint(oldG, nextG);
       } else {
         if (kind == u64(wmDefKindDrag)) {
-          if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-            /* Mailbox win0/win1 = live Dart geoms before the cache blit
-             * so paint + chrome_key + hit-test share one origin. */
-            wmGfxKick();
-            final u64 dpx = osgfx_chrome_drag_step(oldG, nextG);
-            /* Body travels with the cache/scanout move. A decorated
-             * DrawWindow here was the 200 ms first-step TCG. */
-            wmPageSet(u64(wmPageWDmgPx), dpx);
-            wmDmgAcc(dpx, u64(2), u64(0), u64(1));
-            wmGfxChromeStamp();
-          } else {
-            u64 ux = wmPage(u64(wmPageWDefUx));
-            u64 uy = wmPage(u64(wmPageWDefUy));
-            u64 uw = wmPage(u64(wmPageWDefUw));
-            u64 uh = wmPage(u64(wmPageWDefUh));
-            if (uw < u64(1)) {
-              final u64 px = wmRepaintUnion2(
-                  wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
-                  wmGeomX(nextG), wmGeomY(nextG), wmGeomW(nextG),
-                  wmGeomH(nextG));
-            } else {
-              final u64 px = wmRepaintRect(ux, uy, uw, uh);
+          u64 hold = u64(0);
+          if (slot < u64(wmMaxWindows)) {
+            if (wmWin(slot, u64(wmWinSeq)) < u64(1)) {
+              hold = u64(1);
             }
           }
-          /* Discrete old/new already on scanout. Do not leave an AABB
-           * for the pointer path to inherit. */
-          wmDamageClear();
-          if (slot < u64(wmMaxWindows)) {
-            wmVisMaybePublish(slot);
+          if (hold > u64(0)) {
+            /* Size HOLD: scanout + VIS stay put. Do not blit pending. */
+            wmDamageClear();
+          } else {
+            if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+              /* Mailbox win0/win1 = live Dart geoms before the cache blit
+               * so paint + chrome_key + hit-test share one origin. */
+              wmGfxKick();
+              final u64 dpx = osgfx_chrome_drag_step(oldG, nextG);
+              /* Body travels with the cache/scanout move. A decorated
+               * DrawWindow here was the 200 ms first-step TCG. */
+              wmPageSet(u64(wmPageWDmgPx), dpx);
+              wmDmgAcc(dpx, u64(2), u64(0), u64(1));
+              wmGfxChromeStamp();
+            } else {
+              u64 ux = wmPage(u64(wmPageWDefUx));
+              u64 uy = wmPage(u64(wmPageWDefUy));
+              u64 uw = wmPage(u64(wmPageWDefUw));
+              u64 uh = wmPage(u64(wmPageWDefUh));
+              if (uw < u64(1)) {
+                final u64 px = wmRepaintUnion2(
+                    wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
+                    wmGeomX(nextG), wmGeomY(nextG), wmGeomW(nextG),
+                    wmGeomH(nextG));
+              } else {
+                final u64 px = wmRepaintRect(ux, uy, uw, uh);
+              }
+            }
+            /* Discrete old/new already on scanout. Do not leave an AABB
+             * for the pointer path to inherit. */
+            wmDamageClear();
+            if (slot < u64(wmMaxWindows)) {
+              wmVisMaybePublish(slot);
+            }
           }
         }
       }
@@ -2430,9 +2493,9 @@ u64 wmResizeHit(u64 wI, u64 x, u64 y) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
-  final u64 g = wmViewGeom(wI);
-  final u64 wx = wmGeomX(g);
-  final u64 wy = wmGeomY(g);
+  final u64 g = wmHitGeom(wI);
+  final u64 wx = wmHitAbsX(wI);
+  final u64 wy = wmHitAbsY(wI);
   final u64 ww = wmGeomW(g);
   final u64 wh = wmGeomH(g);
   final u64 edge = u64(wmResizeEdge);

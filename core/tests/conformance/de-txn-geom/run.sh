@@ -54,12 +54,20 @@ if "wmVisGeom" not in view:
 if "wmWinSeq" not in view:
     raise SystemExit("wmViewGeom does not gate HOLD on seq==0")
 
+hit = fn(wmde, "wmHitGeom")
+if "wmPendGeomOf" not in hit:
+    raise SystemExit("wmHitGeom does not consult pending")
+if "wmVisGeom" not in hit:
+    raise SystemExit("hit-test HOLD path does not return committed vis")
+if "wmWinSeq" in hit:
+    raise SystemExit("wmHitGeom must stay on VIS after COMMIT until publish")
+
 close_x = fn(wmde, "wmCloseX")
 btn_y = fn(wmde, "wmBtnY")
-if "wmViewGeom" not in close_x:
-    raise SystemExit("wmCloseX hit-test is not view/visible geom")
-if "wmViewGeom" not in btn_y:
-    raise SystemExit("wmBtnY hit-test is not view/visible geom")
+if "wmHitGeom" not in close_x:
+    raise SystemExit("wmCloseX hit-test is not committed/visible geom")
+if "wmHitGeom" not in btn_y:
+    raise SystemExit("wmBtnY hit-test is not committed/visible geom")
 
 absx = fn(ext, "wmAbsX")
 absy = fn(ext, "wmAbsY")
@@ -67,7 +75,7 @@ if "wmViewGeom" not in absx or "wmViewGeom" not in absy:
     raise SystemExit("wmAbs origin is not view geom during HOLD")
 
 title = fn(chrome, "wmTitleHit")
-if "wmViewGeom" not in title:
+if "wmHitGeom" not in title:
     raise SystemExit("wmTitleHit uses requested geom during HOLD")
 
 toggle = fn(wmde, "wmToggleMaxWindow")
@@ -83,6 +91,8 @@ if "wmDefFlagSeq0" in drain:
     raise SystemExit("max drain still sets Seq0 (uncommitted blit)")
 if "wmVisMaybePublish" not in drain:
     raise SystemExit("drag drain does not publish committed VIS")
+if "wmWinSeq" not in drain:
+    raise SystemExit("drag drain does not refuse a size-HOLD blit")
 
 maybe = fn(wmde, "wmVisMaybePublish")
 if "wmWinSeq" not in maybe:
@@ -106,6 +116,19 @@ if "wmDefEnqueue" in resize:
 close = fn(wmde, "wmCloseWindow")
 if "wmVisClear" not in close:
     raise SystemExit("close does not drop committed VIS")
+if "wmVisGeom" not in close:
+    raise SystemExit("close uncovers requested geom, not committed VIS")
+
+clear = fn(wmde, "wmVisClear")
+if "wmStrVis" not in clear:
+    raise SystemExit("VIS clear does not publish a committed generation")
+
+grab = fn(wm, "wmGrab")
+if "wmPendGeomOf" not in grab:
+    raise SystemExit("title grab does not refuse drag during HOLD")
+drag = fn(wm, "wmDragStep")
+if "wmPendGeomOf" not in drag:
+    raise SystemExit("wmDragStep does not refuse a HOLD translate")
 
 kick = fn(gfx, "wmGfxKick")
 if "wmViewGeom" not in kick:

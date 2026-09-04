@@ -173,9 +173,9 @@ u64 wmTitleHit(u64 wI, u64 x, u64 y) {
   if (wmWindowUsable(wI) < u64(1)) {
     return u64(0);
   }
-  final u64 g = wmViewGeom(wI);
-  final u64 wx = wmAbsX(wI);
-  final u64 wy = wmAbsY(wI);
+  final u64 g = wmHitGeom(wI);
+  final u64 wx = wmHitAbsX(wI);
+  final u64 wy = wmHitAbsY(wI);
   final u64 ww = wmGeomW(g);
   final u64 wh = wmGeomH(g);
   u64 th = u64(wmTitleH);

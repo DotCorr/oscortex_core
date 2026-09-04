@@ -3390,8 +3390,15 @@ void wmGrab(u64 x, u64 y) {
     }
   }
   if (drag > u64(0)) {
-    final u64 ax = wmAbsX(hit);
-    final u64 ay = wmAbsY(hit);
+    if (wmPendGeomOf(hit) > u64(0)) {
+      /* Size HOLD: hit-test stays on VIS; do not start a move that
+       * would blit the pending AABB onto scanout. */
+      drag = u64(0);
+    }
+  }
+  if (drag > u64(0)) {
+    final u64 ax = wmHitAbsX(hit);
+    final u64 ay = wmHitAbsY(hit);
     u64 gx = x - ax;
     u64 gy = y - ay;
     if (resize > u64(0)) {
@@ -3568,6 +3575,9 @@ void wmDragStep(u64 x, u64 y) {
   final u64 wI = drag - u64(1);
   if (wmWindowUsable(wI) < u64(1)) {
     wmSetMeta(u64(wmMetaDrag), u64(0));
+    return;
+  }
+  if (wmPendGeomOf(wI) > u64(0)) {
     return;
   }
   if ((wmMeta(u64(wmMetaGrabX)) & u64(wmResizeMark)) > u64(0)) {

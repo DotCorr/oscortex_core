@@ -95,6 +95,8 @@ def _vis_xywh(blob, slot, min_w=240, min_h=200):
         w = int(m.group(4), 16)
         h = int(m.group(5), 16)
         if w < min_w or h < min_h:
+            # Committed clear (close): do not keep a stale AABB.
+            geom = None
             continue
         geom = (
             int(m.group(2), 16),
@@ -159,20 +161,30 @@ def ctrl_of(geom, which="close"):
 
 
 def wait_vis(ser, serial_path, n0=None, pred=None, timeout=3.0):
-    if n0 is None:
-        n0 = vis_count(serial_path, ser.archive or "")
+    """Wait for THIS FILES slot's committed VIS, not any sibling token."""
+    del n0
+    g0 = live_files_xywh(serial_path, ser.archive or "")
     deadline = time.time() + timeout
     while time.time() < deadline:
         ser.read()
-        n = vis_count(serial_path, ser.archive or "")
         g = live_files_xywh(serial_path, ser.archive or "")
-        if n > n0:
-            if pred is None or (g is not None and pred(g)):
+        if pred is not None:
+            if g is not None and pred(g):
                 return g
-        elif pred is not None and g is not None and pred(g):
+        elif g is not None and g != g0:
             return g
         time.sleep(0.02)
     return live_files_xywh(serial_path, ser.archive or "")
+
+
+def wait_files_gone(ser, serial_path, timeout=2.5):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ser.read()
+        if live_files_xywh(serial_path, ser.archive or "") is None:
+            return True
+        time.sleep(0.02)
+    return live_files_xywh(serial_path, ser.archive or "") is None
 
 
 def main():
@@ -234,13 +246,14 @@ def main():
     def ensure_restored(g):
         if g is None:
             return None
-        if g[2] < 1000:
-            return g
-        n0 = vis_count(serial_path, ser.archive or "")
-        rx, ry = ctrl_of(g, "max")
-        d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
-        return wait_vis(ser, serial_path, n0=n0,
-                        pred=lambda gg: gg[2] < 1000, timeout=4) or g
+        tries = 0
+        while g is not None and g[2] >= 1000 and tries < 3:
+            rx, ry = ctrl_of(g, "max")
+            d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
+            g = wait_vis(ser, serial_path,
+                         pred=lambda gg: gg[2] < 1000, timeout=4) or g
+            tries += 1
+        return g
 
     cycle = 0
     while n < WANT:
@@ -309,6 +322,7 @@ def main():
             if geom is not None and geom[2] < 1000:
                 cx, cy = ctrl_of(geom, "close")
                 d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
+                wait_files_gone(ser, serial_path, timeout=2.5)
                 dump("close")
                 n0 = vis_count(serial_path, ser.archive or "")
                 d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],

@@ -63,9 +63,16 @@ def main():
     dump("start")
     # Close a warm FILES if present so the next dock click is a cold launch.
     geom = cs.live_files_xywh(serial_path, ser.archive or "")
+    if geom is not None and geom[2] >= 1000:
+        rx, ry = cs.ctrl_of(geom, "max")
+        d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
+        cs.wait_vis(ser, serial_path, pred=lambda g: g[2] < 1000, timeout=4)
+        geom = cs.live_files_xywh(serial_path, ser.archive or "")
+        dump("pre-restore")
     if geom is not None and geom[2] < 1000:
         cx, cy = cs.ctrl_of(geom, "close")
         d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
+        cs.wait_files_gone(ser, serial_path, timeout=2.5)
         dump("closed")
         time.sleep(dt)
     dump("desk")
@@ -107,6 +114,12 @@ def main():
     n3 = cs.vis_count(serial_path, ser.archive or "")
     d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
     cs.wait_vis(ser, serial_path, n0=n3, pred=lambda g: g[2] < 1000, timeout=4)
+    geom = cs.live_files_xywh(serial_path, ser.archive or "") or geom
+    if geom[2] >= 1000:
+        rx, ry = cs.ctrl_of(geom, "max")
+        d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
+        cs.wait_vis(ser, serial_path, pred=lambda g: g[2] < 1000, timeout=4)
+        geom = cs.live_files_xywh(serial_path, ser.archive or "") or geom
     dump("restore")
     d15.press(q, ser, SET_TITLE[0], SET_TITLE[1], "left", "WM DEFN", timeout=3)
     dump("set-focus")
@@ -134,6 +147,7 @@ def main():
     if geom[2] < 1000:
         cx, cy = cs.ctrl_of(geom, "close")
         d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=2.5)
+        cs.wait_files_gone(ser, serial_path, timeout=2.5)
         dump("close")
         n4 = cs.vis_count(serial_path, ser.archive or "")
         d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],

@@ -192,16 +192,26 @@ def main():
                     n0 = cs.vis_count(serial_path, ser.archive or "")
                     d15.press(q, ser, mx, my, "left", "WM REQ", timeout=2)
                     cs.wait_vis(ser, serial_path, n0=n0,
-                                pred=lambda gg: gg[2] >= 1000, timeout=3)
-                    take("loop-max")
+                                pred=lambda gg: gg[2] >= 1000, timeout=4)
                     geom = live()
-                    if geom is not None:
+                    if geom is not None and geom[2] >= 1000:
+                        take("loop-max")
                         rx, ry = cs.ctrl_of(geom, "max")
                         n1 = cs.vis_count(serial_path, ser.archive or "")
                         d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
                         cs.wait_vis(ser, serial_path, n0=n1,
-                                    pred=lambda gg: gg[2] < 1000, timeout=3)
-                        take("loop-rest")
+                                    pred=lambda gg: gg[2] < 1000, timeout=4)
+                        geom = live()
+                        if geom is not None and geom[2] >= 1000:
+                            rx, ry = cs.ctrl_of(geom, "max")
+                            d15.press(q, ser, rx, ry, "left", "WM REQ",
+                                      timeout=2)
+                            cs.wait_vis(ser, serial_path,
+                                        pred=lambda gg: gg[2] < 1000,
+                                        timeout=4)
+                            geom = live()
+                        if geom is not None and geom[2] < 1000:
+                            take("loop-rest")
                 except Exception as e:
                     faults.append("max/rest %s" % e)
         if n <= 3 or n % 8 == 0:
