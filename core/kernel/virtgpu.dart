@@ -2531,7 +2531,8 @@ u64 virtgpuFbTry() {
   final u64 resp = qdesc + u64(0xA00);
   u64 slot = virtgpuAvailIdx(qdrv);
   u64 head = (slot << u64(1)) & u64(62);
-  virtgpuRamPut32(req, u64(virtgpuTypeGetDisp));
+  virtgpuPutHdr(req, u64(virtgpuTypeGetDisp));
+  virtgpuZero(resp, u64(virtgpuDispBytes));
   virtgpuPutDesc(
       qdesc, head, req, u64(virtgpuHdrBytes), u64(virtgpuDescNext),
       head + u64(1));
@@ -2541,7 +2542,9 @@ u64 virtgpuFbTry() {
   virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
   virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
   Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
-  if (virtgpuWaitUsed(qdev, slot + u64(1)) < (slot + u64(1))) {
+  u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
+  if (used < (slot + u64(1))) {
+    uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
   u64 sw = virtgpuRamGet32(resp + u64(32));
@@ -2586,6 +2589,7 @@ u64 virtgpuFbTry() {
     nframes = u64(1);
   }
   if (nframes > u64(virtgpuBackCap)) {
+    uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
     return u64(0);
   }
   final u64 ebytes = nframes << u64(4);
@@ -2630,6 +2634,7 @@ u64 virtgpuFbTry() {
   while (ei < nframes) {
     final u64 fr = allocFrame();
     if (fr < u64(1)) {
+      uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
       return u64(0);
     }
     vmZeroFrame(fr);
@@ -2637,6 +2642,7 @@ u64 virtgpuFbTry() {
       first = fr;
     }
     if (fr != first + (ei << u64(12))) {
+      uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
       return u64(0);
     }
     final u64 eoff = ei << u64(4);
