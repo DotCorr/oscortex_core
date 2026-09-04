@@ -76,6 +76,12 @@ def main():
     q.key("esc")
     time.sleep(0.2)
 
+    # Park FILES away from the overlay AABB so the switcher is visible.
+    d15.place(q, ser, 80, 48)
+    d15.button(q, 80, 48, "left", True)
+    d15.place(q, ser, 720, 48)
+    d15.button(q, 720, 48, "left", False)
+    time.sleep(0.15)
     marked = harvest(ser)
     key_edge(q, "alt", True)
     time.sleep(0.05)
@@ -86,7 +92,7 @@ def main():
     t1 = time.time()
     key_edge(q, "tab", True)
     key_edge(q, "tab", False)
-    time.sleep(0.2)
+    time.sleep(0.35)
     d15.shot(q, os.path.join(ART, "oscortex-round33-alt-tab.png"))
     key_edge(q, "alt", False)
     switch_go = wait_tok(ser, "WM SWITCH GO", marked, 2.5)
@@ -117,6 +123,7 @@ def main():
     time.sleep(0.25)
     combo(q, "ctrl", "v")
     studio_paste = wait_tok(ser, "STUDIO PASTE", marked, 3.0)
+    time.sleep(0.25)
     d15.shot(q, os.path.join(ART, "oscortex-round33-clipboard-files.png"))
 
     marked2 = harvest(ser)
@@ -132,10 +139,33 @@ def main():
     files_refresh = wait_tok(ser, "FILES REFRESH", marked2, 2.0)
     combo(q, "ctrl", "n")
     files_new = wait_tok(ser, "FILES NEW", marked2, 2.0)
+    d15.place(q, ser, 300, 180)
+    d15.button(q, 300, 180, "right", True)
+    d15.button(q, 300, 180, "right", False)
+    wait_tok(ser, "FILES MENU", marked2, 2.0)
+    q.key("down")
+    q.key("down")
+    q.key("down")
+    q.key("ret")
+    files_del_conf = wait_tok(ser, "FILES DEL CONFIRM", marked2, 2.0)
+    d15.button(q, 300, 180, "right", True)
+    d15.button(q, 300, 180, "right", False)
+    wait_tok(ser, "FILES MENU", marked2, 1.5)
+    q.key("down")
+    q.key("down")
+    q.key("down")
+    q.key("ret")
+    files_del = wait_tok(ser, "FILES DEL", marked2, 2.0)
+    q.key("left")
+    files_back = wait_tok(ser, "FILES BACK", marked2, 1.5)
+    q.key("right")
+    files_fwd = wait_tok(ser, "FILES FWD", marked2, 1.5)
+    combo(q, "ctrl", "v")
+    files_paste = wait_tok(ser, "FILES PASTE", marked2, 1.5)
     blob = harvest(ser)
     files_nodir = "FILES NO DIR" in blob
     files_ro = "FILES RO" in blob
-    files_writable = (not files_ro) or files_new
+    files_writable = files_new or ("FILES NEW" in blob)
 
     set_xy = getattr(d15, "SET_DOCK_XY", (1040, 696))
     marked3 = harvest(ser)
@@ -149,7 +179,21 @@ def main():
     d15.button(q, 220, 100, "left", False)
     set_theme = wait_tok(ser, "SET THEME", marked3, 2.5) or wait_tok(
         ser, "SET CARD", marked3, 1.0)
-    set_persist = "SET THEME" in harvest(ser)
+    theme_blob = harvest(ser)
+    theme_line = ""
+    for line in theme_blob[len(marked3):].splitlines():
+        if line.startswith("SET THEME"):
+            theme_line = line.strip()
+    d15.place(q, ser, set_xy[0], set_xy[1])
+    d15.button(q, set_xy[0], set_xy[1], "left", True)
+    d15.button(q, set_xy[0], set_xy[1], "left", False)
+    set_relaunch = wait_tok(ser, "SET READY", marked3, 4.0)
+    relaunch_theme = ""
+    for line in harvest(ser)[len(theme_blob):].splitlines():
+        if line.startswith("SET THEME"):
+            relaunch_theme = line.strip()
+    set_persist = bool(theme_line) and (
+        (not relaunch_theme) or relaunch_theme == theme_line)
 
     blob = harvest(ser)
     launcher = {
@@ -198,6 +242,11 @@ def main():
         "copy": files_copy or ("FILES COPY" in blob),
         "refresh": files_refresh,
         "new_file": files_new,
+        "delete_confirm": files_del_conf or ("FILES DEL CONFIRM" in blob),
+        "delete": files_del or ("FILES DEL" in blob),
+        "back": files_back or ("FILES BACK" in blob),
+        "forward": files_fwd or ("FILES FWD" in blob),
+        "paste": files_paste or ("FILES PASTE" in blob),
         "no_mkdir": files_nodir,
         "writable": files_writable,
         "ro_surfaced": files_ro,
@@ -207,6 +256,7 @@ def main():
             "FILES RENAME": "FILES RENAME" in blob,
             "FILES COPY": "FILES COPY" in blob,
             "FILES DEL": "FILES DEL" in blob,
+            "FILES DEL CONFIRM": "FILES DEL CONFIRM" in blob,
             "FILES NEW": "FILES NEW" in blob,
             "FILES NO DIR": files_nodir,
             "FILES REFRESH": "FILES REFRESH" in blob,
@@ -220,6 +270,9 @@ def main():
         "store": "CHROME.DAT 4 bytes [chrome,theme,accent,wall]",
         "theme": set_theme,
         "persist_file": set_persist,
+        "relaunch": set_relaunch,
+        "theme_boot": theme_line,
+        "theme_relaunch": relaunch_theme,
         "reboot": "survives leftover disk.img reboot when FAT is writable",
         "tokens": {
             "SET THEME": "SET THEME" in blob,

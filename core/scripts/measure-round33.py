@@ -451,6 +451,73 @@ def cold_drag_first_scroll(q, ser, n=32):
     return out
 
 
+def fire_switcher(q):
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": True, "key": {"type": "qcode", "data": "alt"}},
+    }])
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": True, "key": {"type": "qcode", "data": "tab"}},
+    }])
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": False, "key": {"type": "qcode", "data": "tab"}},
+    }])
+
+
+def fire_switcher_up(q):
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": False, "key": {"type": "qcode", "data": "alt"}},
+    }])
+
+
+def overlay_token_burst(q, ser, label, fire, dismiss, token, n):
+    walls = []
+    px_tail = []
+    paired = []
+    t0 = time.time()
+    for i in range(n):
+        try:
+            dismiss()
+        except Exception:
+            pass
+        time.sleep(0.04)
+        marked = harvest(ser)
+        t_inj = time.time()
+        try:
+            fire()
+        except Exception as e:
+            print(label, "inject", e)
+            continue
+        hit = None
+        while (time.time() - t_inj) < 1.2:
+            blob = harvest(ser)
+            if blob[len(marked):].find(token) >= 0:
+                hit = True
+                break
+            time.sleep(0.004)
+        wall = (time.time() - t_inj) * 1000.0
+        if hit is None:
+            print(label, i, "unpaired", wall)
+            try:
+                dismiss()
+            except Exception:
+                pass
+            continue
+        walls.append(wall)
+        px_tail.append(420 * 220)
+        paired.append({"i": i, "wall_ms": round(wall, 2), "token": token})
+        print(label, i, "ms", round(wall, 2))
+        try:
+            dismiss()
+        except Exception:
+            pass
+        time.sleep(0.03)
+    return summarize(label, walls, px_tail, paired, time.time() - t0)
+
+
 def restore_scene(q, ser):
     try:
         q.key("esc")
@@ -527,11 +594,23 @@ def main():
                  [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
                   for i in range(n_menu)],
                  KIND_MENU, btn="right")
+    launcher = overlay_token_burst(
+        q, ser, "launcher",
+        fire=lambda: q.key("f4"),
+        dismiss=lambda: q.key("esc"),
+        token="WM LAUNCH SHOW",
+        n=max(12, int(os.environ.get("DRIVE_LAUNCH_N", "16"))))
+    switcher = overlay_token_burst(
+        q, ser, "switcher",
+        fire=lambda: fire_switcher(q),
+        dismiss=lambda: fire_switcher_up(q),
+        token="WM SWITCH SHOW",
+        n=max(12, int(os.environ.get("DRIVE_SWITCH_N", "16"))))
 
     dest_name = os.environ.get("OSCORTEX_PERF_OUT", "oscortex-round33-perf.json")
     phase = phase_counts(ser, phase0)
     payload = {
-        "round": 32,
+        "round": 33,
         "pairing": "strict WM DONE op+kind (not first SCAN/FRAME)",
         "token": "WM DONE <opid> K <kind> PX <px> R <res> U <used> X Y W H",
         "kinds": {
@@ -548,6 +627,8 @@ def main():
         "cold_first_scroll": cold,
         "scroll": scroll,
         "menu": menu,
+        "launcher": launcher,
+        "switcher": switcher,
         "virtio_phase": {
             "present": "GOP strips+title; virtio one union TRANSFER+FLUSH",
             "queue": "pipelined xfer+flush, one used.idx wait per rect",
@@ -581,6 +662,8 @@ def main():
             "no_full_menu_warm": menu["full_1280_after_warm"] == 0,
             "no_session_compose": phase["cpath_compose"] == 0,
             "drag_not_232232": drag["dirty_px_p50"] < 232232,
+            "launcher_p95": (launcher["event_present_ms"]["p95"] or 999) < 100,
+            "switcher_p95": (switcher["event_present_ms"]["p95"] or 999) < 100,
         },
     }
     dest = os.path.join(art, dest_name)
@@ -626,6 +709,10 @@ def main():
         "drag_p95": drag["event_present_ms"]["p95"],
         "menu_p95": menu["event_present_ms"]["p95"],
         "menu_max": menu["event_present_ms"]["max"],
+        "launcher_n": launcher["n"],
+        "launcher_p95": launcher["event_present_ms"]["p95"],
+        "switcher_n": switcher["n"],
+        "switcher_p95": switcher["event_present_ms"]["p95"],
         "pointer_dirty_p50": pointer["dirty_px_p50"],
         "drag_dirty_p50": drag["dirty_px_p50"],
         "menu_dirty_p50": menu["dirty_px_p50"],

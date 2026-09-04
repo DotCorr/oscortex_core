@@ -79,8 +79,9 @@ void _start(void) {
     die(0x0C200003UL);
   }
 
-  /* Second live region is slot 1: vmShmBase + shmSlotPages*4096. */
-  volatile u8 *p = (volatile u8 *)0x10280000UL;
+  /* Each process maps its first shmcreate at vmShmBase. TAKE copied
+   * into this process's region; do not use a global slot-1 VA. */
+  volatile u8 *p = (volatile u8 *)0x10200000UL;
   unsigned at = put(0, "WM CLIP B GOT ");
   u64 i = 0;
   while (i < PAY_LEN) {

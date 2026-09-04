@@ -18,6 +18,13 @@ def combo(q, *names):
     q.cmd("send-key", keys=[{"type": "qcode", "data": n} for n in names])
 
 
+def key_edge(q, name, down):
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": down, "key": {"type": "qcode", "data": name}},
+    }])
+
+
 def main():
     if len(sys.argv) < 5:
         raise SystemExit(
@@ -58,13 +65,17 @@ def main():
     q.key("esc")
     time.sleep(0.15)
     dump("launcher-hide")
-    combo(q, "alt", "tab")
-    time.sleep(0.2)
+    key_edge(q, "alt", True)
+    time.sleep(0.05)
+    key_edge(q, "tab", True)
+    key_edge(q, "tab", False)
+    time.sleep(0.25)
     dump("switcher")
-    combo(q, "alt", "tab")
-    time.sleep(0.15)
+    key_edge(q, "tab", True)
+    key_edge(q, "tab", False)
+    time.sleep(0.2)
     dump("switcher-cycle")
-    q.key("ret")
+    key_edge(q, "alt", False)
     time.sleep(0.15)
     dump("switcher-go")
     d15.place(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
