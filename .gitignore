@@ -4,6 +4,9 @@ build/
 # Repo-owned DCDart bootstrap (base+patch). Never a user checkout.
 .dcdart-bootstrap/
 
+# User-local virglrenderer + QEMU 9.2 Venus prefix (bootstrap-qemu-venus.sh).
+.qemu-venus/
+
 # Third-party source fetched by core/user/ports/*/fetch.sh. Never vendored;
 # see core/user/ports/libdrm/README.md.
 .ports/

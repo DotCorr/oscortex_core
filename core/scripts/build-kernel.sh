@@ -161,6 +161,18 @@ LD_CMD="$(find_elf_linker)" || setup_error "no ELF linker found (need x86_64-elf
 BUILD_DIR="${BUILD_DIR:-$CORE_DIR/build}"
 mkdir -p "$BUILD_DIR"
 
+# Byte-reproducible objects: remap every host-absolute prefix the compiler
+# would otherwise bake into DWARF / __FILE__. Diagnostics stay.
+CANON_CFLAGS="$(bash "$SCRIPT_DIR/oscortex-canon-cflags.sh" \
+  "$CORE_DIR=/oscortex" \
+  "$DCDART_HOME=/dcdart" \
+  "$BUILD_DIR=/oscortex-build" \
+  "$CORE_DIR/build/skia=/skia" \
+  ${BUILD_DIR:+"$BUILD_DIR/skia=/skia"})"
+export OSCORTEX_CANON_CFLAGS="$CANON_CFLAGS"
+# shellcheck disable=SC2206
+CANON_ARR=($CANON_CFLAGS)
+
 # ---------------------------------------------------------------------------
 # Step 0 — ONE ROOT FOR THE TOOLCHAIN. (ADR-0043, GAP-0003.)
 #
@@ -218,7 +230,10 @@ ln -s "$DCDART_HOME" "$DCDART_LINK" || setup_error "could not create toolchain s
 # absolute and lexically normalises it, which is the same normalisation the front
 # end applies to the import, so the two cannot drift apart.
 DCC_CMD=(dart "$DCDART_HOME/core/dcc/bin/dcc.dart")
+# Relative prelude spelling is identical across checkouts; dcc still
+# resolves it for @bare URI equality (ADR-0043).
 PRELUDE_PATH="$DCDART_LINK/core/runtime/dc-core-bare/prelude.dart"
+PRELUDE_REL="../build/dcdart/core/runtime/dc-core-bare/prelude.dart"
 [[ -f "$PRELUDE_PATH" ]] || setup_error "no prelude at $PRELUDE_PATH (DCDART_HOME=$DCDART_HOME does not look like a DCDart checkout)"
 
 # The import line is asserted LITERALLY, not parsed. `dcc`'s comparison is a
@@ -244,7 +259,7 @@ echo "build-kernel:          -> $(cd "$DCDART_HOME" && pwd -P)/core/runtime/dc-c
 # ---------------------------------------------------------------------------
 # Step 1 — dcc build --mode bare kmain.dart -o build/kmain.o
 # ---------------------------------------------------------------------------
-( cd "$KERNEL_DIR" && "${DCC_CMD[@]}" build --mode bare --prelude "$PRELUDE_PATH" \
+( cd "$KERNEL_DIR" && "${DCC_CMD[@]}" build --mode bare --prelude "$PRELUDE_REL" \
     kmain.dart -o "$BUILD_DIR/kmain.o" )
 DCC_STATUS=$?
 if [[ $DCC_STATUS -ne 0 ]]; then
@@ -279,7 +294,9 @@ fi
 # legible and its size countable (docs/known-gaps.md GAP-0053).
 # ---------------------------------------------------------------------------
 for asm in boot isr kdata portio; do
-  clang -c -target x86_64-unknown-none-elf "$CORE_DIR/boot/$asm.S" -o "$BUILD_DIR/$asm.o"
+  clang -c -target x86_64-unknown-none-elf \
+    "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
+    "$CORE_DIR/boot/$asm.S" -o "$BUILD_DIR/$asm.o"
   ASM_STATUS=$?
   if [[ $ASM_STATUS -ne 0 ]]; then
     fail "assembling $asm.S exited $ASM_STATUS"
@@ -305,12 +322,14 @@ done
 clang -c -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
   -fno-pic -fno-pie -mno-red-zone -fno-stack-protector \
   -fno-asynchronous-unwind-tables -fno-builtin -O2 -Wall \
+  "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
   -I "$CORE_DIR/plat/osgfx" \
   -o "$BUILD_DIR/osgfx_cmd.o" "$CORE_DIR/plat/osgfx/osgfx_cmd.c" \
   || fail "compiling osgfx_cmd.c failed"
 clang -c -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
   -fno-pic -fno-pie -mno-red-zone -fno-stack-protector \
   -fno-asynchronous-unwind-tables -fno-builtin -O2 -Wall \
+  "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
   -I "$CORE_DIR/plat/osgfx" \
   -o "$BUILD_DIR/osgfx_glyph.o" "$CORE_DIR/plat/osgfx/osgfx_glyph.c" \
   || fail "compiling osgfx_glyph.c failed"
@@ -349,6 +368,7 @@ if [[ "${OSGFX_SKIA:-1}" == 1 ]]; then
     -fno-builtin
     -O2
     -Wall
+    "${CANON_ARR[@]+"${CANON_ARR[@]}"}"
     -I "$CORE_DIR/plat/osgfx"
   )
   clang "${OSGFX_CFLAGS[@]}" -o "$BUILD_DIR/osgfx_scene.o" \
@@ -387,12 +407,14 @@ if [[ "${OSGFX_SKIA:-1}" == 1 ]]; then
     "$BUILD_DIR/osgfx_cxxrt.o" "$BUILD_DIR/osgfx_scene.o" \
     "$BUILD_DIR/osgfx_desk.o" "$BUILD_DIR/osgfx_chrome.o" "$BUILD_DIR/osgfx_session.o" \
     "$BUILD_DIR/osgfx_font.o" "$BUILD_DIR/osgfx_font_data.o")
-  SKIA_SRC="$BUILD_DIR/skia/src"
+  SKIA_SRC="$CORE_DIR/build/skia/src"
+  [[ -d "$SKIA_SRC" ]] || SKIA_SRC="$BUILD_DIR/skia/src"
   GRAPHITE_LIB="$BUILD_DIR/skia/out/guest-elf-graphite/libskia.a"
   if [[ -f "$GRAPHITE_LIB" ]]; then
     clang -c -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
       -fno-pic -fno-pie -mno-red-zone -fno-stack-protector \
       -fno-asynchronous-unwind-tables -fno-builtin -O2 -Wall \
+      "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
       -I "$CORE_DIR/plat/osgfx" \
       -isystem "$CORE_DIR/plat/osgfx/guest_inc" \
       -I "$SKIA_SRC/include/third_party/vulkan" \
@@ -417,12 +439,14 @@ else
   clang -c -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
     -fno-pic -fno-pie -mno-red-zone -fno-stack-protector \
     -fno-asynchronous-unwind-tables -fno-builtin -O2 -Wall \
+    "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
     -I "$CORE_DIR/plat/osgfx" \
     -o "$BUILD_DIR/osgfx_desk.o" "$CORE_DIR/plat/osgfx/osgfx_desk.c" \
     || fail "compiling osgfx_desk.c (no-skia) failed"
   clang -c -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
     -fno-pic -fno-pie -mno-red-zone -fno-stack-protector \
     -fno-asynchronous-unwind-tables -fno-builtin -O2 -Wall \
+    "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
     -I "$CORE_DIR/plat/osgfx" \
     -o "$BUILD_DIR/osgfx_client_stub.o" \
     "$CORE_DIR/plat/osgfx/osgfx_client_stub.c" \
@@ -445,6 +469,7 @@ MEDIA_CFLAGS=(
   -fno-builtin
   -O2
   -Wall
+  "${CANON_ARR[@]+"${CANON_ARR[@]}"}"
   -I "$CORE_DIR/plat/media"
   -I "$CORE_DIR/plat/osgfx"
   -isystem "$CORE_DIR/plat/media/guest_inc"
@@ -515,6 +540,7 @@ clang -c -target x86_64-unknown-none-elf -ffreestanding -nostdlib \
   -fno-pic -fno-pie -mno-red-zone -fno-stack-protector \
   -fno-asynchronous-unwind-tables -fno-builtin -O2 -Wall \
   -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 \
+  "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
   -I "$CORE_DIR/plat/otatls" \
   -o "$BUILD_DIR/otatls.o" "$CORE_DIR/plat/otatls/otatls.c" \
   || fail "compiling otatls.c failed"

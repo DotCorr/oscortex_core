@@ -3,6 +3,12 @@ set -euo pipefail
 CORE="$(cd "$(dirname "$0")/.." && pwd)"
 INC="$CORE/plat/osgfx/guest_inc"
 CLANGINC="$(clang -print-resource-dir)/include"
+if [[ -z "${OSCORTEX_CANON_CFLAGS:-}" ]]; then
+  OSCORTEX_CANON_CFLAGS="$(bash "$CORE/scripts/oscortex-canon-cflags.sh" \
+    "$CORE=/oscortex" "$CORE/build/skia=/skia")"
+fi
+# shellcheck disable=SC2206
+CANON_ARR=(${OSCORTEX_CANON_CFLAGS:-})
 args=()
 skip_next=0
 for a in "$@"; do
@@ -21,6 +27,7 @@ for a in "$@"; do
   esac
 done
 exec clang --target=x86_64-unknown-none-elf \
+  "${CANON_ARR[@]+"${CANON_ARR[@]}"}" \
   -isystem "$INC" \
   -isystem "$CLANGINC" \
   -fno-pic -fno-pie -ffreestanding \

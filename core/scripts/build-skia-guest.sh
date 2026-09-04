@@ -134,8 +134,14 @@ if ! file "$CORE/build/skia-guest-sample.o" | grep -qi 'ELF'; then
   exit 1
 fi
 
+if [[ -z "${OSCORTEX_CANON_CFLAGS:-}" ]]; then
+  OSCORTEX_CANON_CFLAGS="$(bash "$CORE/scripts/oscortex-canon-cflags.sh" \
+    "$CORE=/oscortex" "$CORE/build/skia=/skia")"
+fi
+# shellcheck disable=SC2086
 clang -c -target x86_64-unknown-none-elf -ffreestanding -fno-stack-protector \
   -fno-pic -mno-red-zone -O2 -Wall -I "$PLAT" \
+  $OSCORTEX_CANON_CFLAGS \
   -DCRT_HEAP=4194304 \
   -o "$CORE/build/osgfx_guest_crt.o" "$PLAT/osgfx_guest_crt.c"
 
