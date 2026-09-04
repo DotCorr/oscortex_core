@@ -109,6 +109,12 @@ def main():
     click(q, 36, 500)
     time.sleep(0.1)
 
+    # Dock-launch every app once so all-apps has DESK+six clients.
+    for i in range(6):
+        x, y = dock_xy(i)
+        click(q, x, y)
+        time.sleep(0.18)
+
     marked = harvest(ser)
     q.key("f4")
     launch_show = wait_tok(ser, "WM LAUNCH SHOW", marked, 3.0)
@@ -176,15 +182,17 @@ def main():
     files_hist = "FILES HIST " in harvest(ser)
     d15.shot(q, os.path.join(ART, "oscortex-round35-files-studio.png"))
 
-    # Return to root, create NEW.TXT, Open → STUDIO.
+    # Return to root on the same FILES (do not dock-spawn another).
     q.key("left")
     q.key("left")
     time.sleep(0.15)
+    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
+    click(q, fg[0] + 80, fg[1] + 80)
+    time.sleep(0.1)
     marked_ow = harvest(ser)
-    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
-    time.sleep(0.12)
     combo(q, "ctrl", "n")
     wait_tok(ser, "FILES NEW", marked_ow, 2.0)
+    wait_tok(ser, "FILES SEL ", marked_ow, 1.2)
     q.key("ret")
     handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 3.0)
     if not handoff:
@@ -207,9 +215,6 @@ def main():
     studio_tab = "STUDIO TAB " in harvest(ser) or "STUDIO NEW " in harvest(ser)
     studio_caret = "STUDIO CARET " in harvest(ser)
     # Binary refuse: Open FILES.ELF from root listing (row 0).
-    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
-    time.sleep(0.12)
-    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
     click(q, fg[0] + 80, fg[1] + 48)
     time.sleep(0.05)
     q.key("ret")
@@ -223,10 +228,19 @@ def main():
     time.sleep(0.25)
     sg = cs.live_set_xywh(os.path.join(RUN, "serial.txt"), "") or (
         180, 48, 440, 280)
+    click(q, sg[0] + 40, sg[1] + 32 + 80)
+    time.sleep(0.1)
     cx, cy = set_card_xy(sg, 1)
     click(q, cx, cy)
-    set_theme = wait_tok(ser, "SET THEME", marked_set, 2.5) or wait_tok(
+    set_theme = wait_tok(ser, "SET THEME 1", marked_set, 2.5) or wait_tok(
+        ser, "SET THEME", marked_set, 1.5) or wait_tok(
         ser, "SET CARD", marked_set, 1.5)
+    cx3, cy3 = set_card_xy(sg, 3)
+    click(q, cx3, cy3)
+    wait_tok(ser, "SET ACCENT", marked_set, 1.5)
+    cx5, cy5 = set_card_xy(sg, 5)
+    click(q, cx5, cy5)
+    wait_tok(ser, "SET WALL", marked_set, 1.5)
     pref_ack = wait_tok(ser, "WM PREF ACK", marked_set, 2.0) or (
         "WM PREF ACK" in harvest(ser))
     desk_pref = "DESK PREF" in harvest(ser)

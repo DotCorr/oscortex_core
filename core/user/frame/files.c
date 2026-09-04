@@ -1165,9 +1165,13 @@ static void files_reload_here(void) {
 
 static void files_select_name(const char *name, unsigned nlen) {
   unsigned i = 0;
+  unsigned at;
   while (i < (unsigned)files_names) {
     if (same_bytes(dotted[i], dotlen[i], name, nlen) > 0) {
       files_set_sel((u64)i);
+      at = put(0, "FILES SEL ");
+      at = put(at, name);
+      emit(at);
       return;
     }
     i = i + 1;
