@@ -198,6 +198,10 @@ if 'wmGfxChromeFresh()' not in body:
     raise SystemExit('the gfx arm does not consult the chrome signature')
 if 'wmComposeCommitGfx' not in body:
     raise SystemExit('the gfx arm does not reach the damage-limited path')
+gfx = src[src.index('void wmComposeCommitGfx('):]
+gfx = gfx[:gfx.index('\n}\n')]
+if 'wmPresentClipped' not in gfx:
+    raise SystemExit('paced body/scroll commit does not publish independently')
 # The border arm of wmWindowPixel must decline under gfx.
 wp = src[src.index('u64 wmWindowPixel(u64 wI'):]
 wp = wp[:wp.index('\n}\n')]
