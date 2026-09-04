@@ -41,10 +41,10 @@ skip_one() {
   skip=$((skip + 1))
 }
 
-# Isolated BUILD_DIR so leftover kernel.elf / sit-in image stay put.
-ISO="$(mktemp -d /tmp/oscortex-r27-harness.XXXXXX)"
-ln -s "$CORE_DIR/build/skia" "$ISO/skia"
-export BUILD_DIR="$ISO"
+# Do not export BUILD_DIR. Harnesses that rebuild honour their own
+# workdir or core/build; a leaked ISO path would make G7/m5 compile
+# one kernel and assert another. Leftover QEMU already has the image
+# in RAM — rebuilds of core/build/kernel.elf do not disturb it.
 
 run_one dcdart-compat "bash '$CORE_DIR/tests/conformance/dcdart-compat/run.sh'"
 run_one verify-de-neutral "bash '$CORE_DIR/scripts/verify-de-neutral.sh' --probe"
@@ -72,8 +72,6 @@ else
   skip_one verify-de-mac "Mac cocoa/window-server only; neutral checks ran as verify-de-neutral"
 fi
 
-unset BUILD_DIR
-
 {
   echo "{"
   echo "  \"round\": 27,"
@@ -81,7 +79,7 @@ unset BUILD_DIR
   echo "  \"fail\": $fail,"
   echo "  \"skip\": $skip,"
   echo "  \"dcdart_home\": \"$DCDART_HOME\","
-  echo "  \"isolated_build\": \"$ISO\","
+  echo "  \"build_dir_leaked\": false,"
   echo "  \"results\": ["
   i=0
   for r in "${rows[@]}"; do
