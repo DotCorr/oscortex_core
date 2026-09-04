@@ -48,13 +48,13 @@ def harvest(ser):
         live = ser.read() or ""
     except Exception:
         live = ""
+    if getattr(ser, "sock", None) is not None and live:
+        return live
     try:
         blob = open(ser.path, encoding="latin-1", errors="replace").read()
     except OSError:
         blob = ""
-    if live:
-        return blob + "\n" + live
-    return blob + "\n" + (getattr(ser, "archive", "") or "")
+    return blob + "\n" + (getattr(ser, "archive", "") or "") + "\n" + live
 
 
 def parse_done_line(line):
@@ -75,28 +75,53 @@ def parse_done_line(line):
     }
 
 
+class DoneWatch:
+    """Incremental opid-deduped DONE stream. Avoids rereading the logfile."""
+
+    def __init__(self):
+        self.by_opid = {}
+        self.order = []
+        self.off = 0
+
+    def ingest_text(self, text):
+        if not text:
+            return
+        for line in text.splitlines():
+            ev = parse_done_line(line)
+            if ev is None:
+                continue
+            if ev["opid"] in self.by_opid:
+                continue
+            self.by_opid[ev["opid"]] = ev
+            self.order.append(ev)
+
+    def poll(self, ser):
+        try:
+            ser.read()
+        except Exception:
+            pass
+        live = (getattr(ser, "buf", "") or "") + "\n" + (
+            getattr(ser, "archive", "") or "")
+        self.ingest_text(live)
+        if getattr(ser, "sock", None) is None:
+            try:
+                size = os.path.getsize(ser.path)
+                if size > self.off:
+                    with open(ser.path, "rb") as f:
+                        f.seek(self.off)
+                        chunk = f.read(size - self.off)
+                    self.off = size
+                    self.ingest_text(chunk.decode("latin-1", "replace"))
+            except OSError:
+                pass
+        return self.order
+
+
+WATCH = DoneWatch()
+
+
 def done_events(ser):
-    rows = []
-    seen = set()
-    blob = harvest(ser)
-    for m in DONE_RE.finditer(blob):
-        ev = {
-            "pos": m.start(),
-            "opid": int(m.group(1), 16),
-            "kind": int(m.group(2), 16),
-            "px": int(m.group(3), 16),
-            "res": int(m.group(4), 16),
-            "used": int(m.group(5), 16),
-            "x": int(m.group(6), 16),
-            "y": int(m.group(7), 16),
-            "w": int(m.group(8), 16),
-            "h": int(m.group(9), 16),
-        }
-        if ev["opid"] in seen:
-            continue
-        seen.add(ev["opid"])
-        rows.append(ev)
-    return rows
+    return WATCH.poll(ser)
 
 
 def last_done_opid(ser):
@@ -187,6 +212,14 @@ def summarize(label, walls, px_tail, paired, dur):
     }
 
 
+def send_abs(q, x, y):
+    """Pointer inject without the shared 30 ms place() sleep."""
+    ax, ay = d15.abs_xy(x, y)
+    q.cmd("input-send-event", events=[
+        {"type": "abs", "data": {"axis": "x", "value": ax}},
+        {"type": "abs", "data": {"axis": "y", "value": ay}}])
+
+
 def rec_of(ev, wall, g0):
     return {
         "wall_ms": round(wall, 2),
@@ -209,7 +242,7 @@ def burst(q, ser, label, points, kind, btn=None):
     for x, y in points:
         try:
             if btn:
-                d15.place(q, ser, x, y)
+                send_abs(q, x, y)
                 g0 = last_done_opid(ser)
                 t_inj = time.time()
                 d15.button(q, x, y, btn, True)
@@ -217,7 +250,7 @@ def burst(q, ser, label, points, kind, btn=None):
             else:
                 g0 = last_done_opid(ser)
                 t_inj = time.time()
-                d15.place(q, ser, x, y)
+                send_abs(q, x, y)
         except Exception as e:
             print(label, "inject", e)
             continue
@@ -292,22 +325,30 @@ def ensure_files(q, ser):
 def phase_counts(ser, after=0):
     blob = harvest(ser)[after:]
     paths = [int(m.group(1), 16) for m in CPATH_RE.finditer(blob)]
-    dones = list(DONE_RE.finditer(blob))
+    seen = set()
+    kinds = {"ptr": 0, "drag": 0, "body": 0, "menu": 0, "menu_hide": 0,
+             "menu_row": 0}
+    kind_map = {
+        KIND_PTR: "ptr", KIND_DRAG: "drag", KIND_BODY: "body",
+        KIND_MENU: "menu", KIND_MENU_HIDE: "menu_hide",
+        KIND_MENU_ROW: "menu_row",
+    }
+    for m in DONE_RE.finditer(blob):
+        opid = int(m.group(1), 16)
+        if opid in seen:
+            continue
+        seen.add(opid)
+        name = kind_map.get(int(m.group(2), 16))
+        if name:
+            kinds[name] += 1
     return {
         "cpath_n": len(paths),
         "cpath_skip": sum(1 for p in paths if p == 1),
         "cpath_gfx": sum(1 for p in paths if p == 2),
         "cpath_compose": sum(1 for p in paths if p == 3),
         "dragend_n": len(DRAGEND_RE.findall(blob)),
-        "done_n": len(dones),
-        "done_kinds": {
-            "ptr": sum(1 for m in dones if int(m.group(2), 16) == KIND_PTR),
-            "drag": sum(1 for m in dones if int(m.group(2), 16) == KIND_DRAG),
-            "body": sum(1 for m in dones if int(m.group(2), 16) == KIND_BODY),
-            "menu": sum(1 for m in dones if int(m.group(2), 16) == KIND_MENU),
-            "menu_hide": sum(1 for m in dones if int(m.group(2), 16) == KIND_MENU_HIDE),
-            "menu_row": sum(1 for m in dones if int(m.group(2), 16) == KIND_MENU_ROW),
-        },
+        "done_n": len(seen),
+        "done_kinds": kinds,
         "tail": paths[-12:],
     }
 
@@ -326,7 +367,7 @@ def layered_drag(q, ser, n=32):
         g0 = last_done_opid(ser)
         t_inj = time.time()
         try:
-            d15.place(q, ser, x, y)
+            send_abs(q, x, y)
         except Exception as e:
             print("drag inject", e)
             continue
