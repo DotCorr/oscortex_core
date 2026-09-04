@@ -65,7 +65,7 @@ def main():
         "launches": launches,
         "fault": ("FAULT 0E" in blob) or ("FAULT 0D" in blob),
         "reap": blob.count("WM REAP W "),
-        "oom": "OSGFX OOM" in blob,
+        "oom": ("DESK READY" in blob) and ("OSGFX OOM" in blob.split("DESK READY", 1)[-1]),
         "qtimeout": "VIRTIO QTIMEOUT" in blob,
         "integrity": "OSGFX ABORT" in blob,
         "tap_die": "TAP DIE " in blob,
