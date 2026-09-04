@@ -18,7 +18,7 @@ setup_error() { echo "DE-lat: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=40
+ASSERTIONS_REQUIRED=42
 
 PACE="$CORE_DIR/kernel/wmpace.dart"
 WM="$CORE_DIR/kernel/wm.dart"
@@ -100,6 +100,10 @@ ck; grep -q 'wmLatNotePresent' "$POP" \
   || fail "menu path does not note present after overlay"
 ck; grep -q 'Never close a pending' "$WM" \
   || fail "pointer IRQ still closes leftover LAT kinds"
+ck; grep -q 'void wmLatNoteSprite' "$PACE" \
+  || fail "no sprite-only present that leaves EvKind alone"
+ck; grep -q 'wmLatNoteSprite' "$WM" \
+  || fail "pointer IRQ does not emit the bounded sprite present"
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-lat: PASS ($ASSERTIONS_REQUIRED checks) — guest tick + host wall-time pairing"

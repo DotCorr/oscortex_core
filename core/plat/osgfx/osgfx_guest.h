@@ -119,6 +119,7 @@
 #define OSGFX_WMPAGE_W_DMG_CUM_FULL 438
 #define OSGFX_WMPAGE_W_DMG_CUM_PTR 439
 #define OSGFX_WMPAGE_W_DMG_CUM_CONS 440
+#define OSGFX_WMPAGE_W_SPRITE_SEQ 441
 
 struct OsGfxGuestCmd {
   uint64_t magic;

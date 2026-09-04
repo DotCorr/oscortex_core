@@ -32,7 +32,8 @@ elif [[ ! -f "$ISO" ]]; then
 elif [[ "$KERNEL_UEFI" -nt "$ISO" ]]; then
   need_iso=1
 fi
-GIT_SHA="${DRIVE_GIT_SHA:-$(git -C "$CORE_DIR/.." rev-parse HEAD 2>/dev/null || true)}"
+REPO_ROOT="$(cd "$CORE_DIR/.." && pwd)"
+GIT_SHA="${DRIVE_GIT_SHA:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
 if [[ -z "$GIT_SHA" ]]; then
   GIT_SHA="$(git -C "$CORE_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
 fi

@@ -61,6 +61,7 @@ SET_MAX_XY = (min(SCREEN_W - 24, 728), 20)
 SEQ_MASK = 0xFFFFFFFF
 SEQ_RE = re.compile(r" S ([0-9A-F]+)")
 PRES_RE = re.compile(r"^WM PRES S ([0-9A-F]+)")
+SPRITE_RE = re.compile(r"^WM SPRITE S ([0-9A-F]+)")
 OPID_RE = re.compile(r"^WM OPID ([0-9A-F]+)")
 REST_OP_RE = re.compile(r"FILES REST .* OP ([0-9A-F]+)")
 CFG_OP_RE = re.compile(r"FILES CFG ([0-9A-F]+)")
@@ -163,6 +164,7 @@ class Serial:
         self.lat_seq = []
         self.pres_seq = []
         self.last_pres_seq = None
+        self.last_sprite_seq = None
         self.opids = []
         self.pres_at = []
         self.phase_events = []
@@ -195,6 +197,7 @@ class Serial:
         "OSGFX CHROME", "FILES PHZ", "WM PHZ", "FILES GROW", "FILES REST",
         "WM OPID", "FILES COMMIT", "FILES PREFILL", "WM CLOSE",
         "FILES CFG", "WM DEFN", "WM IRQ", "WM PREP", "WM IFHOLD",
+        "WM SPRITE", "WM DMG", "FILES OPEN", "FILES CAT", "FILES MENU",
     )
 
     def _keep_line(self, line):
@@ -264,6 +267,14 @@ class Serial:
                     self.pres_at.append((n, t_ms))
                     self.phase_events.append(
                         {"token": "WM PRES", "opid": n, "host_ms": t_ms})
+                sm = SPRITE_RE.match(ln)
+                if sm:
+                    n = int(sm.group(1), 16)
+                    if (self.last_sprite_seq is None
+                            or seq_after(self.last_sprite_seq, n)):
+                        self.last_sprite_seq = n
+                    self.phase_events.append(
+                        {"token": "WM SPRITE", "opid": n, "host_ms": t_ms})
                 rm = REST_OP_RE.search(ln)
                 if rm:
                     self.phase_events.append({
@@ -471,6 +482,7 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
     global HOST_OP
     ser.read()
     last = ser.last_pres_seq
+    last_sprite = ser.last_sprite_seq
     opid_mark = len(ser.opids)
     pres_mark = len(ser.pres_at)
     ev_mark = len(ser.phase_events)
@@ -508,12 +520,18 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
                                         and (time.perf_counter() - t_pres) > 0.025):
                     break
         elif not want_opid:
+            spr = ser.last_sprite_seq
+            if spr is not None and (last_sprite is None or seq_after(last_sprite, spr)):
+                ok = True
+                break
             cur = ser.last_pres_seq
             if cur is not None and (last is None or seq_after(last, cur)):
                 ok = True
                 break
-        # Tight drain: an 8ms sleep let the UART FIFO stall on the first
-        # max/restore burst (guest LAT 2–3 ticks, host wall ≥1s).
+            # Pointer/menu without OPID: do not spin the full timeout.
+            time.sleep(0.008)
+        # Tight drain for OPID: an 8ms sleep let the UART FIFO stall on
+        # the first max/restore burst (guest LAT 2–3 ticks, host wall ≥1s).
     wall = round((time.perf_counter() - t0) * 1000.0, 1)
     phases = [e for e in ser.phase_events[ev_mark:]
               if e.get("host_ms") is not None]
@@ -535,7 +553,7 @@ def pair_inject(q, ser, events, timeout=2.5, want_opid=False, label=""):
                 by[tok] = e.get("host_ms")
         rec["phase_ms"] = by
         rec["guest_recv_ms"] = by.get("WM OPID")
-        rec["present_ms"] = by.get("WM PRES")
+        rec["present_ms"] = by.get("WM PRES") or by.get("WM SPRITE")
         rec["phz_begin_ms"] = by.get("FILES PHZ PAINT B")
         rec["phz_end_ms"] = by.get("FILES PHZ PAINT E")
         rec["rest_ms"] = by.get("FILES REST")

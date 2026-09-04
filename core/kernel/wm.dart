@@ -3727,6 +3727,28 @@ void wmPointerTick() {
       wmLatStamp(u64(wmLatKindPtr));
       wmLatNotePresent();
     }
+    /* Bounded sprite present. Independent of EvKind so host pairing
+     * cannot stall, and does not overtake a pending button-edge op. */
+    wmLatNoteSprite();
+    /* Cumulative pointer pixels are this transfer, not the consumed
+     * pending queue. Pace-off still counts; wm dmg must not read zero. */
+    if (ox != x) {
+      wmPageSet(u64(wmPageWPtrPx),
+          u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
+      wmDmgAcc(u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
+          u64(2),
+          u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
+          u64(1));
+    } else {
+      if (oy != y) {
+        wmPageSet(u64(wmPageWPtrPx),
+            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
+        wmDmgAcc(u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
+            u64(2),
+            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
+            u64(1));
+      }
+    }
     if (wmPaced() > u64(0)) {
       if (ox != x) {
         wmDamagePtr(ox, oy, u64(wmPtrW), u64(wmPtrH));
@@ -3740,16 +3762,11 @@ void wmPointerTick() {
       /* Sprite already transferred old+new cursor bounds. Consume the
        * pointer queue so leftover window damage is not inherited. */
       if ((wmPage(u64(wmPageWFlags)) & u64(wmPageFlagPtrDmg)) > u64(0)) {
-        wmPageSet(u64(wmPageWPtrPx),
-            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
-        wmDmgAcc(u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
-            u64(2),
-            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
-            u64(1));
         final u64 pf = wmPage(u64(wmPageWFlags));
         wmPageSet(u64(wmPageWFlags), pf - (pf & u64(wmPageFlagPtrDmg)));
       }
     }
+    wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
   } else {
     if (ox != x) {
       erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));

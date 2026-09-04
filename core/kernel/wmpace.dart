@@ -311,6 +311,9 @@ const int wmPageWDmgCumRegs = 437;
 const int wmPageWDmgCumFull = 438;
 const int wmPageWDmgCumPtr = 439;
 const int wmPageWDmgCumCons = 440;
+/// Sprite-only present seq. Independent of EvKind so pointer pairing
+/// cannot stall behind a leftover drag/menu/focus stamp.
+const int wmPageWSpriteSeq = 441;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
@@ -464,6 +467,13 @@ final List<u8> wmLatStrA = const [
 final List<u8> wmPresStrLine = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x53),
   u8(0x20), u8(0x53), u8(0x20),
+];
+
+/// `'WM SPRITE S '` -- 12 bytes. Pointer sprite present; does not consume EvKind.
+@rodata
+final List<u8> wmSpriteStrLine = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x53), u8(0x50), u8(0x52), u8(0x49),
+  u8(0x54), u8(0x45), u8(0x20), u8(0x53), u8(0x20),
 ];
 
 /// `'WM OPID '` -- 8 bytes. Stamped on every LAT kind so the host pairs
@@ -754,6 +764,19 @@ void wmLatNotePresent() {
   uartPutHex(wmPage(u64(wmPageWEvSeq)), u64(8));
   uartNewline();
   wmPageSet(u64(wmPageWEvKind), u64(0));
+}
+
+/// Sprite transfer present. Never touches EvKind, so a leftover drag
+/// or menu stamp is not closed and pointer host pairing still advances.
+@bare
+void wmLatNoteSprite() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWSpriteSeq), wmPage(u64(wmPageWSpriteSeq)) + u64(1));
+  uartWrite(Rodata.addressOf(wmSpriteStrLine), u64(12));
+  uartPutHex(wmPage(u64(wmPageWSpriteSeq)), u64(8));
+  uartNewline();
 }
 
 /// Takes one frame for the state page and publishes it in the mailbox.

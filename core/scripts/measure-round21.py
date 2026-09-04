@@ -214,13 +214,25 @@ def first_drags(q, ser, n=22):
 
 
 def files_open_proof(q, ser):
+    """CTX FILE then Open on the default FILES tile, not a dragged window."""
+    try:
+        d15.press(q, ser, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1],
+                  "left", "WM CLOSE", timeout=4)
+    except Exception as e:
+        print("files_open close", e)
+    time.sleep(0.3)
+    d15.press(q, ser, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1],
+              "left", "FILES READY", timeout=8)
+    time.sleep(0.4)
     marked = ser.read()
     d15.place(q, ser, CTX_XY[0], CTX_XY[1])
     time.sleep(0.12)
     d15.button(q, CTX_XY[0], CTX_XY[1], "right", True)
     time.sleep(0.05)
     d15.button(q, CTX_XY[0], CTX_XY[1], "right", False)
-    d15.wait_mark(ser, "FILES MENU", marked, 4)
+    menu = d15.wait_mark(ser, "FILES MENU", marked, 4)
+    if not menu:
+        menu = d15.wait_mark(ser, "WM CTX FILE", marked, 2)
     marked = ser.read()
     d15.place(q, ser, OPEN_XY[0], OPEN_XY[1])
     time.sleep(0.12)
@@ -229,11 +241,19 @@ def files_open_proof(q, ser):
     d15.button(q, OPEN_XY[0], OPEN_XY[1], "left", False)
     ok = d15.wait_mark(ser, "FILES OPEN", marked, 4)
     blob = ser.read()
-    cat = "FILES CAT " in blob or "FILES CAT " in open(ser.path).read()[-4000:]
+    try:
+        tail = open(ser.path).read()[-8000:]
+    except OSError:
+        tail = blob
+    cat = "FILES CAT " in blob or "FILES CAT " in tail
+    none = "FILES CAT NONE" in blob or "FILES CAT NONE" in tail
+    refused = "FILES OPEN REFUSED" in blob or "FILES OPEN REFUSED" in tail
     return {
-        "opened": bool(ok),
-        "cat": bool(cat),
-        "refused": "FILES OPEN REFUSED" in blob,
+        "opened": bool(ok) and cat and (not none) and (not refused),
+        "cat": bool(cat) and (not none),
+        "menu": bool(menu),
+        "refused": refused,
+        "none": none,
     }
 
 
@@ -248,8 +268,18 @@ def main():
 
     first = first_drags(q, ser, 22)
 
+    # Release any leftover title grab so pointer pairing is sprite-only.
+    d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
+    time.sleep(0.1)
+    q.type_line("wm dmg")
+    time.sleep(0.25)
+    dmg_after_drag = parse_dmg(ser.read())
+
     pointer_pts = [(80 + (i * 17) % 900, 110 + (i % 7) * 9) for i in range(110)]
     pointer = collect(q, ser, "pointer", pointer_pts, want_opid=False)
+    q.type_line("wm dmg")
+    time.sleep(0.25)
+    dmg_after_ptr = parse_dmg(ser.read())
 
     menu_pts = []
     for i in range(55):
@@ -294,7 +324,17 @@ def main():
             "cumulative_ptr": dmg["cptr"][-4:],
             "consumed": dmg["cons"][-4:],
             "wm_dmg_lines": dmg["lines"],
-            "ptr_640": any(v == 640 for v in dmg["ptr"][-16:]),
+            "ptr_640": any(v == 640 for v in dmg["ptr"][-16:])
+            or any(v > 0 and v % 640 == 0 for v in dmg["cptr"][-8:]),
+            "after_drag": {
+                "cum": dmg_after_drag["cum"][-2:],
+                "lines": dmg_after_drag["lines"][-2:],
+            },
+            "after_pointer": {
+                "cum": dmg_after_ptr["cum"][-2:],
+                "cptr": dmg_after_ptr["cptr"][-2:],
+                "lines": dmg_after_ptr["lines"][-2:],
+            },
         },
         "wm_pace_serial": [ln for ln in blob.splitlines()
                            if ln.startswith("WM PACE ")][-4:],
