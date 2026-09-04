@@ -184,11 +184,13 @@ def summarize(label, walls, px_tail, paired, dur):
     walls_sorted = sorted(walls)
     warm = px_tail[2:] if len(px_tail) > 2 else px_tail
     warm_walls = sorted(walls[2:]) if len(walls) > 2 else walls_sorted
+    event_s = (sum(walls) / 1000.0) if walls else dur
     return {
         "n": n,
         "seconds": round(dur, 3),
-        "achieved_fps": round(n / dur, 2) if dur > 0 else 0,
-        "ops_per_sec": round(n / dur, 2) if dur > 0 else 0,
+        "event_seconds": round(event_s, 3),
+        "achieved_fps": round(n / event_s, 2) if event_s > 0 else 0,
+        "ops_per_sec": round(n / event_s, 2) if event_s > 0 else 0,
         "dirty_px_tail": px_tail[-8:],
         "dirty_px_p50": (sorted(px_tail)[len(px_tail) // 2] if px_tail else 0),
         "dirty_px_max": max(px_tail) if px_tail else 0,
@@ -205,6 +207,7 @@ def summarize(label, walls, px_tail, paired, dur):
             "p95": pct_of(warm_walls, 95),
             "max": round(warm_walls[-1], 2) if warm_walls else None,
         },
+        "walls_ms": [round(w, 2) for w in walls],
         "full_1280_flushes": sum(1 for p in px_tail if p >= FULL_PX),
         "full_1280_after_warm": sum(1 for p in warm if p >= FULL_PX),
         "ambiguous": 0,
