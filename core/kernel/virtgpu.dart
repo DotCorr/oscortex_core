@@ -268,6 +268,11 @@ const int virtgpuResId2 = 2;
 /// Cap on backing frames. 1024 frames is 4 MiB.
 const int virtgpuBackCap = 1024;
 
+/// DE present mode. Named so G7 can census the pick (ADR-0189).
+/// This is not QEMU's xres=/yres= hint.
+const int virtgpuModeWantW = 1280;
+const int virtgpuModeWantH = 720;
+
 /// Cap on attach-entry frames. 1024 entries × 16 B is 4 frames.
 const int virtgpuEntCap = 4;
 
@@ -2575,8 +2580,8 @@ u64 virtgpuFbTry() {
   // virtio-gpu-gl+Venus+llvmpipe while the host renderer starts.
   // The DE present size is 1280×720; do not abort scanout on that
   // probe, and do not share req/resp with an in-flight GET_DISPLAY.
-  final u64 sw = u64(1280);
-  final u64 sh = u64(720);
+  final u64 sw = u64(virtgpuModeWantW);
+  final u64 sh = u64(virtgpuModeWantH);
   u64 slot = u64(0);
   u64 head = u64(0);
   if (virtgpuRamGet32(qdesc + u64(virtgpuMetaFlag)) > u64(0)) {

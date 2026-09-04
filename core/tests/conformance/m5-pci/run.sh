@@ -770,7 +770,7 @@ ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
   || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
 MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
 EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
-ck; [[ "$EXTERN_COUNT" -eq 22 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's eleven, expected 22 (M4's 24 less the eight accessors ADR-0021 deleted = 16, plus M5's port_inl/port_outl for PCI configuration space and port_inw/port_outw for the Bochs VBE registers, plus M7's kernel_image_start/kernel_image_end)"
+ck; [[ "$EXTERN_COUNT" -eq 20 ]] || fail "kmain.o declares $EXTERN_COUNT externs outside M8's eleven, expected 20 (plat C and msr_write subtracted; M5 added PCI/Bochs ports only)"
 for sym in port_inl port_outl port_inw port_outw; do
   ck; grep -q "$sym" <<<"$VERIFY_OUT" || fail "$sym is not in kmain.o's extern manifest — one of the four externs M5 added and still has is gone"
 done
