@@ -12,6 +12,11 @@ if [[ -z "${DCDART_HOME:-}" || ! -f "${DCDART_HOME:-}/core/dcc/bin/dcc.dart" ]];
   eval "$(bash "$CORE_DIR/scripts/bootstrap-dcdart.sh" | tail -n 1)"
 fi
 export DCDART_HOME
+# Do not let a leaked daily-drive BUILD_DIR stomp live elves or starve
+# isolated harnesses of a fresh kernel.
+unset BUILD_DIR
+unset KERNEL_UEFI
+unset DRIVE_GIT_SHA
 
 pass=0
 fail=0

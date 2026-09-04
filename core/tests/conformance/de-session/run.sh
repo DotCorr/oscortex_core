@@ -59,7 +59,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "${BUILD_DIR:-}" == "$CORE_DIR/build" || -z "${BUILD_DIR:-}" ]]; then
+# Inherited BUILD_DIR from an older daily-drive (r23-kbuild, etc.) must
+# not silently test a stale kernel. This harness always isolates unless
+# the caller points at THIS workdir.
+if [[ -z "${BUILD_DIR:-}" || "$BUILD_DIR" == "$CORE_DIR/build" ||
+      "$BUILD_DIR" != "$WORKDIR"* ]]; then
   BUILD_DIR="$WORKDIR/kbuild"
 fi
 mkdir -p "$BUILD_DIR"
