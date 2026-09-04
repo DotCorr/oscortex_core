@@ -142,6 +142,13 @@ if "wmPendGeomOf" not in grab:
 drag = fn(wm, "wmDragStep")
 if "wmPendGeomOf" not in drag:
     raise SystemExit("wmDragStep does not refuse a HOLD translate")
+if "wmPageWDefPres" not in drag:
+    raise SystemExit("inline drag does not mark the next full COMMIT as echo")
+commit = fn(wm, "wmComposeCommit")
+if "wmCommitPath" not in commit:
+    raise SystemExit("compose commit has no CPATH phase log")
+if "full < u64(1)" not in commit:
+    raise SystemExit("body/scroll after drag still forces a session compose")
 
 kick = fn(gfx, "wmGfxKick")
 if "wmViewGeom" not in kick:

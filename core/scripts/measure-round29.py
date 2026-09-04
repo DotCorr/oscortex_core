@@ -122,7 +122,7 @@ def burst(q, ser, label, points, btn=None, skip_ptr=False):
             "wall_ms": round(wall, 2),
             "kind": kind,
             "gen": gen,
-            "gen0": g0,
+            "pos0": g0,
             "dirty_px": px,
             "scan_w": w,
             "scan_h": h,

@@ -323,6 +323,25 @@ final List<u8> wmStrPx = const [
   u8(0x20), u8(0x50), u8(0x58), u8(0x20),
 ];
 
+/// Phase path after a client commit. 1 = echo skip, 2 = gfx damage,
+/// 3 = session compose. First body/scroll after drag must stay on 1/2.
+///
+/// `'WM CPATH '` -- 9 bytes.
+@rodata
+final List<u8> wmStrCPath = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x43), u8(0x50), u8(0x41), u8(0x54), u8(0x48),
+  u8(0x20),
+];
+
+/// Button-up after a translate. One configure; no per-pixel COMMIT.
+///
+/// `'WM DRAGEND '` -- 11 bytes.
+@rodata
+final List<u8> wmStrDragEnd = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x52), u8(0x41), u8(0x47), u8(0x45),
+  u8(0x4E), u8(0x44), u8(0x20),
+];
+
 /// Field separator: the pointer position the frame was composed with. **No
 /// trailing space, because a ` X ` follows it** -- the first cut of this line
 /// had both and printed `CUR  X`, which a field-splitting reader gets wrong.
@@ -1469,6 +1488,14 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
 }
 
+/// UART phase: 1 echo skip, 2 gfx damage, 3 session compose.
+@bare
+void wmCommitPath(u64 path) {
+  uartWrite(Rodata.addressOf(wmStrCPath), u64(9));
+  uartPutHex(path, u64(1));
+  uartNewline();
+}
+
 /// A commit's composition pass. [full] is 1 when the damage is the whole
 /// surface: paint this window's decorated rectangle, and -- if this window is
 /// on top -- every other live window too, so the window that just lost the
@@ -1476,6 +1503,10 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
 /// compose used to do for free and what a damage pass of only the new window
 /// would leave stale. A partial damage paints one screen rectangle and does
 /// not touch anyone else's border.
+///
+/// After a translate layer blit, a chrome-sig flicker must not restamp
+/// the desk on the first body/scroll commit. HOLD and an empty cache
+/// still take the session path so sibling titles cannot go wallpaper.
 @bare
 void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   if (wmActive() < u64(1)) {
@@ -1486,10 +1517,12 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   }
   if (wmPageAddr() > u64(0)) {
     if (wmPage(u64(wmPageWDefPres)) == (slot + u64(1))) {
-      /* Deferred drain already presented this slot from prep. Title-only
-       * client commits still paint; a full-surface echo does not. */
+      /* Drain or inline drag already presented this slot. Title-only
+       * client commits still paint; a full-surface echo does not.
+       * Return before Busy so the first body click is not queued. */
       if (full > u64(0)) {
         wmPageSet(u64(wmPageWDefPres), u64(0));
+        wmCommitPath(u64(1));
         return;
       }
     }
@@ -1513,10 +1546,25 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     }
     if (honour > u64(0)) {
       wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
+      wmCommitPath(u64(2));
       wmIfHoldEnd();
       return;
     }
+    /* Body/scroll damage after a layer blit: a chrome-sig flicker
+     * must not restamp 1.1 Mpx. HOLD (pend) and empty HAVE still
+     * take the session path. */
+    if (full < u64(1)) {
+      if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
+        if (wmPendGeomOf(slot) < u64(1)) {
+          wmComposeCommitGfx(slot, full, dx, dy, dw, dh);
+          wmCommitPath(u64(2));
+          wmIfHoldEnd();
+          return;
+        }
+      }
+    }
     wmCompose();
+    wmCommitPath(u64(3));
     wmVisMaybePublishAll();
     wmIfHoldEnd();
     return;
@@ -3684,6 +3732,9 @@ void wmDragEndConfigure() {
     return;
   }
   wmeventEnqueueConfigure(wI);
+  uartWrite(Rodata.addressOf(wmStrDragEnd), u64(11));
+  uartPutHex(wI, u64(1));
+  uartNewline();
 }
 
 /// One drag step: move the dragged window so the grabbed point follows the
@@ -3757,6 +3808,10 @@ void wmDragStep(u64 x, u64 y) {
       wmDmgAcc(dpx, u64(2), u64(0), u64(1));
       wmGfxChromeStamp();
       wmPresentPair(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+      /* Next full-surface COMMIT is an echo of this layer blit.
+       * Body/scroll damage still paints; the click is not held
+       * behind a session restamp. */
+      wmPageSet(u64(wmPageWDefPres), wI + u64(1));
       wmDamageClear();
       wmVisMaybePublish(wI);
       px = dpx;
