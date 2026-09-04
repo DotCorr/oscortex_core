@@ -374,6 +374,15 @@ def main():
     os.makedirs(art, exist_ok=True)
     d15.PHASE_TIMELINES.clear()
 
+    # Sit-in FILES occupies a slot. Close it from live geom so 20
+    # launch→drag→close cycles cannot exhaust the 4-window cap.
+    slot0, sit = parse_files_geom(harvest(ser))
+    if sit is not None:
+        print("sitin FILES slot", slot0, "geom", sit, "close", ctrl_xy(sit))
+        if not close_geom(q, ser, sit):
+            close_geom(q, ser, (48, 40, 400, 280))
+        time.sleep(0.25)
+
     # Same cold boot: 20 lifecycles (includes first-drags), then pointer+menu.
     life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
     pointer_pts = [(80 + (i * 17) % 900, 360 + (i * 11) % 200)
