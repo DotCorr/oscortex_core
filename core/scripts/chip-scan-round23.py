@@ -215,6 +215,13 @@ def main():
         n += 1
         geom = live_files_xywh(serial_path, ser.archive or "")
         set_geom = live_set_xywh(serial_path, ser.archive or "") or SET_XYWH
+        if geom is not None and set_geom is not None:
+            fx, fy, fw, fh = geom
+            sx, sy, sw, sh = set_geom
+            if fx <= sx and fy <= sy and (fx + fw) >= (sx + sw) and (
+                    fy + fh) >= (sy + sh):
+                # Committed FILES VIS covers SET; SET is not on scanout.
+                set_geom = ()
         path = os.path.join(framedir, "c%05d.png" % n)
         d15.shot(q, path)
         rec = fi.inspect_png(path, files_xywh=geom, set_xywh=set_geom)

@@ -49,8 +49,15 @@ def burst_shots(q, folder, tag, files_xywh, set_xywh):
     for i in range(BURST):
         path = os.path.join(folder, "%s-%02d.png" % (tag, i))
         d15.shot(q, path)
-        rec = inspect_png(path, files_xywh=files_xywh, set_xywh=set_xywh)
-        aa_rec = inspect_aa(path, files_xywh=files_xywh, set_xywh=set_xywh)
+        use_set = set_xywh
+        if files_xywh and set_xywh:
+            fx, fy, fw, fh = files_xywh
+            sx, sy, sw, sh = set_xywh
+            if fx <= sx and fy <= sy and (fx + fw) >= (sx + sw) and (
+                    fy + fh) >= (sy + sh):
+                use_set = ()
+        rec = inspect_png(path, files_xywh=files_xywh, set_xywh=use_set)
+        aa_rec = inspect_aa(path, files_xywh=files_xywh, set_xywh=use_set)
         rec["tag"] = tag
         rec["i"] = i
         rec["aa"] = aa_rec

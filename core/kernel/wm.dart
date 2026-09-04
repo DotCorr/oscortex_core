@@ -1469,8 +1469,14 @@ void wmComposeCommit(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
    * changes still take the full path (chrome sig moved AND full=1). */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     u64 honour = wmGfxChromeFresh();
-    if (full < u64(1)) {
-      honour = u64(1);
+    /* HOLD invalidate drops HAVE. Forcing honour on a partial commit
+     * presented an empty chrome cache (SET/FILES titles → wallpaper)
+     * while VIS stayed on the old AABB. */
+    if (wmPage(u64(wmPageWChromeHave)) < u64(1)) {
+      honour = u64(0);
+    }
+    if (wmPendGeomOf(slot) > u64(0)) {
+      honour = u64(0);
     }
     if (honour > u64(0)) {
       wmComposeCommitGfx(slot, full, dx, dy, dw, dh);

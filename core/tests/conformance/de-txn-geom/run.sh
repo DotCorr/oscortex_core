@@ -101,6 +101,10 @@ if "wmWinSeq" not in maybe:
 commit = fn(wm, "wmComposeCommit")
 if "wmVisMaybePublish" not in commit and "wmVisMaybePublishAll" not in commit:
     raise SystemExit("compose commit does not publish VIS")
+if "wmPendGeomOf" not in commit:
+    raise SystemExit("HOLD compose still honours a stale chrome cache")
+if "wmPageWChromeHave" not in commit:
+    raise SystemExit("HOLD compose does not refuse an empty chrome cache")
 wm_commit = fn(wm, "wmCommit")
 if "wmChromeInvalidate" not in wm_commit:
     raise SystemExit("HOLD commit does not invalidate chrome for sibling titles")

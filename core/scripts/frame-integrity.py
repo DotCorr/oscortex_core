@@ -93,14 +93,17 @@ def sample_rect(rows, x0, y0, x1, y1, step=4):
 def inspect_png(path, files_xywh=(48, 40, 400, 280), set_xywh=(180, 48, 440, 280)):
     w, h, rows = _png_rgba(path)
     title = 36
-    sx, sy, sw, sh = set_xywh
     if files_xywh:
         fx, fy, fw, fh = files_xywh
         fn, fwll = sample_rect(rows, fx + 12, fy + title, fx + fw - 12, fy + fh - 8)
     else:
         fn, fwll = 0, 0
-    sn, swll = sample_rect(rows, sx + 128, sy + title, sx + sw - 12, sy + sh - 8)
-    side_n, side_w = sample_rect(rows, sx + 8, sy + title, sx + 110, sy + sh - 8)
+    if set_xywh:
+        sx, sy, sw, sh = set_xywh
+        sn, swll = sample_rect(rows, sx + 128, sy + title, sx + sw - 12, sy + sh - 8)
+        side_n, side_w = sample_rect(rows, sx + 8, sy + title, sx + 110, sy + sh - 8)
+    else:
+        sn, swll, side_n, side_w = 0, 0, 0, 0
     rec = {
         "png": path,
         "size": [w, h],

@@ -193,11 +193,12 @@ def inspect_png(path, files_xywh=None, set_xywh=None, r=18):
         # 1280 tiles SET to the right of FILES; 800×600 overlaps it.
         set_xywh = (584, 40, 320, 280) if w >= 1200 else (180, 48, 440, 280)
     recs = []
-    sx, sy, sw, sh = set_xywh
     if files_xywh:
         fx, fy, fw, fh = files_xywh
         recs.append(inspect_card(pix, w, h, fx, fy, fw, fh, r, "files"))
-    recs.append(inspect_card(pix, w, h, sx, sy, sw, sh, r, "set"))
+    if set_xywh:
+        sx, sy, sw, sh = set_xywh
+        recs.append(inspect_card(pix, w, h, sx, sy, sw, sh, r, "set"))
     for rec in recs:
         seam = title_seam(pix, rec["rect"][0], rec["rect"][1], rec["rect"][2],
                           rec["rect"][3], r)
