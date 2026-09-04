@@ -136,30 +136,13 @@ def main():
         48, 40, 400, 280)
     click(q, fg[0] + 80, fg[1] + 16)
     time.sleep(0.12)
-    wait_tok(ser, "FILES", harvest(ser), 1.0)
     click(q, fg[0] + 80, fg[1] + 80)
     time.sleep(0.08)
     marked_h = harvest(ser)
-    d15.place(q, ser, fg[0] + 80, fg[1] + 80)
-    d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
-    d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
-    wait_tok(ser, "FILES MENU", marked_h, 2.0)
-    for _ in range(5):
-        q.key("down")
-    q.key("ret")
+    combo(q, "ctrl", "m")
     files_mkdir = wait_tok(ser, "FILES MKDIR", marked_h, 2.5)
     files_dir = wait_tok(ser, "FILES DIR", marked_h, 2.5)
-    # In-folder menu: Back Retry Open New Mkdir Refresh — 4 downs is Mkdir.
-    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
-    click(q, fg[0] + 80, fg[1] + 80)
-    time.sleep(0.08)
-    d15.place(q, ser, fg[0] + 80, fg[1] + 80)
-    d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
-    d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
-    wait_tok(ser, "FILES MENU", harvest(ser), 1.5)
-    for _ in range(4):
-        q.key("down")
-    q.key("ret")
+    combo(q, "ctrl", "m")
     wait_tok(ser, "FILES DIR", harvest(ser), 2.0)
     wait_tok(ser, "FILES MKDIR", harvest(ser), 1.5)
     q.key("left")
@@ -197,8 +180,10 @@ def main():
         handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 2.5)
     studio_ow = wait_tok(ser, "STUDIO OPENWITH", marked_ow, 3.0)
     studio_open = wait_tok(ser, "STUDIO OPEN ", marked_ow, 2.0)
-    # STUDIO slice: new / find / tab / save-as / caret.
+    # Raise the new STUDIO so Ctrl chords hit the editor, not FILES.
+    click(q, 200, 120)
     time.sleep(0.2)
+    # STUDIO slice: new / find / tab / save-as / caret.
     combo(q, "ctrl", "n")
     wait_tok(ser, "STUDIO NEW ", marked_ow, 1.5)
     combo(q, "ctrl", "f")
@@ -238,10 +223,15 @@ def main():
     click(q, sg[0] + 40, sg[1] + 32 + 80)
     time.sleep(0.1)
     cx, cy = set_card_xy(sg, 1)
-    click(q, cx, cy)
-    set_theme = wait_tok(ser, "SET CARD 1", marked_set, 2.5) or wait_tok(
-        ser, "SET THEME 1", marked_set, 1.5) or wait_tok(
-        ser, "SET THEME", marked_set, 1.2)
+    set_theme = False
+    for dx, dy in ((0, 0), (24, 0), (-16, 0), (0, 8), (48, 0), (24, 12)):
+        click(q, cx + dx, cy + dy)
+        if wait_tok(ser, "SET CARD 1", marked_set, 0.7):
+            set_theme = True
+            break
+    if not set_theme:
+        set_theme = wait_tok(ser, "SET THEME 1", marked_set, 1.2) or wait_tok(
+            ser, "SET THEME", marked_set, 0.8)
     cx3, cy3 = set_card_xy(sg, 3)
     click(q, cx3, cy3)
     wait_tok(ser, "SET ACCENT", marked_set, 1.5)

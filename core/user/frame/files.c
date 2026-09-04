@@ -2451,6 +2451,10 @@ static void files_on_key(u64 ev) {
       files_repaint_body();
       return;
     }
+    if (scan == 0x32UL) {
+      files_do_mkdir();
+      return;
+    }
   }
   if (scan == SCAN_F5) {
     files_do_refresh();
