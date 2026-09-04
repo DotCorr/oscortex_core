@@ -401,8 +401,8 @@ ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
   || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
 MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
 EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
-ck; [[ "$EXTERN_COUNT" -eq 44 ]] \
-  || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED, because a compositor that needed a new @extern would be doing in assembly something ADR-0050 says is DCDart's job"
+ck; [[ "$EXTERN_COUNT" -eq 42 ]] \
+  || fail "kmain.o declares $EXTERN_COUNT externs, expected 42 — plat C and msr_write are subtracted by name; D2 added no assembly"
 
 # ===========================================================================
 # Step 5 — the clients, and the disk they live on.

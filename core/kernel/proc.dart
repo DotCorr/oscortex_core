@@ -77,7 +77,7 @@ part of 'kmain.dart';
 // a pair that stopped agreeing fails before a boot does.
 // ---------------------------------------------------------------------------
 
-/// How many processes can exist at once. FOUR, and it is a capacity rather than
+/// How many processes can exist at once. EIGHT, and it is a capacity rather than
 /// a design limit: a fifth `procCreate` is refused by name (`procErrNoSlot`) and
 /// says so, which is the difference between a bounded table and a table that
 /// overruns. Raising it is `procStoreBytes` and one number in `kdata.S`.

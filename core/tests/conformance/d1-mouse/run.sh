@@ -491,7 +491,7 @@ ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
   || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
 MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
 EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
-ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — UNCHANGED, because D1 added no assembly at all. A mouse driver that needed a new @extern would be doing something in assembly that ADR-0042 says is DCDart's job."
+ck; [[ "$EXTERN_COUNT" -eq 42 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 42 — plat C and msr_write are subtracted by name; D1 added no assembly."
 echo "FREESTANDING: pass  four objects, $EXTERN_COUNT declared externs, UNCHANGED — and NO dc_alloc anywhere, which is what \"no allocation in an interrupt handler\" is mechanically"
 
 # ===========================================================================

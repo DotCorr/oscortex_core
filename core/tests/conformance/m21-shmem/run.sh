@@ -218,8 +218,12 @@ ck; [[ $(( S_MAX * S_SLOTPAGES )) -le "$VM_SHM_PAGES" ]] \
   || fail "$S_MAX slots of $S_SLOTPAGES pages exceed the window's $VM_SHM_PAGES pages"
 ck; [[ "$S_MAXPAGES" -le "$VM_SHM_PAGES" ]] \
   || fail "shmMaxPages ($S_MAXPAGES) exceeds the shared window ($VM_SHM_PAGES)"
-ck; [[ "$S_MAX" -le "$S_CAPS" ]] \
-  || fail "a process has $S_CAPS capability slots and there are $S_MAX regions; it could not hold one for each"
+# Global regions are a pool (DESK + six dock apps). Each process only
+# needs create+map, not a capability for every region in the machine.
+ck; [[ "$S_CAPS" -ge 2 ]] \
+  || fail "a process has $S_CAPS capability slots; a FRAME client needs create+map"
+ck; [[ "$S_MAX" -ge 8 ]] \
+  || fail "shmMax is $S_MAX; DESK + six dock apps need 8 global regions"
 
 # 2d. THE @bss BLOCK IS THE SIZE IT SAYS AND IT IS LAST.
 bssfield() { x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \

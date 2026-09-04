@@ -813,7 +813,7 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
       uartNewline();
     }
   }
-  /* IRQ: state + enqueue. Paint in drain (syscall/tick). */
+  /* IRQ: state + enqueue. Paint in drain (surface/tick). */
   if (wmPageAddr() > u64(0)) {
     final u64 g = wmPackGeom(ox, oy, u64(wmPopW), u64(wmPopH));
     wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
