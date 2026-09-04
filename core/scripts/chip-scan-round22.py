@@ -49,8 +49,11 @@ def live_files_xywh(serial_path, archive=""):
     blob += "\n" + archive
     slot = None
     geom = None
+    attach_at = -1
     for m in ATTACH_RE.finditer(blob):
         if int(m.group(3), 16) != 1:
+            continue
+        if int(m.group(6), 16) < 240:
             continue
         slot = int(m.group(1), 16)
         geom = (
@@ -59,6 +62,7 @@ def live_files_xywh(serial_path, archive=""):
             int(m.group(6), 16),
             int(m.group(7), 16),
         )
+        attach_at = m.end()
     if geom is None:
         hits = list(CSDHIT_RE.finditer(blob))
         if hits:
@@ -72,7 +76,7 @@ def live_files_xywh(serial_path, archive=""):
             return geom
         return FILES_FALLBACK
     x, y, w, h = geom
-    for m in MOVE_RE.finditer(blob):
+    for m in MOVE_RE.finditer(blob, attach_at):
         if slot is not None and int(m.group(1), 16) != slot:
             continue
         x = int(m.group(2), 16)

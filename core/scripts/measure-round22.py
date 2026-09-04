@@ -83,24 +83,29 @@ def harvest(ser):
 
 
 def parse_files_geom(blob):
-    """Latest FILES (cap 1) attach, overlaid with later MOVE for that slot."""
+    """Latest real FILES attach (cap 1, width>=240). MOVE only after that line."""
     slot = None
     geom = None
+    attach_at = -1
     for m in ATTACH_RE.finditer(blob):
         cap = int(m.group(3), 16)
+        w = int(m.group(6), 16)
         if cap != 1:
+            continue
+        if w < 240:
             continue
         slot = int(m.group(1), 16)
         geom = (
             int(m.group(4), 16),
             int(m.group(5), 16),
-            int(m.group(6), 16),
+            w,
             int(m.group(7), 16),
         )
+        attach_at = m.end()
     if slot is None or geom is None:
         return None, None
     x, y, w, h = geom
-    for m in MOVE_RE.finditer(blob):
+    for m in MOVE_RE.finditer(blob, attach_at):
         if int(m.group(1), 16) != slot:
             continue
         x = int(m.group(2), 16)
@@ -210,14 +215,19 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
 def launch_files(q, ser):
     fx, fy = d15.FILES_DOCK_XY
     for _try in range(4):
+        before = harvest(ser)
+        n_att = len([m for m in ATTACH_RE.finditer(before)
+                     if int(m.group(3), 16) == 1 and int(m.group(6), 16) >= 240])
         marked = ser.read()
-        if d15.press(q, ser, fx, fy, "left", "DESK LAUNCH", timeout=1.4):
-            if (d15.wait_mark(ser, "FILES READY", marked, 6)
-                    or d15.wait_mark(ser, "FILES CSD", marked, 3)):
+        d15.press(q, ser, fx, fy, "left", "DESK LAUNCH", timeout=1.2)
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            blob = harvest(ser)
+            n2 = len([m for m in ATTACH_RE.finditer(blob)
+                      if int(m.group(3), 16) == 1 and int(m.group(6), 16) >= 240])
+            if n2 > n_att:
                 return True
-        if d15.press(q, ser, fx, fy, "left", "FILES CSD", timeout=1.5):
-            d15.wait_mark(ser, "FILES READY", ser.read(), 6)
-            return True
+            time.sleep(0.08)
         time.sleep(0.15)
     return False
 
