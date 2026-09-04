@@ -163,6 +163,10 @@ if "wmHoldCancel" not in watch:
     raise SystemExit("watchdog has no timeout cancel")
 if "wmVisMaybePublish" not in watch:
     raise SystemExit("watchdog does not publish VIS after COMMIT")
+if "wmGfxChromeFresh" not in watch:
+    raise SystemExit("watchdog force-publish is not gated on composed chrome")
+if "wmPageWChromeHave" not in watch:
+    raise SystemExit("watchdog force-publish ignores chrome HAVE")
 
 cancel = fn(wmde, "wmHoldCancel")
 if "wmStrHoldTo" not in cancel:

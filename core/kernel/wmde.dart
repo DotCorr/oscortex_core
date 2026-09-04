@@ -1079,8 +1079,18 @@ void wmHoldWatch() {
         if (wmWin(i, u64(wmWinSeq)) > u64(0)) {
           if (age > u64(wmHoldForceTicks)) {
             /* Commit already ran in syscall context. Do not Skia-compose
-             * from the PIT tick (ADR-0172). Publish VIS if geom matches. */
-            wmVisMaybePublish(i);
+             * from the PIT tick (ADR-0172). Publish VIS only after a
+             * compose stamped chrome for this geom — otherwise VIS
+             * lies ahead of scanout (maxed AABB, tiled pixels). */
+            u64 ready = u64(0);
+            if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
+              if (wmGfxChromeFresh() > u64(0)) {
+                ready = u64(1);
+              }
+            }
+            if (ready > u64(0)) {
+              wmVisMaybePublish(i);
+            }
           }
         } else {
           if (age > u64(wmHoldCancelTicks)) {

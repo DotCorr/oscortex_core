@@ -312,6 +312,18 @@ def main():
             d15.press(q, ser, mx, my, "left", "WM REQ", timeout=2)
             wait_vis(ser, serial_path, n0=n0,
                      pred=lambda gg: gg[2] >= 1000, timeout=4)
+            # VIS is the claim; wait until scanout matches before dump.
+            gmax = geom_now()
+            if gmax is not None and gmax[2] >= 1000:
+                deadline = time.time() + 0.8
+                settle = os.path.join(framedir, "_max_settle.png")
+                while time.time() < deadline:
+                    d15.shot(q, settle)
+                    rec = fi.inspect_png(settle, files_xywh=gmax, set_xywh=())
+                    aa_rec = aa.inspect_png(settle, files_xywh=gmax, set_xywh=())
+                    if not rec.get("bad") and not aa_rec.get("bad"):
+                        break
+                    time.sleep(0.04)
             dump("max")
             geom = geom_now()
             if geom is not None and geom[2] >= 1000:
