@@ -43,6 +43,13 @@ def combo(q, *names):
     q.cmd("send-key", keys=[{"type": "qcode", "data": n} for n in names])
 
 
+def key_edge(q, name, down):
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": down, "key": {"type": "qcode", "data": name}},
+    }])
+
+
 def write_json(name, obj):
     os.makedirs(ART, exist_ok=True)
     path = os.path.join(ART, name)
@@ -59,29 +66,31 @@ def main():
     marked = harvest(ser)
     q.key("f4")
     launch_show = wait_tok(ser, "WM LAUNCH SHOW", marked, 3.0)
+    wait_tok(ser, "DESK MENU 2", marked, 2.0)
     t0 = time.time()
     q.key("f")
     filt = wait_tok(ser, "WM LAUNCH FILT", marked, 2.5)
     launch_ms = (time.time() - t0) * 1000.0
+    time.sleep(0.25)
     d15.shot(q, os.path.join(ART, "oscortex-round33-launcher.png"))
     q.key("esc")
-    time.sleep(0.15)
+    time.sleep(0.2)
 
     marked = harvest(ser)
-    combo(q, "alt", "tab")
+    key_edge(q, "alt", True)
+    time.sleep(0.05)
+    key_edge(q, "tab", True)
+    key_edge(q, "tab", False)
     switch_show = wait_tok(ser, "WM SWITCH SHOW", marked, 3.0)
-    if not switch_show:
-        combo(q, "alt", "tab")
-        switch_show = wait_tok(ser, "WM SWITCH SHOW", marked, 2.0)
+    wait_tok(ser, "DESK MENU 6", marked, 1.5)
     t1 = time.time()
-    combo(q, "alt", "tab")
-    switch_go = wait_tok(ser, "WM SWITCH GO", marked, 2.5)
-    switch_ms = (time.time() - t1) * 1000.0
-    # Hold overlay for the shot: show again then dump.
-    combo(q, "alt", "tab")
+    key_edge(q, "tab", True)
+    key_edge(q, "tab", False)
     time.sleep(0.2)
     d15.shot(q, os.path.join(ART, "oscortex-round33-alt-tab.png"))
-    q.key("ret")
+    key_edge(q, "alt", False)
+    switch_go = wait_tok(ser, "WM SWITCH GO", marked, 2.5)
+    switch_ms = (time.time() - t1) * 1000.0
     time.sleep(0.1)
 
     marked = harvest(ser)

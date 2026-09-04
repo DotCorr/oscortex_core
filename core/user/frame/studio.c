@@ -39,7 +39,7 @@ typedef unsigned int u32;
 #define O_WRITE 1UL
 #define SEL_BYTES 4UL
 #define SCAN_LCTRL 0x1DUL
-#define CLIP_VA 0x10280000UL
+#define CLIP_VA 0x10200000UL
 #define EDIT_MAX 64UL
 
 static unsigned char buf[512];
@@ -322,6 +322,10 @@ static void try_strip(u64 names) {
   u64 va;
   u64 frames;
 
+  clip_h = sys1(SYS_SHMCREATE, 1);
+  if (clip_h >= WM_RET_FLOOR) {
+    clip_h = 0;
+  }
   h = sys1(SYS_SHMCREATE, WIN_PAGES);
   if (h >= WM_RET_FLOOR) {
     return;
@@ -347,10 +351,6 @@ static void try_strip(u64 names) {
   studio_h = h;
   studio_va = va;
   studio_names = names;
-  clip_h = sys1(SYS_SHMCREATE, 1);
-  if (clip_h >= WM_RET_FLOOR) {
-    clip_h = 0;
-  }
   edit_on = 1;
   edit_n = 0;
   edit_caret = 0;

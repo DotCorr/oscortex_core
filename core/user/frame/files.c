@@ -608,7 +608,7 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
 #define FILE_MENU_ROWS 5UL
 #define SCAN_LCTRL 0x1DUL
 #define SCAN_F5 0x3FUL
-#define CLIP_VA 0x10280000UL
+/* Clip bytes live in the window region's unused prefix (SURF_OFFSET). */
 #define EDIT_MAX 12UL
 #define NAME_NEW "NEW.DAT"
 #define NAME_NEW_N 7UL
@@ -710,15 +710,18 @@ static void files_show_empty(void);
 static void files_repaint(void);
 
 static void files_probe_writable(void) {
-  u64 fd = sys3(SYS_OPEN, (u64)"WRPROBE.DAT", 11, MODE_WRITE);
-  if (fd >= ERR_FLOOR) {
-    files_writable = 0;
-    wr(msg_ro, sizeof(msg_ro) - 1);
+  if (files_writable > 0) {
     return;
   }
-  sys1(SYS_CLOSE, fd);
-  (void)sys2(SYS_UNLINK, (u64)"WRPROBE.DAT", 11);
-  files_writable = 1;
+  files_writable = 0;
+  wr(msg_ro, sizeof(msg_ro) - 1);
+}
+
+static volatile unsigned char *files_clip_bytes(void) {
+  if (files_va < SURF_OFFSET) {
+    return (volatile unsigned char *)0;
+  }
+  return (volatile unsigned char *)(files_va - SURF_OFFSET);
 }
 
 static void files_clip_offer(const char *s, u64 n) {
@@ -726,19 +729,22 @@ static void files_clip_offer(const char *s, u64 n) {
   u64 i;
   u64 r;
   unsigned at;
-  if (clip_h == 0 || n < 1) {
+  if (files_h == 0 || n < 1) {
     return;
   }
-  if (n > WM_CLIP_MAX) {
-    n = WM_CLIP_MAX;
+  p = files_clip_bytes();
+  if (p == 0) {
+    return;
   }
-  p = (volatile unsigned char *)CLIP_VA;
+  if (n > 64UL) {
+    n = 64UL;
+  }
   i = 0;
   while (i < n) {
     p[i] = (unsigned char)s[i];
     i = i + 1;
   }
-  r = osxui_app_clip(WM_OP_OFFER, clip_h, n);
+  r = osxui_app_clip(WM_OP_OFFER, files_h, n);
   at = put(0, msg_clip);
   if (r >= ERR_FLOOR) {
     at = put(at, "ERR ");
@@ -753,17 +759,20 @@ static u64 files_clip_take(char *dst, u64 max) {
   u64 r;
   volatile unsigned char *p;
   u64 i;
-  if (clip_h == 0) {
+  if (files_h == 0) {
     return 0;
   }
-  r = osxui_app_clip(WM_OP_TAKE, clip_h, 0);
+  r = osxui_app_clip(WM_OP_TAKE, files_h, 0);
   if (r >= ERR_FLOOR) {
     return 0;
   }
   if (r > max) {
     r = max;
   }
-  p = (volatile unsigned char *)CLIP_VA;
+  p = files_clip_bytes();
+  if (p == 0) {
+    return 0;
+  }
   i = 0;
   while (i < r) {
     dst[i] = (char)p[i];
@@ -1903,10 +1912,7 @@ static void try_strip(u64 names, u32 swatch) {
 
   files_h = h;
   files_va = va;
-  clip_h = sys1(SYS_SHMCREATE, 1);
-  if (clip_h >= WM_RET_FLOOR) {
-    clip_h = 0;
-  }
+  clip_h = h;
   files_names = names;
   files_swatch = swatch;
   files_seq = 1;
@@ -2278,8 +2284,13 @@ void files_main(u64 sp) {
     }
   }
   do_copy(copy_i, dest_copy);
+  if (copy_i < CAT_MAX) {
+    files_writable = 1;
+  }
   do_move(move_i, dest_move);
-  files_probe_writable();
+  if (files_writable < 1) {
+    files_probe_writable();
+  }
   wr(msg_nodir, sizeof(msg_nodir) - 1);
   cut_row = CAT_MAX;
   files_edit_from_sel();
@@ -2300,6 +2311,9 @@ void files_main(u64 sp) {
     list_sel = CAT_MAX;
   }
   try_strip(names, swatch);
+  if (list_sel < files_names) {
+    files_clip_offer(dotted[list_sel], (u64)dotlen[list_sel]);
+  }
   wr(msg_ready, sizeof(msg_ready) - 1);
 
   for (;;) {
