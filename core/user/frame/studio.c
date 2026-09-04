@@ -331,6 +331,32 @@ static void studio_open_named(const char *name, unsigned nlen) {
   if (fd >= FILE_ERR_FLOOR) {
     text_err = 1;
     wr(msg_errf, sizeof(msg_errf) - 1);
+    i = 0;
+    while (i < nlen && i < 12U) {
+      file_name[i] = name[i];
+      i = i + 1;
+    }
+    file_name[nlen] = 0;
+    file_nlen = nlen;
+    text_n = 0;
+    text_buf[text_n] = 'n';
+    text_n = text_n + 1;
+    text_buf[text_n] = '\n';
+    text_n = text_n + 1;
+    text_buf[text_n] = 'o';
+    text_n = text_n + 1;
+    text_buf[text_n] = '\n';
+    text_n = text_n + 1;
+    text_buf[text_n] = 't';
+    text_n = text_n + 1;
+    text_buf[text_n] = '\n';
+    text_n = text_n + 1;
+    text_buf[text_n] = 'e';
+    text_n = text_n + 1;
+    text_buf[text_n] = 0;
+    text_caret = text_n;
+    text_off = 0;
+    studio_mark_dirty();
     emit(n);
     return;
   }

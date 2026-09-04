@@ -864,6 +864,16 @@ static u64 files_load_listing(const char *path, unsigned nlen) {
         }
         if (skip < 1) {
           n = fmt83(recs[names], dotted[names]);
+          if (n == 8U) {
+            if (same_bytes(dotted[names], 8, path_gone, 8) > 0) {
+              skip = 1;
+            }
+            if (same_bytes(dotted[names], 8, path_miss, 8) > 0) {
+              skip = 1;
+            }
+          }
+        }
+        if (skip < 1) {
           dotlen[names] = n;
           emit_name(dotted[names], n);
           names = names + 1;
@@ -975,23 +985,17 @@ static void files_do_mkdir(void) {
     return;
   }
   emit(at);
-  files_reload_here();
-  {
-    u64 i = 0;
-    u64 hit = files_names;
-    while (i < files_names) {
-      if (same_bytes(dotted[i], dotlen[i], NAME_DIR, (unsigned)NAME_DIR_N) > 0) {
-        hit = i;
-        i = files_names;
-      } else {
-        i = i + 1;
-      }
-    }
-    if (hit < files_names) {
-      files_set_sel(hit);
-      do_file_open(hit);
-    }
+  at = put(0, msg_dir);
+  at = put(at, NAME_DIR);
+  emit(at);
+  if (files_load_listing(NAME_DIR, (unsigned)NAME_DIR_N) > 0) {
+    files_show_empty();
+    return;
   }
+  files_remember_folder(NAME_DIR, (unsigned)NAME_DIR_N);
+  in_folder = 1;
+  can_fwd = 0;
+  files_repaint();
 }
 
 static void files_do_delete(u64 row) {

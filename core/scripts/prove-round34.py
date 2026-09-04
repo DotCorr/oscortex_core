@@ -173,6 +173,40 @@ def main():
     time.sleep(0.25)
     d15.shot(q, os.path.join(ART, "oscortex-round34-clipboard-files.png"))
 
+    marked4 = harvest(ser)
+    blob_vis = harvest(ser)
+    st_slot = cs._cap_slot(blob_vis, 5, 200)
+    stg = cs._vis_xywh(blob_vis, st_slot, min_w=200, min_h=160) if st_slot is not None else None
+    if stg:
+        click(q, stg[0] + 80, stg[1] + 140)
+    else:
+        click(q, 200, 200)
+    time.sleep(0.12)
+    q.key("a")
+    q.key("ret")
+    q.key("b")
+    q.key("ret")
+    q.key("c")
+    key_edge(q, "ctrl", True)
+    key_edge(q, "s", True)
+    key_edge(q, "s", False)
+    key_edge(q, "ctrl", False)
+    studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.5)
+    if not studio_save:
+        if stg:
+            click(q, stg[0] + 80, stg[1] + 140)
+        time.sleep(0.08)
+        q.key("f2")
+        studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.0)
+        if not studio_save:
+            combo(q, "ctrl", "s")
+            studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 1.5)
+    combo(q, "ctrl", "o")
+    studio_open = wait_tok(ser, "STUDIO OPEN", marked4, 2.0)
+    q.key("down")
+    q.key("down")
+    wait_tok(ser, "STUDIO SCROLL", marked4, 1.5)
+
     marked2 = harvest(ser)
     fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or (48, 40, 400, 280)
     click(q, fg[0] + 80, fg[1] + 80)
@@ -275,66 +309,23 @@ def main():
     theme_blob = harvest(ser)
     theme_line = ""
     for line in theme_blob[len(marked3):].splitlines():
-        if line.startswith("SET THEME"):
+        if "SET THEME" in line:
             theme_line = line.strip()
     if not theme_line:
         for line in theme_blob.splitlines():
-            if line.startswith("SET THEME"):
+            if "SET THEME" in line:
                 theme_line = line.strip()
     click(q, set_xy[0], set_xy[1])
     set_relaunch = wait_tok(ser, "SET READY", marked3, 4.0)
     wait_tok(ser, "SET THEME", theme_blob, 2.0)
     relaunch_theme = ""
     for line in harvest(ser)[len(theme_blob):].splitlines():
-        if line.startswith("SET THEME"):
+        if "SET THEME" in line:
             relaunch_theme = line.strip()
     set_persist = bool(theme_line) and (
         (not relaunch_theme) or relaunch_theme == theme_line)
     pref_ack = "WM PREF ACK" in harvest(ser) or "WM PREF" in harvest(ser)
     time.sleep(0.4)
-
-    marked4 = harvest(ser)
-    studio_xy = (
-        d15.RIGHT_X + d15.ICON_PAD + 4 * (d15.ICON_S + d15.ICON_GAP)
-        + d15.ICON_S // 2,
-        d15.PANEL_Y,
-    )
-    click(q, studio_xy[0], studio_xy[1])
-    wait_tok(ser, "STUDIO2 READY", marked4, 3.0)
-    time.sleep(0.2)
-    blob_vis = harvest(ser)
-    st_slot = cs._cap_slot(blob_vis, 5, 200)
-    stg = cs._vis_xywh(blob_vis, st_slot, min_w=200, min_h=160) if st_slot is not None else None
-    if stg:
-        click(q, stg[0] + 80, stg[1] + 140)
-    else:
-        click(q, 120, 180)
-    time.sleep(0.12)
-    q.key("a")
-    q.key("ret")
-    q.key("b")
-    q.key("ret")
-    q.key("c")
-    key_edge(q, "ctrl", True)
-    key_edge(q, "s", True)
-    key_edge(q, "s", False)
-    key_edge(q, "ctrl", False)
-    studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.5) or wait_tok(
-        ser, "STUDIO2 SAVE", marked4, 1.0)
-    if not studio_save:
-        if stg:
-            click(q, stg[0] + 80, stg[1] + 140)
-        time.sleep(0.1)
-        q.key("f2")
-        studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.0)
-        if not studio_save:
-            combo(q, "ctrl", "s")
-            studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 1.5)
-    combo(q, "ctrl", "o")
-    studio_open = wait_tok(ser, "STUDIO OPEN", marked4, 2.0)
-    q.key("down")
-    q.key("down")
-    wait_tok(ser, "STUDIO SCROLL", marked4, 1.5)
 
     browse_xy, play_xy, tap_xy = dock_xy(2), dock_xy(3), dock_xy(5)
     marked_apps = harvest(ser)
