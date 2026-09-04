@@ -26,13 +26,30 @@ N = int(os.environ.get("DRIVE_LIFE_N", "50"))
 QMP = int(open(os.path.join(RUN, "qmp.port")).read())
 
 
-def body_is_black(path, geom):
+def _px(im, x, y):
+    return im.getpixel((min(1279, max(0, x)), min(719, max(0, y))))
+
+
+def body_is_hole(path, geom):
+    """Black OR wallpaper-through-body (vacated card)."""
     im = Image.open(path).convert("RGB")
     x, y, w, h = geom
-    sx = x + max(24, w // 2)
-    sy = y + 80
-    r, g, b = im.getpixel((min(1279, sx), min(719, sy)))
-    return (r + g + b) < 48, (r, g, b)
+    desk = _px(im, 16, 200)
+    samples = [
+        _px(im, x + w // 2, y + 80),
+        _px(im, x + 48, y + 100),
+        _px(im, x + w - 48, y + 120),
+        _px(im, x + w // 2, y + h // 2),
+    ]
+    holes = 0
+    rgb = samples[0]
+    for r, g, b in samples:
+        if (r + g + b) < 48:
+            holes += 1
+            continue
+        if (abs(r - desk[0]) + abs(g - desk[1]) + abs(b - desk[2])) < 36:
+            holes += 1
+    return holes >= 3, rgb, desk, holes
 
 
 def click(q, x, y):
@@ -119,15 +136,16 @@ def main():
         geom = m31.files_geom(ser)
         shot = os.path.join("/tmp", "r32-life-%03d.png" % i)
         d15.shot(q, shot)
-        black, rgb = body_is_black(shot, geom)
+        black, rgb, desk, nmatch = body_is_hole(shot, geom)
         if black:
             holes += 1
         cycles.append({
             "i": i, "gone": gone, "ready": ready, "black": black,
-            "rgb": list(rgb), "geom": list(geom),
+            "rgb": list(rgb), "desk": list(desk), "nmatch": nmatch,
+            "geom": list(geom),
         })
-        print("life", i, "gone", gone, "ready", ready, "black", black,
-              "rgb", rgb, "geom", geom)
+        print("life", i, "gone", gone, "ready", ready, "hole", black,
+              "rgb", rgb, "desk", desk, "nmatch", nmatch, "geom", geom)
         if i == N - 1:
             d15.shot(q, os.path.join(ART, "oscortex-round32-reopen-clean.png"))
     blob = open(os.path.join(RUN, "serial.txt"), encoding="latin-1",

@@ -1414,6 +1414,7 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
   wmSetMeta(u64(wmMetaBusy), u64(1));
   wmReap();
   wmDePrefApply();
+  wmGfxMail();
   /*
    * Client damage is allowed underneath the pointer. The old implementation
    * repainted first and restored afterwards, which put stale pre-commit
@@ -1462,6 +1463,14 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
     }
   }
   if (wmPaced() > u64(0)) {
+    /* First publish (VIS still 0): present the decorated rect now so a
+     * vacated wallpaper card cannot sit on scanout until the pacer. */
+    u64 first = u64(0);
+    if (full > u64(0)) {
+      if (wmVisGeom(slot) < u64(1)) {
+        first = u64(1);
+      }
+    }
     /* Body/scroll (bigger than a 16x16 de-pace patch): publish now so a
      * later 640-px pointer FRAME cannot steal the pair. Do not also
      * wmDamageRect — a queued window AABB pairs the next body click to
@@ -1470,28 +1479,39 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
       if (rw > u64(0)) {
         if (rh > u64(0)) {
           if ((rw * rh) > u64(2048)) {
-            wmOpBegin(u64(wmOpKindBody));
-            final u64 p0 = wmPresentClipped(rx, ry, rw, rh);
-            wmPageSet(u64(wmPageWDmgPx), p0);
-            wmDmgAcc(p0, u64(1), u64(0), u64(1));
-            wmPointerPlace(
-                mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
-            wmPublishFrameNoted(px);
-            wmPublishFrameLine(px, mouseState(u64(mouseWordX)),
-                mouseState(u64(mouseWordY)));
-            wmPageSet(u64(wmPageWPresented),
-                wmPage(u64(wmPageWPresented)) + u64(1));
-            wmOpDone(p0);
-            final u64 dropped0 = wmMeta(u64(wmMetaDropped));
-            final u64 pending0 = dropped0 & u64(wmPointerPending);
-            wmSetMeta(u64(wmMetaDropped), dropped0 & u64(wmPointerDropMask));
-            wmSetMeta(u64(wmMetaBusy), u64(0));
-            wmVisMaybePublish(slot);
-            if (pending0 > u64(0)) {
-              wmPointerTick();
-            }
-            return;
+            first = u64(1);
           }
+        }
+      }
+    }
+    if (first > u64(0)) {
+      if (rw > u64(0)) {
+        if (rh > u64(0)) {
+          if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+            wmGfxMail();
+            final u64 body = wmDrawWindow(slot, u64(1));
+          }
+          wmOpBegin(u64(wmOpKindBody));
+          final u64 p0 = wmPresentClipped(rx, ry, rw, rh);
+          wmPageSet(u64(wmPageWDmgPx), p0);
+          wmDmgAcc(p0, u64(1), u64(0), u64(1));
+          wmPointerPlace(
+              mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+          wmPublishFrameNoted(px);
+          wmPublishFrameLine(px, mouseState(u64(mouseWordX)),
+              mouseState(u64(mouseWordY)));
+          wmPageSet(u64(wmPageWPresented),
+              wmPage(u64(wmPageWPresented)) + u64(1));
+          wmOpDone(p0);
+          final u64 dropped0 = wmMeta(u64(wmMetaDropped));
+          final u64 pending0 = dropped0 & u64(wmPointerPending);
+          wmSetMeta(u64(wmMetaDropped), dropped0 & u64(wmPointerDropMask));
+          wmSetMeta(u64(wmMetaBusy), u64(0));
+          wmVisMaybePublish(slot);
+          if (pending0 > u64(0)) {
+            wmPointerTick();
+          }
+          return;
         }
       }
     }
@@ -2187,6 +2207,12 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   // ADR-0142: under `wm de` the granted geom travels the press
   // queue. Without `wm de` the client is not told (d7-click).
   wmeventEnqueueConfigure(slot);
+  /* Mail the new geom before the first COMMIT so chrome_blit punches
+   * a body hole. A vacated cache with win0=0 would stamp wallpaper
+   * over the reused slot. */
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxMail();
+  }
   /* Sit-in: a newly mapped ordinary window owns the keyboard so
    * STUDIO `e` / PLAY keys are not dropped on a focused DESK. */
   if (wmDeOn() > u64(0)) {

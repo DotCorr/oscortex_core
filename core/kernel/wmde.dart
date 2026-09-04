@@ -2165,7 +2165,10 @@ void wmCloseWindow(u64 wI) {
   /* Punch wallpaper into the live chrome cache + FB. Dropping HAVE
    * forced the next commit down CPATH 3 and left a black vacated card. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    wmGfxKick();
+    /* Mail the post-close set (no FILES) so a later cache blit holes
+     * nothing at this AABB. Do not kick: a gen bump restamps the
+     * session over the vacated wallpaper and the next attach. */
+    wmGfxMail();
     final u64 vacated = osgfx_chrome_vacate_geom(wmPackGeom(ox, oy, ow, oh));
     if (vacated > u64(0)) {
       wmOpBegin(u64(wmOpKindBody));
@@ -2177,6 +2180,7 @@ void wmCloseWindow(u64 wI) {
     } else {
       final u64 unused = wmRepaintRect(ox, oy, ow, oh);
     }
+    wmGfxMail();
   } else {
     final u64 unused = wmRepaintRect(ox, oy, ow, oh);
   }
