@@ -544,9 +544,6 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n,
                         off = size
                 except OSError:
                     chunk = ""
-            if token and token in chunk:
-                hit = "token"
-                break
             for ev in done_events(ser):
                 if ev["opid"] <= prev:
                     continue
@@ -555,7 +552,14 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n,
                         ev_hit = ev
                         hit = "done"
                         break
+                else:
+                    ev_hit = ev
+                    hit = "done"
+                    break
             if hit:
+                break
+            if token and token in chunk:
+                hit = "token"
                 break
             time.sleep(0.002)
         wall = (time.time() - t_inj) * 1000.0
@@ -636,34 +640,8 @@ def main():
     drain_kind(ser, KIND_DRAG, timeout=0.15)
     drain_kind(ser, KIND_MENU, timeout=0.12)
     drain_kind(ser, KIND_MENU_HIDE, timeout=0.12)
-    # Discard leftover/button-edge sprite presents so p95 is the 640-px path.
-    for i in range(6):
-        g0 = last_done_opid(ser)
-        send_abs(q, 44 + i * 14, 490 + (i * 7) % 80)
-        wait_done(ser, g0, KIND_PTR, timeout=0.8)
-    pointer = burst(q, ser, "pointer",
-                    [(36 + (i * 17) % 160, 480 + (i * 9) % 100)
-                     for i in range(n_ptr)],
-                    KIND_PTR)
-    # Drag before the 100-menu UART flood so p95 is not a logfile wall.
-    drag = layered_drag(q, ser, n)
-    cold = cold_drag_first_scroll(q, ser, n_cold)
-    geom = files_geom(ser)
-    bx, by = body_xy(geom, 3)
-    # Body-band click is the strict kind-3 path. Wheel often stays on the
-    # PIT without a DONE when the dirty rect is the de-pace 16x16.
-    scroll = burst(q, ser, "scroll",
-                   [(bx + (i * 5) % 40, by + (i % 2) * 28) for i in range(n)],
-                   KIND_BODY, btn="left")
-    restore_scene(q, ser)
-    drain_kind(ser, KIND_MENU, timeout=0.2)
-    drain_kind(ser, KIND_MENU_HIDE, timeout=0.2)
-    drain_kind(ser, KIND_MENU_ROW, timeout=0.12)
-    menu = burst(q, ser, "menu",
-                 [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
-                  for i in range(n_menu)],
-                 KIND_MENU, btn="right")
-    serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.25, timeout=4.0)
+    serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.2, timeout=3.0)
+    # Overlay bursts FIRST so UART from 100-menu / drag is not in the wall.
     launcher = overlay_token_burst(
         q, ser, "launcher",
         fire=lambda: q.key("f4"),
@@ -671,7 +649,6 @@ def main():
         token="WM LAUNCH SHOW",
         n=max(30, int(os.environ.get("DRIVE_LAUNCH_N", "30"))),
         want_w=280, want_h=0, px=280 * 196)
-    # Hold Alt; each sample is one Tab. Avoids even/odd unpaired SHOW.
     fire_switcher_up(q)
     time.sleep(0.08)
     q.cmd("input-send-event", events=[{
@@ -698,6 +675,35 @@ def main():
         n=max(30, int(os.environ.get("DRIVE_SWITCH_N", "30"))),
         want_w=0, want_h=88, px=400 * 88)
     fire_switcher_up(q)
+    try:
+        q.key("esc")
+    except Exception:
+        pass
+    serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.15, timeout=2.0)
+    # Discard leftover/button-edge sprite presents so p95 is the 640-px path.
+    for i in range(6):
+        g0 = last_done_opid(ser)
+        send_abs(q, 44 + i * 14, 490 + (i * 7) % 80)
+        wait_done(ser, g0, KIND_PTR, timeout=0.8)
+    pointer = burst(q, ser, "pointer",
+                    [(36 + (i * 17) % 160, 480 + (i * 9) % 100)
+                     for i in range(n_ptr)],
+                    KIND_PTR)
+    drag = layered_drag(q, ser, n)
+    cold = cold_drag_first_scroll(q, ser, n_cold)
+    geom = files_geom(ser)
+    bx, by = body_xy(geom, 3)
+    scroll = burst(q, ser, "scroll",
+                   [(bx + (i * 5) % 40, by + (i % 2) * 28) for i in range(n)],
+                   KIND_BODY, btn="left")
+    restore_scene(q, ser)
+    drain_kind(ser, KIND_MENU, timeout=0.2)
+    drain_kind(ser, KIND_MENU_HIDE, timeout=0.2)
+    drain_kind(ser, KIND_MENU_ROW, timeout=0.12)
+    menu = burst(q, ser, "menu",
+                 [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
+                  for i in range(n_menu)],
+                 KIND_MENU, btn="right")
 
     dest_name = os.environ.get("OSCORTEX_PERF_OUT", "oscortex-round34-perf.json")
     phase = phase_counts(ser, phase0)

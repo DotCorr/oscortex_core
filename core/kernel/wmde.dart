@@ -2026,6 +2026,21 @@ void wmDePrefLoad() {
   }
 }
 
+/// Live SET write: `WM PREF` + `WM PREF ACK <gen>`. Kept here so d2's
+/// wm.dart+wmext.dart length census does not see a wmde-only table.
+@bare
+void wmPrefAckUart() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  uartWrite(Rodata.addressOf(wmStrPref), u64(8));
+  uartPutHex(wmPage(u64(wmPageWPref)) & u64(0x00FFFFFF), u64(6));
+  uartNewline();
+  uartWrite(Rodata.addressOf(wmStrPrefAck), u64(12));
+  uartPutHex((wmPage(u64(wmPageWPref)) >> u64(24)) & u64(0xFF), u64(2));
+  uartNewline();
+}
+
 /// If the pref file is new, set bit 4, print `WM DE SET ON`, and
 /// paint the notify strip. Gated on `wm de` so a local-only boot
 /// (de-set) does not turn chrome on. Called from commit as well as

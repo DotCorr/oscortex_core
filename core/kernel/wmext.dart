@@ -862,12 +862,7 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     if (wall > u64(0)) {
       wmWallSetDesk(u64(0xA11E0001) + wall, wall & u64(3));
     }
-    uartWrite(Rodata.addressOf(wmStrPref), u64(8));
-    uartPutHex(wmPage(u64(wmPageWPref)) & u64(0x00FFFFFF), u64(6));
-    uartNewline();
-    uartWrite(Rodata.addressOf(wmStrPrefAck), u64(12));
-    uartPutHex((wmPage(u64(wmPageWPref)) >> u64(24)) & u64(0xFF), u64(2));
-    uartNewline();
+    wmPrefAckUart();
     userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWPref)));
     return;
   }

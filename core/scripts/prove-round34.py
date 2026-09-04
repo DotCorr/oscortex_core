@@ -11,6 +11,10 @@ spec = importlib.util.spec_from_file_location(
     "d15", os.path.join(HERE, "daily-drive-round15.py"))
 d15 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(d15)
+cs_spec = importlib.util.spec_from_file_location(
+    "cs", os.path.join(HERE, "chip-scan-round24.py"))
+cs = importlib.util.module_from_spec(cs_spec)
+cs_spec.loader.exec_module(cs)
 
 ART = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
 RUN = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r34")
@@ -57,10 +61,37 @@ def write_json(name, obj):
     return path
 
 
+def click(q, x, y):
+    d15.place(q, ser_ref[0], int(x), int(y))
+    d15.button(q, int(x), int(y), "left", True)
+    d15.button(q, int(x), int(y), "left", False)
+
+
+def dock_xy(i):
+    x = (d15.RIGHT_X + d15.ICON_PAD + i * (d15.ICON_S + d15.ICON_GAP)
+         + d15.ICON_S // 2)
+    return x, d15.PANEL_Y
+
+
+def set_card_xy(geom, i):
+    x, y, w, _h = geom
+    cols = 3 if w >= (120 + 12 + 192 + 88) else (
+        2 if w >= (120 + 12 + 96 + 88) else 1)
+    row_h = 36 if cols < 3 else 48
+    card_h = 32 if cols < 3 else 40
+    tx = x + 120 + 12 + (i % cols) * 96 + 44
+    ty = y + 32 + 52 + (i // cols) * row_h + card_h // 2
+    return int(tx), int(ty)
+
+
+ser_ref = [None]
+
+
 def main():
     q = d15.Qmp(int(open(os.path.join(RUN, "qmp.port")).read()))
     ser = d15.Serial(os.path.join(RUN, "serial.txt"),
                      int(open(os.path.join(RUN, "serial.port")).read()))
+    ser_ref[0] = ser
     os.makedirs(ART, exist_ok=True)
 
     marked = harvest(ser)
@@ -127,9 +158,12 @@ def main():
     d15.shot(q, os.path.join(ART, "oscortex-round34-clipboard-files.png"))
 
     marked2 = harvest(ser)
-    d15.place(q, ser, 300, 180)
-    d15.button(q, 300, 180, "right", True)
-    d15.button(q, 300, 180, "right", False)
+    fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or (48, 40, 400, 280)
+    click(q, fg[0] + 80, fg[1] + 80)
+    time.sleep(0.15)
+    d15.place(q, ser, fg[0] + 80, fg[1] + 80)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
     files_menu = wait_tok(ser, "FILES MENU", marked2, 2.0)
     q.key("down")
     q.key("down")
@@ -139,41 +173,47 @@ def main():
     files_refresh = wait_tok(ser, "FILES REFRESH", marked2, 2.0)
     combo(q, "ctrl", "n")
     files_new = wait_tok(ser, "FILES NEW", marked2, 2.0)
-    d15.place(q, ser, 300, 180)
-    d15.button(q, 300, 180, "right", True)
-    d15.button(q, 300, 180, "right", False)
+    d15.place(q, ser, fg[0] + 80, fg[1] + 80)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
     wait_tok(ser, "FILES MENU", marked2, 2.0)
     q.key("down")
     q.key("down")
     q.key("down")
     q.key("ret")
     files_del_conf = wait_tok(ser, "FILES DEL CONFIRM", marked2, 2.0)
-    d15.button(q, 300, 180, "right", True)
-    d15.button(q, 300, 180, "right", False)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
     wait_tok(ser, "FILES MENU", marked2, 1.5)
     q.key("down")
     q.key("down")
     q.key("down")
     q.key("ret")
     files_del = wait_tok(ser, "FILES DEL", marked2, 2.0)
+    click(q, fg[0] + 80, fg[1] + 80)
+    time.sleep(0.08)
     q.key("left")
     files_back = wait_tok(ser, "FILES BACK", marked2, 1.5)
     q.key("right")
     files_fwd = wait_tok(ser, "FILES FWD", marked2, 1.5)
     combo(q, "ctrl", "v")
     files_paste = wait_tok(ser, "FILES PASTE", marked2, 1.5)
-    d15.place(q, ser, 300, 180)
-    d15.button(q, 300, 180, "right", True)
-    d15.button(q, 300, 180, "right", False)
+    d15.place(q, ser, fg[0] + 80, fg[1] + 80)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", True)
+    d15.button(q, fg[0] + 80, fg[1] + 80, "right", False)
     wait_tok(ser, "FILES MENU", marked2, 2.0)
     for _ in range(5):
         q.key("down")
     q.key("ret")
     files_mkdir = wait_tok(ser, "FILES MKDIR", marked2, 2.5)
-    q.key("n")
-    time.sleep(0.1)
+    time.sleep(0.15)
     q.key("ret")
     files_dir = wait_tok(ser, "FILES DIR", marked2, 2.5)
+    if not files_dir:
+        q.key("n")
+        time.sleep(0.1)
+        q.key("ret")
+        files_dir = wait_tok(ser, "FILES DIR", marked2, 2.0)
     combo(q, "ctrl", "n")
     files_new_in = wait_tok(ser, "FILES NEW", marked2, 2.0)
     q.key("left")
@@ -186,26 +226,29 @@ def main():
     files_ro = "FILES RO" in blob
     files_writable = files_new or ("FILES NEW" in blob)
 
-    set_xy = getattr(d15, "SET_DOCK_XY", (1040, 696))
+    set_xy = getattr(d15, "SET_DOCK_XY", dock_xy(0))
     marked3 = harvest(ser)
-    d15.place(q, ser, set_xy[0], set_xy[1])
-    d15.button(q, set_xy[0], set_xy[1], "left", True)
-    d15.button(q, set_xy[0], set_xy[1], "left", False)
+    click(q, set_xy[0], set_xy[1])
     wait_tok(ser, "SET READY", marked3, 4.0)
-    time.sleep(0.2)
-    d15.place(q, ser, 220, 100)
-    d15.button(q, 220, 100, "left", True)
-    d15.button(q, 220, 100, "left", False)
+    time.sleep(0.35)
+    sg = cs.live_set_xywh(os.path.join(RUN, "serial.txt"), "") or (180, 48, 440, 280)
+    cx, cy = set_card_xy(sg, 0)
+    click(q, sg[0] + 40, sg[1] + 32 + 80)
+    time.sleep(0.1)
+    click(q, cx, cy)
     set_theme = wait_tok(ser, "SET THEME", marked3, 2.5) or wait_tok(
-        ser, "SET CARD", marked3, 1.0)
+        ser, "SET CARD", marked3, 1.5)
+    d15.shot(q, os.path.join(ART, "oscortex-round34-live-theme-a.png"))
+    cx1, cy1 = set_card_xy(sg, 1)
+    click(q, cx1, cy1)
+    wait_tok(ser, "SET THEME", harvest(ser), 2.0)
+    d15.shot(q, os.path.join(ART, "oscortex-round34-live-theme.png"))
     theme_blob = harvest(ser)
     theme_line = ""
     for line in theme_blob[len(marked3):].splitlines():
         if line.startswith("SET THEME"):
             theme_line = line.strip()
-    d15.place(q, ser, set_xy[0], set_xy[1])
-    d15.button(q, set_xy[0], set_xy[1], "left", True)
-    d15.button(q, set_xy[0], set_xy[1], "left", False)
+    click(q, set_xy[0], set_xy[1])
     set_relaunch = wait_tok(ser, "SET READY", marked3, 4.0)
     relaunch_theme = ""
     for line in harvest(ser)[len(theme_blob):].splitlines():
@@ -214,16 +257,58 @@ def main():
     set_persist = bool(theme_line) and (
         (not relaunch_theme) or relaunch_theme == theme_line)
     pref_ack = "WM PREF ACK" in harvest(ser) or "WM PREF" in harvest(ser)
-    d15.shot(q, os.path.join(ART, "oscortex-round34-live-theme.png"))
+    time.sleep(0.4)
+
+    browse_xy, play_xy, tap_xy = dock_xy(2), dock_xy(3), dock_xy(5)
+    marked_apps = harvest(ser)
+    click(q, browse_xy[0], browse_xy[1])
+    wait_tok(ser, "BROWSE READY", marked_apps, 3.0)
+    click(q, play_xy[0], play_xy[1])
+    wait_tok(ser, "PLAY READY", marked_apps, 3.0)
+    click(q, tap_xy[0], tap_xy[1])
+    wait_tok(ser, "TAP READY", marked_apps, 3.0)
+    click(q, d15.FILES_DOCK_XY[0], d15.FILES_DOCK_XY[1])
+    wait_tok(ser, "FILES READY", marked_apps, 3.0)
 
     marked4 = harvest(ser)
+    studio_xy = (
+        d15.RIGHT_X + d15.ICON_PAD + 4 * (d15.ICON_S + d15.ICON_GAP)
+        + d15.ICON_S // 2,
+        d15.PANEL_Y,
+    )
+    click(q, studio_xy[0], studio_xy[1])
+    wait_tok(ser, "STUDIO2 READY", marked4, 3.0)
+    time.sleep(0.2)
+    blob_vis = harvest(ser)
+    st_slot = cs._cap_slot(blob_vis, 5, 200)
+    stg = cs._vis_xywh(blob_vis, st_slot, min_w=200, min_h=160) if st_slot is not None else None
+    if stg:
+        click(q, stg[0] + 80, stg[1] + 140)
+    else:
+        click(q, 120, 180)
+    time.sleep(0.1)
+    q.key("a")
+    q.key("ret")
+    q.key("b")
     combo(q, "ctrl", "s")
-    studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.0) or wait_tok(
+    studio_save = wait_tok(ser, "STUDIO SAVE FILE", marked4, 2.5) or wait_tok(
         ser, "STUDIO2 SAVE", marked4, 1.0)
     combo(q, "ctrl", "o")
     studio_open = wait_tok(ser, "STUDIO OPEN", marked4, 2.0)
+    q.key("down")
+    wait_tok(ser, "STUDIO SCROLL", marked4, 1.2)
     d15.shot(q, os.path.join(ART, "oscortex-round34-studio.png"))
+    q.key("f4")
+    wait_tok(ser, "WM LAUNCH SHOW", marked4, 1.5)
     d15.shot(q, os.path.join(ART, "oscortex-round34-fast-overlays.png"))
+    q.key("esc")
+    time.sleep(0.1)
+    click(q, fg[0] + 80, fg[1] + 80)
+    time.sleep(0.08)
+    q.key("left")
+    wait_tok(ser, "FILES BACK", marked4, 1.2)
+    q.key("right")
+    wait_tok(ser, "FILES FWD", marked4, 1.2)
 
     blob = harvest(ser)
     launcher = {
@@ -334,7 +419,8 @@ def main():
             "FILES PASTE": "FILES PASTE" in blob,
         },
         "clients_live": blob.count("FILES READY") + blob.count("SET READY")
-        + blob.count("STUDIO2 READY"),
+        + blob.count("STUDIO2 READY") + blob.count("BROWSE READY")
+        + blob.count("PLAY READY") + blob.count("TAP READY"),
     }
     studio = {
         "round": 34,

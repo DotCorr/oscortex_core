@@ -711,6 +711,7 @@ static u64 write_copy(const char *src, unsigned slen, const char *dst,
 static void do_file_open(u64 row);
 static void do_file_rename(u64 row);
 static void files_go_back(void);
+static void files_set_sel(u64 row);
 static void files_retry(void);
 static void files_show_empty(void);
 static void files_show_error(void);
@@ -974,6 +975,17 @@ static void files_do_mkdir(void) {
   }
   emit(at);
   files_reload_here();
+  {
+    u64 i = 0;
+    while (i < files_names) {
+      if (same_bytes(dotted[i], dotlen[i], NAME_DIR, NAME_DIR_N) > 0) {
+        files_set_sel(i);
+        i = files_names;
+      } else {
+        i = i + 1;
+      }
+    }
+  }
 }
 
 static void files_do_delete(u64 row) {
