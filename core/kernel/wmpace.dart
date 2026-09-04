@@ -342,6 +342,20 @@ const int wmPageWPendHi = 479;
 const int wmPageWVisGenHi = 483;
 const int wmPageWHoldArmHi = 487;
 const int wmPageWHoldKickHi = 491;
+/// Operation token: WM op id through virtio submit/used. Not a .bss word.
+const int wmPageWOpId = 492;
+const int wmPageWOpKind = 493;
+const int wmPageWOpRes = 494;
+const int wmPageWOpUsed = 495;
+const int wmPageWOpX = 496;
+const int wmPageWOpY = 497;
+const int wmPageWOpW = 498;
+const int wmPageWOpH = 499;
+const int wmPageWOpHave = 500;
+const int wmOpKindPtr = 1;
+const int wmOpKindDrag = 2;
+const int wmOpKindBody = 3;
+const int wmOpKindMenu = 4;
 const int wmHoldKickTicks = 50;
 const int wmHoldForceTicks = 80;
 const int wmHoldCancelTicks = 200;
@@ -513,6 +527,31 @@ final List<u8> wmSpriteStrLine = const [
 final List<u8> wmOpidStrLine = const [
   u8(0x57), u8(0x4D), u8(0x20), u8(0x4F), u8(0x50), u8(0x49), u8(0x44),
   u8(0x20),
+];
+
+/// `'WM DONE '` -- 8 bytes. Strict completion: op id + kind + rect + fence.
+@rodata
+final List<u8> wmDoneStrLine = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x44), u8(0x4F), u8(0x4E), u8(0x45),
+  u8(0x20),
+];
+
+/// `' K '` -- 3 bytes.
+@rodata
+final List<u8> wmDoneStrK = const [
+  u8(0x20), u8(0x4B), u8(0x20),
+];
+
+/// `' R '` -- 3 bytes. Virtio resource id (0 on GOP).
+@rodata
+final List<u8> wmDoneStrR = const [
+  u8(0x20), u8(0x52), u8(0x20),
+];
+
+/// `' U '` -- 3 bytes. Control-queue used.idx (0 on GOP).
+@rodata
+final List<u8> wmDoneStrU = const [
+  u8(0x20), u8(0x55), u8(0x20),
 ];
 
 /// `' COAL '` -- 6 bytes.
@@ -769,6 +808,114 @@ u64 wmPageHoldArmOf(u64 slot) {
 @bare
 u64 wmPageHoldKickOf(u64 slot) {
   return wmPageSlotWord(u64(wmPageWHoldKick0), u64(wmPageWHoldKickHi), slot);
+}
+
+/// Starts a measured WM operation. Host wait is this id+kind, not SCAN.
+@bare
+void wmOpBegin(u64 kind) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (kind < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWOpId), wmPage(u64(wmPageWOpId)) + u64(1));
+  wmPageSet(u64(wmPageWOpKind), kind);
+  wmPageSet(u64(wmPageWOpRes), u64(0));
+  wmPageSet(u64(wmPageWOpUsed), u64(0));
+  wmPageSet(u64(wmPageWOpX), u64(0));
+  wmPageSet(u64(wmPageWOpY), u64(0));
+  wmPageSet(u64(wmPageWOpW), u64(0));
+  wmPageSet(u64(wmPageWOpH), u64(0));
+  wmPageSet(u64(wmPageWOpHave), u64(1));
+}
+
+/// Unions a transferred rectangle into the open operation token.
+@bare
+void wmOpNoteRect(u64 x, u64 y, u64 w, u64 h) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWOpHave)) < u64(1)) {
+    return;
+  }
+  if (w < u64(1)) {
+    return;
+  }
+  if (h < u64(1)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWOpW)) < u64(1)) {
+    wmPageSet(u64(wmPageWOpX), x);
+    wmPageSet(u64(wmPageWOpY), y);
+    wmPageSet(u64(wmPageWOpW), w);
+    wmPageSet(u64(wmPageWOpH), h);
+    return;
+  }
+  u64 x0 = wmPage(u64(wmPageWOpX));
+  u64 y0 = wmPage(u64(wmPageWOpY));
+  u64 x1 = x0 + wmPage(u64(wmPageWOpW));
+  u64 y1 = y0 + wmPage(u64(wmPageWOpH));
+  if (x < x0) {
+    x0 = x;
+  }
+  if (y < y0) {
+    y0 = y;
+  }
+  if ((x + w) > x1) {
+    x1 = x + w;
+  }
+  if ((y + h) > y1) {
+    y1 = y + h;
+  }
+  wmPageSet(u64(wmPageWOpX), x0);
+  wmPageSet(u64(wmPageWOpY), y0);
+  wmPageSet(u64(wmPageWOpW), x1 - x0);
+  wmPageSet(u64(wmPageWOpH), y1 - y0);
+}
+
+/// Records the virtio resource and used.idx of the last flush in this op.
+@bare
+void wmOpNoteVirtio(u64 res, u64 used) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWOpHave)) < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWOpRes), res);
+  wmPageSet(u64(wmPageWOpUsed), used);
+}
+
+/// Prints `WM DONE` so the host can wait exact op+kind.
+@bare
+void wmOpDone(u64 px) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (wmPage(u64(wmPageWOpHave)) < u64(1)) {
+    return;
+  }
+  uartWrite(Rodata.addressOf(wmDoneStrLine), u64(8));
+  uartPutHex(wmPage(u64(wmPageWOpId)), u64(8));
+  uartWrite(Rodata.addressOf(wmDoneStrK), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpKind)), u64(2));
+  uartWrite(Rodata.addressOf(wmStrPx), u64(4));
+  uartPutHex(px, u64(8));
+  uartWrite(Rodata.addressOf(wmDoneStrR), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpRes)), u64(8));
+  uartWrite(Rodata.addressOf(wmDoneStrU), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpUsed)), u64(8));
+  uartWrite(Rodata.addressOf(wmStrX), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpX)), u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpY)), u64(4));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpW)), u64(4));
+  uartWrite(Rodata.addressOf(wmStrH), u64(3));
+  uartPutHex(wmPage(u64(wmPageWOpH)), u64(4));
+  uartNewline();
+  wmPageSet(u64(wmPageWOpHave), u64(0));
 }
 
 /// Stamps the PIT tick and kind of an input that must present.
@@ -1960,6 +2107,7 @@ u64 wmPresentClipped(u64 x, u64 y, u64 w, u64 h) {
     return u64(0);
   }
   virtgpuPresent(x, y, cw, ch);
+  wmOpNoteRect(x, y, cw, ch);
   return cw * ch;
 }
 
@@ -2009,6 +2157,71 @@ void wmPresentPair(u64 ax, u64 ay, u64 aw, u64 ah, u64 bx, u64 by, u64 bw,
   wmPublishFrameLine(px, mouseState(u64(mouseWordX)),
       mouseState(u64(mouseWordY)));
   wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+}
+
+/// Vacated strips + the entire new window. Host virtio overlap is not
+/// memmoved; transferring only the exposed edge would leave ghosts.
+/// Software sit-in still uses [wmPresentPair] / [wmRepaintUnion2].
+@bare
+u64 wmPresentMove(u64 ox, u64 oy, u64 ow, u64 oh, u64 nx, u64 ny, u64 nw,
+    u64 nh) {
+  u64 px = u64(0);
+  u64 regs = u64(0);
+  final u64 rad = u64(wmGfxRadius);
+  if (nx > ox) {
+    u64 vw = nx - ox;
+    if (vw > ow) {
+      vw = ow;
+    }
+    u64 vx = ox;
+    if (vx > rad) {
+      vx = vx - rad;
+      vw = vw + rad;
+    }
+    px = px + wmPresentClipped(vx, oy, vw, oh);
+    regs = regs + u64(1);
+  } else {
+    if (ox > nx) {
+      u64 vw = ox - nx;
+      if (vw > ow) {
+        vw = ow;
+      }
+      px = px + wmPresentClipped(nx + nw, oy, vw + rad, oh);
+      regs = regs + u64(1);
+    }
+  }
+  if (ny > oy) {
+    u64 vh = ny - oy;
+    if (vh > oh) {
+      vh = oh;
+    }
+    u64 vy = oy;
+    if (vy > rad) {
+      vy = vy - rad;
+      vh = vh + rad;
+    }
+    px = px + wmPresentClipped(ox, vy, ow, vh);
+    regs = regs + u64(1);
+  } else {
+    if (oy > ny) {
+      u64 vh = oy - ny;
+      if (vh > oh) {
+        vh = oh;
+      }
+      px = px + wmPresentClipped(ox, ny + nh, ow, vh + rad);
+      regs = regs + u64(1);
+    }
+  }
+  px = px + wmPresentClipped(nx, ny, nw, nh);
+  regs = regs + u64(1);
+  wmPageSet(u64(wmPageWDmgPx), px);
+  wmPageSet(u64(wmPageWDmgRegs), regs);
+  wmDmgAcc(px, regs, u64(0), u64(1));
+  wmPublishFrameNoted(px);
+  wmPublishFrameLine(px, mouseState(u64(mouseWordX)),
+      mouseState(u64(mouseWordY)));
+  wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+  return px;
 }
 
 /// Presents pending dirty region(s) and clears them. Dart only.

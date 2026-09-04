@@ -1470,6 +1470,7 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
       if (rw > u64(0)) {
         if (rh > u64(0)) {
           if ((rw * rh) > u64(2048)) {
+            wmOpBegin(u64(wmOpKindBody));
             final u64 p0 = wmPresentClipped(rx, ry, rw, rh);
             wmPageSet(u64(wmPageWDmgPx), p0);
             wmDmgAcc(p0, u64(1), u64(0), u64(1));
@@ -1480,6 +1481,7 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
                 mouseState(u64(mouseWordY)));
             wmPageSet(u64(wmPageWPresented),
                 wmPage(u64(wmPageWPresented)) + u64(1));
+            wmOpDone(p0);
             final u64 dropped0 = wmMeta(u64(wmMetaDropped));
             final u64 pending0 = dropped0 & u64(wmPointerPending);
             wmSetMeta(u64(wmMetaDropped), dropped0 & u64(wmPointerDropMask));
@@ -3846,7 +3848,9 @@ void wmDragStep(u64 x, u64 y) {
       wmPageSet(u64(wmPageWDmgPx), dpx);
       wmDmgAcc(dpx, u64(2), u64(0), u64(1));
       wmGfxChromeStamp();
-      wmPresentPair(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+      wmOpBegin(u64(wmOpKindDrag));
+      final u64 vpx = wmPresentMove(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+      wmOpDone(vpx);
       /* Next full-surface COMMIT is an echo of this layer blit.
        * Body/scroll damage still paints; the click is not held
        * behind a session restamp. */
@@ -4011,6 +4015,7 @@ void wmPointerTick() {
       }
     }
     if (moved > u64(0)) {
+      wmOpBegin(u64(wmOpKindPtr));
       final u64 p0 = wmPresentClipped(ox, oy, u64(wmPtrW), u64(wmPtrH));
       final u64 p1 = wmPresentClipped(x, y, u64(wmPtrW), u64(wmPtrH));
       final u64 ptrPx = p0 + p1;
@@ -4019,6 +4024,7 @@ void wmPointerTick() {
       wmPublishFrameNoted(ptrPx);
       wmPublishFrameLine(ptrPx, x, y);
       wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+      wmOpDone(ptrPx);
     }
     if (wmPaced() > u64(0)) {
       /* Sprite already transferred. Consume the pointer queue so a

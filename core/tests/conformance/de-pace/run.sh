@@ -48,7 +48,7 @@ setup_error() { echo "DE-pace: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=71
+ASSERTIONS_REQUIRED=77
 
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm x86_64-elf-objdump; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -211,6 +211,22 @@ print('    the gfx commit arm is signature-gated and damage-limited')
 PY"
 ck; [[ $ARM_STATUS -eq 0 ]] || { echo "$ARM_OUT" >&2; fail "the gfx commit arm is not what ADR-0188 says it is"; }
 echo "$ARM_OUT"
+
+# 1d2. STRICT OP TOKEN + STRIP DRAG (Round 31). Measurement waits WM DONE
+# op+kind, not the first SCAN/FRAME. Small-move virtio must not reupload
+# both full layers.
+ck; grep -q 'const int wmPageWOpId = 492;' "$PACE_DART" \
+  || fail "wmpace.dart has no operation-id page word"
+ck; grep -q 'void wmOpBegin(u64 kind)' "$PACE_DART" \
+  || fail "wmpace.dart has no wmOpBegin"
+ck; grep -q 'void wmOpDone(u64 px)' "$PACE_DART" \
+  || fail "wmpace.dart has no wmOpDone"
+ck; grep -q 'u64 wmPresentMove(' "$PACE_DART" \
+  || fail "wmpace.dart has no vacated+new-window present"
+ck; grep -q 'wmPresentMove' "$WM_DART" \
+  || fail "wmDragStep still presents both full layers"
+ck; grep -q 'osgfx_menu_blit' "$CORE_DIR/kernel/wmgfx.dart" \
+  || fail "menu open still has no pre-rendered card blit"
 
 # 1e. THE CLOCK IS THE PIT, AND IT IS ONLY LEFT RUNNING FOR A COMPOSITOR THAT
 # ASKED. GAP-0058's still tick counter is what makes `ticks` byte-exact.

@@ -27,6 +27,12 @@ external u64 osgfx_chrome_prep_rest();
 @extern
 external u64 osgfx_chrome_drag_step(u64 oldG, u64 newG);
 
+@extern
+external u64 osgfx_chrome_hit_restore();
+
+@extern
+external u64 osgfx_menu_blit(u64 pop);
+
 const int wmGfxRadius = 18;
 
 const int wmMetaGfx = 23;

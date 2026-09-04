@@ -2058,6 +2058,7 @@ void virtgpuRect(u64 x, u64 y, u64 w, u64 h) {
       qdesc + u64(virtgpuMetaFlush),
       virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)) + u64(1));
   virtgpuRamPut32(qdesc + u64(virtgpuMetaDamage), w * h);
+  wmOpNoteVirtio(rid, virtgpuRamGet16(qdev + u64(2)));
   /* Glyph cells (exactly 8×16) stay silent so G5/G7 UART is one
    * FLUSH count per banner. Every other RESOURCE_FLUSH prints the
    * generation a host pairer waits on — including 16×20 pointer. */

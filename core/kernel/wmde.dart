@@ -2576,11 +2576,13 @@ void wmDefDrain() {
               wmPageSet(u64(wmPageWDmgPx), dpx);
               wmDmgAcc(dpx, u64(2), u64(0), u64(1));
               wmGfxChromeStamp();
-              /* Discrete old+new layer blit. Never a 1280×720 SCAN. */
-              wmPresentPair(
+              /* Vacated strips + new window. Never a 1280×720 SCAN. */
+              wmOpBegin(u64(wmOpKindDrag));
+              final u64 vpx = wmPresentMove(
                   wmGeomX(oldG), wmGeomY(oldG), wmGeomW(oldG), wmGeomH(oldG),
                   wmGeomX(nextG), wmGeomY(nextG), wmGeomW(nextG),
                   wmGeomH(nextG));
+              wmOpDone(vpx);
             } else {
               u64 ux = wmPage(u64(wmPageWDefUx));
               u64 uy = wmPage(u64(wmPageWDefUy));

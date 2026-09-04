@@ -586,6 +586,7 @@ void wmPopPresentVis(u64 ox, u64 oy) {
   } else {
     y = u64(0);
   }
+  wmOpBegin(u64(wmOpKindMenu));
   final u64 px = wmPresentClipped(x, y, u64(wmPopVisW), u64(wmPopVisH));
   wmPublishFrameNoted(px);
   wmPublishFrameLine(
@@ -593,6 +594,72 @@ void wmPopPresentVis(u64 ox, u64 oy) {
   if (wmPageAddr() > u64(0)) {
     wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
   }
+  wmOpDone(px);
+}
+
+/// Hover/selection rows only. Does not charge leftover body damage.
+@bare
+void wmPopPresentRows(u64 ox, u64 oy) {
+  final u64 rx = ox + u64(6);
+  final u64 ry = oy + u64(wmPopRowPad);
+  final u64 rw = u64(wmPopW) - u64(12);
+  final u64 rh = (u64(wmPopRowH) * u64(2)) - u64(2);
+  wmOpBegin(u64(wmOpKindMenu));
+  final u64 px = wmPresentClipped(rx, ry, rw, rh);
+  wmPublishFrameNoted(px);
+  wmPublishFrameLine(
+      px, mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+  }
+  wmOpDone(px);
+}
+
+/// Immutable card blit + labels. Skips a session tick when chrome HAVE.
+@bare
+void wmPopPaintFast(u64 ox, u64 oy) {
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxKick();
+    if (wmPageAddr() > u64(0)) {
+      if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
+        final u64 unused0 = osgfx_chrome_hit_restore();
+        final u64 unused1 = osgfx_menu_blit((ox << u64(32)) | oy);
+        if (wmDeOn() > u64(0)) {
+          wmPopMenuDraw(ox, oy);
+        }
+        wmPopPresentVis(ox, oy);
+        return;
+      }
+    }
+    osgfx_guest_tick();
+    wmGfxChromeStamp();
+    wmPopPresentVis(ox, oy);
+    return;
+  }
+  wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
+  if (wmDeOn() > u64(0)) {
+    wmPopMenuDraw(ox, oy);
+  }
+}
+
+/// Restore vacated card from the chrome cache. No 1280 restamp.
+@bare
+void wmPopRestoreFast(u64 ox, u64 oy) {
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxKick();
+    if (wmPageAddr() > u64(0)) {
+      if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
+        final u64 unused = osgfx_chrome_hit_restore();
+        wmPopPresentVis(ox, oy);
+        return;
+      }
+    }
+    osgfx_guest_tick();
+    wmGfxChromeStamp();
+    wmPopPresentVis(ox, oy);
+    return;
+  }
+  final u64 unused = wmRepaintRect(ox, oy, u64(wmPopW), u64(wmPopH));
 }
 
 /// Paints the popover if it is showing. Returns the pixels written, or 0
@@ -626,10 +693,7 @@ void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* HIT restores the vacated card from the chrome cache. Do not
      * wmCompose a 1280×720 restamp to hide a 168×80 menu. */
-    wmGfxKick();
-    osgfx_guest_tick();
-    wmGfxChromeStamp();
-    wmPopPresentVis(x, y);
+    wmPopRestoreFast(x, y);
     return;
   }
   final u64 unused = wmRepaintRect(x, y, w, h);
@@ -641,17 +705,12 @@ void wmPopPaintCard() {
   final u64 ox = packed >> u64(32);
   final u64 oy = packed & u64(0xFFFFFFFF);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    /* Prewarmed card is a HIT overlay. Hover labels stay CPU-side. */
-    wmGfxKick();
-    osgfx_guest_tick();
-    wmGfxChromeStamp();
+    wmPopPaintFast(ox, oy);
+    return;
   }
   wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
   if (wmDeOn() > u64(0)) {
     wmPopMenuDraw(ox, oy);
-  }
-  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    wmPopPresentVis(ox, oy);
   }
 }
 
@@ -683,10 +742,7 @@ void wmPopHide() {
       }
     }
     if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-      wmGfxKick();
-      osgfx_guest_tick();
-      wmGfxChromeStamp();
-      wmPopPresentVis(ox, oy);
+      wmPopRestoreFast(ox, oy);
       wmLatNotePresent();
     } else {
       wmPopDamageRestore(ox, oy, u64(wmPopW), u64(wmPopH));
@@ -852,10 +908,7 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
   }
   /* Present both sides even when drain last-wins coalesces hide. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    wmGfxKick();
-    osgfx_guest_tick();
-    wmGfxChromeStamp();
-    wmPopPresentVis(ox, oy);
+    wmPopPaintFast(ox, oy);
     wmLatNotePresent();
   } else {
     wmPopPaintCard();
@@ -1196,14 +1249,12 @@ u64 wmPopHoverTick(u64 x, u64 y) {
   }
   wmPopSetHover(row);
   wmPopWritePage();
-  if (wmPageAddr() > u64(0)) {
-    final u64 packed = wmMeta(u64(wmMetaPopXY));
-    final u64 g = wmPackGeom(packed >> u64(32), packed & u64(0xFFFFFFFF),
-        u64(wmPopW), u64(wmPopH));
-    wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
-  } else {
-    wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
-        wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
+  final u64 packed = wmMeta(u64(wmMetaPopXY));
+  final u64 ox = packed >> u64(32);
+  final u64 oy = packed & u64(0xFFFFFFFF);
+  wmPopMenuDraw(ox, oy);
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPopPresentRows(ox, oy);
   }
   return u64(1);
 }
@@ -1287,14 +1338,12 @@ u64 wmPopKey(u64 ev) {
       }
       wmPopSetHover(row);
       wmPopWritePage();
-      if (wmPageAddr() > u64(0)) {
-        final u64 packed = wmMeta(u64(wmMetaPopXY));
-        final u64 g = wmPackGeom(packed >> u64(32), packed & u64(0xFFFFFFFF),
-            u64(wmPopW), u64(wmPopH));
-        wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
-      } else {
-        wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
-            wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
+      final u64 packed0 = wmMeta(u64(wmMetaPopXY));
+      final u64 ox0 = packed0 >> u64(32);
+      final u64 oy0 = packed0 & u64(0xFFFFFFFF);
+      wmPopMenuDraw(ox0, oy0);
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        wmPopPresentRows(ox0, oy0);
       }
       return u64(1);
     }
@@ -1304,14 +1353,12 @@ u64 wmPopKey(u64 ev) {
       }
       wmPopSetHover(row);
       wmPopWritePage();
-      if (wmPageAddr() > u64(0)) {
-        final u64 packed = wmMeta(u64(wmMetaPopXY));
-        final u64 g = wmPackGeom(packed >> u64(32), packed & u64(0xFFFFFFFF),
-            u64(wmPopW), u64(wmPopH));
-        wmDefEnqueue(u64(wmDefKindMenu), u64(wmDefSlotMenu), g, g);
-      } else {
-        wmPopMenuDraw(wmMeta(u64(wmMetaPopXY)) >> u64(32),
-            wmMeta(u64(wmMetaPopXY)) & u64(0xFFFFFFFF));
+      final u64 packed1 = wmMeta(u64(wmMetaPopXY));
+      final u64 ox1 = packed1 >> u64(32);
+      final u64 oy1 = packed1 & u64(0xFFFFFFFF);
+      wmPopMenuDraw(ox1, oy1);
+      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+        wmPopPresentRows(ox1, oy1);
       }
       return u64(1);
     }

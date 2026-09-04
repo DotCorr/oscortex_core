@@ -29,6 +29,11 @@ __attribute__((weak)) uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestC
   (void)m;
   return 0;
 }
+__attribute__((weak)) uint64_t osgfx_chrome_hit_restore(void) { return 0; }
+__attribute__((weak)) uint64_t osgfx_menu_blit(uint64_t pop) {
+  (void)pop;
+  return 0;
+}
 __attribute__((weak)) uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy,
                                                         uint64_t wh) {
   (void)which;

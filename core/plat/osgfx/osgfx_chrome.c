@@ -1542,3 +1542,19 @@ uint64_t osgfx_chrome_prep_present(uint64_t which, uint64_t xy, uint64_t wh) {
   }
   return (uint64_t)(unsigned)rw * (uint64_t)(unsigned)rh;
 }
+
+uint64_t osgfx_chrome_hit_restore(void) {
+  return osgfx_chrome_hit_present(&osgfx_guest_cmd);
+}
+
+uint64_t osgfx_menu_blit(uint64_t pop) {
+  const struct OsGfxGuestCmd *m;
+
+  m = &osgfx_guest_cmd;
+  if (m->fb == 0 || pop == 0) {
+    return 0;
+  }
+  osgfx_session_blit_menu((uint32_t *)(uintptr_t)m->fb, (int)m->pitch,
+                          (int)m->w, (int)m->h, pop);
+  return (uint64_t)OSGFX_POP_W * (uint64_t)OSGFX_POP_H;
+}
