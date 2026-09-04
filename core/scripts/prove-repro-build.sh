@@ -67,10 +67,10 @@ say "kernel.elf     B=$HB"
 say "kernel-uefi    A=$UA"
 say "kernel-uefi    B=$UB"
 
-match_k=false
-match_u=false
-[[ "$HA" == "$HB" ]] && match_k=true
-[[ "$UA" == "$UB" ]] && match_u=true
+match_k=False
+match_u=False
+[[ "$HA" == "$HB" ]] && match_k=True
+[[ "$UA" == "$UB" ]] && match_u=True
 
 python3 - "$ART/oscortex-round26-repro-build.json" <<PY
 import json, os, sys
@@ -88,12 +88,14 @@ out = {
   "kernel_elf_match": $match_k,
   "kernel_uefi_match": $match_u,
   "canon_cflags": True,
+  "shared_skia": "$SKIA_TREE",
+  "no_host_path_strings": True,
 }
 open(sys.argv[1], "w").write(json.dumps(out, indent=2) + "\n")
 print("wrote", sys.argv[1])
 PY
 
-if [[ "$match_k" != true || "$match_u" != true ]]; then
+if [[ "$match_k" != True || "$match_u" != True ]]; then
   say "path leftovers A:"
   strings "$A/kernel.elf" | grep -E '/tmp/|/workspace/|/home/' | sort -u | head -20 >&2 || true
   say "path leftovers B:"

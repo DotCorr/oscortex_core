@@ -70,9 +70,17 @@ if [[ ! -x "$PREFIX/bin/qemu-system-x86_64" ]]; then
   mkdir -p "$SRC/qemu/build"
   (
     cd "$SRC/qemu/build"
+    GTK_FLAG=()
+    if ! pkg-config --exists gtk+-3.0 2>/dev/null; then
+      say "gtk+-3.0 not present — egl-headless needs a DRM node; GTK+GLX does not"
+    fi
+    if pkg-config --exists gtk+-3.0 2>/dev/null; then
+      GTK_FLAG=(--enable-gtk)
+    fi
     ../configure --prefix="$PREFIX" --target-list=x86_64-softmmu \
       --enable-virglrenderer --enable-opengl --enable-slirp --disable-docs \
       --disable-user --disable-werror \
+      "${GTK_FLAG[@]}" \
       --extra-cflags="-I$PREFIX/include" \
       --extra-ldflags="-L$PREFIX/lib -L$PREFIX/lib/x86_64-linux-gnu" \
       >&2

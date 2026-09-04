@@ -75,6 +75,7 @@ cp -a "$PROMO/disk.img" "$LIVE/disk.img"
 cp -a "$PROMO/BUILD.json" "$LIVE/BUILD.json"
 rm -rf "$PROMO"
 
+cp -a "$LIVE/BUILD.json" "$ART/oscortex-round26-build.json"
 cp -a "$LIVE/BUILD.json" "$ART/oscortex-round25-build.json"
 say "promoted kernel=$K_SHA uefi=$U_SHA git=$GIT_SHA"
 echo "PROMOTED=$LIVE"

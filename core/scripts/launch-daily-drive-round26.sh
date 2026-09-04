@@ -95,7 +95,8 @@ if [[ "${OSCORTEX_VENUS:-0}" == "1" ]]; then
   if [[ -x "$PREFIX/bin/qemu-system-x86_64" ]]; then
     QEMU_BIN="$PREFIX/bin/qemu-system-x86_64"
   fi
-  export LD_LIBRARY_PATH="$PREFIX/lib:$PREFIX/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+  export LD_LIBRARY_PATH="$PREFIX/lib:$PREFIX/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu"
+  unset LD_PRELOAD
   if "$QEMU_BIN" -device virtio-gpu-gl-pci,help 2>&1 | grep -q 'venus'; then
     VENUS=1
   else
@@ -110,7 +111,10 @@ GPU_ARGS=()
 DISPLAY_ARGS=(-display gtk,zoom-to-fit=on)
 if [[ "$VENUS" == "1" ]]; then
   GPU_ARGS=(-vga none -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=256M,xres=1280,yres=720)
-  DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
+  DISPLAY_ARGS=(-display egl-headless)
+  if "$QEMU_BIN" -display help 2>&1 | grep -q '^gtk$'; then
+    DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
+  fi
 fi
 
 nohup "$QEMU_BIN" \
