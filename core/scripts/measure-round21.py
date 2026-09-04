@@ -218,7 +218,16 @@ def first_drags(q, ser, n=22):
             {"type": "abs", "data": {"axis": "y", "value": ay}},
         ], 3.0, want_opid=True, label="first_drag")
         d15.button(q, nx, ny, "left", False)
-        time.sleep(0.12)
+        time.sleep(0.06)
+        d15.button(q, nx, ny, "left", False)
+        # Drop the title grab on wallpaper so the next press is a close
+        # hit, not another drag step.
+        d15.place(q, ser, 90, 400)
+        time.sleep(0.05)
+        d15.button(q, 90, 400, "left", True)
+        time.sleep(0.04)
+        d15.button(q, 90, 400, "left", False)
+        time.sleep(0.15)
         if wall is not None:
             walls.append(wall)
         if d15.PHASE_TIMELINES:
