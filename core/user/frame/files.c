@@ -204,6 +204,7 @@ static char cur_path[PATH_CAP];
 static unsigned cur_plen;
 static u64 fwd_streak;
 static const char path_ow[] = "OPENWITH.DAT";
+static const char path_chrome[] = "CHROME.DAT";
 static const char path_studio[] = "STUDIO.ELF";
 static const char new_body[] = "note\n";
 static const char path_gone[] = "GONE.DAT";
@@ -1788,6 +1789,16 @@ static u64 files_plant_skip(u64 row) {
       return 1;
     }
     if (same_bytes(dotted[row], 8, path_miss, 8) > 0) {
+      return 1;
+    }
+  }
+  if (dotlen[row] == 12) {
+    if (same_bytes(dotted[row], 12, path_ow, 12) > 0) {
+      return 1;
+    }
+  }
+  if (dotlen[row] == 10) {
+    if (same_bytes(dotted[row], 10, path_chrome, 10) > 0) {
       return 1;
     }
   }
