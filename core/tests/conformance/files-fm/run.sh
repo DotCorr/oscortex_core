@@ -320,6 +320,8 @@ else
   echo "FILES-FM: SKIP — fsck_msdos not found on PATH (FAT volume certification unavailable)"
   exit 0
 fi
+ck; [[ -x "$FSCK" ]] || command -v "$FSCK" >/dev/null 2>&1 \
+  || setup_error "fsck_msdos not found"
 capture FSCK_OUT FSCK_STATUS -- "$FSCK" -n "$IMG_A"
 ck; [[ $FSCK_STATUS -eq 0 ]] || { echo "$FSCK_OUT" >&2; fail "fsck_msdos rejected image A"; }
 echo "IMAGE: pass  fsck_msdos accepts the planted volume"

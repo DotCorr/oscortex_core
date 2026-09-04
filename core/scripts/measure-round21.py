@@ -206,14 +206,13 @@ def launch_files(q, ser):
     fx, fy = d15.FILES_DOCK_XY
     for _try in range(8):
         marked = ser.read()
-        d15.place(q, ser, fx, fy)
-        time.sleep(0.1)
-        d15.button(q, fx, fy, "left", True)
-        got = d15.wait_mark(ser, "FILES READY", marked, 1.6)
-        if not got:
-            got = d15.wait_mark(ser, "FILES CSD", marked, 1.2)
-        d15.button(q, fx, fy, "left", False)
+        if d15.press(q, ser, fx, fy, "left", "DESK LAUNCH", timeout=1.2):
+            if (d15.wait_mark(ser, "FILES READY", marked, 6)
+                    or d15.wait_mark(ser, "FILES CSD", marked, 3)):
+                return True
+        got = d15.press(q, ser, fx, fy, "left", "FILES CSD", timeout=2.0)
         if got:
+            d15.wait_mark(ser, "FILES READY", ser.read(), 6)
             return True
         time.sleep(0.2)
     return False
