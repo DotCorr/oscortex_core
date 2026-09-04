@@ -488,58 +488,6 @@ static u64 launch_nlen(u64 i) {
   return 7UL;
 }
 
-static u64 stem_prefix_eq(u64 packed, const char *p, u64 n) {
-  u64 i = 0;
-  while (i < n) {
-    char c = (char)((packed >> (i * 8UL)) & 0xFFUL);
-    if (c != p[i]) {
-      return 0;
-    }
-    i = i + 1;
-  }
-  return 1;
-}
-
-static u64 icon_prefix_len(u64 i) {
-  if (i == 0UL) {
-    return 3UL;
-  }
-  if (i == 1UL) {
-    return 5UL;
-  }
-  if (i == 2UL) {
-    return 6UL;
-  }
-  if (i == 3UL) {
-    return 4UL;
-  }
-  if (i == 4UL) {
-    return 6UL;
-  }
-  return 3UL;
-}
-
-/* A closed client must be spawnable again. launched_mask alone kept the
- * dock icon inert after WM CLOSE (DESK PRESS with no DESK LAUNCH). */
-static u64 icon_is_live(u64 icon) {
-  char *nm;
-  u64 n;
-  u64 k;
-  nm = launch_name(icon);
-  n = icon_prefix_len(icon);
-  k = 0;
-  while (k < 4UL) {
-    u64 packed = osxui_app_name(k);
-    if (packed != 0UL) {
-      if (stem_prefix_eq(packed, nm, n) != 0UL) {
-        return 1;
-      }
-    }
-    k = k + 1;
-  }
-  return 0;
-}
-
 static void launch_icon(u64 i) {
   char *nm;
   u64 nlen;
