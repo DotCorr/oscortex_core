@@ -493,11 +493,14 @@ void osgfx_fill_rect(OsGfx *g, int x, int y, int w, int h, uint32_t rgb) {
       if (use == 0) {
         use = 0x001C6A38u;
       }
-      if (osgfx_graphite_fill_desk(g->px, g->pitch, x, y, w, h, use) != 0) {
+      /* 480×270 proof is safe. A full 1280×720 Graphite surface on
+       * the first chrome miss #GP'd (FAULT 0D OP FF50). */
+      if (w <= 480 && h <= 270) {
+        if (osgfx_graphite_fill_desk(g->px, g->pitch, x, y, w, h, use) != 0) {
+          return;
+        }
         return;
       }
-      /* Do not fall back to CPU put_px for that desk proof. */
-      return;
     }
   }
   yy = y;
