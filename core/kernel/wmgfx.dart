@@ -25,13 +25,7 @@ external u64 osgfx_chrome_prep(u64 win0, u64 win1);
 external u64 osgfx_chrome_prep_rest();
 
 @extern
-external u64 osgfx_chrome_prep_present(u64 which, u64 xy, u64 wh);
-
-@extern
 external u64 osgfx_chrome_drag_step(u64 oldG, u64 newG);
-
-@extern
-external void osgfx_guest_ack();
 
 const int wmGfxRadius = 18;
 

@@ -824,7 +824,17 @@ fi
 EXTERN_MANIFEST="$CORE_DIR/build/kmain.o.externs"
 ck; [[ -f "$EXTERN_MANIFEST" ]] || fail "dcc wrote no $EXTERN_MANIFEST — the extern census below has nothing authoritative to read"
 PLAT_EXTERNS=$(grep -E '^(osgfx|osxui)_[A-Za-z0-9_]+$' "$EXTERN_MANIFEST" | sort -u)
-PLAT_PRESENT=$(wc -w <<<"$PLAT_EXTERNS" | tr -d ' ')
+# Subtract only C-module entry points the object actually calls.
+# Unused @extern declarations are stale-manifest notes and must not
+# deflate the M11 assembly-extern pin (42 vs 44 was two dead decls).
+PLAT_PRESENT=$(printf '%s\n' "$VERIFY_OUT" | python3 - <<'PY'
+import re, sys
+text = sys.stdin.read()
+m = re.search(r"declared extern\(s\): ([^)]+)\)", text)
+names = m.group(1).split() if m else []
+print(sum(1 for n in names if n.startswith("osgfx_") or n.startswith("osxui_")))
+PY
+)
 ck; [[ "$PLAT_PRESENT" -ge 7 ]] \
   || fail "kmain.o declares only $PLAT_PRESENT osgfx_/osxui_ entry points, expected at least the seven of ADR-0104/0113/0136/0172/0181 — the OS stopped calling its own C modules"
 for sym in $PLAT_EXTERNS; do
