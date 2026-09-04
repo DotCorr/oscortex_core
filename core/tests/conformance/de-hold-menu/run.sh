@@ -14,6 +14,7 @@ MEAS="$CORE_DIR/scripts/measure-round24.py"
 M1="$CORE_DIR/tests/conformance/m1-interrupts/run.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+grep -q 'wmPageWCsdArmed' "$PACE" || fail "CSD down-edge latch missing"
 grep -q 'void wmHoldWatch' "$WMDE" || fail "wmHoldWatch missing"
 grep -q 'void wmHoldKick' "$WMDE" || fail "wmHoldKick missing"
 grep -q 'void wmHoldCancel' "$WMDE" || fail "wmHoldCancel missing"

@@ -83,15 +83,22 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 # ---------------------------------------------------------------------------
 # Step 1 — build (dcc build + assemble boot.S and isr.S + link)
+# Isolated BUILD_DIR so this harness cannot stomp live core/build/kernel*.elf.
 # ---------------------------------------------------------------------------
+M1_BUILD="$WORKDIR/kbuild"
+export BUILD_DIR="$M1_BUILD"
+mkdir -p "$M1_BUILD"
+if [[ -d "$CORE_DIR/build/skia" && ! -e "$M1_BUILD/skia" ]]; then
+  ln -s "$CORE_DIR/build/skia" "$M1_BUILD/skia"
+fi
 BUILD_LOG="$WORKDIR/build.log"
-capture_log "$BUILD_LOG" BUILD_STATUS -- bash "$CORE_DIR/scripts/build-kernel.sh"
+capture_log "$BUILD_LOG" BUILD_STATUS -- BUILD_DIR="$M1_BUILD" bash "$CORE_DIR/scripts/build-kernel.sh"
 cat "$BUILD_LOG"
 ck; if [[ $BUILD_STATUS -ne 0 ]]; then
   fail "build-kernel.sh exited $BUILD_STATUS (log above)"
 fi
 
-KERNEL_ELF="$CORE_DIR/build/kernel.elf"
+KERNEL_ELF="$M1_BUILD/kernel.elf"
 ck; [[ -f "$KERNEL_ELF" ]] || fail "build-kernel.sh reported success but $KERNEL_ELF was not produced"
 
 # ---------------------------------------------------------------------------
@@ -107,9 +114,9 @@ fi
 # actually gets corrupted if it ever regresses, and the corruption would be
 # silent data damage rather than a crash. Assert it here rather than trusting
 # the toolchain to keep its promise.
-RED_ZONE_HITS=$(x86_64-elf-objdump -d "$CORE_DIR/build/kmain.o" | grep -cE '\-0x[0-9a-f]+\(%rsp\)')
+RED_ZONE_HITS=$(x86_64-elf-objdump -d "$M1_BUILD/kmain.o" | grep -cE '\-0x[0-9a-f]+\(%rsp\)')
 ck; if [[ "$RED_ZONE_HITS" -ne 0 ]]; then
-  x86_64-elf-objdump -d "$CORE_DIR/build/kmain.o" | grep -nE '\-0x[0-9a-f]+\(%rsp\)' >&2
+  x86_64-elf-objdump -d "$M1_BUILD/kmain.o" | grep -nE '\-0x[0-9a-f]+\(%rsp\)' >&2
   fail "kmain.o contains $RED_ZONE_HITS negative-%rsp access(es) — the red zone is back (DCDart ADR-0039 regressed). An interrupt would corrupt the interrupted function's locals."
 fi
 echo "STRUCTURAL: pass  no red-zone (negative %rsp) accesses in kmain.o"
@@ -119,7 +126,7 @@ echo "STRUCTURAL: pass  no red-zone (negative %rsp) accesses in kmain.o"
 # replaced by `unreachable` and deleted — either way `M1 FAULT 06` would stop
 # being evidence of a real trap. A `ud2` reached only by a conditional branch
 # is what makes it real.
-ck; if ! x86_64-elf-objdump -d --disassemble=kmain "$CORE_DIR/build/kmain.o" | grep -q 'ud2'; then
+ck; if ! x86_64-elf-objdump -d --disassemble=kmain "$M1_BUILD/kmain.o" | grep -q 'ud2'; then
   fail "kmain contains no ud2 — the deliberate overflow trap was optimized away, so M1's fault test would prove nothing"
 fi
 echo "STRUCTURAL: pass  kmain contains a ud2 (deliberate overflow trap survives codegen)"
@@ -127,7 +134,7 @@ echo "STRUCTURAL: pass  kmain contains a ud2 (deliberate overflow trap survives 
 # 2c. 256 stubs at a 16-byte stride, and the stub table sized to match.
 # Size column is hex; converted with bash arithmetic rather than awk's
 # strtonum(), which is a gawk extension and absent from macOS's awk.
-STUB_TABLE_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/isr.o" | awk '$2 == ".rodata" {print $3; exit}')
+STUB_TABLE_HEX=$(x86_64-elf-objdump -h "$M1_BUILD/isr.o" | awk '$2 == ".rodata" {print $3; exit}')
 ck; [[ -n "$STUB_TABLE_HEX" ]] || fail "isr.o has no .rodata section — the stub-address table is missing"
 STUB_TABLE_BYTES=$((16#$STUB_TABLE_HEX))
 ck; if [[ "$STUB_TABLE_BYTES" -ne 2048 ]]; then
@@ -174,13 +181,13 @@ echo "STRUCTURAL: pass  kernel.elf has no .got/.got.plt"
 #     (an unreferenced `@bss` block is dropped by LLVM, silently, which is
 #     exactly the failure this catches).
 # ---------------------------------------------------------------------------
-RODATA_IDX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.rodata[[:space:]].*/\1/p')
+RODATA_IDX=$(x86_64-elf-readelf -SW "$M1_BUILD/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.rodata[[:space:]].*/\1/p')
 ck; [[ -n "$RODATA_IDX" ]] || fail "kmain.o has no .rodata section — the @rodata message tables are missing entirely"
-BSS_IDX=$(x86_64-elf-readelf -SW "$CORE_DIR/build/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.bss[[:space:]].*/\1/p')
+BSS_IDX=$(x86_64-elf-readelf -SW "$M1_BUILD/kmain.o" | sed -n 's/^[[:space:]]*\[[[:space:]]*\([0-9]*\)\][[:space:]]*\.bss[[:space:]].*/\1/p')
 ck; [[ -n "$BSS_IDX" ]] || fail "kmain.o has no .bss section — the @bss mutable statics (ADR-0021) are missing entirely"
 
-TABLE_COUNT=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" | awk -v ix="$RODATA_IDX" '$4=="OBJECT" && $7==ix' | wc -l | tr -d ' ')
-STRAY=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+TABLE_COUNT=$(x86_64-elf-readelf -sW "$M1_BUILD/kmain.o" | awk -v ix="$RODATA_IDX" '$4=="OBJECT" && $7==ix' | wc -l | tr -d ' ')
+STRAY=$(x86_64-elf-readelf -sW "$M1_BUILD/kmain.o" \
   | awk -v r="$RODATA_IDX" -v b="$BSS_IDX" '$4=="OBJECT" && $7!=r && $7!=b {print $8" (section "$7")"}')
 ck; if [[ -n "$STRAY" ]]; then
   echo "$STRAY" >&2
@@ -189,7 +196,7 @@ fi
 ck; [[ "$TABLE_COUNT" -ge 16 ]] || fail "only $TABLE_COUNT @rodata table(s) found in kmain.o .rodata, expected at least 16 (one per fixed message)"
 
 # The @bss set, from the image and from the source, compared name for name.
-BSS_IN_IMAGE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
+BSS_IN_IMAGE=$(x86_64-elf-readelf -sW "$M1_BUILD/kmain.o" \
   | awk -v b="$BSS_IDX" '$4=="OBJECT" && $7==b {print $8}' | sort)
 BSS_IN_SOURCE=$(grep -h -A1 '^@bss$' "$CORE_DIR"/kernel/*.dart \
   | sed -n 's/^final Bss \([A-Za-z0-9_]*\) = .*/\1/p' | sort)
@@ -271,7 +278,7 @@ echo "STRUCTURAL: pass  all $TABLE_COUNT @rodata message tables are in .rodata, 
 # Adding a message table moves `end` and the padding but NOT TRAIL_ANON, so
 # this does not churn on every new string.
 # ---------------------------------------------------------------------------
-ck; if ! python3 - "$CORE_DIR/build/kmain.o" "$RODATA_IDX" <<'PY'
+ck; if ! python3 - "$M1_BUILD/kmain.o" "$RODATA_IDX" <<'PY'
 import re, subprocess, sys
 
 obj, idx = sys.argv[1], sys.argv[2]
@@ -442,7 +449,7 @@ PY
 then
   fail "kmain.o's .rodata layout is not 'elements only, no header' (ADR-0040)"
 fi
-SEC_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".rodata"{print $3; exit}')
+SEC_HEX=$(x86_64-elf-objdump -h "$M1_BUILD/kmain.o" | awk '$2==".rodata"{print $3; exit}')
 SEC_TOTAL=$((16#$SEC_HEX))
 echo "STRUCTURAL: pass  .rodata's $TABLE_COUNT table symbols abut exactly with no header or padding between any pair, nothing but a relocated jump table precedes them, and nothing but a pinned, code-referenced constant block follows them ($SEC_TOTAL bytes total)"
 
@@ -466,7 +473,7 @@ fi
 ALLOWLIST="$CORE_DIR/tools/bare-symbol-allowlist.txt"
 ck; [[ -f "$ALLOWLIST" ]] || setup_error "allowlist not found at $ALLOWLIST"
 
-capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$CORE_DIR/build/kmain.o" "$KERNEL_ELF"'
+capture_sh VERIFY_OUT VERIFY_STATUS -- 'OSCORTEX_ALLOWLIST="$ALLOWLIST" bash "$CORE_DIR/scripts/verify-freestanding.sh" "$M1_BUILD/kmain.o" "$KERNEL_ELF"'
 echo "$VERIFY_OUT"
 ck; if [[ $VERIFY_STATUS -ne 0 ]] || grep -q "FREESTANDING: FAIL" <<<"$VERIFY_OUT"; then
   fail "verify-freestanding.sh did not report a clean pass"

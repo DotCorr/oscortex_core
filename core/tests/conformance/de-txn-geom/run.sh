@@ -85,6 +85,9 @@ if "wmVisPublish(" in toggle:
     raise SystemExit("max/restore publishes VIS before COMMIT")
 if "wmPopHide" not in toggle:
     raise SystemExit("max/restore does not dismiss an open menu before HOLD")
+rel = fn(wmde, "wmDeCsdRelease")
+if "wmPageWCsdArmed" not in rel:
+    raise SystemExit("CSD release still re-toggles max on button-up")
 if "wmHoldKick" not in toggle:
     raise SystemExit("max/restore does not retry an unpublished HOLD")
 if "wmStrHoldRe" not in toggle:

@@ -329,6 +329,9 @@ const int wmPageWVisGen0 = 454;
 /// Kick 0 = none, 1 = configure re-enqueue, 2 = timeout cancel.
 const int wmPageWHoldArm0 = 458;
 const int wmPageWHoldKick0 = 462;
+/// 1 if the down-edge already fired a CSD button. Release must not
+/// toggle max/close again (press() is down+up in 50 ms).
+const int wmPageWCsdArmed = 466;
 const int wmHoldKickTicks = 50;
 const int wmHoldForceTicks = 80;
 const int wmHoldCancelTicks = 200;

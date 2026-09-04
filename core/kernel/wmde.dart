@@ -2835,14 +2835,23 @@ u64 wmDeCsdButtons(u64 hit, u64 geomHit, u64 x, u64 y) {
     return u64(0);
   }
   if (wmCloseHit(hit, x, y) > u64(0)) {
+    if (wmPageAddr() > u64(0)) {
+      wmPageSet(u64(wmPageWCsdArmed), u64(1));
+    }
     wmCloseWindow(hit);
     return u64(1);
   }
   if (wmMaxHit(hit, x, y) > u64(0)) {
+    if (wmPageAddr() > u64(0)) {
+      wmPageSet(u64(wmPageWCsdArmed), u64(1));
+    }
     wmToggleMaxWindow(hit);
     return u64(1);
   }
   if (wmMinHit(hit, x, y) > u64(0)) {
+    if (wmPageAddr() > u64(0)) {
+      wmPageSet(u64(wmPageWCsdArmed), u64(1));
+    }
     wmMinWindow(hit);
     return u64(1);
   }
@@ -2850,11 +2859,18 @@ u64 wmDeCsdButtons(u64 hit, u64 geomHit, u64 x, u64 y) {
 }
 
 /// Left-up CSD: a press that missed the down-edge (busy / sticky grab)
-/// still closes when the pointer is on the live control disc.
+/// still closes when the pointer is on the live control disc. If the
+/// down-edge already fired a button, do not toggle again.
 @bare
 u64 wmDeCsdRelease(u64 x, u64 y) {
   if (wmDeOn() < u64(1)) {
     return u64(0);
+  }
+  if (wmPageAddr() > u64(0)) {
+    if (wmPage(u64(wmPageWCsdArmed)) > u64(0)) {
+      wmPageSet(u64(wmPageWCsdArmed), u64(0));
+      return u64(1);
+    }
   }
   u64 hit = wmHit(x, y);
   final u64 geomHit = wmDeGeomHit(x, y);
