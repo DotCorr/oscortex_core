@@ -168,7 +168,7 @@ wait "$QEMU_PID" || true
 ck; grep -q "MKDIR OK" "$SER" || { tail -80 "$SER" >&2; fail "serial has no MKDIR OK"; }
 ck; ! grep -q "MKDIR FAIL" "$SER" || fail "probe printed MKDIR FAIL"
 
-python3 - "$IMG" <<'PY' || fail "FAT walk did not see NEWDIR / IN.DAT"
+ck; python3 - "$IMG" <<'PY' || fail "FAT walk did not see NEWDIR / IN.DAT"
 import struct, sys
 img = open(sys.argv[1], "rb").read()
 bps = 512

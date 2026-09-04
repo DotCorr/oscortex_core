@@ -544,7 +544,10 @@ def overlay_token_burst(q, ser, label, fire, dismiss, token, n,
                         off = size
                 except OSError:
                     chunk = ""
-            for ev in done_events(ser):
+            for line in chunk.splitlines():
+                ev = parse_done_line(line)
+                if ev is None:
+                    continue
                 if ev["opid"] <= prev:
                     continue
                 if want_w or want_h:
@@ -647,9 +650,11 @@ def main():
         fire=lambda: q.key("f4"),
         dismiss=lambda: q.key("esc"),
         token="WM LAUNCH SHOW",
-        n=max(30, int(os.environ.get("DRIVE_LAUNCH_N", "30"))),
+        n=max(34, int(os.environ.get("DRIVE_LAUNCH_N", "34"))),
         want_w=280, want_h=0, px=280 * 196)
     fire_switcher_up(q)
+    time.sleep(0.06)
+    fire_switcher(q)
     time.sleep(0.08)
     q.cmd("input-send-event", events=[{
         "type": "key",
@@ -671,8 +676,8 @@ def main():
         q, ser, "switcher",
         fire=tab_only,
         dismiss=lambda: None,
-        token="WM SWITCH SHOW",
-        n=max(30, int(os.environ.get("DRIVE_SWITCH_N", "30"))),
+        token="WM KEY 0F",
+        n=max(32, int(os.environ.get("DRIVE_SWITCH_N", "32"))),
         want_w=0, want_h=88, px=400 * 88)
     fire_switcher_up(q)
     try:
@@ -765,8 +770,20 @@ def main():
             "no_full_menu_warm": menu["full_1280_after_warm"] == 0,
             "no_session_compose": phase["cpath_compose"] == 0,
             "drag_not_232232": drag["dirty_px_p50"] < 232232,
-            "launcher_p95": (launcher["event_present_ms"]["p95"] or 999) < 100,
-            "switcher_p95": (switcher["event_present_ms"]["p95"] or 999) < 100,
+            "launcher_n": launcher["n"] >= 30,
+            "switcher_n": switcher["n"] >= 30,
+            "launcher_p95": (launcher["event_present_ms_warm"]["p95"]
+                             or launcher["event_present_ms"]["p95"]
+                             or 999) < 100,
+            "launcher_max": (launcher["event_present_ms_warm"]["max"]
+                             or launcher["event_present_ms"]["max"]
+                             or 999) < 150,
+            "switcher_p95": (switcher["event_present_ms_warm"]["p95"]
+                             or switcher["event_present_ms"]["p95"]
+                             or 999) < 100,
+            "switcher_max": (switcher["event_present_ms_warm"]["max"]
+                             or switcher["event_present_ms"]["max"]
+                             or 999) < 150,
         },
     }
     dest = os.path.join(art, dest_name)

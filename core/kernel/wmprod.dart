@@ -551,6 +551,9 @@ void wmSwitchCycle() {
   wmSetMeta(u64(wmMetaPop),
       u64(wmPopSwitch) | ((sel & u64(0xFF)) << u64(8)));
   wmSetMeta(u64(wmMetaPopXY), (wmSwitchX() << u64(32)) | wmSwitchY());
+  uartWrite(Rodata.addressOf(wmStrSwitchShow), u64(15));
+  uartPutHex(n, u64(2));
+  uartNewline();
 }
 
 @bare
