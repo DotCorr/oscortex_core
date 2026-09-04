@@ -159,7 +159,7 @@ void _start(void) {
         if (armed == 0) {
           armed = 1;
           paint_body(pix_va, 1);
-          osxui_app_csd(shm_h, WIN_W, cap_play, 4UL);
+          osxui_app_csd_win(shm_h, WIN_W, WIN_H, cap_play, 4UL);
           commit_all(2);
           wr(msg_hit, sizeof(msg_hit) - 1);
         }
