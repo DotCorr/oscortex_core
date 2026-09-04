@@ -298,9 +298,10 @@ static int painting;
 static int probe_done;
 static uintptr_t saved_rsp;
 /* Host-precompiled SPIR-V curve path does not run AnalyticRRect SkSL.
- * 1MiB is enough for PIX/RRECT/DESK snap. 8MiB paint_stack + 8MiB CRT
- * heap blew past vmFineBytes (kernel_end > 16MiB → PROC REFUSED 01). */
-alignas(16) static unsigned char paint_stack[1 * 1024 * 1024];
+ * 1MiB held PIX/RRECT/DESK snaps but the first 1280 chrome miss
+ * #GP'd (FAULT 0D OP FF50) once CRT heap let the paint proceed.
+ * vmFineBytes is 32MiB (ADR-0189); 4MiB stack + 6MiB CRT stays under. */
+alignas(16) static unsigned char paint_stack[4 * 1024 * 1024];
 
 static SkColor sk_rgb(uint32_t rgb) {
   return SkColorSetARGB(255, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
