@@ -700,17 +700,30 @@ def restore_scene(q, ser):
 
 def wallpaper_park(q, ser):
     """Published wallpaper-miss park: click empty desktop, then WM global keys."""
+    for code in ("alt", "ctrl", "shift"):
+        try:
+            q.cmd("input-send-event", events=[{
+                "type": "key",
+                "data": {"down": False,
+                         "key": {"type": "qcode", "data": code}},
+            }])
+        except Exception:
+            pass
     try:
         q.key("esc")
     except Exception:
         pass
     time.sleep(0.05)
-    send_abs(q, 36, 500)
+    # (36,500) is the published miss on a fresh sit-in. A leftover with
+    # dragged windows can cover that point; (400,500) is the open desktop
+    # above the dock on 1280×720.
+    park_xy = (400, 500)
+    send_abs(q, park_xy[0], park_xy[1])
     time.sleep(0.02)
     try:
-        d15.button(q, 36, 500, "left", True)
+        d15.button(q, park_xy[0], park_xy[1], "left", True)
         time.sleep(0.03)
-        d15.button(q, 36, 500, "left", False)
+        d15.button(q, park_xy[0], park_xy[1], "left", False)
     except Exception:
         pass
     time.sleep(0.12)
@@ -747,7 +760,7 @@ def write_overlay_json(art, launcher, switcher, park_ok):
             and switcher.get("hits", 0) >= 30
             and lp95 < 100 and lmax < 150
             and sp95 < 100 and smax < 150),
-        "wallpaper_park": "click 36,500",
+        "wallpaper_park": "click 400,500 (36,500 covered on dirty leftover)",
         "wallpaper_park_ok": park_ok,
         "note": (
             "Present-level kinds 7/8 after wallpaper-miss park. "
