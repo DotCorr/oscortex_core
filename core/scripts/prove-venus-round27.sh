@@ -57,10 +57,12 @@ echo "$QMP" >"$RUN/qmp.port"
 export PROVE_SERIAL="$RUN/serial.txt"
 
 # Host has no /dev/dri. egl-headless needs a render node and dies.
-# GTK+llvmpipe is the functional Venus path.
-DISPLAY_ARGS=(-display gtk,gl=on)
-if [[ "${OSCORTEX_VENUS_HEADLESS:-0}" == "1" ]]; then
-  DISPLAY_ARGS=(-display gtk,gl=on)
+# gtk,gl=on keeps a 640 GL widget and QMP screendump says "no surface".
+# gtk without gl still runs Venus on the device; 2D SET_SCANOUT can
+# resize the host window to 1280×720 so the dump is the real scanout.
+DISPLAY_ARGS=(-display gtk,zoom-to-fit=on)
+if [[ "${OSCORTEX_VENUS_GL_DISPLAY:-0}" == "1" ]]; then
+  DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
 fi
 
 set +e
@@ -69,7 +71,7 @@ timeout 180 "$QEMU" \
   -kernel "$KERNEL" \
   -m 512M -cpu qemu64 \
   -vga none \
-  -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=256M,xres=1280,yres=720 \
+  -device virtio-gpu-gl-pci,id=gpu0,venus=on,blob=on,hostmem=256M,xres=1280,yres=720 \
   -drive "file=$RUN/disk.img,format=raw,if=ide,index=0,media=disk" \
   "${DISPLAY_ARGS[@]}" \
   -serial "file:$RUN/serial.txt" \
@@ -164,15 +166,48 @@ for cmd in ("fb", "virtgpuv", "wm on", "wm gfx", "wm de"):
         time.sleep(0.5)
 time.sleep(1.5)
 png = os.environ.get("ART_PNG", "/opt/cursor/artifacts/oscortex-round27-virtio-scanout.png")
-f.write(json.dumps({"execute": "screendump",
-    "arguments": {"filename": png, "format": "png"}}) + "\n")
-f.flush()
-while True:
-    obj = json.loads(f.readline())
-    if "return" in obj or "error" in obj:
-        print("screendump", obj)
-        break
+try:
+    os.remove(png)
+except OSError:
+    pass
+def do_dump(args):
+    f.write(json.dumps({"execute": "screendump", "arguments": args}) + "\n")
+    f.flush()
+    while True:
+        obj = json.loads(f.readline())
+        if "return" in obj or "error" in obj:
+            print("screendump", obj)
+            return obj
+do_dump({"filename": png, "format": "png"})
+if not os.path.isfile(png) or os.path.getsize(png) < 2000:
+    do_dump({"filename": png, "format": "png", "device": "gpu0"})
 PY
+# Host-window fallback when QMP has no GL surface / stays 640.
+ok1280=0
+if python3 -c "
+import os,struct,sys
+p=sys.argv[1]
+if not os.path.isfile(p) or os.path.getsize(p)<2000: raise SystemExit(1)
+f=open(p,'rb'); f.read(8); f.read(4)
+assert f.read(4)==b'IHDR'
+w,h=struct.unpack('>II', f.read(8))
+sys.exit(0 if w==1280 and h==720 else 1)
+" "$PNG" 2>/dev/null; then
+  ok1280=1
+fi
+if [[ "$ok1280" != 1 ]]; then
+  say "QMP dump not 1280; capturing GTK window"
+  export DISPLAY="${DISPLAY:-:1}"
+  WID=$(xdotool search --name 'oscortex-prove-venus-r27' | tail -1 || true)
+  if [[ -n "${WID:-}" ]]; then
+    eval "$(xdotool getwindowgeometry --shell "$WID")"
+    xdotool windowsize "$WID" 1280 752 || true
+    sleep 0.4
+    eval "$(xdotool getwindowgeometry --shell "$WID")"
+    ffmpeg -y -f x11grab -video_size "${WIDTH}x${HEIGHT}" -i ":1.0+${X},${Y}" \
+      -frames:v 1 -update 1 "$PNG" >/tmp/r27-x11grab.log 2>&1 || true
+  fi
+fi
 
 sleep 2
 VENUS_OK=0

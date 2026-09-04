@@ -134,7 +134,10 @@ DISPLAY_ARGS=(-display gtk,zoom-to-fit=on)
 BOOT_ARGS=()
 if [[ "$VENUS" == "1" ]]; then
   GPU_ARGS=(-vga none -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=256M,xres=1280,yres=720)
-  DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
+  DISPLAY_ARGS=(-display gtk,zoom-to-fit=on)
+  if [[ "${OSCORTEX_VENUS_GL_DISPLAY:-0}" == "1" ]]; then
+    DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
+  fi
 fi
 if [[ "$BIOS" == "1" ]]; then
   BOOT_ARGS=(-kernel "$KERNEL_ELF")
