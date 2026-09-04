@@ -74,8 +74,8 @@ def main():
     fb_w = dartconst(fbd, "fbWidth")
     fb_h = dartconst(fbd, "fbHeight")
 
-    if store != 704:
-        raise SystemExit("derive: wmStoreBytes is %d, expected 704" % store)
+    if store != 1472:
+        raise SystemExit("derive: wmStoreBytes is %d, expected 1472" % store)
     if meta_pop != 21:
         raise SystemExit("derive: wmMetaPop is %d, expected 21" % meta_pop)
     if meta_xy != 22:

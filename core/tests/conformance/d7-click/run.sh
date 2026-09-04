@@ -104,7 +104,7 @@ PROG_SYS=$(grep -m1 '^#define SYS_WMEVENT ' "$SCRIPT_DIR/prog.c" | awk '{print $
 ck; [[ "$E_SYS" -eq 25 ]] || fail "wmeventSysNo is $E_SYS, expected 25"
 ck; [[ "$PROG_SYS" -eq "$E_SYS" ]] || fail "prog.c says SYS_WMEVENT is $PROG_SYS and the kernel says $E_SYS"
 ck; [[ "$E_SYS" -eq "$SYSNO" ]] || fail "the model and the kernel disagree about the syscall number"
-ck; [[ "$E_SLOTS" -eq "$W_MAX" ]] || fail "wmeventSlots is $E_SLOTS and wmMaxWindows is $W_MAX"
+ck; [[ "$E_SLOTS" -eq 8 ]] || fail "wmeventSlots is $E_SLOTS, expected 8 (event ring, not one per wmMaxWindows=$W_MAX)"
 ck; [[ $(( E_SLOTS * E_SLOTB )) -eq "$E_STORE" ]] \
   || fail "wmeventSlots * wmeventSlotBytes = $(( E_SLOTS * E_SLOTB )), store is $E_STORE"
 ck; [[ "$E_STORE" -eq 768 ]] || fail "wmeventStoreBytes is $E_STORE, expected 768"

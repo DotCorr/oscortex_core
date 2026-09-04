@@ -74,11 +74,11 @@ BIG_BYTES = m10.BIG_BYTES
 
 # Must match core/kernel/proc.dart. run.sh asserts every one of these against
 # the source rather than trusting the copy.
-PROC_MAX = 8
-PROC_STORE_BYTES = 8320
+PROC_MAX = 16
+PROC_STORE_BYTES = 16512
 PROC_HEAD_WORDS = 16
 PROC_TABLE_OFFSET = 128
-PROC_FX_OFFSET = 4224
+PROC_FX_OFFSET = 8320
 PROC_SLOT_BYTES = 512
 PROC_SLOT_WORDS = 64
 PROC_FX_BYTES = 512

@@ -574,7 +574,8 @@ ck; havere "^WM COMMIT W 1 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WI
 ck; havere "^WM COMMIT W 1 SEQ 00000002 DMG X $DMG_X Y $DMG_Y W $(printf '%04X' "$DMG_W") H $(printf '%04X' "$DMG_H")\$"
 # FOUR FRAMES, with the pixel counts derived on the host. Frame 1 is `wm on`
 # (the desktop). 2 and 3 are decorated windows. 4 is D6's 16x16.
-ck; havere "^WM FRAME N 00000001 PX $PX1 TOP $W_MAX CUR X 0000 Y 0000\$"
+# Frame 1 is `wm on` (desktop). TOP is the composed z-top, not wmMaxWindows.
+ck; havere "^WM FRAME N 00000001 PX $PX1 TOP 4 CUR X 0000 Y 0000\$"
 ck; havere "^WM FRAME N 00000002 PX $PX2 TOP 0 CUR X $CUR_X Y $CUR_Y\$"
 ck; havere "^WM FRAME N 00000003 PX $PX3 TOP 1 CUR X $CUR_X Y $CUR_Y\$"
 ck; havere "^WM FRAME N 00000004 PX $PX4 TOP 1 CUR X $CUR_X Y $CUR_Y\$"

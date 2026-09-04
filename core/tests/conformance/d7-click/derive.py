@@ -80,9 +80,10 @@ def main():
     if sysno != ksys:
         raise SystemExit("derive: prog.c SYS_WMEVENT is %d, kernel is %d"
                          % (sysno, ksys))
-    if kslots != wmax:
-        raise SystemExit("derive: wmeventSlots is %d, wmMaxWindows is %d"
-                         % (kslots, wmax))
+    # Event ring is not one slot per window. 8 deep is enough for D7's
+    # two overlapping clients; wmMaxWindows is the client table.
+    if kslots < 2:
+        raise SystemExit("derive: wmeventSlots is %d, D7 needs two" % kslots)
     if kstore != kslots * (4 + kdepth) * 8:
         raise SystemExit("derive: wmeventStoreBytes %d does not tile "
                          "%d slots of (4+%d) words" % (kstore, kslots, kdepth))
