@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "name": "oscortex-dcdart-toolchain",
+  "repo": "https://github.com/DotCorr/DCDart.git",
+  "base": "df3d05304531e0aadd315ec40d12f30fec6ee534",
+  "base_ref": "origin/main",
+  "base_reachable": true,
+  "unreachable": {
+    "legacy_pin": "02631a77",
+    "legacy_pin_reason": "rewritten out of the public DCDart repository; not a valid object locally or on GitHub",
+    "local_only": [
+      {
+        "sha": "8d53e381c7125aff8b0a4adfffdcaba639b2f5cf",
+        "note": "local cursor/volatile-support tip; not on GitHub (ls-remote empty); do not claim reachable"
+      },
+      {
+        "sha": "b07cec63a3a41c35a5fccc052c660739405c6130",
+        "note": "local compiler that already has this patch applied; DCDart push is 403; not on GitHub"
+      }
+    ]
+  },
+  "patches": [
+    {
+      "id": "0001-volatile-compiler-used",
+      "path": "toolchains/dcdart/patches/0001-volatile-compiler-used.patch",
+      "sha256": "a8b3aa8e341c2e953110f7c8c658f8f90b26f40830a4d1e5cc4fbead03d9d591",
+      "purpose": "Volatile<T> lowering (Pointer-or-Volatile) plus llvm.compiler.used so unused @rodata survives GlobalDCE"
+    }
+  ],
+  "expected_files": {
+    "core/backend/lib/llvm_emit.dart": "86f777695e3d376851ba3ecabc30739377f0019905c8e3108974b93596b50aa9",
+    "core/backend/test/rodata_emission_test.dart": "b0a6055310f490f28ddf23743ef1674b0cecda419080b6efad27d163a6fbae24",
+    "core/dcc-lower/lib/lower.dart": "f2fb3e8529c91d2a02b278d66139007302962900e8cb8cc9a144e946e4f2c8f3",
+    "core/runtime/dc-core-bare/prelude.dart": "d0b4c1af1a9974c0500289b8cc2b8148ddf7bcac0e1104ea199d17e8cf3913de"
+  },
+  "compat_probe": "core/scripts/verify-dcdart-compat.sh",
+  "identity": "df3d053+0001-volatile-compiler-used"
+}

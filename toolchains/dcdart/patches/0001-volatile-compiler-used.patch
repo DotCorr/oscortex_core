@@ -1,0 +1,101 @@
+diff --git a/core/backend/lib/llvm_emit.dart b/core/backend/lib/llvm_emit.dart
+index 75abcfe..ff7c233 100644
+--- a/core/backend/lib/llvm_emit.dart
++++ b/core/backend/lib/llvm_emit.dart
+@@ -228,6 +228,18 @@ String emitModule(
+       buffer.write(_emitGlobal(global, context: module.name));
+     }
+     buffer.writeln();
++    // Pin read-only globals against LLVM GlobalDCE. A one-byte @rodata
++    // table whose address is consumed after lowering has no IR use, and
++    // without llvm.compiler.used the unused probe (and kernel tables
++    // like argsStrSp) vanish from the object.
++    final used = <DCGlobal>[
++      for (final global in module.globals)
++        if (!global.isMutable) global,
++    ];
++    if (used.isNotEmpty) {
++      buffer.writeln(_emitCompilerUsed(used));
++      buffer.writeln();
++    }
+   }
+   if (needsHeap) {
+     buffer.write(_emitHeapGlobals(regionBytes, sizeClasses));
+@@ -1207,6 +1219,13 @@ String _emitGlobal(DCGlobal global, {required String context}) {
+   return buffer.toString();
+ }
+ 
++/// `@llvm.compiler.used` so unused `@rodata` survives `-O2` GlobalDCE.
++String _emitCompilerUsed(List<DCGlobal> used) {
++  final body = used.map((g) => 'ptr @${g.linkName}').join(', ');
++  return '@llvm.compiler.used = appending global [${used.length} x ptr] '
++      '[$body], section "llvm.metadata"';
++}
++
+ /// A [DCConstant] tree as LLVM constant-expression text.
+ String _emitConstant(DCConstant constant, {required String context}) {
+   switch (constant) {
+diff --git a/core/backend/test/rodata_emission_test.dart b/core/backend/test/rodata_emission_test.dart
+index 2dbccda..bfa50f0 100644
+--- a/core/backend/test/rodata_emission_test.dart
++++ b/core/backend/test/rodata_emission_test.dart
+@@ -45,6 +45,12 @@ void main() {
+     // may precede element 0. A length word or class pointer would silently
+     // shift every index rather than fail.
+     expect(ll, isNot(contains('i64 2, i64 4096')));
++    expect(
++      ll,
++      contains(
++        '@llvm.compiler.used = appending global [1 x ptr] [ptr @memmap], section "llvm.metadata"',
++      ),
++    );
+   });
+ 
+   test('narrower widths emit at their own width', () {
+diff --git a/core/dcc-lower/lib/lower.dart b/core/dcc-lower/lib/lower.dart
+index cfadd67..5ca4f2f 100644
+--- a/core/dcc-lower/lib/lower.dart
++++ b/core/dcc-lower/lib/lower.dart
+@@ -2969,7 +2969,8 @@ class _BareFunctionLowerer {
+       final enclosingClass = target.enclosingClass;
+ 
+       if (target.name.text == 'fromAddress' &&
+-          enclosingClass?.name == 'Pointer' &&
++          (enclosingClass?.name == 'Pointer' ||
++              enclosingClass?.name == 'Volatile') &&
+           target.enclosingLibrary.importUri == preludeUri) {
+         final pointeeType = _pointeeTypeFromTypeArgs(expr.arguments.types);
+         final address = _lowerExpression(expr.arguments.positional.single);
+@@ -4515,7 +4516,8 @@ class _BareFunctionLowerer {
+ 
+   bool _isPointerValueMember(Member member) =>
+       member.name.text == 'value' &&
+-      member.enclosingClass?.name == 'Pointer' &&
++      (member.enclosingClass?.name == 'Pointer' ||
++          member.enclosingClass?.name == 'Volatile') &&
+       member.enclosingLibrary.importUri == preludeUri;
+ 
+   DCType _pointeeTypeFromTypeArgs(List<DartType> typeArgs) {
+diff --git a/core/runtime/dc-core-bare/prelude.dart b/core/runtime/dc-core-bare/prelude.dart
+index 1829dd9..f1f7d50 100644
+--- a/core/runtime/dc-core-bare/prelude.dart
++++ b/core/runtime/dc-core-bare/prelude.dart
+@@ -854,6 +854,18 @@ class Pointer<T> {
+       throw UnimplementedError('dcc-lower substitutes real codegen for this');
+ }
+ 
++/// MMIO/side-effect pointer. dcc-lower emits volatile Load/Store operations
++/// for every `.value` access, so optimization cannot elide or reorder it.
++class Volatile<T> {
++  final u64 _address;
++  const Volatile.fromAddress(this._address);
++
++  T get value =>
++      throw UnimplementedError('dcc-lower substitutes volatile codegen');
++  set value(T v) =>
++      throw UnimplementedError('dcc-lower substitutes volatile codegen');
++}
++
+ /// Marks a class `@packed` (DCDART_SPEC.md §6): fields laid out sequentially
+ /// with no natural-alignment padding, matching a C `struct` compiled with
+ /// `#pragma pack(1)`/`__attribute__((packed))`. dcc-lower requires this

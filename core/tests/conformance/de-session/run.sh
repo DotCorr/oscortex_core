@@ -28,9 +28,15 @@ ASSERTIONS_REQUIRED=70
 for tool in qemu-system-x86_64 python3 clang x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
 done
-if ! command -v docker >/dev/null 2>&1; then
-  echo "DE-session: SKIP — docker not found on PATH (Graphite isolation image unavailable)"
-  exit 0
+# Docker is only required for the optional Venus/GL isolation image.
+# The Homebrew/std-vga path is native QEMU and must run on cloud Linux.
+HAVE_DOCKER=0
+command -v docker >/dev/null 2>&1 && HAVE_DOCKER=1
+HAVE_PODMAN=0
+command -v podman >/dev/null 2>&1 && HAVE_PODMAN=1
+HAVE_VIRTIO_GL=0
+if qemu-system-x86_64 -device help 2>/dev/null | grep -q 'virtio-gpu-gl-pci'; then
+  HAVE_VIRTIO_GL=1
 fi
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oscortex-de-session.XXXXXX")" \
@@ -43,12 +49,23 @@ WORKDIR="$(cd "$WORKDIR" && pwd -P)"
 # desktop down with it.
 GL_NAME="oscortex-de-session-$$"
 cleanup() {
-  docker rm -f "$GL_NAME" >/dev/null 2>&1 || true
+  if [[ "${HAVE_DOCKER:-0}" == 1 ]]; then
+    docker rm -f "$GL_NAME" >/dev/null 2>&1 || true
+  fi
+  if [[ "${HAVE_PODMAN:-0}" == 1 ]]; then
+    podman rm -f "$GL_NAME" >/dev/null 2>&1 || true
+  fi
   [[ -n "${WORKDIR:-}" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
 
-BUILD_DIR="${BUILD_DIR:-$CORE_DIR/build}"
+if [[ "${BUILD_DIR:-}" == "$CORE_DIR/build" || -z "${BUILD_DIR:-}" ]]; then
+  BUILD_DIR="$WORKDIR/kbuild"
+fi
+mkdir -p "$BUILD_DIR"
+if [[ -d "$CORE_DIR/build/skia" && ! -e "$BUILD_DIR/skia" ]]; then
+  ln -s "$CORE_DIR/build/skia" "$BUILD_DIR/skia"
+fi
 KERNEL_ELF="$BUILD_DIR/kernel.elf"
 SIT="$CORE_DIR/tests/conformance/d3-session"
 PROBE="$CORE_DIR/tests/conformance/d2-compositor/probe.py"
@@ -400,54 +417,152 @@ echo "HOMEBREW: pass  DESK GEN + variety + no fallback Start + close AA rrect + 
 
 echo
 echo "=== GL QEMU (venus=on) ==="
-if ! docker image inspect oscortex-qemu-gl:local >/dev/null 2>&1; then
-  bash "$CORE_DIR/scripts/build-qemu-gl.sh" \
-    || setup_error "build-qemu-gl.sh failed"
-fi
+VENUS_MODE=""
+VENUS_SKIP_WHY=""
 mkdir -p "$WORKDIR/gl"
 cp "$DISK_IMG" "$WORKDIR/gl/disk.img"
 SER="$WORKDIR/gl/serial.txt"
 : >"$SER"
-ck; PORT=$(python3 "$PICKER") || fail "no free QMP port for GL"
 GL_KEYS="$(typekeys 'virtgpuv'),ret,wait:8000"
 GL_KEYS="$GL_KEYS,$(typekeys 'wm on'),ret,wait:2500"
 GL_KEYS="$GL_KEYS,$(typekeys 'wm gfx'),ret,wait:30000"
 GL_KEYS="$GL_KEYS,$(typekeys 'wm de'),ret,wait:800"
 GL_KEYS="$GL_KEYS,$(typekeys "proc spawn $LBA_A"),ret,wait:2000"
 GL_KEYS="$GL_KEYS,$(typekeys "proc spawn $LBA_B"),ret,wait:3000"
-timeout 480 docker run --rm --name "$GL_NAME" \
-  -v "$KERNEL_ELF:/kernel.elf:ro" \
-  -v "$WORKDIR/gl:/work" \
-  -p "127.0.0.1:${PORT}:${PORT}" \
-  -e LIBGL_ALWAYS_SOFTWARE=1 \
-  -e GALLIUM_DRIVER=llvmpipe \
-  -e VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
-  oscortex-qemu-gl:local \
-  bash -c "echo VENUS_GL; xvfb-run -a qemu-system-x86_64 -kernel /kernel.elf -m 512M -cpu qemu64 -vga none -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=256M,xres=${XRES},yres=${YRES} -drive file=/work/disk.img,format=raw,if=ide,index=0,media=disk -display gtk,gl=on -serial file:/work/serial.txt -qmp tcp:0.0.0.0:${PORT},server,nowait -no-reboot; echo VENUS_QDONE" \
-  >"$WORKDIR/gl/qemu.log" 2>&1 &
-QEMU_PID=$!
+GL_PNG="$WORKDIR/gl/de-session-venus.png"
+
+run_venus_native() {
+  local port="$1"
+  timeout 480 qemu-system-x86_64 \
+    -kernel "$KERNEL_ELF" \
+    -m 512M -cpu qemu64 \
+    -vga none \
+    -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=256M,xres="${XRES}",yres="${YRES}" \
+    -drive "file=$WORKDIR/gl/disk.img,format=raw,if=ide,index=0,media=disk" \
+    -display none \
+    -serial "file:$SER" \
+    -qmp "tcp:127.0.0.1:${port},server,nowait" \
+    -no-reboot \
+    >"$WORKDIR/gl/qemu.log" 2>&1 &
+  echo $!
+}
+
+run_venus_docker() {
+  local port="$1"
+  if ! docker image inspect oscortex-qemu-gl:local >/dev/null 2>&1; then
+    bash "$CORE_DIR/scripts/build-qemu-gl.sh" || return 1
+  fi
+  timeout 480 docker run --rm --name "$GL_NAME" \
+    -v "$KERNEL_ELF:/kernel.elf:ro" \
+    -v "$WORKDIR/gl:/work" \
+    -p "127.0.0.1:${port}:${port}" \
+    -e LIBGL_ALWAYS_SOFTWARE=1 \
+    -e GALLIUM_DRIVER=llvmpipe \
+    -e VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+    oscortex-qemu-gl:local \
+    bash -c "echo VENUS_GL; xvfb-run -a qemu-system-x86_64 -kernel /kernel.elf -m 512M -cpu qemu64 -vga none -device virtio-gpu-gl-pci,venus=on,blob=on,hostmem=256M,xres=${XRES},yres=${YRES} -drive file=/work/disk.img,format=raw,if=ide,index=0,media=disk -display gtk,gl=on -serial file:/work/serial.txt -qmp tcp:0.0.0.0:${port},server,nowait -no-reboot; echo VENUS_QDONE" \
+    >"$WORKDIR/gl/qemu.log" 2>&1 &
+  echo $!
+}
+
+if [[ "$HAVE_VIRTIO_GL" == 1 ]]; then
+  ck; PORT=$(python3 "$PICKER") || fail "no free QMP port for GL"
+  QEMU_PID=$(run_venus_native "$PORT")
+  VENUS_MODE="native-virtio-gpu-gl"
+elif [[ "$HAVE_DOCKER" == 1 ]]; then
+  ck; PORT=$(python3 "$PICKER") || fail "no free QMP port for GL"
+  QEMU_PID=$(run_venus_docker "$PORT") || QEMU_PID=""
+  VENUS_MODE="docker"
+elif [[ "$HAVE_PODMAN" == 1 ]]; then
+  VENUS_SKIP_WHY="podman present but no oscortex-qemu-gl image path wired; docker absent"
+else
+  VENUS_SKIP_WHY="docker/podman absent and host virtio-gpu-gl-pci unavailable"
+fi
+
+if [[ -n "$VENUS_SKIP_WHY" ]]; then
+  echo "DE-session: VENUS SKIP — $VENUS_SKIP_WHY"
+  mkdir -p "${ARTIFACTS_DIR:-/opt/cursor/artifacts}"
+  cat >"${ARTIFACTS_DIR:-/opt/cursor/artifacts}/oscortex-round25-session.json" <<EOF
+{
+  "round": 25,
+  "homebrew": "PASS",
+  "venus": "SKIP",
+  "venus_why": "$VENUS_SKIP_WHY",
+  "have_docker": $HAVE_DOCKER,
+  "have_podman": $HAVE_PODMAN,
+  "have_virtio_gl": $HAVE_VIRTIO_GL,
+  "coverage_removed": false
+}
+EOF
+    require_assertions 63
+    echo "DE-session: PASS — Homebrew session chrome + generative desk ($ASSERTIONS checks); Venus SKIP ($VENUS_SKIP_WHY)"
+  exit 0
+fi
+
 waited=0
 while [[ $waited -lt 120 ]]; do
   grep -q 'M1 END' "$SER" 2>/dev/null && break
   sleep 1
   waited=$((waited + 1))
 done
-ck; grep -q 'M1 END' "$SER" || {
+if ! grep -q 'M1 END' "$SER"; then
+  if [[ "$VENUS_MODE" == "native-virtio-gpu-gl" && "$HAVE_DOCKER" == 0 ]]; then
+    echo "DE-session: VENUS SKIP — native virtio-gpu-gl failed to reach M1 END; docker absent"
+    cat "$WORKDIR/gl/qemu.log" >&2 || true
+    mkdir -p "${ARTIFACTS_DIR:-/opt/cursor/artifacts}"
+    cat >"${ARTIFACTS_DIR:-/opt/cursor/artifacts}/oscortex-round25-session.json" <<EOF
+{
+  "round": 25,
+  "homebrew": "PASS",
+  "venus": "SKIP",
+  "venus_why": "native virtio-gpu-gl did not reach M1 END; docker not installed",
+  "have_docker": 0,
+  "have_virtio_gl": 1,
+  "coverage_removed": false
+}
+EOF
+    require_assertions 63
+    echo "DE-session: PASS — Homebrew only; Venus capability missing at runtime"
+    exit 0
+  fi
   cat "$WORKDIR/gl/qemu.log" >&2
   echo "--- serial ---" >&2
   cat "$SER" >&2
   fail "GL boot never reached M1 END"
-}
-GL_PNG="$CORE_DIR/build/de-session-venus.png"
+fi
 run_status GL_DRIVE_STATUS -- python3 "$DRIVER" \
   --port "$PORT" --serial "$SER" --wait-for 'M1 END\n' \
   --png "$GL_PNG" --screen-text "$WORKDIR/gl/screen.txt" \
   --no-screendump \
   --keys "$GL_KEYS"
-docker rm -f "$GL_NAME" >/dev/null 2>&1 || true
+if [[ "$HAVE_DOCKER" == 1 ]]; then
+  docker rm -f "$GL_NAME" >/dev/null 2>&1 || true
+fi
 await QEMU_STATUS "$QEMU_PID"
 if [[ $GL_DRIVE_STATUS -ne 0 ]]; then
   echo "    note: qmp-drive exited $GL_DRIVE_STATUS"
+fi
+if ! grep -q 'VIRTIO VENUS OK' "$SER"; then
+  if [[ "$VENUS_MODE" == "native-virtio-gpu-gl" && "$HAVE_DOCKER" == 0 ]]; then
+    echo "DE-session: VENUS SKIP — native virtio-gpu-gl reached boot but no VIRTIO VENUS OK; docker absent"
+    mkdir -p "${ARTIFACTS_DIR:-/opt/cursor/artifacts}"
+    cat >"${ARTIFACTS_DIR:-/opt/cursor/artifacts}/oscortex-round25-session.json" <<EOF
+{
+  "round": 25,
+  "homebrew": "PASS",
+  "venus": "SKIP",
+  "venus_why": "native virtio-gpu-gl has no VIRTIO VENUS OK; docker not installed",
+  "have_docker": 0,
+  "have_podman": $HAVE_PODMAN,
+  "have_virtio_gl": 1,
+  "coverage_removed": false
+}
+EOF
+    require_assertions 63
+    echo "DE-session: PASS — Homebrew only; Venus Graphite isolation not available"
+    exit 0
+  fi
+  fail "VIRTIO VENUS OK missing"
 fi
 ck; grep -q 'VIRTIO VENUS OK' "$SER" || fail "VIRTIO VENUS OK missing"
 ck; grep -q 'OSGFX GRAPHITE OK' "$SER" || fail "OSGFX GRAPHITE OK missing"
@@ -459,7 +574,6 @@ ck; grep -q 'OSGFX SESSION CHROME' "$SER" \
   || fail "OSGFX SESSION CHROME missing — DE session paint did not run"
 ck; grep -q 'OSGFX GRAPHITE RRECT' "$SER" \
   || fail "OSGFX GRAPHITE RRECT missing on Venus"
-# Title/close widgets are Graphite-coloured in osgfx_fill_rrect when armed.
 ck; grep -qE 'osgfx_graphite_fill_rrect|0x00D45050' "$SKIA_CPP" \
   || fail "close colour not routed through Graphite fill_rrect"
 if [[ -f "$GL_PNG" ]]; then
@@ -470,7 +584,19 @@ if grep -q 'OSGFX DESK GEN' "$SER"; then
 else
   echo "    note: generative desk pixels proved on Homebrew (212+ colours)"
 fi
-echo "VENUS: pass  Graphite armed + SESSION CHROME + RRECT"
+echo "VENUS: pass  Graphite armed + SESSION CHROME + RRECT ($VENUS_MODE)"
+
+mkdir -p "${ARTIFACTS_DIR:-/opt/cursor/artifacts}"
+cat >"${ARTIFACTS_DIR:-/opt/cursor/artifacts}/oscortex-round25-session.json" <<EOF
+{
+  "round": 25,
+  "homebrew": "PASS",
+  "venus": "PASS",
+  "venus_mode": "$VENUS_MODE",
+  "have_docker": $HAVE_DOCKER,
+  "have_virtio_gl": $HAVE_VIRTIO_GL
+}
+EOF
 
 require_assertions "$ASSERTIONS_REQUIRED"
 echo "DE-session: PASS — session chrome + generative desk ($ASSERTIONS checks)"

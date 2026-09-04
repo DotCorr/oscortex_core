@@ -25,6 +25,10 @@ grep -q 'mbCmdHasM1Fault' "$MB" || fail "mbCmdHasM1Fault missing"
 grep -q 'm1fault' "$M1" || fail "m1-interrupts does not pass m1fault"
 grep -q 'menu_on = 0' "$FILES" || fail "FILES does not dismiss menu on configure"
 grep -q 'msg_menu_esc' "$FILES" || fail "FILES configure dismiss has no MENU ESC"
+grep -q 'FILES MENU ESC' "$FILES" || fail "FILES MENU ESC token missing"
+grep -q 'SCAN_ESC' "$FILES" || fail "FILES has no Escape scancode path"
+[[ -f "$CORE_DIR/scripts/prove-files-menu-esc.py" ]] \
+  || fail "live FILES MENU ESC prover missing"
 
 python3 - "$WMDE" "$WM" "$FILES" "$CHIP" "$MEAS" "$KMAIN" <<'PY' || fail "hold/menu source checks"
 import re, sys
@@ -58,6 +62,10 @@ if "wmPopHide" not in resize:
 
 if "menu_on = 0" not in files or "msg_menu_esc" not in files:
     raise SystemExit("FILES configure does not dismiss the row menu")
+if "SCAN_ESC" not in files or "files_on_key" not in files:
+    raise SystemExit("FILES Escape is not a client key path")
+if 'FILES MENU ESC\\n' not in files and 'FILES MENU ESC\n' not in files:
+    raise SystemExit("FILES MENU ESC token has no newline (vacuous serial match risk)")
 
 if "q.key" in chip[chip.find("def ensure_restored"):chip.find("\n    cycle")]:
     raise SystemExit("chip-scan still Esc-unsticks HOLD")
@@ -79,4 +87,9 @@ if "m2Enter" not in fn(kmain, "kmain"):
     raise SystemExit("production kmain does not continue at m2Enter")
 print("de-hold-menu static PASS")
 PY
+# Anti-vacuity: live prover must compare pixels, not only the serial token.
+grep -q 'region_diff' "$CORE_DIR/scripts/prove-files-menu-esc.py" \
+  || fail "ESC prover has no region_diff pixel restoration check"
+grep -q 'pixel_restore' "$CORE_DIR/scripts/prove-files-menu-esc.py" \
+  || fail "ESC prover does not record pixel_restore"
 echo "de-hold-menu: PASS"

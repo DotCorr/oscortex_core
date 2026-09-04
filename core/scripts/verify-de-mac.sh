@@ -78,23 +78,9 @@ HARNESS_NAMES=(
 )
 
 if [[ "$CHECK_ONLY" == 1 ]]; then
-  echo "verify-de-mac: static check (no build/QEMU)"
-  echo "verify-de-mac: pin $(awk '{print $1; exit}' "$PIN_FILE")"
-  for name in "${HARNESS_NAMES[@]}"; do
-    run="$CORE_DIR/tests/conformance/$name/run.sh"
-    if [[ -f "$run" ]]; then
-      printf '  harness %-18s FOUND\n' "$name"
-    else
-      printf '  harness %-18s absent (runtime skip)\n' "$name"
-    fi
-  done
-  python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' \
-    "$QMP_HELPER" \
-    || { echo "verify-de-mac: FAIL — QMP helper does not parse" >&2; exit 1; }
-  bash -n "$COMPAT_PROBE" \
-    || { echo "verify-de-mac: FAIL — DCDart compatibility probe does not parse" >&2; exit 1; }
-  echo "verify-de-mac: CHECK PASS"
-  exit 0
+  echo "verify-de-mac: delegating static/neutral checks to verify-de-neutral.sh"
+  bash "$SCRIPT_DIR/verify-de-neutral.sh" --check
+  exit $?
 fi
 
 [[ "$(uname -s)" == "Darwin" ]] || {
@@ -112,7 +98,7 @@ else
 fi
 
 PIN_WANT="$(awk '{print $1; exit}' "$PIN_FILE")"
-[[ "$PIN_WANT" =~ ^[0-9a-fA-F]{7,40}$ ]] || {
+[[ "$PIN_WANT" =~ ^[0-9a-fA-F]{7,40}(\+[A-Za-z0-9._-]+)?$ ]] || {
   echo "verify-de-mac: FAIL — invalid pin in $PIN_FILE: $PIN_WANT" >&2
   exit 2
 }

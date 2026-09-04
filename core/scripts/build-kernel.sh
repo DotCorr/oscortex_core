@@ -62,10 +62,15 @@ command -v dart >/dev/null 2>&1 || setup_error "dart not found on PATH (source e
 #
 # A mismatch is a warning by default.  With OSCORTEX_REQUIRE_PIN=1, every
 # checkout must pass verify-dcdart-compat.sh, which compiles and inspects the
-# load-bearing Volatile, @rodata/GlobalDCE and no-FP semantics.  Git identity is
-# still printed for provenance, but cannot be the gate: 02631a77 was rewritten
-# out of the public DCDart repository, and rejecting a Mac's surviving
-# compatible checkout by identity would make the pin a permanent deadlock.
+# load-bearing Volatile, @rodata/GlobalDCE and no-FP semantics.
+#
+# DCDART_PIN.txt is a base+patch identity (see DCDART_MANIFEST.json).
+# The public DCDart tip is df3d053 (origin/main). 02631a77 was rewritten
+# out of GitHub and is not a valid object. 8d53e38 / b07cec6 exist only
+# as local tips and must not be claimed reachable. Bootstrap:
+#   bash core/scripts/bootstrap-dcdart.sh
+# writes a repo-owned .dcdart-bootstrap/src and never mutates a user
+# DCDart checkout.
 DCDART_DESC="(not a git checkout)"
 DCDART_FULL=""
 DCDART_DIRTY=""
@@ -77,18 +82,29 @@ if command -v git >/dev/null 2>&1 && git -C "$DCDART_HOME" rev-parse --git-dir >
   fi
 fi
 PIN_FILE="$REPO_DIR/DCDART_PIN.txt"
+MANIFEST="$REPO_DIR/DCDART_MANIFEST.json"
 PIN_WANT="(no DCDART_PIN.txt)"
 [[ -f "$PIN_FILE" ]] && PIN_WANT="$(awk '{print $1; exit}' "$PIN_FILE")"
-echo "build-kernel: toolchain $DCDART_HOME @ ${DCDART_DESC}${DCDART_DIRTY}; DCDART_PIN.txt says $PIN_WANT"
+BOOT_ID=""
+[[ -f "$DCDART_HOME/.oscortex-dcdart-identity" ]] && \
+  BOOT_ID="$(tr -d '[:space:]' <"$DCDART_HOME/.oscortex-dcdart-identity")"
+echo "build-kernel: toolchain $DCDART_HOME @ ${DCDART_DESC}${DCDART_DIRTY}; DCDART_PIN.txt says $PIN_WANT${BOOT_ID:+; bootstrap $BOOT_ID}"
 # Compare the FULL hash against the pin as a prefix, not the abbreviated one.
 # `rev-parse --short` picks its own length, so a pin recorded at eight characters
 # against a seven-character abbreviation compared unequal and warned on a
 # correctly pinned tree -- a guard that cries wolf exactly when it is satisfied
 # gets ignored, which is the failure mode this whole check exists to remove.
-if [[ -n "$DCDART_FULL" && "$DCDART_FULL" != "$PIN_WANT"* && "$PIN_WANT" != "(no DCDART_PIN.txt)" ]]; then
-  echo "build-kernel: WARNING — the toolchain is NOT the pinned commit. This kernel is being built" >&2
-  echo "              against $DCDART_DESC and DCDART_PIN.txt claims $PIN_WANT. Either bump the pin" >&2
-  echo "              deliberately after a green sweep, or point DCDART_HOME at the pinned commit." >&2
+PIN_OK=0
+if [[ -n "$BOOT_ID" && "$BOOT_ID" == "$PIN_WANT" ]]; then
+  PIN_OK=1
+fi
+if [[ -n "$DCDART_FULL" && "$DCDART_FULL" == "$PIN_WANT"* ]]; then
+  PIN_OK=1
+fi
+if [[ "$PIN_OK" -eq 0 && -n "$DCDART_FULL" && "$PIN_WANT" != "(no DCDART_PIN.txt)" ]]; then
+  echo "build-kernel: WARNING — toolchain git $DCDART_DESC is not pin $PIN_WANT." >&2
+  echo "              Use bash core/scripts/bootstrap-dcdart.sh for the reachable" >&2
+  echo "              base+patch, or point DCDART_HOME at that tree." >&2
 fi
 if [[ -n "$DCDART_DIRTY" ]]; then
   echo "build-kernel: WARNING — the toolchain working tree is DIRTY, so '$DCDART_DESC' does not identify it." >&2

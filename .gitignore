@@ -1,6 +1,9 @@
 # Build artifacts
 build/
 
+# Repo-owned DCDart bootstrap (base+patch). Never a user checkout.
+.dcdart-bootstrap/
+
 # Third-party source fetched by core/user/ports/*/fetch.sh. Never vendored;
 # see core/user/ports/libdrm/README.md.
 .ports/
