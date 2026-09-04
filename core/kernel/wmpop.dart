@@ -169,6 +169,7 @@ final List<u8> wmStrPopRaise = const [
 const int wmPopWall = 1;
 const int wmPopWin = 4;
 const int wmPopDock = 5;
+const int wmPopSwitch = 6;
 
 /// `'WM WALL REGEN '` -- 14 bytes.
 @rodata

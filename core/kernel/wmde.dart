@@ -93,10 +93,15 @@ const int wmSlot0Color = 0x00586878;
 
 const int wmSlot1Color = 0x00485868;
 
-/// Start / spotlight popover.
-const int wmLaunchW = 160;
+/// Start / spotlight popover. Edge-safe rounded overlay (Round 33).
+const int wmLaunchW = 420;
 
-const int wmLaunchH = 128;
+const int wmLaunchH = 220;
+
+/// Alt-Tab switcher card. Same AABB as the DESK overlay.
+const int wmSwitchW = 420;
+
+const int wmSwitchH = 220;
 
 const int wmLaunchColor = 0x00C86828;
 
@@ -212,6 +217,20 @@ final List<u8> wmStrDeSetOn = const [
 final List<u8> wmStrPrefName = const [
   u8(0x43), u8(0x48), u8(0x52), u8(0x4F), u8(0x4D), u8(0x45), u8(0x20),
   u8(0x20), u8(0x44), u8(0x41), u8(0x54),
+];
+
+/// `'CHROME.DAT'` -- 10 bytes. fatParseAt path form.
+@rodata
+final List<u8> wmStrPrefPath = const [
+  u8(0x43), u8(0x48), u8(0x52), u8(0x4F), u8(0x4D), u8(0x45), u8(0x2E),
+  u8(0x44), u8(0x41), u8(0x54),
+];
+
+/// `'WM PREF '` -- 8 bytes.
+@rodata
+final List<u8> wmStrPref = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x50), u8(0x52), u8(0x45), u8(0x46),
+  u8(0x20),
 ];
 
 /// `'WM CLOSE W '` -- 11 bytes.
@@ -1541,16 +1560,32 @@ u64 wmChromePixel(u64 x, u64 y) {
   return u64(wmChromeColor);
 }
 
-/// Launch-popover origin X (flush left, above the strip).
+/// Launch-popover origin X (centred, edge-safe).
 @bare
 u64 wmLaunchX() {
-  return u64(0);
+  final u64 sw = fbGeomWidth();
+  if (sw <= u64(wmLaunchW)) {
+    return u64(8);
+  }
+  u64 x = (sw - u64(wmLaunchW)) >> u64(1);
+  if ((x + u64(wmLaunchW) + u64(8)) > sw) {
+    x = sw - u64(wmLaunchW) - u64(8);
+  }
+  if (x < u64(8)) {
+    x = u64(8);
+  }
+  return x;
 }
 
-/// Launch-popover origin Y.
+/// Launch-popover origin Y (above the dock, edge-safe).
 @bare
 u64 wmLaunchY() {
-  return fbGeomHeight() - u64(wmChromeH) - u64(wmLaunchH);
+  final u64 sh = fbGeomHeight();
+  u64 y = sh - u64(wmChromeH) - u64(wmLaunchH) - u64(8);
+  if (y < u64(8)) {
+    y = u64(8);
+  }
+  return y;
 }
 
 /// Panel origin X (flush right, above the strip).
@@ -1621,6 +1656,11 @@ void wmDePopHide() {
     wmSetMeta(u64(wmMetaPop), u64(0));
     wmPopDamageRestore(
         wmPanelX(), wmPanelY(), u64(wmPanelW), u64(wmPanelH));
+  }
+  if (k == u64(wmPopSwitch)) {
+    wmSetMeta(u64(wmMetaPop), u64(0));
+    wmPopDamageRestore(wmSwitchX(), wmSwitchY(), u64(wmSwitchW),
+        u64(wmSwitchH));
   }
 }
 
@@ -1923,6 +1963,55 @@ u64 wmDePrefFind() {
   return u64(0);
 }
 
+/// Load CHROME.DAT bytes 0..3 into the page pref word and apply wall.
+@bare
+void wmDePrefLoad() {
+  final u64 pn = fatParseAt(Rodata.addressOf(wmStrPrefPath), u64(10));
+  if (pn > u64(fatErrOk)) {
+    return;
+  }
+  final u64 st = fatLookup();
+  if (st > u64(fatErrOk)) {
+    return;
+  }
+  if (fatFileBytes() < u64(1)) {
+    return;
+  }
+  final u64 lba = fatFileSector(u64(0));
+  if (lba < u64(1)) {
+    return;
+  }
+  if (fatReadCached(lba) > u64(0)) {
+    return;
+  }
+  final u64 base = fatSectorBase();
+  final u64 chrome = fatU8(base);
+  final u64 theme = fatU8(base + u64(1));
+  final u64 accent = fatU8(base + u64(2));
+  final u64 wall = fatU8(base + u64(3));
+  u64 prev = u64(0);
+  if (wmPageAddr() > u64(0)) {
+    prev = wmPage(u64(wmPageWPref)) & u64(0x00FFFFFF);
+  }
+  wmPrefNote(theme, accent, wall);
+  if (chrome > u64(0)) {
+    if (wmDePrefOn() < u64(1)) {
+      wmSetMeta(u64(wmMetaChrome),
+          wmMeta(u64(wmMetaChrome)) | u64(wmDePrefMask));
+    }
+  }
+  final u64 now = (theme & u64(0xFF)) | ((accent & u64(0xFF)) << u64(8)) |
+      ((wall & u64(0xFF)) << u64(16));
+  if (now != prev) {
+    uartWrite(Rodata.addressOf(wmStrPref), u64(8));
+    uartPutHex(now, u64(6));
+    uartNewline();
+    if (wall > u64(0)) {
+      wmWallSetDesk(u64(0xA11E0001) + wall, wall & u64(3));
+    }
+  }
+}
+
 /// If the pref file is new, set bit 4, print `WM DE SET ON`, and
 /// paint the notify strip. Gated on `wm de` so a local-only boot
 /// (de-set) does not turn chrome on. Called from commit as well as
@@ -1932,20 +2021,20 @@ void wmDePrefApply() {
   if (wmDeOn() < u64(1)) {
     return;
   }
-  if (wmDePrefOn() > u64(0)) {
-    return;
-  }
   if (wmDePrefFind() < u64(1)) {
     return;
   }
-  wmSetMeta(u64(wmMetaChrome),
-      wmMeta(u64(wmMetaChrome)) | u64(wmDePrefMask));
-  uartWrite(Rodata.addressOf(wmStrDeSetOn), u64(12));
-  uartNewline();
-  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
-    wmFillRect(wmNoteX(), wmStartY(), u64(wmNoteW), u64(wmChromeH),
-        u64(wmDeSetColor));
+  if (wmDePrefOn() < u64(1)) {
+    wmSetMeta(u64(wmMetaChrome),
+        wmMeta(u64(wmMetaChrome)) | u64(wmDePrefMask));
+    uartWrite(Rodata.addressOf(wmStrDeSetOn), u64(12));
+    uartNewline();
+    if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+      wmFillRect(wmNoteX(), wmStartY(), u64(wmNoteW), u64(wmChromeH),
+          u64(wmDeSetColor));
+    }
   }
+  wmDePrefLoad();
 }
 
 /// Walks the FAT root and caches up to [wmDeLaunchMax] ELF directory
@@ -2028,11 +2117,15 @@ void wmDeStartShow() {
       wmDePopHide();
     }
   }
+  wmLaunchReset();
   wmSetMeta(u64(wmMetaPop), u64(wmPopLaunch));
   wmSetMeta(u64(wmMetaPopXY),
-      (u64(8) << u64(32)) | wmLaunchY());
+      (wmLaunchX() << u64(32)) | wmLaunchY());
   final u64 n = wmDeLaunchN();
   uartWrite(Rodata.addressOf(wmStrDeStart), u64(12));
+  uartPutHex(n, u64(2));
+  uartNewline();
+  uartWrite(Rodata.addressOf(wmStrLaunchShow), u64(15));
   uartPutHex(n, u64(2));
   uartNewline();
   if (wmPanelStrip() < u64(1)) {
@@ -2155,6 +2248,7 @@ void wmCloseWindow(u64 wI) {
   if (wmMeta(u64(wmMetaFocus)) == (wI + u64(1))) {
     wmSetMeta(u64(wmMetaFocus), u64(0));
   }
+  wmMruDrop(wI);
   uartWrite(Rodata.addressOf(wmStrClose), u64(11));
   uartPutHex(wI, u64(1));
   uartWrite(Rodata.addressOf(wmStrPid), u64(5));
@@ -2863,11 +2957,18 @@ u64 wmDeGrab(u64 x, u64 y) {
   final u64 k = wmMeta(u64(wmMetaPop));
   if (k == u64(wmPopLaunch)) {
     if (wmLaunchHit(x, y) > u64(0)) {
-      final u64 row = wmDeRowAt(y, wmLaunchY());
+      final u64 row = wmLaunchRowAt(y);
       wmDePopHide();
-      if (row < wmDeLaunchN()) {
-        wmDeSpawnRow(row);
+      if (row < wmLaunchFiltN()) {
+        wmDeSpawnRow(wmLaunchFiltAt(row));
       }
+      return u64(1);
+    }
+    wmDePopHide();
+  }
+  if (k == u64(wmPopSwitch)) {
+    if (wmSwitchHit(x, y) > u64(0)) {
+      wmSwitchCommit();
       return u64(1);
     }
     wmDePopHide();

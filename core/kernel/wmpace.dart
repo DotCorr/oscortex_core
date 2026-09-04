@@ -352,6 +352,16 @@ const int wmPageWOpY = 497;
 const int wmPageWOpW = 498;
 const int wmPageWOpH = 499;
 const int wmPageWOpHave = 500;
+/// Packed ASCII typeahead (up to 8 bytes). No new .bss.
+const int wmPageWLaunchQ = 501;
+/// sel:8 | filtN:8 | qlen:8 | gen:8.
+const int wmPageWLaunchSel = 502;
+/// MRU of ordinary clients, most-recent in the low byte.
+const int wmPageWMru = 503;
+/// switch sel:8 | n:8 | alt:8 | super:8.
+const int wmPageWSwitch = 504;
+/// SET theme:8 | accent:8 | wall:8 | gen:8. Survives app close.
+const int wmPageWPref = 505;
 const int wmOpKindPtr = 1;
 const int wmOpKindDrag = 2;
 const int wmOpKindBody = 3;

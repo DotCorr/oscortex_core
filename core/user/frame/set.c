@@ -48,7 +48,7 @@ typedef unsigned int u32;
 
 #define YIELD_SPIN 8000UL
 #define O_WRITE 1UL
-#define PREF_BYTES 1UL
+#define PREF_BYTES 4UL
 #define FILE_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
 
 #define PAGE_APPEAR 0UL
@@ -95,6 +95,9 @@ static u64 fact_chrome_on;
 static const char path_facts[] = "FACTS.DAT";
 static const char path_pref[] = "CHROME.DAT";
 static const char msg_ready[] = "SET READY\n";
+static const char msg_theme[] = "SET THEME ";
+static const char msg_accent[] = "SET ACCENT ";
+static const char msg_wall[] = "SET WALL ";
 static const char msg_miss[] = "SET MISS\n";
 static const char msg_bad[] = "SET BAD\n";
 static const char msg_row[] = "SET LABEL OUTLINE ADV ";
@@ -108,6 +111,9 @@ static u64 set_slot = 0xFFUL;
 static const char lab_on[] = "ON";
 static const char lab_off[] = "OFF";
 static unsigned char pref_on = 1;
+static unsigned char pref_theme = 0;
+static unsigned char pref_accent = 0;
+static unsigned char pref_wall = 0;
 
 static u64 lab_adv;
 static u64 theme_sel;
@@ -139,6 +145,29 @@ static u64 load_u16(const unsigned char *p) {
 }
 
 static u32 xor4(u32 a, u32 b, u32 c, u32 d) { return a ^ b ^ c ^ d; }
+
+static u32 theme_fill(void) {
+  if (pref_theme == 1) {
+    return 0x00D8DEE6UL;
+  }
+  if (pref_theme == 2) {
+    return 0x00F4E8D8UL;
+  }
+  return (u32)SURF_FILL;
+}
+
+static u32 theme_accent(void) {
+  if (pref_accent == 1) {
+    return 0x004080E0UL;
+  }
+  if (pref_accent == 2) {
+    return 0x008060C0UL;
+  }
+  if (pref_accent == 3) {
+    return 0x0040C060UL;
+  }
+  return (u32)ACCENT_SEL;
+}
 
 static u32 chrome_swatch(u64 on) {
   if (on > 0) {
@@ -188,7 +217,7 @@ static u32 pixel_of(u64 px, u64 py, u64 on) {
       }
     }
   }
-  return (u32)SURF_FILL;
+  return theme_fill();
 }
 
 static void fill_cpu(u64 va, u64 x, u64 y, u64 w, u64 h, u32 rgb) {
@@ -253,7 +282,7 @@ static void paint_appear_chrome(u64 on) {
     tx = SIDE_W + 12UL + (i % cols) * 96UL;
     ty = OSXUI_CSD_H + 52UL + (i / cols) * rh;
     osxui_app_card(shm_h, tx, ty, 88UL, ch, (i == theme_sel) ? 1UL : 0UL,
-                   THEME_CARD, SIDE_SEL);
+                   THEME_CARD, theme_accent());
     osxui_app_rrect(shm_h, tx + 10UL, ty + 12UL, 8UL, 8UL, 4UL, 0x00E07070UL);
     osxui_app_rrect(shm_h, tx + 24UL, ty + 12UL, 8UL, 8UL, 4UL, 0x00E0C040UL);
     osxui_app_rrect(shm_h, tx + 38UL, ty + 12UL, 8UL, 8UL, 4UL, ACCENT_SEL);
@@ -452,13 +481,47 @@ static void emit_toggle(u64 on) {
   emit(n);
 }
 
+static unsigned char pref_blob[4];
+
 static void write_pref(void) {
-  u64 fd = sys3(SYS_OPEN, (u64)path_pref, 10, O_WRITE);
+  u64 fd;
+  pref_blob[0] = pref_on;
+  pref_blob[1] = pref_theme;
+  pref_blob[2] = pref_accent;
+  pref_blob[3] = pref_wall;
+  fd = sys3(SYS_OPEN, (u64)path_pref, 10, O_WRITE);
   if (fd >= FILE_ERR_FLOOR) {
     return;
   }
-  sys3(SYS_FDWRITE, fd, (u64)&pref_on, PREF_BYTES);
+  sys3(SYS_FDWRITE, fd, (u64)pref_blob, PREF_BYTES);
   sys1(SYS_CLOSE, fd);
+}
+
+static void load_pref(void) {
+  u64 fd = sys2(SYS_OPEN, (u64)path_pref, 10);
+  u64 got;
+  if (fd >= FILE_ERR_FLOOR) {
+    return;
+  }
+  got = sys3(SYS_READ, fd, (u64)pref_blob, PREF_BYTES);
+  sys1(SYS_CLOSE, fd);
+  if (got < 1) {
+    return;
+  }
+  pref_on = pref_blob[0];
+  if (got > 1) {
+    pref_theme = pref_blob[1];
+  }
+  if (got > 2) {
+    pref_accent = pref_blob[2];
+  }
+  if (got > 3) {
+    pref_wall = pref_blob[3];
+  }
+  theme_sel = (u64)pref_theme;
+  if (pref_on > 0) {
+    armed = 1;
+  }
 }
 
 static void flip(void) {
@@ -519,11 +582,35 @@ static u64 press_in_theme(u64 ev) {
         if (ry >= ty) {
           if (ry < (ty + appear_card_h())) {
             theme_sel = i;
+            if (i < 3UL) {
+              pref_theme = (unsigned char)i;
+            } else if (i < 5UL) {
+              pref_accent = (unsigned char)(i - 2UL);
+            } else {
+              pref_wall = (unsigned char)(i - 4UL);
+            }
+            write_pref();
             paint_all(pix_va, armed);
             commit_rect(0, 0, set_w, set_h, 6);
             {
               unsigned at = put(0, "SET CARD ");
               at = puthex(at, i, 1);
+              line[at++] = '\n';
+              emit(at);
+            }
+            if (i < 3UL) {
+              unsigned at = put(0, msg_theme);
+              at = puthex(at, (u64)pref_theme, 1);
+              line[at++] = '\n';
+              emit(at);
+            } else if (i < 5UL) {
+              unsigned at = put(0, msg_accent);
+              at = puthex(at, (u64)pref_accent, 1);
+              line[at++] = '\n';
+              emit(at);
+            } else {
+              unsigned at = put(0, msg_wall);
+              at = puthex(at, (u64)pref_wall, 1);
               line[at++] = '\n';
               emit(at);
             }
@@ -689,6 +776,21 @@ void _start(void) {
   }
 
   emit_facts();
+  load_pref();
+  {
+    unsigned at = put(0, msg_theme);
+    at = puthex(at, (u64)pref_theme, 1);
+    line[at++] = '\n';
+    emit(at);
+    at = put(0, msg_accent);
+    at = puthex(at, (u64)pref_accent, 1);
+    line[at++] = '\n';
+    emit(at);
+    at = put(0, msg_wall);
+    at = puthex(at, (u64)pref_wall, 1);
+    line[at++] = '\n';
+    emit(at);
+  }
 
   shm_h = sys1(SYS_SHMCREATE, WIN_PAGES);
   if (shm_h >= WM_RET_FLOOR) {

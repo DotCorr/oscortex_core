@@ -364,6 +364,73 @@ static inline unsigned long osxui_app_launch(unsigned long i) {
   return r;
 }
 
+static inline unsigned long osxui_app_launch_q(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_LAUNCH_Q;
+  osxui_app_desc[OSXUI_APP_XY] = 0;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
+static inline unsigned long osxui_app_launch_sel(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_LAUNCH_SEL;
+  osxui_app_desc[OSXUI_APP_XY] = 0;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
+static inline unsigned long osxui_app_pref(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_PREF;
+  osxui_app_desc[OSXUI_APP_XY] = 0;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
+static inline unsigned long osxui_app_switch_at(unsigned long vis) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_SWITCH;
+  osxui_app_desc[OSXUI_APP_XY] = vis;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0xFFUL;
+  }
+  return r;
+}
+
+static inline unsigned long osxui_app_clip(unsigned long op, unsigned long h,
+                                           unsigned long len) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = op;
+  osxui_app_desc[WM_DESC_HANDLE] = h;
+  osxui_app_desc[OSXUI_APP_KIND] = len;
+  osxui_app_desc[OSXUI_APP_XY] = 0;
+  osxui_app_desc[OSXUI_APP_SHAPE] = 0;
+  osxui_app_desc[OSXUI_APP_N] = 0;
+  osxui_app_desc[OSXUI_APP_C0] = 0;
+  osxui_app_desc[OSXUI_APP_C1] = 0;
+  r = osxui_app_call();
+  return r;
+}
+
 static inline void osxui_app_move(unsigned long h, unsigned long x,
                                   unsigned long y) {
   osxui_app_desc[WM_DESC_OP] = WM_OP_MOVE;

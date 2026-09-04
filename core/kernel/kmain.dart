@@ -150,6 +150,10 @@ part 'wmchrome.dart';
 // the launch-index cache live in the existing chrome word. Not last.
 part 'wmde.dart';
 
+// Round 33. Launcher typeahead, Alt-Tab switcher, DE shortcuts.
+// No `@bss` — query/MRU/pref live in the existing wmpage words.
+part 'wmprod.dart';
+
 // ADR-0070. Right-click popover. No `@bss` -- visibility and origin live
 // in spare wmStore words 21 and 22. Not last: D7 owns that.
 part 'wmpop.dart';

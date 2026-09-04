@@ -791,6 +791,7 @@ void wmFocusTo(u64 wI) {
   }
   wmLatStamp(u64(wmLatKindFocus));
   wmSeatFocusSet(u64(0), wI);
+  wmMruTouch(wI);
   /* Ring colour is a C-side cache patch. Kick so focus_only runs, then
    * dirty only title/border — not a 1280×720 session tick. */
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
@@ -2757,8 +2758,9 @@ u64 wmDecoY(u64 wI) {
 }
 
 /// DESK menu card size — lockstep with desk.c MENU_W / MENU_H (ADR-0195).
-const int wmOverlayW = 160;
-const int wmOverlayH = 88;
+/// Round 33: one overlay covers launcher (420×220) and switcher.
+const int wmOverlayW = 420;
+const int wmOverlayH = 220;
 
 /// `'WM OVERLAY CLEAR'` -- 16 bytes.
 @rodata
@@ -2806,7 +2808,7 @@ void wmOverlayRestore() {
   }
 }
 
-/// 1 for DESK's 160×88 menu overlay (ADR-0195 / ADR-0196).
+/// 1 for DESK's menu overlay (ADR-0195 / ADR-0196).
 @bare
 u64 wmIsOverlay(u64 wI) {
   if (wmIsPanel(wI) > u64(0)) {

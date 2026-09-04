@@ -109,6 +109,9 @@
  * ------------------------------------------------------------------------- */
 #define WM_OP_ATTACH 1UL
 #define WM_OP_COMMIT 2UL
+#define WM_OP_OFFER 3UL
+#define WM_OP_TAKE 4UL
+#define WM_CLIP_MAX 4096UL
 
 /* ADR-0192. SCREEN answers `(w << 32) | h` for the LIVE scanout, so a client
  * stops having to freeze 800x600 into itself. PAINT hands one osgfx.h draw --
@@ -132,6 +135,10 @@
 #define WM_SCREEN_LAUNCH 4UL
 #define WM_SCREEN_DESK_KEY 5UL
 #define WM_SCREEN_TASKS_HI 6UL
+#define WM_SCREEN_LAUNCH_Q 7UL
+#define WM_SCREEN_LAUNCH_SEL 8UL
+#define WM_SCREEN_PREF 9UL
+#define WM_SCREEN_SWITCH 10UL
 #define WM_TASK_LIVE 0x80UL
 #define WM_TASK_PANEL 0x40UL
 #define WM_TASK_FOCUS 0x20UL

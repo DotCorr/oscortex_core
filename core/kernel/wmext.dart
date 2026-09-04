@@ -794,6 +794,35 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     userSetFrame(frame, u64(userFrameRax), packed);
     return;
   }
+  if (kind == u64(7)) {
+    if (wmPageAddr() < u64(1)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWLaunchQ)));
+    return;
+  }
+  if (kind == u64(8)) {
+    if (wmPageAddr() < u64(1)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWLaunchSel)));
+    return;
+  }
+  if (kind == u64(9)) {
+    if (wmPageAddr() < u64(1)) {
+      userSetFrame(frame, u64(userFrameRax), u64(0));
+      return;
+    }
+    userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWPref)));
+    return;
+  }
+  if (kind == u64(10)) {
+    userSetFrame(frame, u64(userFrameRax),
+        wmSwitchAt(wmDesc(ptr, u64(wmDescY))));
+    return;
+  }
   userSetFrame(frame, u64(userFrameRax), u64(0));
 }
 

@@ -279,6 +279,14 @@ void kbdHandle() {
     pref = pref & u64(0xFFFFFFFFFFFFFFFB);
     kbdSetPrefix(pref);
   }
+  if (scancode == u8(0x38)) {
+    pref = pref | u64(wmKbdBitAlt);
+    kbdSetPrefix(pref);
+  }
+  if (scancode == u8(0xB8)) {
+    pref = pref & u64(0xFFFFFFFFFFFFFFF7);
+    kbdSetPrefix(pref);
+  }
   u64 ext = u64(0);
   if ((pref & u64(1)) > u64(0)) {
     kbdSetPrefix(pref & u64(0xFFFFFFFFFFFFFFFE));
@@ -291,9 +299,17 @@ void kbdHandle() {
   }
   ev = ev | ext;
   if ((ev & u64(kbdqBitBreak)) < u64(1)) {
-    if (ext < u64(1)) {
-      if ((ev & u64(0xFF)) == u64(0x0F)) {
-        if (wmDeOn() > u64(0)) {
+    if ((ev & u64(0xFF)) == u64(0x0F)) {
+      if (wmDeOn() > u64(0)) {
+        if ((kbdPrefix() & u64(wmKbdBitAlt)) > u64(0)) {
+          wmSwitchCycle();
+          return;
+        }
+        if (wmPopKind() == u64(wmPopLaunch)) {
+          kbdqPush(ev);
+          return;
+        }
+        if (wmFocusLive() < u64(1)) {
           u64 back = u64(0);
           if ((kbdPrefix() & u64(6)) > u64(0)) {
             back = u64(1);
@@ -301,6 +317,14 @@ void kbdHandle() {
           wmFocusCycle(back);
           return;
         }
+      }
+    }
+  }
+  if ((ev & u64(kbdqBitBreak)) > u64(0)) {
+    if ((ev & u64(0xFF)) == u64(0x38)) {
+      if (wmPopKind() == u64(wmPopSwitch)) {
+        wmSwitchCommit();
+        return;
       }
     }
   }

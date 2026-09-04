@@ -66,9 +66,14 @@ typedef unsigned int u32;
 /* The pixels one poll of the window table costs when nothing changed: none.
  * A repaint only happens when the table or the scanout rect moves. */
 #define YIELD_SPIN 8000UL
-#define MENU_W 160UL
-#define MENU_H 88UL
-#define MENU_PAGES 14UL
+#define MENU_W 420UL
+#define MENU_H 220UL
+#define MENU_PAGES 91UL
+#define LAUNCH_SEARCH_H 36UL
+#define LAUNCH_ROW_H 24UL
+#define SWITCH_CARD_W 56UL
+#define SWITCH_CARD_H 72UL
+#define SWITCH_PAD 12UL
 
 /* osxui_button_fb's in-ELF retest (ADR-0192 §5). Linked for real now:
  * osxui.c + osxui_fb.c, not the weak no-op in osgfx_glyph.c. */
@@ -91,6 +96,8 @@ static u64 last_tasks;
 static u64 last_tasks_hi;
 static u64 last_screen;
 static u64 last_pop;
+static u64 last_launch_sel;
+static u64 last_pref;
 static u64 seq;
 static u64 menu_h;
 static u64 menu_va;
@@ -115,6 +122,9 @@ static char slot_stem[9];
 #define SLOT_Y (ISLAND_Y + 6UL)
 #define SLOT_FILL 0x00E4ECF4UL
 #define SLOT_FOCUS 0x00B8C8D8UL
+#define SLOT_FOCUS_A1 0x00A0C8F0UL
+#define SLOT_FOCUS_A2 0x00C8B0E0UL
+#define SLOT_FOCUS_A3 0x00C0D890UL
 static char name_set[] = "SET.ELF";
 static char name_files[] = "FILES.ELF";
 static char name_web[] = "BROWSE.ELF";
@@ -366,6 +376,8 @@ static void paint_frost_islands(u64 wall_key) {
   }
 }
 
+static u64 slot_focus_rgb(void);
+
 static void paint_slots(u64 tasks, u64 tasks_hi) {
   u64 i;
   u64 n;
@@ -388,7 +400,7 @@ static void paint_slots(u64 tasks, u64 tasks_hi) {
         sx = SLOT_X0 + n * SLOT_PITCH;
         rgb = SLOT_FILL;
         if ((st & WM_TASK_FOCUS) != 0) {
-          rgb = SLOT_FOCUS;
+          rgb = slot_focus_rgb();
         }
         osxui_app_rrect(shm_h, sx, SLOT_Y, SLOT_W, SLOT_H, 8UL, rgb);
         {
@@ -658,34 +670,164 @@ static void commit_menu(void) {
   (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
 }
 
+static u64 desk_fold(u64 ch) {
+  if (ch >= 0x61UL) {
+    if (ch <= 0x7AUL) {
+      return ch - 0x20UL;
+    }
+  }
+  return ch;
+}
+
+static u64 launch_q_match(u64 packed, u64 q, u64 qlen) {
+  u64 i;
+  if (qlen < 1UL) {
+    return 1;
+  }
+  i = 0;
+  while (i < qlen) {
+    u64 want = desk_fold((q >> (i * 8UL)) & 0xFFUL);
+    u64 have = desk_fold((packed >> (i * 8UL)) & 0xFFUL);
+    if (want != have) {
+      return 0;
+    }
+    i = i + 1;
+  }
+  return 1;
+}
+
+static u64 slot_focus_rgb(void) {
+  u64 pref = osxui_app_pref();
+  u64 accent = (pref >> 8) & 0xFFUL;
+  if (accent == 1UL) {
+    return SLOT_FOCUS_A1;
+  }
+  if (accent == 2UL) {
+    return SLOT_FOCUS_A2;
+  }
+  if (accent == 3UL) {
+    return SLOT_FOCUS_A3;
+  }
+  return SLOT_FOCUS;
+}
+
 static void paint_desk_menu(u64 kind) {
   char stem[8];
+  char qbuf[9];
   u64 i;
+  u64 vis;
+  u64 q;
+  u64 qlen;
+  u64 sel;
+  u64 packed;
+  u64 n;
+  u64 ry;
+  u64 rgb;
+  u64 cx;
+  u64 slot;
   osxui_app_menu_card(menu_h, MENU_W, MENU_H);
   if (kind == 1UL) {
     osxui_app_menu_row(menu_h, MENU_W, 0, OSXUI_MENU_ROW0, "Regen", 5);
     osxui_app_menu_row(menu_h, MENU_W, 1, OSXUI_MENU_ROW1, "Image", 5);
+    return;
   }
   if (kind == 2UL) {
+    packed = osxui_app_launch_sel();
+    sel = packed & 0xFFUL;
+    qlen = (packed >> 16) & 0xFFUL;
+    q = osxui_app_launch_q();
+    i = 0;
+    while (i < 8UL) {
+      qbuf[i] = (char)((q >> (i * 8UL)) & 0xFFUL);
+      i = i + 1;
+    }
+    qbuf[8] = 0;
+    osxui_app_rrect(menu_h, 8UL, 8UL, MENU_W - 16UL, LAUNCH_SEARCH_H - 8UL, 8UL,
+                    0x00FFFFFFUL);
+    if (qlen > 0UL) {
+      if (qlen > 8UL) {
+        qlen = 8UL;
+      }
+      osxui_app_text(menu_h, 16UL, 12UL, qbuf, qlen, WM_TEXT_TITLE_PX,
+                     WM_TEXT_MEDIUM, OSXUI_MENU_FG);
+    } else {
+      osxui_app_text(menu_h, 16UL, 12UL, "Search apps", 11, WM_TEXT_LABEL_PX,
+                     WM_TEXT_REGULAR, OSXUI_GLASS_FG_MUTED);
+    }
+    vis = 0;
     i = 0;
     while (i < ICON_N) {
-      u64 n = stem_into(stem, osxui_app_launch(i));
-      u64 ry = OSXUI_MENU_PAD + i * 20UL;
-      u64 rgb = OSXUI_MENU_ROW0;
-      if ((i & 1UL) != 0UL) {
-        rgb = OSXUI_MENU_ROW1;
-      }
+      n = stem_into(stem, osxui_app_launch(i));
       if (n > 0) {
-        osxui_app_rrect(menu_h, 4UL, ry, MENU_W - 8UL, 18UL, 4UL, rgb);
-        osxui_app_text(menu_h, 8UL, ry + 2UL, stem, n, WM_TEXT_LABEL_PX,
-                       WM_TEXT_REGULAR, OSXUI_MENU_FG);
+        if (launch_q_match(osxui_app_launch(i), q, qlen) > 0) {
+          ry = LAUNCH_SEARCH_H + vis * LAUNCH_ROW_H;
+          rgb = OSXUI_MENU_ROW0;
+          if ((vis & 1UL) != 0UL) {
+            rgb = OSXUI_MENU_ROW1;
+          }
+          if (vis == sel) {
+            rgb = 0x00D0E4F8UL;
+          }
+          osxui_app_rrect(menu_h, 8UL, ry, MENU_W - 16UL, LAUNCH_ROW_H - 4UL,
+                          6UL, rgb);
+          osxui_app_text(menu_h, 16UL, ry + 2UL, stem, n, WM_TEXT_LABEL_PX,
+                         WM_TEXT_REGULAR, OSXUI_MENU_FG);
+          vis = vis + 1;
+        }
       }
       i = i + 1;
     }
+    {
+      u64 at = put(0, "DESK LAUNCH FILT ");
+      at = put_hex(at, vis, 2);
+      at = put(at, " Q ");
+      at = put_hex(at, qlen, 1);
+      emit(at);
+    }
+    return;
+  }
+  if (kind == 6UL) {
+    packed = osxui_app_launch_sel();
+    (void)packed;
+    sel = (osxui_app_pop() >> 56) & 0xFFUL;
+    vis = 0;
+    i = 0;
+    while (i < 8UL) {
+      slot = osxui_app_switch_at(i);
+      if (slot >= 8UL) {
+        break;
+      }
+      n = stem_into(stem, osxui_app_name(slot));
+      cx = SWITCH_PAD + vis * (SWITCH_CARD_W + 8UL);
+      if ((cx + SWITCH_CARD_W) > MENU_W) {
+        break;
+      }
+      rgb = OSXUI_MENU_ROW0;
+      if (vis == sel) {
+        rgb = 0x00D0E4F8UL;
+      }
+      osxui_app_rrect(menu_h, cx, 24UL, SWITCH_CARD_W, SWITCH_CARD_H, 10UL,
+                      rgb);
+      if (n > 0) {
+        osxui_app_text(menu_h, cx + 6UL, 48UL, stem, n, WM_TEXT_LABEL_PX,
+                       WM_TEXT_REGULAR, OSXUI_MENU_FG);
+      }
+      vis = vis + 1;
+      i = i + 1;
+    }
+    {
+      u64 at = put(0, "DESK SWITCH ");
+      at = put_hex(at, vis, 1);
+      at = put(at, " S ");
+      at = put_hex(at, sel, 1);
+      emit(at);
+    }
+    return;
   }
   if (kind == 4UL) {
     osxui_app_menu_row(menu_h, MENU_W, 0, OSXUI_MENU_ROW0, "Close", 5);
     osxui_app_menu_row(menu_h, MENU_W, 1, OSXUI_MENU_ROW1, "Raise", 5);
+    return;
   }
   if (kind == 5UL) {
     osxui_app_menu_row(menu_h, MENU_W, 0, OSXUI_MENU_ROW0, "Raise", 5);
@@ -859,6 +1001,8 @@ void desk_main(u64 sp) {
   commit_all();
   attach_menu();
   last_pop = 0;
+  last_launch_sel = 0;
+  last_pref = osxui_app_pref();
   wr(msg_ready, 10);
   wr(msg_strip, 10);
   wr(msg_dock, 9);
@@ -876,9 +1020,20 @@ void desk_main(u64 sp) {
     }
     sys1(SYS_YIELD, 0);
     pop = osxui_app_pop();
-    if (pop != last_pop) {
-      last_pop = pop;
-      sync_menu(pop);
+    {
+      u64 lsel = osxui_app_launch_sel();
+      u64 pref = osxui_app_pref();
+      if (pop != last_pop || lsel != last_launch_sel) {
+        last_pop = pop;
+        last_launch_sel = lsel;
+        sync_menu(pop);
+      }
+      if (pref != last_pref) {
+        last_pref = pref;
+        paint_bar(last_tasks, last_tasks_hi);
+        commit_all();
+        wr("DESK PREF\n", 10);
+      }
     }
     {
       u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);

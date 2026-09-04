@@ -156,6 +156,26 @@ static u64 menu_row;
 static u64 menu_x;
 static u64 menu_y;
 static u64 menu_sel;
+static u64 files_writable;
+static u64 files_ctrl;
+static u64 clip_h;
+static u64 confirm_del;
+static u64 can_fwd;
+static u64 cut_row;
+static char edit_buf[16];
+static u64 edit_n;
+static u64 edit_caret;
+static u64 edit_on;
+static const char msg_del[] = "FILES DEL ";
+static const char msg_del_conf[] = "FILES DEL CONFIRM";
+static const char msg_new[] = "FILES NEW ";
+static const char msg_nodir[] = "FILES NO DIR";
+static const char msg_paste[] = "FILES PASTE ";
+static const char msg_refresh[] = "FILES REFRESH";
+static const char msg_fwd[] = "FILES FWD";
+static const char msg_ro[] = "FILES RO";
+static const char msg_clip[] = "FILES CLIP ";
+static const char msg_field[] = "FILES FIELD ";
 static u64 scroll_off;
 static u64 list_sel;
 static u64 files_err;
@@ -219,6 +239,7 @@ static const char msg_error[] = "FILES ERROR";
 static const char ext_cpy[] = "CPY";
 static const char ext_mov[] = "MOV";
 static const char ext_ren[] = "REN";
+static const char ext_pst[] = "PST";
 
 static inline u64 sys4(u64 n, u64 a, u64 b, u64 c, u64 d) {
   u64 r;
@@ -583,7 +604,14 @@ static void paint_all(u64 h, u64 va, u64 names, u32 swatch) {
 }
 
 #define FILE_MENU_W 168UL
-#define FILE_MENU_H 80UL
+#define FILE_MENU_H 128UL
+#define FILE_MENU_ROWS 5UL
+#define SCAN_LCTRL 0x1DUL
+#define SCAN_F5 0x3FUL
+#define CLIP_VA 0x10280000UL
+#define EDIT_MAX 12UL
+#define NAME_NEW "NEW.DAT"
+#define NAME_NEW_N 7UL
 
 static u64 row_at_y(u64 y, u64 names) {
   u64 body_h = files_height;
@@ -670,11 +698,286 @@ static void files_prefill_cap(void) {
   wr(msg_prefill, sizeof(msg_prefill) - 1);
 }
 
+static void do_copy(unsigned pick, char *dest);
+static void do_move(unsigned pick, char *dest);
+static u64 write_copy(const char *src, unsigned slen, const char *dst,
+                      unsigned dlen);
+static void do_file_open(u64 row);
+static void do_file_rename(u64 row);
+static void files_go_back(void);
+static void files_retry(void);
+static void files_show_empty(void);
+static void files_repaint(void);
+
+static void files_probe_writable(void) {
+  u64 fd = sys3(SYS_OPEN, (u64)"WRPROBE.DAT", 11, MODE_WRITE);
+  if (fd >= ERR_FLOOR) {
+    files_writable = 0;
+    wr(msg_ro, sizeof(msg_ro) - 1);
+    return;
+  }
+  sys1(SYS_CLOSE, fd);
+  (void)sys2(SYS_UNLINK, (u64)"WRPROBE.DAT", 11);
+  files_writable = 1;
+}
+
+static void files_clip_offer(const char *s, u64 n) {
+  volatile unsigned char *p;
+  u64 i;
+  u64 r;
+  unsigned at;
+  if (clip_h == 0 || n < 1) {
+    return;
+  }
+  if (n > WM_CLIP_MAX) {
+    n = WM_CLIP_MAX;
+  }
+  p = (volatile unsigned char *)CLIP_VA;
+  i = 0;
+  while (i < n) {
+    p[i] = (unsigned char)s[i];
+    i = i + 1;
+  }
+  r = osxui_app_clip(WM_OP_OFFER, clip_h, n);
+  at = put(0, msg_clip);
+  if (r >= ERR_FLOOR) {
+    at = put(at, "ERR ");
+    at = puthex(at, r & 0xFFUL, 2);
+  } else {
+    at = puthex(at, n, 2);
+  }
+  emit(at);
+}
+
+static u64 files_clip_take(char *dst, u64 max) {
+  u64 r;
+  volatile unsigned char *p;
+  u64 i;
+  if (clip_h == 0) {
+    return 0;
+  }
+  r = osxui_app_clip(WM_OP_TAKE, clip_h, 0);
+  if (r >= ERR_FLOOR) {
+    return 0;
+  }
+  if (r > max) {
+    r = max;
+  }
+  p = (volatile unsigned char *)CLIP_VA;
+  i = 0;
+  while (i < r) {
+    dst[i] = (char)p[i];
+    i = i + 1;
+  }
+  if (r < max) {
+    dst[r] = 0;
+  }
+  return r;
+}
+
+static void files_edit_from_sel(void) {
+  u64 i;
+  if (list_sel >= files_names) {
+    edit_n = 0;
+    edit_caret = 0;
+    return;
+  }
+  i = 0;
+  while (i < dotlen[list_sel] && i < EDIT_MAX) {
+    edit_buf[i] = dotted[list_sel][i];
+    i = i + 1;
+  }
+  edit_n = i;
+  edit_caret = i;
+  edit_buf[i] = 0;
+}
+
+static void files_go_fwd(void) {
+  if (can_fwd < 1) {
+    return;
+  }
+  can_fwd = 0;
+  wr(msg_fwd, sizeof(msg_fwd) - 1);
+  files_show_empty();
+}
+
+static void files_do_refresh(void) {
+  wr(msg_refresh, sizeof(msg_refresh) - 1);
+  if (in_folder > 0) {
+    if (files_err > 0) {
+      files_retry();
+      return;
+    }
+    files_show_empty();
+    return;
+  }
+  empty_noted = 0;
+  files_repaint();
+}
+
+static void files_do_new(void) {
+  u64 fd;
+  unsigned at;
+  if (files_writable < 1) {
+    wr(msg_ro, sizeof(msg_ro) - 1);
+    return;
+  }
+  fd = sys3(SYS_OPEN, (u64)NAME_NEW, NAME_NEW_N, MODE_WRITE);
+  if (fd >= ERR_FLOOR) {
+    wr(msg_ro, sizeof(msg_ro) - 1);
+    return;
+  }
+  sys1(SYS_CLOSE, fd);
+  at = put(0, msg_new);
+  at = put(at, NAME_NEW);
+  emit(at);
+  if (files_names < CAT_MAX) {
+    unsigned k = 0;
+    while (k < NAME_NEW_N) {
+      dotted[files_names][k] = NAME_NEW[k];
+      k = k + 1;
+    }
+    dotted[files_names][NAME_NEW_N] = 0;
+    dotlen[files_names] = (unsigned)NAME_NEW_N;
+    files_names = files_names + 1;
+  }
+}
+
+static void files_do_delete(u64 row) {
+  u64 r;
+  unsigned at;
+  if (row >= files_names) {
+    return;
+  }
+  if (files_writable < 1) {
+    wr(msg_ro, sizeof(msg_ro) - 1);
+    return;
+  }
+  if (confirm_del != (row + 1UL)) {
+    confirm_del = row + 1UL;
+    wr(msg_del_conf, sizeof(msg_del_conf) - 1);
+    return;
+  }
+  confirm_del = 0;
+  r = sys2(SYS_UNLINK, (u64)dotted[row], (u64)dotlen[row]);
+  at = put(0, msg_del);
+  at = put(at, dotted[row]);
+  if (r >= ERR_FLOOR) {
+    at = put(at, " ERR");
+    emit(at);
+    return;
+  }
+  emit(at);
+  if (row + 1UL < files_names) {
+    u64 j = row;
+    while (j + 1UL < files_names) {
+      unsigned k = 0;
+      while (k < 16U) {
+        dotted[j][k] = dotted[j + 1UL][k];
+        k = k + 1;
+      }
+      dotlen[j] = dotlen[j + 1UL];
+      j = j + 1;
+    }
+  }
+  if (files_names > 0) {
+    files_names = files_names - 1;
+  }
+  if (list_sel >= files_names) {
+    if (files_names > 0) {
+      list_sel = files_names - 1;
+    } else {
+      list_sel = 0;
+    }
+  }
+}
+
+static void files_do_paste(void) {
+  char got[16];
+  u64 n;
+  unsigned dlen;
+  u64 wrote;
+  unsigned at;
+  n = files_clip_take(got, 12);
+  if (n < 1) {
+    return;
+  }
+  got[n] = 0;
+  at = put(0, msg_paste);
+  at = put(at, got);
+  emit(at);
+  {
+    u64 i = 0;
+    while (i < n && i < EDIT_MAX) {
+      edit_buf[i] = got[i];
+      i = i + 1;
+    }
+  }
+  edit_n = n;
+  edit_caret = n;
+  edit_buf[n] = 0;
+  at = put(0, msg_field);
+  at = put(at, edit_buf);
+  emit(at);
+  if (files_writable < 1) {
+    return;
+  }
+  if (cut_row < files_names) {
+    dlen = dest_from(got, (unsigned)n, dest_ren, ext_pst);
+    (void)sys4(SYS_RENAME, (u64)dotted[cut_row], (u64)dotlen[cut_row],
+               (u64)dest_ren, (u64)dlen);
+    cut_row = CAT_MAX;
+    return;
+  }
+  dlen = dest_from(got, (unsigned)n, dest_copy, ext_pst);
+  wrote = write_copy(got, (unsigned)n, dest_copy, dlen);
+  (void)wrote;
+}
+
+static void files_menu_run(u64 row) {
+  if (in_folder > 0) {
+    if (row == 0) {
+      files_go_back();
+    } else if (row == 1) {
+      files_retry();
+    } else if (row == 4) {
+      files_do_refresh();
+    }
+    return;
+  }
+  if (row == 0) {
+    do_file_open(menu_row);
+    return;
+  }
+  if (row == 1) {
+    do_file_rename(menu_row);
+    return;
+  }
+  if (row == 2) {
+    if (menu_row < files_names) {
+      do_copy((unsigned)menu_row, dest_copy);
+      files_clip_offer(dotted[menu_row], (u64)dotlen[menu_row]);
+    }
+    return;
+  }
+  if (row == 3) {
+    files_do_delete(menu_row);
+    return;
+  }
+  if (row == 4) {
+    files_do_new();
+  }
+}
+
 static void paint_file_menu(void) {
   u64 mx = menu_x;
   u64 my = menu_y;
-  u64 row0 = menu_sel == 0 ? MENU_SELECTED : OSXUI_MENU_ROW0;
-  u64 row1 = menu_sel == 1 ? MENU_SELECTED : OSXUI_MENU_ROW1;
+  u64 row;
+  u64 rgb;
+  u64 fg;
+  const char *lab;
+  unsigned nlab;
+  u64 enabled;
   if (mx + FILE_MENU_W > files_w) {
     mx = files_w - FILE_MENU_W;
   }
@@ -683,24 +986,73 @@ static void paint_file_menu(void) {
   }
   osxui_app_rrect(files_h, mx, my, FILE_MENU_W, FILE_MENU_H, OSXUI_MENU_R,
                   OSXUI_MENU_BG);
-  osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD, FILE_MENU_W - 8UL,
-                  OSXUI_MENU_ROW_H - 2UL, 4UL, row0);
-  if (in_folder > 0) {
-    osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + 4UL, "Back", 4,
-                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
-    osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H,
-                    FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL, row1);
+  row = 0;
+  while (row < FILE_MENU_ROWS) {
+    enabled = 1;
+    if (in_folder > 0) {
+      if (row == 0) {
+        lab = "Back";
+        nlab = 4;
+      } else if (row == 1) {
+        lab = "Retry";
+        nlab = 5;
+      } else if (row == 4) {
+        lab = "Refresh";
+        nlab = 7;
+      } else {
+        lab = "—";
+        nlab = 1;
+        enabled = 0;
+      }
+    } else {
+      if (row == 0) {
+        lab = "Open";
+        nlab = 4;
+        if (menu_row >= files_names) {
+          enabled = 0;
+        }
+      } else if (row == 1) {
+        lab = "Rename";
+        nlab = 6;
+        if (menu_row >= files_names || files_writable < 1) {
+          enabled = 0;
+        }
+      } else if (row == 2) {
+        lab = "Copy";
+        nlab = 4;
+        if (menu_row >= files_names) {
+          enabled = 0;
+        }
+      } else if (row == 3) {
+        lab = "Delete";
+        nlab = 6;
+        if (confirm_del == (menu_row + 1UL)) {
+          lab = "Delete?";
+          nlab = 7;
+        }
+        if (menu_row >= files_names || files_writable < 1) {
+          enabled = 0;
+        }
+      } else {
+        lab = "New File";
+        nlab = 8;
+        if (files_writable < 1) {
+          enabled = 0;
+        }
+      }
+    }
+    rgb = (row & 1UL) ? OSXUI_MENU_ROW1 : OSXUI_MENU_ROW0;
+    if (menu_sel == row) {
+      rgb = MENU_SELECTED;
+    }
+    fg = enabled > 0 ? OSXUI_MENU_FG : SURF_EMPTY_FG;
+    osxui_app_rrect(files_h, mx + 4UL,
+                    my + OSXUI_MENU_PAD + row * OSXUI_MENU_ROW_H,
+                    FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL, rgb);
     osxui_app_text(files_h, mx + 8UL,
-                   my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL, "Retry", 5,
-                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
-  } else {
-    osxui_app_text(files_h, mx + 8UL, my + OSXUI_MENU_PAD + 4UL, "Open", 4,
-                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
-    osxui_app_rrect(files_h, mx + 4UL, my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H,
-                    FILE_MENU_W - 8UL, OSXUI_MENU_ROW_H - 2UL, 4UL, row1);
-    osxui_app_text(files_h, mx + 8UL,
-                   my + OSXUI_MENU_PAD + OSXUI_MENU_ROW_H + 4UL, "Rename", 6,
-                   WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+                   my + OSXUI_MENU_PAD + row * OSXUI_MENU_ROW_H + 4UL, lab,
+                   nlab, WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, fg);
+    row = row + 1;
   }
 }
 
@@ -1039,6 +1391,7 @@ static void files_restore_root(void) {
 static void files_go_back(void) {
   menu_on = 0;
   if (in_folder > 0) {
+    can_fwd = 1;
     files_restore_root();
     wr(msg_back, sizeof(msg_back) - 1);
     files_repaint();
@@ -1089,6 +1442,7 @@ static void do_file_open(u64 row) {
     at = put(at, dotted[row]);
     emit(at);
     files_show_empty();
+    can_fwd = 0;
     return;
   }
   fd = sys2(SYS_OPEN, (u64)dotted[row], (u64)dotlen[row]);
@@ -1350,21 +1704,7 @@ static void files_on_event(u64 ev) {
         }
         menu_on = 0;
         menu_sel = row;
-        if (in_folder > 0) {
-          if (row == 0) {
-            files_go_back();
-          }
-          if (row == 1) {
-            files_retry();
-          }
-        } else {
-          if (row == 0) {
-            do_file_open(menu_row);
-          }
-          if (row == 1) {
-            do_file_rename(menu_row);
-          }
-        }
+        files_menu_run(row);
         files_repaint();
         return;
       }
@@ -1383,6 +1723,9 @@ static void files_on_key(u64 ev) {
   u64 scan;
   unsigned at;
   if ((ev & KBD_BIT_BREAK) != 0) {
+    if ((ev & 0xFFUL) == SCAN_LCTRL) {
+      files_ctrl = 0;
+    }
     return;
   }
   scan = ev & 0xFFUL;
@@ -1395,7 +1738,18 @@ static void files_on_key(u64 ev) {
     }
     if ((ev & KBD_BIT_EXT) != 0) {
       if (scan == SCAN_UP || scan == SCAN_DOWN) {
-        menu_sel = menu_sel == 0 ? 1UL : 0UL;
+        if (scan == SCAN_DOWN) {
+          menu_sel = menu_sel + 1UL;
+          if (menu_sel >= FILE_MENU_ROWS) {
+            menu_sel = 0;
+          }
+        } else {
+          if (menu_sel < 1UL) {
+            menu_sel = FILE_MENU_ROWS - 1UL;
+          } else {
+            menu_sel = menu_sel - 1UL;
+          }
+        }
         at = put(0, msg_menu_sel);
         at = puthex(at, menu_sel, 1);
         emit(at);
@@ -1406,24 +1760,24 @@ static void files_on_key(u64 ev) {
     if (scan == SCAN_ENTER) {
       u64 selected = menu_sel;
       menu_on = 0;
-      if (in_folder > 0) {
-        if (selected == 0) {
-          files_go_back();
-        } else {
-          files_retry();
-        }
-      } else if (selected == 0) {
-        do_file_open(menu_row);
-      } else {
-        do_file_rename(menu_row);
-      }
+      files_menu_run(selected);
       files_repaint_body();
     }
     return;
   }
-  if (scan == SCAN_ESC || scan == SCAN_BKSP) {
+  if (scan == SCAN_ESC) {
+    if (edit_on > 0) {
+      edit_on = 0;
+      return;
+    }
     files_go_back();
     return;
+  }
+  if (scan == SCAN_BKSP) {
+    if (edit_on < 1) {
+      files_go_back();
+      return;
+    }
   }
   if ((ev & KBD_BIT_EXT) != 0) {
     if (scan == SCAN_UP) {
@@ -1441,12 +1795,73 @@ static void files_on_key(u64 ev) {
     if (scan == SCAN_LEFT) {
       files_go_back();
     }
+    if (scan == SCAN_RIGHT) {
+      files_go_fwd();
+    }
+    return;
+  }
+  if (scan == SCAN_LCTRL) {
+    files_ctrl = 1;
+    return;
+  }
+  if (files_ctrl > 0) {
+    files_ctrl = 0;
+    if (scan == 0x2EUL) {
+      if (list_sel < files_names) {
+        files_clip_offer(dotted[list_sel], (u64)dotlen[list_sel]);
+        at = put(0, msg_copy);
+        at = put(at, dotted[list_sel]);
+        emit(at);
+      }
+      return;
+    }
+    if (scan == 0x2DUL) {
+      cut_row = list_sel;
+      if (list_sel < files_names) {
+        files_clip_offer(dotted[list_sel], (u64)dotlen[list_sel]);
+      }
+      return;
+    }
+    if (scan == 0x2FUL) {
+      files_do_paste();
+      files_repaint_body();
+      return;
+    }
+    if (scan == 0x31UL) {
+      files_do_new();
+      files_repaint_body();
+      return;
+    }
+  }
+  if (scan == SCAN_F5) {
+    files_do_refresh();
     return;
   }
   if (scan == SCAN_ENTER) {
     do_file_open(list_sel);
     files_repaint_body();
     return;
+  }
+  if (edit_on > 0) {
+    char letter = scan_letter(scan);
+    if (scan == SCAN_BKSP) {
+      if (edit_caret > 0) {
+        edit_caret = edit_caret - 1;
+        edit_n = edit_caret;
+        edit_buf[edit_n] = 0;
+      }
+      return;
+    }
+    if (letter != 0 && edit_n < EDIT_MAX) {
+      edit_buf[edit_n] = letter;
+      edit_n = edit_n + 1;
+      edit_caret = edit_n;
+      edit_buf[edit_n] = 0;
+      at = put(0, msg_field);
+      at = put(at, edit_buf);
+      emit(at);
+      return;
+    }
   }
   files_type_sel(scan_letter(scan));
 }
@@ -1488,6 +1903,10 @@ static void try_strip(u64 names, u32 swatch) {
 
   files_h = h;
   files_va = va;
+  clip_h = sys1(SYS_SHMCREATE, 1);
+  if (clip_h >= WM_RET_FLOOR) {
+    clip_h = 0;
+  }
   files_names = names;
   files_swatch = swatch;
   files_seq = 1;
@@ -1860,6 +2279,10 @@ void files_main(u64 sp) {
   }
   do_copy(copy_i, dest_copy);
   do_move(move_i, dest_move);
+  files_probe_writable();
+  wr(msg_nodir, sizeof(msg_nodir) - 1);
+  cut_row = CAT_MAX;
+  files_edit_from_sel();
 
   miss_ghost();
 

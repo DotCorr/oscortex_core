@@ -38,6 +38,9 @@ typedef unsigned int u32;
 #define FILE_ERR_FLOOR 0xFFFFFFFFFFFFFF00UL
 #define O_WRITE 1UL
 #define SEL_BYTES 4UL
+#define SCAN_LCTRL 0x1DUL
+#define CLIP_VA 0x10280000UL
+#define EDIT_MAX 64UL
 
 static unsigned char buf[512];
 static unsigned char acc[16];
@@ -70,6 +73,17 @@ static const char msg_edit[] = "STUDIO EDIT ";
 static const char cap_studio[] = "STUDIO";
 static u64 view_row = 0;
 static u64 view_off = 0;
+static u64 clip_h;
+static u64 studio_ctrl;
+static char edit_buf[EDIT_MAX + 1];
+static u64 edit_n;
+static u64 edit_caret;
+static u64 edit_on;
+static const char msg_copy[] = "STUDIO COPY ";
+static const char msg_paste[] = "STUDIO PASTE ";
+static u64 studio_h;
+static u64 studio_va;
+static u64 studio_names;
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;
@@ -152,6 +166,94 @@ static u32 band_colour(u64 i) {
     return (u32)SURF_BAND0;
   }
   return (u32)SURF_BAND1;
+}
+
+static void studio_clip_offer(void) {
+  volatile unsigned char *p;
+  u64 i;
+  u64 r;
+  unsigned n;
+  if (clip_h == 0 || edit_n < 1) {
+    return;
+  }
+  p = (volatile unsigned char *)CLIP_VA;
+  i = 0;
+  while (i < edit_n) {
+    p[i] = (unsigned char)edit_buf[i];
+    i = i + 1;
+  }
+  r = osxui_app_clip(WM_OP_OFFER, clip_h, edit_n);
+  n = put(0, msg_copy);
+  if (r >= FILE_ERR_FLOOR) {
+    n = put(n, "ERR");
+  } else {
+    n = puthex(n, edit_n, 2);
+  }
+  emit(n);
+}
+
+static void studio_clip_take(void) {
+  u64 r;
+  volatile unsigned char *p;
+  u64 i;
+  unsigned n;
+  if (clip_h == 0) {
+    return;
+  }
+  r = osxui_app_clip(WM_OP_TAKE, clip_h, 0);
+  if (r >= FILE_ERR_FLOOR) {
+    return;
+  }
+  if (r > EDIT_MAX) {
+    r = EDIT_MAX;
+  }
+  p = (volatile unsigned char *)CLIP_VA;
+  i = 0;
+  while (i < r) {
+    edit_buf[i] = (char)p[i];
+    i = i + 1;
+  }
+  edit_n = r;
+  edit_caret = r;
+  edit_buf[r] = 0;
+  n = put(0, msg_paste);
+  i = 0;
+  while (i < r && n < 70) {
+    line[n++] = edit_buf[i];
+    i = i + 1;
+  }
+  emit(n);
+}
+
+static void paint_strip(u64 va, u64 names);
+
+static void paint_edit(u64 h) {
+  osxui_app_rrect(h, 8UL, WIN_H - 36UL, WIN_W - 16UL, 28UL, 6UL, 0x00F4F6FAUL);
+  if (edit_n > 0) {
+    osxui_app_text(h, 14UL, WIN_H - 30UL, edit_buf, edit_n, WM_TEXT_LABEL_PX,
+                   WM_TEXT_REGULAR, 0x00202830UL);
+  } else {
+    osxui_app_text(h, 14UL, WIN_H - 30UL, "type / paste", 12, WM_TEXT_LABEL_PX,
+                   WM_TEXT_REGULAR, 0x00506070UL);
+  }
+}
+
+static void studio_repaint(u64 names) {
+  if (studio_h == 0) {
+    return;
+  }
+  paint_strip(studio_va, names);
+  osxui_app_csd(studio_h, WIN_W, cap_studio, 6UL);
+  paint_edit(studio_h);
+  desc[WM_DESC_OP] = WM_OP_COMMIT;
+  desc[WM_DESC_HANDLE] = studio_h;
+  desc[WM_DESC_X] = 0;
+  desc[WM_DESC_Y] = 0;
+  desc[WM_DESC_W] = WIN_W;
+  desc[WM_DESC_H] = WIN_H;
+  desc[WM_DESC_STRIDE] = 2;
+  desc[WM_DESC_OFFSET] = 0;
+  (void)sys1(SYS_WMSURFACE, (u64)&desc[0]);
 }
 
 static void paint_strip(u64 va, u64 names) {
@@ -240,7 +342,19 @@ static void try_strip(u64 names) {
 
   paint_strip(va, names);
   osxui_app_csd(h, WIN_W, cap_studio, 6UL);
+  paint_edit(h);
   wr(msg_csd, sizeof(msg_csd) - 1);
+  studio_h = h;
+  studio_va = va;
+  studio_names = names;
+  clip_h = sys1(SYS_SHMCREATE, 1);
+  if (clip_h >= WM_RET_FLOOR) {
+    clip_h = 0;
+  }
+  edit_on = 1;
+  edit_n = 0;
+  edit_caret = 0;
+  edit_buf[0] = 0;
 
   desc[WM_DESC_OP] = WM_OP_COMMIT;
   desc[WM_DESC_HANDLE] = h;
@@ -380,9 +494,29 @@ static void pump(u64 names) {
 
   ev = sys1(SYS_KBDEVENT, KBD_OP_POP);
   if (ev != KBD_EMPTY) {
-    if ((ev & KBD_BIT_BREAK) == 0) {
+    if ((ev & KBD_BIT_BREAK) != 0) {
+      if ((ev & 0xFFUL) == SCAN_LCTRL) {
+        studio_ctrl = 0;
+      }
+    } else {
       sc = ev & 0xFFUL;
-      if (sc == 0x48UL) {
+      if (sc == SCAN_LCTRL) {
+        studio_ctrl = 1;
+      } else if (studio_ctrl > 0) {
+        studio_ctrl = 0;
+        if (sc == 0x2EUL) {
+          studio_clip_offer();
+        } else if (sc == 0x2FUL) {
+          studio_clip_take();
+          studio_repaint(names);
+        } else if (sc == 0x2DUL) {
+          edit_n = 0;
+          edit_caret = 0;
+          edit_buf[0] = 0;
+          studio_clip_offer();
+          studio_repaint(names);
+        }
+      } else if (sc == 0x48UL) {
         if (view_row > 0) {
           view_open(view_row - 1, names);
         }
@@ -394,9 +528,66 @@ static void pump(u64 names) {
         launch_row(view_row, names);
       } else if (sc == 0x12UL) {
         persist_row(view_row);
+        edit_on = 1;
         n = put(0, msg_edit);
         n = puthex(n, view_row, 2);
         emit(n);
+      } else if (edit_on > 0) {
+        if (sc == 0x0EUL) {
+          if (edit_caret > 0) {
+            edit_caret = edit_caret - 1;
+            edit_n = edit_caret;
+            edit_buf[edit_n] = 0;
+            studio_repaint(names);
+          }
+        } else if ((ev & KBD_BIT_EXT) == 0) {
+          if (sc >= KEY_DIGIT1 && sc <= 0x0BUL && edit_n < 1) {
+            row = sc - KEY_DIGIT1;
+            if (row < names) {
+              view_open(row, names);
+              launch_row(row, names);
+            }
+          } else if (edit_n < EDIT_MAX) {
+            char ch = 0;
+            if (sc == 0x39UL) {
+              ch = ' ';
+            } else if (sc == 0x1EUL) {
+              ch = 'a';
+            } else if (sc == 0x30UL) {
+              ch = 'b';
+            } else if (sc == 0x2EUL) {
+              ch = 'c';
+            } else if (sc == 0x20UL) {
+              ch = 'd';
+            } else if (sc == 0x12UL) {
+              ch = 'e';
+            } else if (sc == 0x21UL) {
+              ch = 'f';
+            } else if (sc == 0x2FUL) {
+              ch = 'v';
+            } else if (sc == 0x17UL) {
+              ch = 'i';
+            } else if (sc == 0x18UL) {
+              ch = 'o';
+            } else if (sc == 0x19UL) {
+              ch = 'p';
+            } else if (sc == 0x1FUL) {
+              ch = 's';
+            } else if (sc == 0x14UL) {
+              ch = 't';
+            }
+            if (ch != 0) {
+              edit_buf[edit_n] = ch;
+              edit_n = edit_n + 1;
+              edit_caret = edit_n;
+              edit_buf[edit_n] = 0;
+              n = put(0, msg_edit);
+              n = puthex(n, edit_n, 2);
+              emit(n);
+              studio_repaint(names);
+            }
+          }
+        }
       } else if ((ev & KBD_BIT_EXT) == 0) {
         if (sc >= KEY_DIGIT1) {
           row = sc - KEY_DIGIT1;

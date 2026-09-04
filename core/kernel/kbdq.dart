@@ -230,6 +230,10 @@ void kbdqSys(u64 frame) {
       return;
     }
     final u64 ev = kbdqPop();
+    if (wmDeKey(ev) > u64(0)) {
+      userSetFrame(frame, u64(userFrameRax), u64(kbdqEmpty));
+      return;
+    }
     if (wmPopKey(ev) > u64(0)) {
       userSetFrame(frame, u64(userFrameRax), u64(kbdqEmpty));
       return;
