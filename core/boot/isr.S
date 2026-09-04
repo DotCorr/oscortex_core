@@ -250,9 +250,14 @@ isr_common:
 
     call isrDispatch
 
-    /* Save/restore MXCSR + x87 so Graphite/FFmpeg C++ ticks cannot
-       leak SSE state into the interrupted context (m11 fxsave fence).
-       RSP is 16-aligned here (see comment above); fxsave needs 16. */
+    /* Graphite/FFmpeg C++ ticks leak SSE into the interrupted context
+       unless fenced. fxsave itself is a #UD when boot.S left OSFXSR
+       clear (m11 no-SSE CPU). Skip the whole trampoline then — Skia
+       is SSE and must not run on that machine. */
+    call sse_enabled
+    testq %rax, %rax
+    jz .Lno_sse_tick
+    /* RSP is 16-aligned here (see comment above); fxsave needs 16. */
     subq $512, %rsp
     fxsave (%rsp)
     /* osgfx trampoline. Mailbox is zero unless `wm gfx`. */
@@ -262,6 +267,7 @@ isr_common:
     call osmedia_guest_tick
     fxrstor (%rsp)
     addq $512, %rsp
+.Lno_sse_tick:
 
     popq %r15
     popq %r14
