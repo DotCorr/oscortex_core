@@ -3673,7 +3673,7 @@ void wmPointerTick() {
       }
     } else {
       if (wasLeft > u64(0)) {
-        wmDeCsdRelease(x, y);
+        final u64 unused = wmDeCsdRelease(x, y);
       }
       wmSetMeta(u64(wmMetaDrag), u64(0));
     }
@@ -3713,7 +3713,7 @@ void wmPointerTick() {
     }
   } else {
     if (wasLeft > u64(0)) {
-      wmDeCsdRelease(x, y);
+      final u64 unused = wmDeCsdRelease(x, y);
     }
     wmSetMeta(u64(wmMetaDrag), u64(0));
   }
