@@ -324,7 +324,7 @@ KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 M15_OFF_HEX=$(bssoff fileStore)
 ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-ck; [[ "$M15_BSS" -eq 2560 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 2560 — 1280 at M15, doubled by M16's write path (ADR-0020 §7)"
+ck; [[ "$M15_BSS" -eq 3584 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 3584 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7)"
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
 ck; [[ "$KDATA_BSS" -eq 19872 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 19872 — 9728 through M13 (9664, plus M18's 64-byte scheduler header, ADR-0022) plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."

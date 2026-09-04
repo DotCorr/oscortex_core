@@ -141,8 +141,8 @@ ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq $(( 16#$KBDQ_OFF )) ]] \
   || fail "wmStore is not immediately before kbdqStore"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 36576 ]] \
-  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 36576 — ADR-0109's 23264, plus four authorised growths that all sit BELOW this milestone: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536 and pmmBoundMib to 256), shmStore +4096 (the bit-plane must describe exactly pmmMaxFrames, asserted in m21-shmem), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB, vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words). See GAP-0053's ledger. D7 itself must still add nothing."
+ck; [[ "$TOTAL_BSS" -eq 37600 ]] \
+  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 37600 — ADR-0109's 23264, plus four authorised growths that all sit BELOW this milestone: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536 and pmmBoundMib to 256), shmStore +4096 (the bit-plane must describe exactly pmmMaxFrames, asserted in m21-shmem), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB, vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words). See GAP-0053's ledger. D7 itself must still add nothing."
 echo "STRUCTURAL: pass  wmeventStore is last ($EV_SIZE bytes), kbdqStore immediately before it; total .bss $TOTAL_BSS"
 
 # Negative control on the HOST: delivering the click to the bottom surface

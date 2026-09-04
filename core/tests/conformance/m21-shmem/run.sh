@@ -256,8 +256,8 @@ ck; [[ $(( 16#$KBDQ_OFF + KBDQ_SIZE )) -eq $(( 16#$EV_OFF )) ]] \
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
   || fail "wmeventStore ends at $(( 16#$EV_OFF + EV_SIZE )) and kmain.o's .bss is $DART_BSS — D7's block is not last"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 36576 ]] \
-  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 36576 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
+ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 37600 ]] \
+  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 
 # 2e. THE STORAGE SEAM. ADR-0011 §0: the symbol is named in its accessors and
 # nowhere else in the kernel.

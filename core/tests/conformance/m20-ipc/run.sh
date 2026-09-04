@@ -156,7 +156,7 @@ ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{
 ASM_BSS=$((16#$ASM_BSS_HEX))
 [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o donates $ASM_BSS bytes of .bss, expected exactly 96"
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-[[ "$KDATA_BSS" -eq 36576 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 36576 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
+[[ "$KDATA_BSS" -eq 37600 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, GAP-0053's running total, and every harness that subtracts a later block move with it."
 
 # D7 (ADR-0055) added a block AFTER D2's and is the last one in .bss now, so it
 # is subtracted FIRST -- exactly the accounting D2 itself gave D4.
@@ -228,7 +228,7 @@ CHAN_OFF=$(bssoff chanStore)
 [[ -n "$CHAN_OFF" ]] || fail "chanStore has no .bss offset in kmain.o"
 [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
   || fail "chanStore ends at $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) and kmain.o's .bss less S0's ioctlStore and D1's mouseStore is $DART_BSS — M20's block is not immediately before D1's, so every earlier harness's 'bytes from my block to the end' number has silently moved"
-[[ $(( KDATA_BSS - CHAN_STORE_SIZE )) -eq 22688 ]] \
+[[ $(( KDATA_BSS - CHAN_STORE_SIZE )) -eq 23712 ]] \
   || fail "the .bss outside chanStore is $(( KDATA_BSS - CHAN_STORE_SIZE )), not M19's 14368 plus 4224 — M20 moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
 
 # THE REGIONS TILE EXACTLY. A region that ran past the end of a port record

@@ -263,8 +263,8 @@ user_resume_ok_addr:
  * behind four named functions is what keeps the eventual migration to DCDart
  * mutable statics a four-line rewrite instead of an audit.
  * `tests/conformance/m14-fat/run.sh` counts the call sites. */
-/* uint64_t file_store_addr(void) -- base of the 1280-byte file-descriptor
- * block. See `file_store` above for the three region offsets.
+/* uint64_t file_store_addr(void) -- base of the file-descriptor
+ * block (3584 bytes: 9 rows). See file.dart fileStoreBytes.
  *
  * ONE accessor for THREE regions, and THREE call sites in
  * `core/kernel/file.dart` and nowhere else. Same rule, same reason, sixth

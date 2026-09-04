@@ -198,7 +198,7 @@ TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
 # now pinned outright with its ledger, exactly as D7 pins it, and the claim
 # this check actually makes -- chrome must not add a block -- is enforced
 # directly below by the "every byte is inside a named block" census.
-EXPECT_BSS=36576
+EXPECT_BSS=37600
 ck; [[ "$WM_SIZE" -eq 704 ]] || fail "the image has wmStore ${WM_SIZE:-missing}, expected 704"
 ck; [[ "$TOTAL_BSS" -eq "$EXPECT_BSS" ]] \
   || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected $EXPECT_BSS — ADR-0109's 23264, plus four authorised growths that all sit BELOW this milestone: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536 and pmmBoundMib to 256), shmStore +4096 (the bit-plane must describe exactly pmmMaxFrames), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB, vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words). See GAP-0053's ledger. Chrome itself must still add nothing"

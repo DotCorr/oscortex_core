@@ -304,15 +304,15 @@ const int fileSysRenameNo = 32;
 /// leaked, and `m15-fileio`'s program opens five files to prove it.
 const int fileMaxFds = 4;
 
-/// Descriptor rows. FIVE, because two different things can be in ring 3 on this
-/// machine and only one of them is a process: rows 0..3 are the four process
-/// slots and row 4 is the `run <name>` program, which has no slot.
-const int fileRows = 5;
+/// Descriptor rows. NINE: process slots 0..7 plus the `run <name>`
+/// row. Must stay `procMax + 1` or a dock app in slot 5+ gets
+/// [fileRetNoOwner] on every open (STUDIO APPS.TXT).
+const int fileRows = 9;
 
 /// The row a `run <name>` program uses. Equal to `procMax` by construction —
 /// the row indices below it are exactly the process slots — and asserted equal
 /// to it by the harness rather than left as a coincidence.
-const int fileRunRow = 4;
+const int fileRunRow = 8;
 
 /// The largest single `read`. One sector, deliberately: the bounce buffer is
 /// one sector, and a bound that equals the buffer means the loop below cannot
@@ -333,17 +333,15 @@ const int fileNameMax = 12;
 /// sector. A program writes more by calling again.
 const int fileWriteMax = 512;
 
-/// Donated storage: 2560 bytes in FOUR regions. See `core/boot/kdata.S`.
+/// Donated storage: 3584 bytes in FOUR regions. See `core/boot/kdata.S`.
 ///
-/// M16 took this from 1280: the metadata doubled to 32 words (M16 has six
-/// counters of its own), a descriptor doubled from four words to eight (an
-/// entry index, a last cluster, a mode and a spare), and a SECOND 512-byte
-/// sector buffer appeared — see [fileSecBase] for why one is not enough.
-const int fileStoreBytes = 2560;
+/// M16 took this from 1280 to 2560. Round 27 added four descriptor
+/// rows (1024 bytes) so `fileRows` tracks `procMax + 1` = 9.
+const int fileStoreBytes = 3584;
 const int fileMetaOffset = 0;
 const int fileTableOffset = 256;
-const int fileBufOffset = 1536;
-const int fileSecOffset = 2048;
+const int fileBufOffset = 2560;
+const int fileSecOffset = 3072;
 
 /// Thirty-two metadata words.
 const int fileMetaWords = 32;

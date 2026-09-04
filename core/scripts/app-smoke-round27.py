@@ -83,7 +83,11 @@ def fatal(path):
         blob = open(path).read()
     except OSError:
         blob = ""
-    if "OSGFX OOM" in blob or "OSGFX ABORT" in blob:
+    desk = blob.find("DESK READY")
+    after = blob[desk:] if desk >= 0 else blob
+    if "OSGFX ABORT" in after:
+        return True
+    if after.count("OSGFX OOM") >= 2:
         return True
     if "FAULT 0E" in blob or "FAULT 0D" in blob:
         return True

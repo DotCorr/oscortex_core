@@ -188,7 +188,7 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 36576 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 36576 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 37600 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
 # The later blocks, subtracted NEWEST FIRST, so that every assertion below
 # means what it meant when M19 wrote it.
@@ -259,7 +259,7 @@ ck; [[ $(( 16#$CHAN_OFF + CHAN_STORE_SIZE )) -eq "$DART_BSS" ]] \
 DART_BSS=$(( DART_BSS - CHAN_STORE_SIZE ))
 KDATA_BSS=$(( KDATA_BSS - CHAN_STORE_SIZE ))
 M19_TOTAL=$KDATA_BSS
-ck; [[ "$M19_TOTAL" -eq 22688 ]] || fail "the .bss outside chanStore, ioctlStore and shmStore is $M19_TOTAL, not M19's 14368 plus 4224 — a later milestone moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
+ck; [[ "$M19_TOTAL" -eq 23712 ]] || fail "the .bss outside chanStore, ioctlStore and shmStore is $M19_TOTAL, not M19's 14368 plus 4224 — a later milestone moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
 
 ARGS_STORE_SIZE=$(bsssize argsStore)
 ck; [[ "$ARGS_STORE_SIZE" == "256" ]] || fail "argsStore is ${ARGS_STORE_SIZE:-missing} bytes, expected 256"
@@ -267,7 +267,7 @@ ARGS_OFF=$(bssoff argsStore)
 ck; [[ -n "$ARGS_OFF" ]] || fail "argsStore has no .bss offset in kmain.o"
 ck; [[ $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) -eq $(( 16#$CHAN_OFF )) ]] \
   || fail "argsStore ends at $(( 16#$ARGS_OFF + ARGS_STORE_SIZE )) and chanStore begins at $(( 16#$CHAN_OFF )) — something was inserted BETWEEN M19's block and M20's, so M19's 'bytes from my block to the next' number has silently moved"
-ck; [[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 22432 ]] \
+ck; [[ $(( KDATA_BSS - ARGS_STORE_SIZE )) -eq 23456 ]] \
   || fail "the .bss outside args_store, chanStore and ioctlStore is $(( KDATA_BSS - ARGS_STORE_SIZE )), not M18's 14112 plus 4224 — M19 moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
 
 # The three regions inside the block, multiplied out against the block's own

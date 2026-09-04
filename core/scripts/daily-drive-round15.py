@@ -662,6 +662,17 @@ def shot_virtio_backing(q, path):
 def shot(q, path, also=None):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     last = None
+    try:
+        if shot_virtio_backing(q, path):
+            print("shot", path, "bytes", os.path.getsize(path), "via virtio backing")
+            if also and also != path:
+                try:
+                    copy_file(path, also)
+                except OSError as e:
+                    print("WARN: fallback shot copy failed:", e)
+            return
+    except (OSError, SystemExit) as e:
+        last = e
     for _ in range(3):
         try:
             q.cmd("screendump", filename=os.path.abspath(path), format="png")
