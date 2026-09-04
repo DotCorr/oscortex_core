@@ -1973,6 +1973,16 @@ void wmPacePresent() {
     wmPageSet(u64(wmPageWDmgRegs), u64(2));
     wmDmgAcc(ptrPx, u64(2), ptrPx, u64(1));
     wmPointerPlace(mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+    if (ax1 > ax0) {
+      if (ay1 > ay0) {
+        virtgpuRect(ax0, ay0, ax1 - ax0, ay1 - ay0);
+      }
+    }
+    if (bx1 > bx0) {
+      if (by1 > by0) {
+        virtgpuRect(bx0, by0, bx1 - bx0, by1 - by0);
+      }
+    }
     wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
     wmLatNotePresent();
     return;

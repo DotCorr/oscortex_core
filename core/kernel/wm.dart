@@ -1143,6 +1143,11 @@ void wmDrawLiveClients(u64 top) {
 /// publishing the count the harness derives.
 @bare
 void wmPublishFrameQ(u64 px, u64 quiet) {
+  /* G5 virtio-gpu scanout is guest RAM: stores are invisible until
+   * TRANSFER_TO_HOST_2D + RESOURCE_FLUSH. GOP / Bochs BAR bases sit
+   * above virtgpuRamCeil, so virtgpuRect is a no-op on the sit-in
+   * leftover. Armed only after virtgpuc / G5. */
+  virtgpuRect(u64(0), u64(0), fbGeomWidth(), fbGeomHeight());
   final u64 cx = mouseState(u64(mouseWordX));
   final u64 cy = mouseState(u64(mouseWordY));
   wmSetMeta(u64(wmMetaCurX), cx);

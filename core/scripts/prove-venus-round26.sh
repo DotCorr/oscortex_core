@@ -39,11 +39,10 @@ PICKER="$CORE_DIR/tests/conformance/m2-console/pick-port.py"
 QMP=$(python3 "$PICKER")
 echo "$QMP" >"$RUN/qmp.port"
 
-# This QEMU 9.2 prefix is built with OpenGL + egl-headless (GTK was
-# not available at configure time). egl-headless still hosts Venus.
+# Prefer GTK+GLX (no DRM render node). Fall back to egl-headless.
 DISPLAY_ARGS=(-display egl-headless)
 if "$QEMU" -display help 2>&1 | grep -q '^gtk$'; then
-  DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
+  DISPLAY_ARGS=(-display gtk,gl=on)
 fi
 if [[ "${OSCORTEX_VENUS_HEADLESS:-0}" == "1" ]]; then
   DISPLAY_ARGS=(-display egl-headless)
@@ -120,12 +119,14 @@ for ch in "virtgpuv":
 key("ret")
 time.sleep(0.2)
 # Enable gfx path after Venus capset.
-for cmd in ("wm on", "wm gfx"):
+# G5 scanout so fbState is guest RAM + SET_SCANOUT (ADR-0064 fb
+# still prints FB NONE first). Then wm can compose onto Venus.
+for cmd in ("fb", "virtgpuc", "wm on", "wm gfx"):
     for ch in cmd:
         key("spc" if ch == " " else ch)
         time.sleep(0.04)
     key("ret")
-    time.sleep(0.3)
+    time.sleep(0.45)
 # Screenshot
 import os
 png = os.environ.get("ART_PNG", "/opt/cursor/artifacts/oscortex-round26-gpu.png")

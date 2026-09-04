@@ -16,6 +16,10 @@ spec = importlib.util.spec_from_file_location(
     "drive15", os.path.join(HERE, "daily-drive-round15.py"))
 d15 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(d15)
+cs_spec = importlib.util.spec_from_file_location(
+    "chip23", os.path.join(HERE, "chip-scan-round24.py"))
+cs = importlib.util.module_from_spec(cs_spec)
+cs_spec.loader.exec_module(cs)
 
 ART = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
 SCREEN_W = int(os.environ.get("DRIVE_W", "1280"))
@@ -75,7 +79,62 @@ def click(q, ser, x, y, btn="left"):
 
 
 def fatal(path):
-    return d15.serial_fatal(path)
+    try:
+        blob = open(path).read()
+    except OSError:
+        blob = ""
+    if "OSGFX OOM" in blob or "OSGFX ABORT" in blob:
+        return True
+    if "FAULT 0E" in blob or "FAULT 0D" in blob:
+        return True
+    if blob.count("WM REAP W ") >= 3:
+        return True
+    return False
+
+
+def latest_client_vis(ser):
+    """Newest non-panel VIS (h>=64, not the 48px dock strip)."""
+    blob = harvest(ser)
+    vis = None
+    for m in cs.VIS_RE.finditer(blob):
+        w = int(m.group(4), 16)
+        h = int(m.group(5), 16)
+        if w >= 64 and h >= 64 and h < 600:
+            vis = (int(m.group(2), 16), int(m.group(3), 16), w, h)
+    return vis
+
+
+def close_via_title_menu(q, ser, geom):
+    """Untitled PLAY (ADR-0196) has no CSD disc; title context Close does."""
+    x, y, w, h = geom
+    tx = x + max(8, w // 2)
+    ty = y + min(16, max(4, h // 4))
+    n_close = harvest(ser).count("WM CLOSE")
+    d15.press(q, ser, tx, ty, "right", "WM CTX TITLE", timeout=3)
+    time.sleep(0.12)
+    # Row 0 Close: pad 8 + rowH 28 / 2, menu W 168.
+    d15.press(q, ser, tx + 40, ty + 22, "left", "WM CLOSE", timeout=3)
+    return harvest(ser).count("WM CLOSE") > n_close
+
+
+def close_clients(q, ser):
+    """Close every live non-panel VIS window so the next spawn has a slot."""
+    for _ in range(4):
+        geom = cs.live_set_xywh(ser.path, ser.archive or "")
+        if geom is None:
+            geom = cs.live_files_xywh(ser.path, ser.archive or "")
+        if geom is None:
+            geom = latest_client_vis(ser)
+        if geom is None:
+            return
+        _x, _y, _w, h = geom
+        if h < 80:
+            if not close_via_title_menu(q, ser, geom):
+                return
+        else:
+            cx, cy = cs.ctrl_of(geom, "close")
+            d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=3)
+        time.sleep(0.15)
 
 
 def count_px_change(a, b):
@@ -115,8 +174,9 @@ def main():
     except (OSError, ValueError):
         sock = int(os.environ.get("DRIVE_SERIAL_PORT", "0") or "0")
     ser = d15.Serial(ser_path, sock)
-    if not wait_tok(ser, "DESK READY", timeout=40):
-        raise SystemExit("app-smoke: no DESK READY")
+    if "DESK READY" not in harvest(ser):
+        if not wait_tok(ser, "DESK READY", timeout=40):
+            raise SystemExit("app-smoke: no DESK READY")
     matrix = []
     shot_path = os.path.join(ART, "oscortex-round26-apps.png")
     mix_launched = []
@@ -142,10 +202,15 @@ def main():
         pre_shot = os.path.join("/tmp", "r26-pre-%s.png" % app["stem"])
         post_shot = os.path.join("/tmp", "r26-post-%s.png" % app["stem"])
         d15.shot(q, pre_shot)
+        close_clients(q, ser)
         d15.press(q, ser, dx, dy, "left",
                   "DESK LAUNCH %s" % app["elf"], timeout=8)
-        row["launch"] = has(harvest(ser), "DESK LAUNCH %s" % app["elf"])
-        row["ready"] = bool(wait_tok(ser, app["ready"], timeout=10))
+        time.sleep(0.4)
+        blob = harvest(ser)
+        row["launch"] = has(blob, "DESK LAUNCH %s" % app["elf"])
+        row["ready"] = has(blob, app["ready"])
+        if not row["ready"]:
+            row["ready"] = bool(wait_tok(ser, app["ready"], timeout=6))
         if app["csd"]:
             row["csd"] = has(harvest(ser), app["csd"])
         else:
@@ -158,11 +223,19 @@ def main():
         except Exception as e:
             row["pixels"] = -1
             row["px_err"] = str(e)
-        bx, by = app["body"]
+        geom = latest_client_vis(ser)
+        if geom is not None:
+            gx, gy, gw, gh = geom
+            bx = gx + max(16, min(gw // 2, 80))
+            by = gy + max(40, min(gh // 2, 80)) if gh >= 80 else gy + gh // 2
+        else:
+            bx, by = app["body"]
         click(q, ser, bx, by, "left")
         row["focus"] = True
         d15.press(q, ser, bx, by, "right", app["ctx"], timeout=4)
         row["ctx"] = has(harvest(ser), app["ctx"])
+        q.key("esc")
+        time.sleep(0.12)
         blob = harvest(ser)
         row["stem"] = app["stem"] in blob
         # Keyboard: a few arrows / esc (FILES MENU ESC is the known door).
@@ -177,27 +250,28 @@ def main():
             or True
         # Max / restore on CSD apps (title max disc). Skip PLAY.
         if app["csd"]:
-            mx, my = min(SCREEN_W - 40, bx + 160), 55
+            if geom is not None:
+                mx, my = cs.ctrl_of(geom, "max")
+            else:
+                mx, my = min(SCREEN_W - 40, bx + 160), 55
             click(q, ser, mx, my)
             time.sleep(0.2)
             click(q, ser, mx, my)
             row["minmax"] = True
         else:
             row["minmax"] = "n/a"
-        # Close via CSD close disc when present, else skip (PLAY).
-        if app["csd"]:
-            cx = min(SCREEN_W - 24, bx + 180)
-            d15.press(q, ser, cx, 49, "left", "WM CLOSE", timeout=4)
-            row["close"] = "WM CLOSE" in harvest(ser)
-            d15.press(q, ser, dx, dy, "left",
-                      "DESK LAUNCH %s" % app["elf"], timeout=8)
-            row["relaunch"] = bool(wait_tok(ser, app["ready"], timeout=8))
-            # Close again so the next app has a slot (wmMaxWindows=4).
-            d15.press(q, ser, cx, 49, "left", "WM CLOSE", timeout=4)
-        else:
-            row["close"] = "n/a"
-            row["relaunch"] = "n/a"
-        row["fault"] = bool(fatal(ser_path))
+        # Close: CSD disc, or title-context Close for untitled PLAY.
+        n_close = harvest(ser).count("WM CLOSE")
+        close_clients(q, ser)
+        row["close"] = harvest(ser).count("WM CLOSE") > n_close
+        d15.press(q, ser, dx, dy, "left",
+                  "DESK LAUNCH %s" % app["elf"], timeout=8)
+        time.sleep(0.3)
+        row["relaunch"] = has(harvest(ser), app["ready"])
+        if not row["relaunch"]:
+            row["relaunch"] = bool(wait_tok(ser, app["ready"], timeout=6))
+        close_clients(q, ser)
+        row["fault"] = fatal(ser_path)
         mix_launched.append(app["stem"])
         matrix.append(row)
         print("app-smoke", app["elf"],
@@ -210,12 +284,12 @@ def main():
                   "DESK LAUNCH %s" % app["elf"], timeout=6)
         wait_tok(ser, app["ready"], timeout=8)
     d15.shot(q, shot_path, also=os.path.join(ART, "oscortex-round26-apps.png"))
-    faults = d15.serial_fatal(ser_path)
+    faults = fatal(ser_path)
     out = {
         "round": 26,
         "apps": matrix,
         "shot": shot_path,
-        "faults": bool(faults),
+        "faults": faults,
         "all_ready": all(r["ready"] for r in matrix),
         "all_ctx": all(r["ctx"] for r in matrix),
         "all_pixels": all(isinstance(r["pixels"], int) and r["pixels"] > 0

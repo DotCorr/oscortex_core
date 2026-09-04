@@ -90,6 +90,7 @@ out = {
   "canon_cflags": True,
   "shared_skia": "$SKIA_TREE",
   "no_host_path_strings": True,
+  "git": "$(git -C "$REPO_DIR" rev-parse HEAD)",
 }
 open(sys.argv[1], "w").write(json.dumps(out, indent=2) + "\n")
 print("wrote", sys.argv[1])
