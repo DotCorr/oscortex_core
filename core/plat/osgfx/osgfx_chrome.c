@@ -128,12 +128,16 @@ static uint64_t chrome_key(const struct OsGfxGuestCmd *m, const uint64_t *pg) {
   h = 0xC1A0B0C0D0E0F001ULL;
   /* TOP and POP kind are scanout overlays (focus ring / menu card).
    * Folding them forced a 900 ms session MISS on every raise and
-   * first menu. Held/DE/WALL/PANEL still change the cached picture. */
+   * first menu. Held/DE/WALL/PANEL still change the cached picture.
+   * Window identity is size, not screen position: a full-screen chrome
+   * keyed on x,y MISSed (and SET_SCANOUT 1280×720) on every drag.
+   * Each decorated layer is moved by restore+blit; glass recomposes
+   * only the vacated/new bounds. */
   h = mix(h, m->flags & ~OSGFX_CHROME_OVERLAY_MASK);
   h = mix(h, m->w);
   h = mix(h, m->h);
-  h = mix(h, m->win0);
-  h = mix(h, m->win1);
+  h = mix(h, m->win0 & 0xffffffffULL);
+  h = mix(h, m->win1 & 0xffffffffULL);
   h = mix(h, m->desk);
   h = mix(h, m->wall);
   /* The client edge tones. This is the pair `wmGfxChromeSig` does not have. */
@@ -1117,6 +1121,9 @@ static uint64_t chrome_drag_apply(uint64_t old_g, uint64_t new_g) {
                   ow + OSGFX_RADIUS + OSGFX_RADIUS,
                   oh + OSGFX_RADIUS + OSGFX_RADIUS, nx, ny, nw, nh, seed,
                   keep);
+    /* Dock/panel glass is a DESK client hole, not this layer. Vacate
+     * restores desk-cache wallpaper in the old AABB only — do not
+     * frost the whole strip (that would invent a glass bar). */
   }
   g_uncover0 = old_g;
   g_uncover1 = 0;

@@ -571,6 +571,30 @@ void wmPopMenuDraw(u64 ox, u64 oy) {
   wmPopLabel(ox, oy, u64(1), Rodata.addressOf(wmStrPopImage));
 }
 
+/// Overlay present: visual card bounds only, never the full scanout.
+@bare
+void wmPopPresentVis(u64 ox, u64 oy) {
+  u64 x = ox;
+  u64 y = oy;
+  if (ox > u64(wmPopVisL)) {
+    x = ox - u64(wmPopVisL);
+  } else {
+    x = u64(0);
+  }
+  if (oy > u64(wmPopVisT)) {
+    y = oy - u64(wmPopVisT);
+  } else {
+    y = u64(0);
+  }
+  final u64 px = wmPresentClipped(x, y, u64(wmPopVisW), u64(wmPopVisH));
+  wmPublishFrameNoted(px);
+  wmPublishFrameLine(
+      px, mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)));
+  if (wmPageAddr() > u64(0)) {
+    wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+  }
+}
+
 /// Paints the popover if it is showing. Returns the pixels written, or 0
 /// when it is off -- so a compose that never saw a right-click does not
 /// move its count.
@@ -605,6 +629,7 @@ void wmPopDamageRestore(u64 x, u64 y, u64 w, u64 h) {
     wmGfxKick();
     osgfx_guest_tick();
     wmGfxChromeStamp();
+    wmPopPresentVis(x, y);
     return;
   }
   final u64 unused = wmRepaintRect(x, y, w, h);
@@ -624,6 +649,9 @@ void wmPopPaintCard() {
   wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
   if (wmDeOn() > u64(0)) {
     wmPopMenuDraw(ox, oy);
+  }
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmPopPresentVis(ox, oy);
   }
 }
 
@@ -656,6 +684,7 @@ void wmPopHide() {
       wmGfxKick();
       osgfx_guest_tick();
       wmGfxChromeStamp();
+      wmPopPresentVis(ox, oy);
       wmLatNotePresent();
     } else {
       if (wmPageAddr() < u64(1)) {
@@ -823,6 +852,7 @@ void wmPopShowKind(u64 x, u64 y, u64 kind) {
     wmGfxKick();
     osgfx_guest_tick();
     wmGfxChromeStamp();
+    wmPopPresentVis(ox, oy);
     wmLatNotePresent();
   } else {
     if (wmPageAddr() < u64(1)) {

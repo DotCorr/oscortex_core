@@ -1161,15 +1161,35 @@ void wmPublishFrameQ(u64 px, u64 quiet, u64 x, u64 y, u64 w, u64 h) {
   final u64 pending = dropped & u64(wmPointerPending);
   wmSetMeta(u64(wmMetaDropped), dropped & u64(wmPointerDropMask));
   wmSetMeta(u64(wmMetaBusy), u64(0));
-  wmSetMeta(u64(wmMetaPixels), px);
-  wmBumpMeta(u64(wmMetaFrames));
-  wmLatNotePresent();
+  wmPublishFrameNoted(px);
   if (quiet > u64(0)) {
     if (pending > u64(0)) {
       wmPointerTick();
     }
     return;
   }
+  wmPublishFrameLine(px, cx, cy);
+  if (pending > u64(0)) {
+    wmPointerTick();
+  }
+}
+
+/// Records a present that already transferred its dirty rects.
+/// Pairing token is the FRAME line plus whatever SCAN [virtgpuPresent]
+/// already printed. Does not transfer again.
+@bare
+void wmPublishFrameNoted(u64 px) {
+  final u64 cx = mouseState(u64(mouseWordX));
+  final u64 cy = mouseState(u64(mouseWordY));
+  wmSetMeta(u64(wmMetaCurX), cx);
+  wmSetMeta(u64(wmMetaCurY), cy);
+  wmSetMeta(u64(wmMetaPixels), px);
+  wmBumpMeta(u64(wmMetaFrames));
+  wmLatNotePresent();
+}
+
+@bare
+void wmPublishFrameLine(u64 px, u64 cx, u64 cy) {
   uartWrite(Rodata.addressOf(wmStrFrame), u64(11));
   uartPutHex(wmMeta(u64(wmMetaFrames)), u64(8));
   uartWrite(Rodata.addressOf(wmStrPx), u64(4));
@@ -1182,9 +1202,6 @@ void wmPublishFrameQ(u64 px, u64 quiet, u64 x, u64 y, u64 w, u64 h) {
   uartWrite(Rodata.addressOf(wmStrY), u64(3));
   uartPutHex(cy, u64(4));
   uartNewline();
-  if (pending > u64(0)) {
-    wmPointerTick();
-  }
 }
 
 @bare
@@ -2066,6 +2083,15 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   // ADR-0142: under `wm de` the granted geom travels the press
   // queue. Without `wm de` the client is not told (d7-click).
   wmeventEnqueueConfigure(slot);
+  /* Sit-in: a newly mapped ordinary window owns the keyboard so
+   * STUDIO `e` / PLAY keys are not dropped on a focused DESK. */
+  if (wmDeOn() > u64(0)) {
+    if (wmIsPanel(slot) < u64(1)) {
+      if (wmIsOverlay(slot) < u64(1)) {
+        wmFocusTo(slot);
+      }
+    }
+  }
   userSetFrame(frame, u64(userFrameRax), va);
 }
 
@@ -3828,43 +3854,35 @@ void wmPointerTick() {
     /* Bounded sprite present. Independent of EvKind so host pairing
      * cannot stall, and does not overtake a pending button-edge op. */
     wmLatNoteSprite();
-    /* Cumulative pointer pixels are this transfer, not the consumed
-     * pending queue. Pace-off still counts; wm dmg must not read zero. */
+    /* Old+new sprite must RESOURCE_FLUSH / FRAME even with no window
+     * damage. Consuming the ptr flag without a transfer left SCAN
+     * pairing at n=0 (R28). About 640 px, clipped at the edges. */
+    u64 moved = u64(0);
     if (ox != x) {
-      wmPageSet(u64(wmPageWPtrPx),
-          u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
-      wmDmgAcc(u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
-          u64(2),
-          u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
-          u64(1));
+      moved = u64(1);
     } else {
       if (oy != y) {
-        wmPageSet(u64(wmPageWPtrPx),
-            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH));
-        wmDmgAcc(u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
-            u64(2),
-            u64(wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH),
-            u64(1));
+        moved = u64(1);
       }
     }
+    if (moved > u64(0)) {
+      final u64 p0 = wmPresentClipped(ox, oy, u64(wmPtrW), u64(wmPtrH));
+      final u64 p1 = wmPresentClipped(x, y, u64(wmPtrW), u64(wmPtrH));
+      final u64 ptrPx = p0 + p1;
+      wmPageSet(u64(wmPageWPtrPx), ptrPx);
+      wmDmgAcc(ptrPx, u64(2), ptrPx, u64(1));
+      wmPublishFrameNoted(ptrPx);
+      wmPublishFrameLine(ptrPx, x, y);
+      wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
+    }
     if (wmPaced() > u64(0)) {
-      if (ox != x) {
-        wmDamagePtr(ox, oy, u64(wmPtrW), u64(wmPtrH));
-        wmDamagePtr(x, y, u64(wmPtrW), u64(wmPtrH));
-      } else {
-        if (oy != y) {
-          wmDamagePtr(ox, oy, u64(wmPtrW), u64(wmPtrH));
-          wmDamagePtr(x, y, u64(wmPtrW), u64(wmPtrH));
-        }
-      }
-      /* Sprite already transferred old+new cursor bounds. Consume the
-       * pointer queue so leftover window damage is not inherited. */
+      /* Sprite already transferred. Consume the pointer queue so a
+       * leftover AABB cannot inherit a 1280×720 pace present. */
       if ((wmPage(u64(wmPageWFlags)) & u64(wmPageFlagPtrDmg)) > u64(0)) {
         final u64 pf = wmPage(u64(wmPageWFlags));
         wmPageSet(u64(wmPageWFlags), pf - (pf & u64(wmPageFlagPtrDmg)));
       }
     }
-    wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
   } else {
     if (ox != x) {
       erased = wmRepaintRect(ox, oy, u64(mouseCursorCols), u64(mouseCursorRows));

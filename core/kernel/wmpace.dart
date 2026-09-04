@@ -1434,7 +1434,9 @@ u64 wmGfxChromeSig() {
     u64 g = u64(0);
     if (wmWindowHeld(i) > u64(0)) {
       if (wmWinOverlay(i) < u64(1)) {
-        g = wmViewGeom(i) | u64(1);
+        /* Size-only. Position is a layer blit, not a chrome MISS. */
+        final u64 vg = wmViewGeom(i);
+        g = (wmGeomW(vg) << u64(16)) | wmGeomH(vg) | u64(1);
       }
     }
     s = s ^ (g << (i & u64(3)));
@@ -1926,6 +1928,41 @@ void wmDamagePtr(u64 x, u64 y, u64 w, u64 h) {
   wmPageSet(u64(wmPageWFlags), f | u64(wmPageFlagPtrDmg));
 }
 
+/// Clipped RESOURCE_FLUSH. Returns transferred pixels (0 if off-screen).
+@bare
+u64 wmPresentClipped(u64 x, u64 y, u64 w, u64 h) {
+  final u64 gw = fbGeomWidth();
+  final u64 gh = fbGeomHeight();
+  if (w < u64(1)) {
+    return u64(0);
+  }
+  if (h < u64(1)) {
+    return u64(0);
+  }
+  if (x >= gw) {
+    return u64(0);
+  }
+  if (y >= gh) {
+    return u64(0);
+  }
+  u64 cw = w;
+  u64 ch = h;
+  if ((x + cw) > gw) {
+    cw = gw - x;
+  }
+  if ((y + ch) > gh) {
+    ch = gh - y;
+  }
+  if (cw < u64(1)) {
+    return u64(0);
+  }
+  if (ch < u64(1)) {
+    return u64(0);
+  }
+  virtgpuPresent(x, y, cw, ch);
+  return cw * ch;
+}
+
 @bare
 void wmDamageClear() {
   final u64 f = wmPage(u64(wmPageWFlags));
@@ -1956,6 +1993,22 @@ void wmDmgAcc(u64 px, u64 regs, u64 ptrPx, u64 consumed) {
   if ((wmPage(u64(wmPageWDmgCumCons)) & u64(15)) == u64(0)) {
     wmDmgLine();
   }
+}
+
+/// Two discrete dirty rects + FRAME. Never a full-scanout fallback.
+@bare
+void wmPresentPair(u64 ax, u64 ay, u64 aw, u64 ah, u64 bx, u64 by, u64 bw,
+    u64 bh) {
+  final u64 p0 = wmPresentClipped(ax, ay, aw, ah);
+  final u64 p1 = wmPresentClipped(bx, by, bw, bh);
+  final u64 px = p0 + p1;
+  wmPageSet(u64(wmPageWDmgPx), px);
+  wmPageSet(u64(wmPageWDmgRegs), u64(2));
+  wmDmgAcc(px, u64(2), u64(0), u64(1));
+  wmPublishFrameNoted(px);
+  wmPublishFrameLine(px, mouseState(u64(mouseWordX)),
+      mouseState(u64(mouseWordY)));
+  wmPageSet(u64(wmPageWPresented), wmPage(u64(wmPageWPresented)) + u64(1));
 }
 
 /// Presents pending dirty region(s) and clears them. Dart only.
