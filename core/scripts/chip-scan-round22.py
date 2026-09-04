@@ -171,6 +171,7 @@ def main():
         rec["tag"] = tag
         rec["aa"] = aa_rec
         rec["files_xywh"] = list(geom)
+        open(path + ".geom", "w").write("%d %d %d %d %s\n" % (geom[0], geom[1], geom[2], geom[3], tag))
         # False-positive class: inspector AABB on a just-closed / tiling
         # frame where the live token has not yet been reprinted.
         if rec.get("bad") or aa_rec.get("bad"):

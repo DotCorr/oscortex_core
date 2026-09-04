@@ -71,11 +71,36 @@ def shades(pix, x0, y0, x1, y1, w, h):
     }
 
 
-def corner_tooth(pix, x0, y0, x1, y1, w, h, rect=None):
+def inside_rrect(px, py, x, y, cw, ch, r):
+    """True if (px, py) is inside the rounded card, not the AABB cutout."""
+    if px < x or py < y or px >= x + cw or py >= y + ch:
+        return False
+    # AABB perimeter next to wallpaper is the straight edge, not a tooth.
+    if px == x or py == y or px == x + cw - 1 or py == y + ch - 1:
+        return False
+    if r <= 0:
+        return True
+    ix0 = x + r
+    iy0 = y + r
+    ix1 = x + cw - r
+    iy1 = y + ch - r
+    if ix0 <= px < ix1:
+        return True
+    if iy0 <= py < iy1:
+        return True
+    cx = ix0 if px < ix0 else ix1 - 1
+    cy = iy0 if py < iy0 else iy1 - 1
+    dx = px - cx
+    dy = py - cy
+    return (dx * dx + dy * dy) <= (r * r)
+
+
+def corner_tooth(pix, x0, y0, x1, y1, w, h, rect=None, radius=18):
     """Wallpaper 4-adjacent to opaque fill *inside* the card is a tooth.
 
     Wallpaper just outside the AABB next to an opaque side is the
-    straight edge, not a corner stair.
+    straight edge, not a corner stair. Wallpaper in the AABB but
+    outside the rrect (the rounded cutout) is also not a tooth.
     """
     teeth = 0
     samples = 0
@@ -100,6 +125,11 @@ def corner_tooth(pix, x0, y0, x1, y1, w, h, rect=None):
                     inside_f = rx0 <= nx < rx1 and ry0 <= ny < ry1
                     if not (inside_w and inside_f):
                         continue
+                    rw = rx1 - rx0
+                    rh = ry1 - ry0
+                    if not (inside_rrect(x, y, rx0, ry0, rw, rh, radius)
+                            and inside_rrect(nx, ny, rx0, ry0, rw, rh, radius)):
+                        continue
                 teeth += 1
     return teeth, samples
 
@@ -116,7 +146,7 @@ def inspect_card(pix, w, h, x, y, cw, ch, r, name):
     for key, (cx, cy) in corners.items():
         band = shades(pix, cx - 1, cy - 1, cx + r + 2, cy + r + 2, w, h)
         t, s = corner_tooth(pix, cx - 1, cy - 1, cx + r + 2, cy + r + 2, w, h,
-                            rect=(x, y, cw, ch))
+                            rect=(x, y, cw, ch), radius=r)
         band["teeth"] = t
         band["samples"] = s
         out["corners"][key] = band
