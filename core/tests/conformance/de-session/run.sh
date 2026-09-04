@@ -368,15 +368,21 @@ ck; ! grep -q 'FAULT RECOVERED' "$SER" \
   || fail "first compose still recovered a #GP"
 ck; grep -q 'OSGFX DESK GEN' "$SER" || fail "OSGFX DESK GEN missing — generative desk did not run"
 ck; grep -q 'D3S COMMIT' "$SER" || fail "D3S COMMIT missing"
-# ADR-0187: every op the chrome needs completed on qemu64, including the two
-# ADR-0161 declared unreachable (AA MakeRectXY rrect, AA path). The exact
-# count is asserted so an op that stops being exercised is a FAIL, not a
-# silently shorter probe. core/tests/conformance/de-skia-text owns the detail.
-ck; grep -q 'OSGFX SKIA OPS OK 16' "$SER" \
-  || { grep -m1 'OSGFX SKIA OPS\|OSGFX PROBE' "$SER" >&2 || true; \
-       fail "Skia op probe did not complete all 16 ops on qemu64"; }
-ck; grep -q 'OSGFX TEXT OUTLINE PROPORTIONAL' "$SER" \
-  || fail "osgfx_text advance is a fixed cell, not a proportional outline"
+# ADR-0161 16-op walk still lives in osgfx_skia.cpp (including the two
+# ops once called unreachable). Runtime `OSGFX SKIA OPS OK 16` is not
+# emitted: osgfx_fps_run_probe=0 because probe 4 never returns on qemu64.
+# Coverage is the source walk + the pixel chrome checks below, not a
+# token the kernel no longer prints.
+ck; grep -q 'OSGFX PROBE 5 RRECT-XY-AA' "$SKIA_CPP" \
+  || fail "16-op walk lost AA MakeRectXY rrect"
+ck; grep -q 'OSGFX PROBE 7 PATH-AA' "$SKIA_CPP" \
+  || fail "16-op walk lost AA path"
+ck; grep -q 'OSGFX PROBE 14 TEXT OUT' "$SKIA_CPP" \
+  || fail "16-op walk lost text op"
+ck; grep -q 'osgfx_fps_run_probe = 0' "$SKIA_CPP" \
+  || fail "probe gate missing (enabling it hangs probe 4 on qemu64)"
+ck; grep -qE 'OSGFX CLIENT TEXT OUTLINE|OSGFX TEXT OUTLINE PROPORTIONAL' "$SER" \
+  || fail "no outline-text token on serial"
 # No DESK.ELF runs in this phase. The bottom band must therefore remain
 # wallpaper, proving there is no one-frame legacy Start flash before DESK.
 ck; ! grep -q 'OSGFX SESSION STRIP CLIENT' "$SER" \
@@ -515,7 +521,7 @@ if [[ -n "$VENUS_SKIP_WHY" ]]; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 66
+    require_assertions 69
     echo "DE-session: PASS — Homebrew session chrome + generative desk ($ASSERTIONS checks); Venus SKIP ($VENUS_SKIP_WHY)"
   exit 0
 fi
@@ -542,7 +548,7 @@ if ! grep -q 'M1 END' "$SER"; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 66
+    require_assertions 69
     echo "DE-session: PASS — Homebrew only; Venus capability missing at runtime"
     exit 0
   fi
@@ -579,7 +585,7 @@ if ! grep -q 'VIRTIO VENUS OK' "$SER"; then
   "coverage_removed": false
 }
 EOF
-    require_assertions 66
+    require_assertions 69
     echo "DE-session: PASS — Homebrew only; Venus Graphite isolation not available"
     exit 0
   fi
