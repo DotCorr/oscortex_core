@@ -337,16 +337,18 @@ def main():
     time.sleep(0.15)
     ser.read()
 
+    ptr_n = max(100, int(os.environ.get("DRIVE_PTR_N", "100")))
+    menu_n = max(100, int(os.environ.get("DRIVE_MENU_N", "100")))
     pointer_pts = [(36 + (i * 13) % 120, 500 + (i * 7) % 90)
-                   for i in range(int(os.environ.get("DRIVE_PTR_N", "100")))]
+                   for i in range(ptr_n)]
     menu_pts = [(48 + (i * 11) % 100, 510 + (i * 5) % 80)
-                for i in range(int(os.environ.get("DRIVE_MENU_N", "100")))]
+                for i in range(menu_n)]
     pointer = collect(q, ser, "pointer", pointer_pts, want_opid=True)
     menu = collect(q, ser, "menu", menu_pts, btn="right", want_opid=True)
     if pointer["n"] < 100 or menu["n"] < 100:
         raise SystemExit("latency n=0 or short pointer=%d menu=%d (need >=100)"
                          % (pointer["n"], menu["n"]))
-    life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
+    life = cycles(q, ser, max(20, int(os.environ.get("DRIVE_LIFE_N", "20"))))
 
     blob = harvest(ser)
     hits = parse_csdhits(blob)
