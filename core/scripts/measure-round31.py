@@ -381,6 +381,10 @@ def main():
     if len(sys.argv) < 3:
         raise SystemExit("usage: measure-round31.py <qmp> <serial>")
     q = d15.Qmp(int(sys.argv[1]))
+    run = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r31")
+    if str(sys.argv[2]).isdigit():
+        os.environ.setdefault(
+            "DRIVE_SERIAL_FILE", os.path.join(run, "serial.txt"))
     ser = m24.open_serial(sys.argv[2])
     art = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
     os.makedirs(art, exist_ok=True)

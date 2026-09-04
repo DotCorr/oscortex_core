@@ -623,9 +623,11 @@ void wmPopPaintFast(u64 ox, u64 oy) {
     if (wmPageAddr() > u64(0)) {
       if (wmPage(u64(wmPageWChromeHave)) > u64(0)) {
         final u64 unused0 = osgfx_chrome_hit_restore();
-        final u64 unused1 = osgfx_menu_blit((ox << u64(32)) | oy);
         if (wmDeOn() > u64(0)) {
+          final u64 unused1 = osgfx_menu_blit((ox << u64(32)) | oy);
           wmPopMenuDraw(ox, oy);
+        } else {
+          wmFillRect(ox, oy, u64(wmPopW), u64(wmPopH), u64(wmPopColor));
         }
         wmPopPresentVis(ox, oy);
         return;
@@ -1249,12 +1251,14 @@ u64 wmPopHoverTick(u64 x, u64 y) {
   }
   wmPopSetHover(row);
   wmPopWritePage();
-  final u64 packed = wmMeta(u64(wmMetaPopXY));
-  final u64 ox = packed >> u64(32);
-  final u64 oy = packed & u64(0xFFFFFFFF);
-  wmPopMenuDraw(ox, oy);
-  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    wmPopPresentRows(ox, oy);
+  if (wmDeOn() > u64(0)) {
+    final u64 packed = wmMeta(u64(wmMetaPopXY));
+    final u64 ox = packed >> u64(32);
+    final u64 oy = packed & u64(0xFFFFFFFF);
+    wmPopMenuDraw(ox, oy);
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      wmPopPresentRows(ox, oy);
+    }
   }
   return u64(1);
 }
@@ -1338,12 +1342,14 @@ u64 wmPopKey(u64 ev) {
       }
       wmPopSetHover(row);
       wmPopWritePage();
-      final u64 packed0 = wmMeta(u64(wmMetaPopXY));
-      final u64 ox0 = packed0 >> u64(32);
-      final u64 oy0 = packed0 & u64(0xFFFFFFFF);
-      wmPopMenuDraw(ox0, oy0);
-      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        wmPopPresentRows(ox0, oy0);
+      if (wmDeOn() > u64(0)) {
+        final u64 packed0 = wmMeta(u64(wmMetaPopXY));
+        final u64 ox0 = packed0 >> u64(32);
+        final u64 oy0 = packed0 & u64(0xFFFFFFFF);
+        wmPopMenuDraw(ox0, oy0);
+        if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+          wmPopPresentRows(ox0, oy0);
+        }
       }
       return u64(1);
     }
@@ -1353,12 +1359,14 @@ u64 wmPopKey(u64 ev) {
       }
       wmPopSetHover(row);
       wmPopWritePage();
-      final u64 packed1 = wmMeta(u64(wmMetaPopXY));
-      final u64 ox1 = packed1 >> u64(32);
-      final u64 oy1 = packed1 & u64(0xFFFFFFFF);
-      wmPopMenuDraw(ox1, oy1);
-      if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-        wmPopPresentRows(ox1, oy1);
+      if (wmDeOn() > u64(0)) {
+        final u64 packed1 = wmMeta(u64(wmMetaPopXY));
+        final u64 ox1 = packed1 >> u64(32);
+        final u64 oy1 = packed1 & u64(0xFFFFFFFF);
+        wmPopMenuDraw(ox1, oy1);
+        if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+          wmPopPresentRows(ox1, oy1);
+        }
       }
       return u64(1);
     }
