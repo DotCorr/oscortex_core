@@ -95,8 +95,12 @@ def main():
     os.makedirs(ART, exist_ok=True)
 
     marked = harvest(ser)
+    try:
+        key_edge(q, "alt", False)
+    except Exception:
+        pass
     q.key("esc")
-    time.sleep(0.15)
+    time.sleep(0.2)
     marked = harvest(ser)
     q.key("f4")
     launch_show = wait_tok(ser, "WM LAUNCH SHOW", marked, 3.0)
