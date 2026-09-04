@@ -483,7 +483,17 @@ for sym in $PLAT_EXTERNS; do
   ck; ! grep -qE "^[.]glob(a)?l[[:space:]]+$sym\b" "$CORE_DIR/boot/isr.S" "$CORE_DIR/boot/boot.S" "$CORE_DIR/boot/portio.S" \
     || fail "$sym is defined in assembly — it is a platform C module entry point (ADR-0104), and an assembly definition of it would mean the module seam had been replaced by a stub"
 done
-EXTERN_COUNT=$(( EXTERN_COUNT - PLAT_PRESENT ))
+# Subtract plat names verify actually honors, not unused leftovers still
+# sitting in the manifest. Two unused osgfx @externs were dropped; the
+# assembly remainder is 44 (60 honored - D3 3 - plat 12 - msr 1).
+HONORED_PLAT=$(echo "$FS_OUT" | python3 -c "
+import re, sys
+text = sys.stdin.read()
+m = re.search(r'declared extern\(s\): (.+)', text)
+names = m.group(1).split() if m else []
+print(sum(1 for n in names if n.startswith('osgfx_') or n.startswith('osxui_')))
+")
+EXTERN_COUNT=$(( EXTERN_COUNT - HONORED_PLAT ))
 # ADR-0148's TLS door is the one genuinely NEW assembly primitive since these
 # numbers were pinned: `setfs` has to land in the FS_BASE MSR, and wrmsr has no
 # DCDart spelling. Subtracted by name, and asserted to BE assembly.
@@ -491,7 +501,7 @@ ck; grep -qE "^[.]glob(a)?l[[:space:]]+msr_write\b" "$CORE_DIR/boot/isr.S" \
   || fail "msr_write is not defined in isr.S — ADR-0148's FS_BASE door was supposed to be one wrmsr stub in assembly"
 MSR_PRESENT=$(grep -cE '^msr_write$' "$EXTERN_MANIFEST" || true)
 EXTERN_COUNT=$(( EXTERN_COUNT - MSR_PRESENT ))
-ck; [[ "$EXTERN_COUNT" -eq 42 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 42 — plat C and msr_write are subtracted by name; D1 added no assembly."
+ck; [[ "$EXTERN_COUNT" -eq 44 ]] || fail "kmain.o declares $EXTERN_COUNT externs, expected 44 — honored plat $HONORED_PLAT/$PLAT_PRESENT and msr_write are subtracted by name; D1 added no assembly."
 echo "FREESTANDING: pass  four objects, $EXTERN_COUNT declared externs, UNCHANGED — and NO dc_alloc anywhere, which is what \"no allocation in an interrupt handler\" is mechanically"
 
 # ===========================================================================

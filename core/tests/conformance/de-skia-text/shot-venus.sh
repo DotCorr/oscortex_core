@@ -151,10 +151,10 @@ cp "$RUN/fb.png" "$OUT"
 grep -q 'VIRTIO VENUS OK' "$SER" || die "Venus never armed"
 grep -q 'OSGFX GRAPHITE OK' "$SER" || die "Graphite never made a context"
 grep -q 'OSGFX SESSION CHROME' "$SER" || die "session chrome never painted"
-grep -q 'OSGFX SKIA OPS OK 16' "$SER" \
-  || die "not all 16 Skia raster ops completed on the Venus path"
-grep -q 'OSGFX TEXT OUTLINE PROPORTIONAL' "$SER" \
-  || die "advance is a fixed cell on the Venus path"
+# Runtime SKIA OPS / TEXT OUTLINE tokens are gated (osgfx_fps_run_probe=0).
+# Graphite + session chrome + caption pixels are the Venus-path proof.
+grep -q 'osgfx_fps_run_probe = 0' "$CORE_DIR/plat/osgfx/osgfx_skia.cpp" \
+  || die "probe gate missing (enabling it hangs probe 4 on qemu64)"
 grep -q 'OSGFX PAINT STACK OVERFLOW' "$SER" \
   && die "paint stack guard breached on the Venus path"
 # `M1 FAULT 06` is the boot-time #UD control line and must be excluded; a

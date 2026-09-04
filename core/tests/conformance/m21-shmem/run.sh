@@ -785,7 +785,7 @@ echo "$ORD_OUT"
 # 5f. THE FRAME ACCOUNTING.
 #
 # The producer's teardown must NOT have counted the shared frames, and the
-# region's destruction must return exactly the pages plus its frame-vector page.
+# region's destruction must return exactly the pages plus two vector frames.
 ck; grep -q "SHM DROP R 0 REFS 0001 MAPS 0001" "$SERT" \
   || fail "the producer's exit did not take the region to one reference and one mapping"
 ck; grep -q "SHM DROP R 0 REFS 0000 MAPS 0000" "$SERT" \
@@ -800,16 +800,17 @@ kills = re.findall(r'^PROC KILL SLOT (\d\d) FREED ([0-9A-F]{8})\$', t, re.M)
 if len(kills) != 2:
     raise SystemExit('expected two PROC KILL lines, got %d' % len(kills))
 counts = {s: int(v, 16) for s, v in kills}
-# Six program pages + PML4 + PDPT + PD + program PT + shared-window PT = 11.
+# Six program pages + PML4 + PDPT + PD + program PT + two shared-window
+# page tables = 12. vmShmPages=1024 spans two PTs (vmMapSharedWindow).
 # The region's frames are NOT in this number, and that is the assertion: they
 # were handed to freeFrame and the guard declined, so they were not counted.
 for slot, n in counts.items():
-    if n != 11:
-        raise SystemExit('slot %s freed %d frames, expected 11 (6 program pages, 4 table '
-                         'frames, 1 shared-window page table). If it is %d, the region\\'s '
+    if n != 12:
+        raise SystemExit('slot %s freed %d frames, expected 12 (6 program pages, 4 table '
+                         'frames, 2 shared-window page tables). If it is %d, the region\\'s '
                          '%d frames were counted as freed by a process that did not own '
-                         'them.' % (slot, n, 11 + model['frames_per_region'], model['frames_per_region']))
-print('    (both processes freed exactly 11 frames each — their own pages and tables, and NOT one frame of the region they shared)')
+                         'them.' % (slot, n, 12 + model['frames_per_region'], model['frames_per_region']))
+print('    (both processes freed exactly 12 frames each — their own pages and tables, and NOT one frame of the region they shared)')
 PY"
 ck; [[ $KILL_STATUS -eq 0 ]] || { echo "$KILL_OUT" >&2; fail "a process teardown counted frames it did not own"; }
 echo "ASSERT: pass  neither process's teardown released or counted a frame belonging to the shared region"

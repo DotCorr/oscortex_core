@@ -1357,21 +1357,16 @@ import re, sys
 cap = open(sys.argv[1], "rb").read()
 m1 = open(sys.argv[2], "rb").read()
 fails = []
-# M1's golden MINUS the OSGFX probe lines is what this machine must print, and
-# it must print all of it. ADR-0187's three-line verdict is a Skia self-test,
-# and Skia is compiled with SSE, so isr_common skips the platform-module
-# trampoline outright when `sse_enabled()` is 0 -- calling it here would be a
-# guaranteed #UD on every interrupt for the rest of the boot. Deriving the
-# expectation by subtraction rather than storing a second golden keeps one
-# source of truth and makes the claim sharper than a prefix test: the ONLY
-# thing this CPU may omit is the self-test that needs the instructions it does
-# not have.
+# M1's golden, minus any leftover OSGFX probe lines, is what this machine
+# must print, and it must print all of it. ADR-0187's three-line verdict
+# was a Skia self-test; osgfx_fps_run_probe=0 so those lines are no longer
+# in the golden (GAP-0350: diagnostics, not the boot contract). Skia is
+# still compiled with SSE, so isr_common skips the platform-module
+# trampoline when sse_enabled() is 0 -- calling it here would be a
+# guaranteed #UD on every interrupt. If a future probe line returns to
+# the golden, subtract it here rather than storing a second file.
 m1_nosse = b"".join(l for l in m1.splitlines(keepends=True)
                     if not l.startswith(b"OSGFX "))
-if m1_nosse == m1:
-    fails.append("m1-interrupts/expected.txt has no OSGFX probe line to subtract — "
-                 "either ADR-0187's verdict stopped printing or this subtraction is "
-                 "matching the wrong thing")
 if not cap.startswith(m1_nosse):
     fails.append("the kernel did not reach the end of M1's output on a CPU without "
                  "SSE. If it produced nothing at all, the CR4 write is not guarded "

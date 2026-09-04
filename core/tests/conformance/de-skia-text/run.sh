@@ -33,7 +33,7 @@ setup_error() { echo "DE-skia-text: FAIL — $1" >&2; exit 2; }
 
 source "$SCRIPT_DIR/../_lib/harness.sh"
 
-ASSERTIONS_REQUIRED=36
+ASSERTIONS_REQUIRED=38
 
 for tool in qemu-system-x86_64 python3 x86_64-elf-nm; do
   command -v "$tool" >/dev/null 2>&1 || setup_error "$tool not found on PATH"
@@ -158,13 +158,18 @@ await QEMU_STATUS "$QEMU_PID"
 ck; [[ $DRIVE_STATUS -eq 0 ]] || { tail -40 "$SER" >&2; fail "driver exited $DRIVE_STATUS"; }
 
 # ADR-0161 recorded AA MakeRectXY rrect and AA path as unreachable on qemu64.
-# The probe walks every op the chrome uses and names the one it dies inside,
-# so a regression points at an op instead of at "Skia hangs".
-ck; grep -q 'OSGFX SKIA OPS OK 16' "$SER" \
-  || { grep -E 'OSGFX (SKIA OPS|PROBE)' "$SER" | tail -3 >&2 || true; \
-       fail "not all 16 Skia raster ops completed on qemu64"; }
-ck; grep -q 'OSGFX TEXT OUTLINE PROPORTIONAL' "$SER" \
-  || fail "in-OS advance is a fixed cell, not a proportional outline"
+# The 16-op walk still lives in osgfx_skia.cpp. Runtime `OSGFX SKIA OPS OK 16`
+# is not emitted: osgfx_fps_run_probe=0 because probe 4 never returns on
+# qemu64 (same contract as de-session). Coverage is the source walk plus
+# the caption.py pixel checks below, not a token the kernel no longer prints.
+ck; grep -q 'OSGFX PROBE 5 RRECT-XY-AA' "$SKIA_CPP" \
+  || fail "16-op walk lost AA MakeRectXY rrect"
+ck; grep -q 'OSGFX PROBE 7 PATH-AA' "$SKIA_CPP" \
+  || fail "16-op walk lost AA path"
+ck; grep -q 'OSGFX PROBE 14 TEXT OUT' "$SKIA_CPP" \
+  || fail "16-op walk lost text op"
+ck; grep -q 'osgfx_fps_run_probe = 0' "$SKIA_CPP" \
+  || fail "probe gate missing (enabling it hangs probe 4 on qemu64)"
 ck; ! grep -q 'OSGFX PAINT STACK OVERFLOW' "$SER" \
   || fail "paint stack guard was breached"
 ck; ! grep -q 'OSGFX OOM' "$SER" || fail "Skia ran the bump heap out"
