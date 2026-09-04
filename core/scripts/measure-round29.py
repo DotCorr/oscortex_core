@@ -71,17 +71,21 @@ def first_after(ser, prev_gen, want_kind=None):
     return None
 
 
-def wait_pair(ser, prev, timeout=3.0):
+def wait_pair(ser, prev, timeout=3.0, skip_ptr=False):
     t0 = time.time()
     while (time.time() - t0) < timeout:
         got = first_after(ser, prev)
         if got is not None:
+            kind, gen, px, w, h = got
+            if skip_ptr and px <= 640 and px > 0:
+                prev = gen
+                continue
             return got + ((time.time() - t0) * 1000.0,)
         time.sleep(0.005)
     return None
 
 
-def burst(q, ser, label, points, btn=None):
+def burst(q, ser, label, points, btn=None, skip_ptr=False):
     walls = []
     px_tail = []
     gen_tail = []
@@ -93,9 +97,7 @@ def burst(q, ser, label, points, btn=None):
         try:
             if btn:
                 d15.place(q, ser, x, y)
-                time.sleep(0.02)
                 d15.button(q, x, y, btn, True)
-                time.sleep(0.03)
                 d15.button(q, x, y, btn, False)
                 if btn == "right":
                     try:
@@ -107,7 +109,7 @@ def burst(q, ser, label, points, btn=None):
         except Exception as e:
             print(label, "inject", e)
             continue
-        got = wait_pair(ser, g0, timeout=2.5)
+        got = wait_pair(ser, g0, timeout=2.5, skip_ptr=skip_ptr)
         if got is None:
             print(label, "unpaired", x, y, "prev", g0)
             continue
@@ -188,7 +190,7 @@ def main():
     drag_pts = [(120 + (i * 9) % 200, 55) for i in range(n)]
     d15.place(q, ser, drag_pts[0][0], drag_pts[0][1])
     d15.button(q, drag_pts[0][0], drag_pts[0][1], "left", True)
-    drag = burst(q, ser, "drag", drag_pts[1:])
+    drag = burst(q, ser, "drag", drag_pts[1:], skip_ptr=True)
     d15.button(q, drag_pts[-1][0], drag_pts[-1][1], "left", False)
     scroll = burst(q, ser, "scroll",
                    [(120, 180 + (i * 11) % 80) for i in range(n // 2)],

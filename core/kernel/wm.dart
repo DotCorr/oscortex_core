@@ -1243,6 +1243,12 @@ void wmCompose() {
   /* ADR-0183: under `wm gfx`, session paints wallpaper (+ title/taskbar
    * overlays without body fill), then Dart blits every FRAME surface so
    * FILES/SET/DESK shm survives the tick. Without gfx, solid desk + blit. */
+  if (wmMeta(u64(wmMetaDrag)) > u64(0)) {
+    /* Translate drag already published discrete old+new layers.
+     * A session compose here was the 1.1 Mpx FRAME after every step. */
+    wmSetMeta(u64(wmMetaBusy), u64(0));
+    return;
+  }
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* The session can paint without either cache, but then there is no
      * persistent wallpaper image for damage repair and no presentation
@@ -3665,6 +3671,21 @@ void wmResizeStep(u64 x, u64 y) {
   uartNewline();
 }
 
+/// One configure after a translate so the client learns the final origin.
+/// Per-pixel configure during drag forced a 1.1 Mpx wmCompose.
+@bare
+void wmDragEndConfigure() {
+  final u64 drag = wmMeta(u64(wmMetaDrag));
+  if (drag < u64(1)) {
+    return;
+  }
+  final u64 wI = drag - u64(1);
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  wmeventEnqueueConfigure(wI);
+}
+
 /// One drag step: move the dragged window so the grabbed point follows the
 /// pointer, and repaint where it WAS and where it now IS. A marked grab
 /// is a resize (ADR-0121), not a move.
@@ -3720,14 +3741,26 @@ void wmDragStep(u64 x, u64 y) {
   final u64 ow = w + b + b;
   final u64 oh = h + b + b;
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(cx, cy, w, h));
-  wmeventEnqueueConfigure(wI);
+  /* Translate-only: do not enqueue configure per pixel. That COMMIT
+   * path took honour=0 and wmCompose'd a 1.1 Mpx FRAME after the
+   * layer blit. One configure on button-up is enough. */
   u64 px = u64(0);
   if (wmPageAddr() > u64(0)) {
     if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-      wmDefEnqueue(u64(wmDefKindDrag), wI,
+      /* Present the layer now (IRQ12). Enqueue+kick was a later
+       * 1280 compose; pointer-first pairing stole the 232k blit. */
+      wmGfxMail();
+      final u64 dpx = osgfx_chrome_drag_step(
           wmPackGeom(ox, oy, ow, oh),
           wmPackGeom(cx - b, cy - b, ow, oh));
-      wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
+      wmPageSet(u64(wmPageWDmgPx), dpx);
+      wmDmgAcc(dpx, u64(2), u64(0), u64(1));
+      wmGfxChromeStamp();
+      wmPresentPair(ox, oy, ow, oh, cx - b, cy - b, ow, oh);
+      wmDamageClear();
+      wmVisMaybePublish(wI);
+      px = dpx;
+      wmSetMeta(u64(wmMetaRectPixels), px | u64(wmRectComposePending));
     } else {
       /* Software sit-in (d2): page exists after `wm on`, but idle
        * drain is gfx/DE-only. Paint now or MOVE is a ghost geom. */
@@ -3803,6 +3836,7 @@ void wmPointerTick() {
       if (wasLeft > u64(0)) {
         final u64 unused = wmDeCsdRelease(x, y);
       }
+      wmDragEndConfigure();
       wmSetMeta(u64(wmMetaDrag), u64(0));
     }
     wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);
@@ -3843,6 +3877,7 @@ void wmPointerTick() {
     if (wasLeft > u64(0)) {
       final u64 unused = wmDeCsdRelease(x, y);
     }
+    wmDragEndConfigure();
     wmSetMeta(u64(wmMetaDrag), u64(0));
   }
   wmSetMeta(u64(wmMetaButtons), (right << u64(1)) | left);

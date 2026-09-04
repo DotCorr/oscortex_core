@@ -2567,8 +2567,9 @@ void wmDefDrain() {
             if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
               /* Mailbox win0/win1 = live Dart geoms before the cache blit
                * so paint + chrome_key + hit-test share one origin.
-               * Position is not in the chrome key; kick stays HIT. */
-              wmGfxKick();
+               * Mail only — a gen bump owed a session tick that then
+               * wmCompose'd 1.1 Mpx after every PresentPair. */
+              wmGfxMail();
               final u64 dpx = osgfx_chrome_drag_step(oldG, nextG);
               /* Body travels with the cache/scanout move. A decorated
                * DrawWindow here was the 200 ms first-step TCG. */

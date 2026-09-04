@@ -298,8 +298,12 @@ u64 wmRrectCover(u64 px, u64 py, u64 x, u64 y, u64 w, u64 h, u64 r) {
   return ((hits * u64(255)) + u64(8)) ~/ u64(16);
 }
 
+/// Writes live geoms into the osgfx mailbox. Does not bump `gen` and
+/// does not owe a session tick — drag uses this so a translate cannot
+/// force `osgfx_guest_tick` + `wmCompose` (the 1.1 Mpx FRAME after
+/// each PresentPair).
 @bare
-void wmGfxKick() {
+void wmGfxMail() {
   u64 mailbox = u64(0);
   u64 win0 = u64(0);
   u64 win1 = u64(0);
@@ -307,15 +311,14 @@ void wmGfxKick() {
   u64 win1Slot = u64(wmMaxWindows);
   u64 pop = u64(0);
   u64 packed = u64(0);
-  u64 gen = u64(0);
   u64 flags = u64(0);
   u64 desk = u64(0);
   u64 wall = u64(0);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     mailbox = kernel_data_start();
     final u64 _pageOk = wmPageEnsure();
-    if (_pageOk > u64(0)) {
-      wmSessionOwe();
+    if (_pageOk < u64(1)) {
+      return;
     }
     desk = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailDesk)).value;
     wall = Pointer<u64>.fromAddress(mailbox + u64(wmPopMailWall)).value;
@@ -391,11 +394,24 @@ void wmGfxKick() {
     Pointer<u64>.fromAddress(mailbox + u64(48)).value = win0;
     Pointer<u64>.fromAddress(mailbox + u64(56)).value = win1;
     Pointer<u64>.fromAddress(mailbox + u64(64)).value = pop;
-    gen = Pointer<u64>.fromAddress(mailbox + u64(72)).value + u64(1);
-    Pointer<u64>.fromAddress(mailbox + u64(72)).value = gen;
     Pointer<u64>.fromAddress(mailbox + u64(wmPopMailDesk)).value = desk;
     Pointer<u64>.fromAddress(mailbox + u64(wmPopMailWall)).value = wall;
   }
+}
+
+@bare
+void wmGfxKick() {
+  if (wmMeta(u64(wmMetaGfx)) < u64(1)) {
+    return;
+  }
+  wmGfxMail();
+  if (wmPageAddr() > u64(0)) {
+    wmSessionOwe();
+  }
+  final u64 mailbox = kernel_data_start();
+  final u64 gen =
+      Pointer<u64>.fromAddress(mailbox + u64(72)).value + u64(1);
+  Pointer<u64>.fromAddress(mailbox + u64(72)).value = gen;
 }
 
 /// `wm gfx` -- chrome plus the osgfx C ABI. Prints `WM GFX ON`. No help line.
