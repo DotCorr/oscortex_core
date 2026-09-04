@@ -525,22 +525,30 @@ def overlay_kind_burst(q, ser, label, fire, dismiss, kind, n,
             continue
         ev, _w = wait_done(ser, prev, kind, timeout=2.5)
         wall = (time.time() - t_inj) * 1000.0
-        walls.append(wall)
+        hit = None
         if ev is None:
             paired.append({"i": i, "ms": wall, "hit": None})
-            try:
-                dismiss()
-            except Exception:
-                pass
-            continue
-        if want_w or want_h:
+        elif want_w or want_h:
             if not overlay_match(ev, want_w, want_h):
                 paired.append({"i": i, "ms": wall, "hit": "kind-geom-miss",
                                "ev": ev})
-                continue
-        paired.append({"i": i, "ms": wall, "hit": "done", "ev": ev,
-                       "opid": ev["opid"], "kind": ev["kind"],
-                       "w": ev["w"], "h": ev["h"], "px": ev["px"]})
+            else:
+                hit = "done"
+                walls.append(wall)
+                paired.append({"i": i, "ms": wall, "hit": "done", "ev": ev,
+                               "opid": ev["opid"], "kind": ev["kind"],
+                               "w": ev["w"], "h": ev["h"], "px": ev["px"]})
+        else:
+            hit = "done"
+            walls.append(wall)
+            paired.append({"i": i, "ms": wall, "hit": "done", "ev": ev,
+                           "opid": ev["opid"], "kind": ev["kind"],
+                           "w": ev["w"], "h": ev["h"], "px": ev["px"]})
+        # F4 toggles. Close after every sample so the next fire is a SHOW.
+        try:
+            dismiss()
+        except Exception:
+            pass
     try:
         dismiss()
     except Exception:
