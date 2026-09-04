@@ -548,12 +548,8 @@ static void launch_icon(u64 i) {
   if (i >= ICON_N) {
     return;
   }
-  if ((launched_mask & (1UL << i)) != 0UL) {
-    if (icon_is_live(i) != 0UL) {
-      return;
-    }
-    launched_mask = launched_mask & ~(1UL << i);
-  }
+  /* Dock is spawn, not raise. A live stem used to return here and
+   * block the next FILES.ELF after the first client. */
   nm = launch_name(i);
   nlen = launch_nlen(i);
   at = put(0, msg_launch);

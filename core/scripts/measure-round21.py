@@ -190,11 +190,8 @@ def first_drags(q, ser, n=22):
     walls = []
     presents = []
     fresh = 0
-    # Sit-in already paid a 1px title step on the first FILES tile.
-    # Every counted sample is a new client: close that tile, spawn, drag.
-    if not close_files(q, ser, 1):
-        close_files(q, ser, 0)
-    time.sleep(0.2)
+    # Dock spawn is a new client each click (desk no longer treats the
+    # icon as raise-if-live). Sit-in FILES can stay; the new tile is top.
     for i in range(n):
         if not launch_files(q, ser):
             print("relaunch miss", i)
@@ -242,10 +239,7 @@ def first_drags(q, ser, n=22):
                     "oscortex-round21-first-drag.png"))
             except Exception as e:
                 print("first-drag shot", e)
-        if not (close_files(q, ser, 0) or close_files(q, ser, -28)):
-            print("close miss", i)
-            continue
-        time.sleep(0.15)
+        time.sleep(0.08)
     return {
         "n": len(walls),
         "fresh_relaunches": fresh,
