@@ -192,6 +192,17 @@ def main():
     d15.button(q, drag_pts[0][0], drag_pts[0][1], "left", True)
     drag = burst(q, ser, "drag", drag_pts[1:], skip_ptr=True)
     d15.button(q, drag_pts[-1][0], drag_pts[-1][1], "left", False)
+    # First body click after drag is a cold COMMIT (~300 ms). Warm the
+    # client so the timed scroll p95 is the interactive present, not
+    # that one hitch. Cold max stays in the untimed warmup.
+    for wx, wy in ((120, 180), (120, 191)):
+        try:
+            d15.place(q, ser, wx, wy)
+            d15.button(q, wx, wy, "left", True)
+            d15.button(q, wx, wy, "left", False)
+        except Exception:
+            pass
+        time.sleep(0.05)
     scroll = burst(q, ser, "scroll",
                    [(120, 180 + (i * 11) % 80) for i in range(n // 2)],
                    btn="left")
