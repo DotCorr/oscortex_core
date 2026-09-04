@@ -56,14 +56,11 @@ QMP=$(python3 "$PICKER")
 echo "$QMP" >"$RUN/qmp.port"
 export PROVE_SERIAL="$RUN/serial.txt"
 
-# Host has no /dev/dri. egl-headless needs a render node and dies.
-# gtk,gl=on keeps a 640 GL widget and QMP screendump says "no surface".
-# gtk without gl still runs Venus on the device; 2D SET_SCANOUT can
-# resize the host window to 1280×720 so the dump is the real scanout.
-DISPLAY_ARGS=(-display gtk,zoom-to-fit=on)
-if [[ "${OSCORTEX_VENUS_GL_DISPLAY:-0}" == "1" ]]; then
-  DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
-fi
+# Host has no /dev/dri. virtio-gpu-gl-pci requires the display
+# backend to enable GL. gtk,gl=on + llvmpipe: QMP screendump has
+# no surface and the GTK widget stays 640. Guest RAM backing is
+# the armed 1280 scanout (FB VIRTIO … AT <phys>).
+DISPLAY_ARGS=(-display gtk,gl=on,zoom-to-fit=on)
 
 set +e
 timeout 180 "$QEMU" \
@@ -170,17 +167,40 @@ try:
     os.remove(png)
 except OSError:
     pass
-def do_dump(args):
-    f.write(json.dumps({"execute": "screendump", "arguments": args}) + "\n")
+def rpc(cmd, args=None):
+    msg = {"execute": cmd}
+    if args is not None:
+        msg["arguments"] = args
+    f.write(json.dumps(msg) + "\n")
     f.flush()
     while True:
         obj = json.loads(f.readline())
         if "return" in obj or "error" in obj:
-            print("screendump", obj)
+            print(cmd, obj)
             return obj
-do_dump({"filename": png, "format": "png"})
-if not os.path.isfile(png) or os.path.getsize(png) < 2000:
-    do_dump({"filename": png, "format": "png", "device": "gpu0"})
+rpc("screendump", {"filename": png, "format": "png"})
+blob = open(serial_path, encoding="latin-1", errors="replace").read() if serial_path else ""
+import re
+m = re.search(r"FB VIRTIO [0-9A-Fa-f]+x[0-9A-Fa-f]+ AT ([0-9A-Fa-f]+)", blob)
+addr = int(m.group(1), 16) if m else 0
+rawp = os.path.abspath(png + ".bgrx")
+print("scanout_addr", hex(addr), "raw", rawp)
+if addr > 0:
+    rpc("pmemsave", {"val": addr, "size": 1280 * 720 * 4, "filename": rawp})
+PY
+# Encode guest scanout backing (BGRX) to the 1280 artifact.
+python3 - "$PNG" <<'PY'
+import os, sys
+from PIL import Image
+png = sys.argv[1]
+rawp = png + ".bgrx"
+if os.path.isfile(rawp) and os.path.getsize(rawp) >= 1280 * 720 * 4:
+    data = open(rawp, "rb").read(1280 * 720 * 4)
+    im = Image.frombytes("RGB", (1280, 720), data, "raw", "BGRX")
+    im.save(png)
+    print("encoded scanout backing", png, im.size, "bytes", os.path.getsize(png))
+else:
+    print("no scanout backing at", rawp, "size", os.path.getsize(rawp) if os.path.isfile(rawp) else 0)
 PY
 # Host-window fallback when QMP has no GL surface / stays 640.
 ok1280=0

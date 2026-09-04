@@ -107,6 +107,12 @@ final List<u8> fbStrVirtio = const [
   u8(0x49), u8(0x4F), u8(0x20),
 ];
 
+/// `" AT "` -- 4 bytes. Scanout backing address after FB VIRTIO geom.
+@rodata
+final List<u8> fbStrAt = const [
+  u8(0x20), u8(0x41), u8(0x54), u8(0x20),
+];
+
 /// `"FB NONE -- no VGA-class device with a memory BAR0 on bus 0\n"` -- 59 bytes.
 @rodata
 final List<u8> fbStrNoDev = const [

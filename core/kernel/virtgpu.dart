@@ -2590,6 +2590,8 @@ u64 virtgpuFbTry() {
         uartPutHex(sw, u64(4));
         uartWrite(Rodata.addressOf(fbStrBy), u64(1));
         uartPutHex(sh, u64(4));
+        uartWrite(Rodata.addressOf(fbStrAt), u64(4));
+        uartPutHex(live, u64(8));
         uartNewline();
         return u64(1);
       }
@@ -2750,6 +2752,8 @@ u64 virtgpuFbTry() {
   uartPutHex(sw, u64(4));
   uartWrite(Rodata.addressOf(fbStrBy), u64(1));
   uartPutHex(sh, u64(4));
+  uartWrite(Rodata.addressOf(fbStrAt), u64(4));
+  uartPutHex(first, u64(8));
   uartNewline();
   return u64(1);
 }
