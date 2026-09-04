@@ -154,21 +154,20 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
 
 
 def close_files(q, ser, dx=0):
-    """Close the FILES tile at default geom + dx. Require a new CLOSE token."""
-    marked = ser.read()
-    cx = d15.FILES_CLOSE_XY[0] + dx
-    cy = d15.FILES_CLOSE_XY[1]
-    d15.place(q, ser, cx, cy)
-    time.sleep(0.08)
-    d15.button(q, cx, cy, "left", True)
-    time.sleep(0.05)
-    d15.button(q, cx, cy, "left", False)
-    got = d15.wait_mark(ser, "WM CLOSE", marked, 2.5)
-    if got:
-        return True
-    # Disc may still be at the default tile.
-    if dx != 0:
-        return close_files(q, ser, 0)
+    """Close FILES by the traffic disc. After a +28 step the disc sits
+    next to SET's left AABB — click the disc's left half."""
+    cy = 56
+    xs = [d15.FILES_CLOSE_XY[0] + dx - 8, d15.FILES_CLOSE_XY[0] + dx,
+          d15.FILES_CLOSE_XY[0], 422 + dx + 9]
+    for cx in xs:
+        marked = ser.read()
+        d15.place(q, ser, cx, cy)
+        time.sleep(0.06)
+        d15.button(q, cx, cy, "left", True)
+        time.sleep(0.04)
+        d15.button(q, cx, cy, "left", False)
+        if d15.wait_mark(ser, "WM CLOSE", marked, 1.2):
+            return True
     return False
 
 
@@ -246,21 +245,22 @@ def first_drags(q, ser, n=22):
     }
 
 
-def files_open_proof(q, ser):
-    """CTX FILE then Open on the default FILES tile, not a dragged window."""
-    close_files(q, ser, 28)
-    close_files(q, ser, 0)
-    time.sleep(0.25)
-    if not launch_files(q, ser):
-        return {
-            "opened": False,
-            "cat": False,
-            "menu": False,
-            "refused": False,
-            "none": False,
-            "launch": False,
-        }
-    time.sleep(0.4)
+def files_open_proof(q, ser, relaunch=False):
+    """CTX FILE then Open. Default tile after sit-in; relaunch only if asked."""
+    if relaunch:
+        close_files(q, ser, 28)
+        close_files(q, ser, 0)
+        time.sleep(0.25)
+        if not launch_files(q, ser):
+            return {
+                "opened": False,
+                "cat": False,
+                "menu": False,
+                "refused": False,
+                "none": False,
+                "launch": False,
+            }
+        time.sleep(0.4)
     marked = ser.read()
     d15.place(q, ser, CTX_XY[0], CTX_XY[1])
     time.sleep(0.12)
@@ -304,19 +304,22 @@ def main():
     art = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
     os.makedirs(art, exist_ok=True)
 
+    # Open while FILES is still on the default tile (sit-in only moved 1px).
+    open_proof = files_open_proof(q, ser)
+    try:
+        d15.shot(q, os.path.join(art, "oscortex-round21-files-open.png"))
+    except Exception as e:
+        print("files-open shot", e)
+
     first = first_drags(q, ser, 22)
 
     # Release any leftover title grab so pointer pairing is sprite-only.
     d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
     time.sleep(0.1)
-    q.type_line("wm dmg")
-    time.sleep(0.25)
     dmg_after_drag = parse_dmg(ser.read())
 
     pointer_pts = [(80 + (i * 17) % 900, 110 + (i % 7) * 9) for i in range(110)]
     pointer = collect(q, ser, "pointer", pointer_pts, want_opid=False)
-    q.type_line("wm dmg")
-    time.sleep(0.25)
     dmg_after_ptr = parse_dmg(ser.read())
 
     menu_pts = []
@@ -329,10 +332,6 @@ def main():
     except Exception:
         pass
     time.sleep(0.15)
-
-    q.type_line("wm dmg")
-    time.sleep(0.3)
-    open_proof = files_open_proof(q, ser)
     q.type_line("wm dmg")
     time.sleep(0.3)
     q.type_line("wm pace")
