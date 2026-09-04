@@ -116,7 +116,8 @@ def main():
     marked_set2 = harvest(ser)
     click(q, dock_xy(0)[0], dock_xy(0)[1])
     set_focus = wait_tok(ser, "WM FOCUS ", marked_set2, 2.0)
-    set_dup = "SET READY" in harvest(ser)[len(marked_set2):]
+    set_win = harvest(ser)[len(marked_set2):]
+    set_dup = ("SET READY" in set_win) and ("FS OPEN SET" in set_win)
     files1 = harvest(ser)
     click(q, dock_xy(1)[0], dock_xy(1)[1])
     files_multi_a = wait_tok(ser, "FILES READY", files1, 3.0) or wait_tok(

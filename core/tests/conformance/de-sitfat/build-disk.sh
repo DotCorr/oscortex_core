@@ -139,7 +139,7 @@ import json, sys
 lay = json.load(open(sys.argv[1]))
 need = ['BROWSE.ELF', 'PLAY.ELF', 'TAP.ELF', 'FILES.ELF', 'SET.ELF',
         'PING.ELF', 'STUDIO.ELF', 'APP1.ELF', 'DESK.ELF',
-        'NOTE.TXT', 'OPENWITH.DAT',
+        'NOTE.TXT', 'OPENWITH.DAT', 'PINS.DAT',
         'VOID', 'GONE.DAT', 'MISS.DAT']
 miss = [n for n in need if n not in lay['order']]
 if miss:
