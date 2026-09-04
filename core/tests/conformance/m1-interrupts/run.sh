@@ -68,7 +68,7 @@ source "$SCRIPT_DIR/../_lib/harness.sh"
 # its PASS line. It moves when the harness legitimately gains or loses checks,
 # exactly like the pinned .bss sizes elsewhere in this file -- and a DROP
 # below it is the failure this exists to catch.
-ASSERTIONS_REQUIRED=23
+ASSERTIONS_REQUIRED=26
 
 
 ck; if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
@@ -492,7 +492,9 @@ fi
 SERIAL_CAPTURE="$WORKDIR/serial.txt"
 : >"$SERIAL_CAPTURE"
 
-capture_log "$WORKDIR/qemu.log" QEMU_STATUS -- timeout 10 qemu-system-x86_64 -kernel "$KERNEL_ELF" -m 128M -serial "file:$SERIAL_CAPTURE" -display none -no-reboot
+# Conformance self-test: `-append m1fault` takes the deliberate #UD.
+# Production / daily-drive omit that token and must not print FAULT.
+capture_log "$WORKDIR/qemu.log" QEMU_STATUS -- timeout 10 qemu-system-x86_64 -kernel "$KERNEL_ELF" -append m1fault -m 128M -serial "file:$SERIAL_CAPTURE" -display none -no-reboot
 ck; if [[ $QEMU_STATUS -ne 0 && $QEMU_STATUS -ne 124 ]]; then
   cat "$WORKDIR/qemu.log" >&2
   fail "qemu-system-x86_64 exited $QEMU_STATUS unexpectedly (log above)"
@@ -509,9 +511,23 @@ ck; if ! cmp -s "$SERIAL_CAPTURE" "$EXPECTED"; then
 fi
 
 CAPTURED_BYTES=$(wc -c <"$SERIAL_CAPTURE" | tr -d ' ')
+
+PROD_CAPTURE="$WORKDIR/serial-prod.txt"
+: >"$PROD_CAPTURE"
+capture_log "$WORKDIR/qemu-prod.log" PROD_STATUS -- timeout 10 qemu-system-x86_64 -kernel "$KERNEL_ELF" -m 128M -serial "file:$PROD_CAPTURE" -display none -no-reboot
+ck; if [[ $PROD_STATUS -ne 0 && $PROD_STATUS -ne 124 ]]; then
+  cat "$WORKDIR/qemu-prod.log" >&2
+  fail "production-path qemu exited $PROD_STATUS unexpectedly"
+fi
+ck; grep -q 'M1 END' "$PROD_CAPTURE" \
+  || fail "production boot never reached M1 END"
+ck; ! grep -q 'FAULT' "$PROD_CAPTURE" \
+  || fail "production boot printed a FAULT token (m1fault is conformance-only)"
+echo "PRODUCTION: pass  M1 END with zero FAULT tokens (no m1fault cmdline)"
+
 # GAP-0168: the PASS line below describes work; this refuses to print it
 # unless that many checks actually executed. An abort, a loop that iterated
 # zero times, a branch not taken or a deleted guard all land here.
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "M1-interrupts: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S) -> link -> structural checks -> verify-freestanding pass -> real QEMU boot (-m 128M) -> exact ${CAPTURED_BYTES}-byte serial match: 256 IDT gates installed, int3 delivered to a DCDart handler and resumed, timer IRQ observed on remapped vector 0x20, 100 PIT ticks with working EOI, and a deliberate #UD caught and diagnosed instead of triple-faulting"
+echo "M1-interrupts: PASS — dcc build -> assemble (boot.S + isr.S + kdata.S) -> link -> structural checks -> verify-freestanding pass -> real QEMU boot (-m 128M -append m1fault) -> exact ${CAPTURED_BYTES}-byte serial match: 256 IDT gates installed, int3 delivered to a DCDart handler and resumed, timer IRQ observed on remapped vector 0x20, 100 PIT ticks with working EOI, and a deliberate #UD caught and diagnosed instead of triple-faulting; production path has zero FAULT tokens"
 exit 0

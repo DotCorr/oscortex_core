@@ -3545,6 +3545,9 @@ void wmResizeStep(u64 x, u64 y) {
       return;
     }
   }
+  if (wmPopOn() > u64(0)) {
+    wmPopHide();
+  }
   wmSetWin(wI, u64(wmWinGeom), wmPackGeom(ox, oy, nw, nh));
   wmSetWin(wI, u64(wmWinSeq), u64(0));
   wmeventEnqueueConfigure(wI);

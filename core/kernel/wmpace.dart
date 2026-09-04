@@ -325,6 +325,13 @@ const int wmPageWLifeClose = 445;
 const int wmPageWVis0 = 446;
 const int wmPageWPend0 = 450;
 const int wmPageWVisGen0 = 454;
+/// Round 24: HOLD watchdog. Arm tick and kick/cancel count per slot.
+/// Kick 0 = none, 1 = configure re-enqueue, 2 = timeout cancel.
+const int wmPageWHoldArm0 = 458;
+const int wmPageWHoldKick0 = 462;
+const int wmHoldKickTicks = 50;
+const int wmHoldForceTicks = 80;
+const int wmHoldCancelTicks = 200;
 
 const int wmDefKindNone = 0;
 const int wmDefKindMax = 1;
@@ -2096,6 +2103,7 @@ void wmFrameTick() {
   if (wmActive() > u64(0)) {
     if (wmMeta(u64(wmMetaBusy)) < u64(1)) {
       wmDefDrain();
+      wmHoldWatch();
     }
   }
   if (wmPaced() < u64(1)) {

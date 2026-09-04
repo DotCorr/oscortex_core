@@ -260,8 +260,8 @@ part 'virtnet.dart';
 ///   `M1 ...`      interrupts report     -- tests/conformance/m1-interrupts/
 ///                                          run.sh asserts the WHOLE capture
 ///
-/// This function never returns. It ends in a deliberate fault whose handler
-/// halts -- see the end of the body.
+/// This function never returns. Production continues at m2Enter() after
+/// `M1 END`. The deliberate #UD is conformance-only (`m1fault`).
 @bare
 void kmain(u64 mbInfo) {
   // The VGA console FIRST, before anything can print. Two reasons, and the
@@ -553,30 +553,25 @@ void kmain(u64 mbInfo) {
   }
   m1ReportTicks(ticks);
 
-  // ---- The deliberate fault: M1's actual point ----
+  // ---- M1 fault-recovery self-test (conformance only) ----
   //
-  // Mask every IRQ and clear IF first, so a tick cannot arrive mid-diagnostic
-  // and interleave output into the middle of a line.
+  // The overflow is M1's original point: DCDart traps on u64 overflow
+  // with a real `ud2` (#UD, vector 6). isrDispatch prints
+  // "M1 FAULT 06 ...", then "M1 END", then m2Enter(). Daily-drive and
+  // demo boots must not print or execute that fault path. Gate: Multiboot
+  // cmdline token `m1fault` (m1-interrupts passes `-append m1fault`).
+  // The `ud2` stays in kmain so the structural disassembly check still
+  // proves the trap was not constant-folded away.
+  if (mbCmdHasM1Fault(mbInfo) > u64(0)) {
+    picMaskAll();
+    interrupts_disable();
+    final u64 boom = ticks + u64(0xFFFFFFFFFFFFFFFF);
+    uartPutHex(boom, u64(16));
+    halt_forever();
+  }
+
   picMaskAll();
   interrupts_disable();
-
-  // `ticks` is >= 100 and came from an opaque extern call, so adding
-  // 0xFFFFFFFFFFFFFFFF to it overflows a u64 for certain. It is spelled this
-  // way ON PURPOSE rather than as a constant expression: DCDart's arithmetic
-  // traps on overflow (DCDART_SPEC §4.1) by emitting a real conditional
-  // `ud2`, and with two constants LLVM would be free to fold the whole thing
-  // at compile time -- potentially into `unreachable`, which would delete the
-  // surrounding code rather than trap at runtime. An opaque operand forces a
-  // genuine runtime check. Verified by disassembly, not assumed.
-  //
-  // The resulting #UD (vector 6) lands in isrDispatch, which prints
-  // "M1 FAULT 06 ...", then "M1 END", then halts. At M0 this same fault would
-  // have triple-faulted the VM and printed nothing at all -- that difference
-  // IS the milestone.
-  final u64 boom = ticks + u64(0xFFFFFFFFFFFFFFFF);
-
-  // Not reached. Consuming `boom` keeps the overflowing add from being dead
-  // code that a future optimizer could drop.
-  uartPutHex(boom, u64(16));
-  halt_forever();
+  m1End();
+  m2Enter();
 }

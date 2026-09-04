@@ -272,3 +272,70 @@ void mbReport(u64 info) {
   mbWalkMmap(mmapAddr, mmapLen);
   mbEnd();
 }
+
+/// 1 if Multiboot cmdline contains the token `m1fault`.
+/// Prints nothing — production boot must not take the #UD path.
+@bare
+u64 mbCmdHasM1Fault(u64 info) {
+  if (info < u64(1)) {
+    return u64(0);
+  }
+  if ((info & u64(3)) > u64(0)) {
+    return u64(0);
+  }
+  final u64 flags = mbU32(info);
+  if ((flags & u64(4)) < u64(1)) {
+    return u64(0);
+  }
+  final u64 cmd = mbU32(info + u64(16));
+  if (cmd < u64(1)) {
+    return u64(0);
+  }
+  u64 i = u64(0);
+  while (i < u64(160)) {
+    final u64 c0 = Pointer<u8>.fromAddress(cmd + i).value.toU64();
+    if (c0 < u64(1)) {
+      return u64(0);
+    }
+    u64 atTok = u64(0);
+    if (i < u64(1)) {
+      atTok = u64(1);
+    } else {
+      final u64 prev = Pointer<u8>.fromAddress(cmd + i - u64(1)).value.toU64();
+      if (prev == u64(0x20)) {
+        atTok = u64(1);
+      }
+    }
+    if (atTok > u64(0)) {
+      if (c0 == u64(0x6D)) {
+        final u64 c1 = Pointer<u8>.fromAddress(cmd + i + u64(1)).value.toU64();
+        if (c1 == u64(0x31)) {
+          final u64 c2 = Pointer<u8>.fromAddress(cmd + i + u64(2)).value.toU64();
+          if (c2 == u64(0x66)) {
+            final u64 c3 = Pointer<u8>.fromAddress(cmd + i + u64(3)).value.toU64();
+            if (c3 == u64(0x61)) {
+              final u64 c4 = Pointer<u8>.fromAddress(cmd + i + u64(4)).value.toU64();
+              if (c4 == u64(0x75)) {
+                final u64 c5 = Pointer<u8>.fromAddress(cmd + i + u64(5)).value.toU64();
+                if (c5 == u64(0x6C)) {
+                  final u64 c6 = Pointer<u8>.fromAddress(cmd + i + u64(6)).value.toU64();
+                  if (c6 == u64(0x74)) {
+                    final u64 c7 = Pointer<u8>.fromAddress(cmd + i + u64(7)).value.toU64();
+                    if (c7 < u64(1)) {
+                      return u64(1);
+                    }
+                    if (c7 == u64(0x20)) {
+                      return u64(1);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(0);
+}

@@ -1230,8 +1230,10 @@ ck; grep -q 'FILES REST' "$SER" \
   || fail "FILES did not restore prior geometry after maximize"
 ck; ! grep -q 'OSGFX OOM' "$SER" \
   || fail "Skia bump exhausted after combined daily-drive input"
-# M1 FAULT 06 is the deliberate boot #UD before M1 END. A later vector,
-# USER FAULT, or M4 FAULT is a real daily-drive crash.
+# Production boot has zero FAULT tokens (m1fault is conformance-only).
+# A vector after M1 END, USER FAULT, or M4 FAULT is a real crash.
+ck; ! grep -qE 'FAULT' "$SER" \
+  || fail "production/demo boot printed a FAULT token"
 ck; ! sed -n '/^M1 END/,$p' "$SER" | grep -qE '^(M1|M4|USER) FAULT' \
   || fail "kernel faulted under combined daily-drive input"
 

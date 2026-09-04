@@ -1103,6 +1103,12 @@ static void files_on_event(u64 ev) {
       if (nw != files_w || nh != files_height) {
         u64 shrinking = 0;
         u64 growing = 0;
+        /* Dismiss the row menu before a HOLD resize so COMMIT is not
+         * deferred behind FILES CFG / menu paint. Escape still works. */
+        if (menu_on > 0) {
+          menu_on = 0;
+          wr(msg_menu_esc, sizeof(msg_menu_esc) - 1);
+        }
         files_op = files_op + 1;
         at = put(0, msg_cfg);
         at = puthex(at, files_op, 8);

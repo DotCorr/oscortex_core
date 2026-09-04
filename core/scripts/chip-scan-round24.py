@@ -189,7 +189,7 @@ def wait_files_gone(ser, serial_path, timeout=2.5):
 
 def main():
     if len(sys.argv) < 4:
-        raise SystemExit("usage: chip-scan-round23.py <qmp> <serial> <framedir>")
+        raise SystemExit("usage: chip-scan-round24.py <qmp> <serial> <framedir>")
     port = int(sys.argv[1])
     serial_path = sys.argv[2]
     framedir = sys.argv[3]
@@ -315,13 +315,30 @@ def main():
             dump("max")
             geom = geom_now()
             if geom is not None and geom[2] >= 1000:
+                # Formerly deadlocking: FILES CFG/menu open on the maxed
+                # card, then restore. Menu must dismiss; HOLD must publish.
+                bx, by = geom[0] + 90, geom[1] + 140
+                try:
+                    d15.press(q, ser, bx, by, "right", "FILES MENU", timeout=2)
+                    dump("files-menu-max")
+                except Exception:
+                    dump("files-menu-miss")
                 rx, ry = ctrl_of(geom, "max")
                 n1 = vis_count(serial_path, ser.archive or "")
                 d15.press(q, ser, rx, ry, "left", "WM REQ", timeout=2)
                 wait_vis(ser, serial_path, n0=n1,
-                         pred=lambda gg: gg[2] < 1000, timeout=4)
+                         pred=lambda gg: gg[2] < 1000, timeout=5)
                 dump("restore")
+                if cycle == 5:
+                    try:
+                        d15.shot(q, os.path.join(
+                            art, "oscortex-round24-menu-restore.png"))
+                    except Exception as e:
+                        print("menu-restore shot", e)
             geom = ensure_restored(geom_now() or geom)
+            if geom is not None and geom[2] >= 1000:
+                dump("hold-stuck")
+                raise SystemExit("restore HOLD stuck after max+menu")
         if n >= WANT:
             break
         if cycle % 4 == 0:
@@ -339,12 +356,12 @@ def main():
                          pred=lambda gg: gg[2] < 1000, timeout=6)
                 dump("relaunch")
 
-    proof = os.path.join(art, "oscortex-round23-zero-flags.png")
+    proof = os.path.join(art, "oscortex-round24-zero-flags.png")
     d15.shot(q, proof)
-    txn_png = os.path.join(art, "oscortex-round23-transactional-geom.png")
+    txn_png = os.path.join(art, "oscortex-round24-transactional-geom.png")
     d15.shot(q, txn_png)
     payload = {
-        "round": 23,
+        "round": 24,
         "frames": n,
         "chips": len(bad),
         "seconds": round(time.time() - t0, 1),
@@ -355,11 +372,11 @@ def main():
         "wallpaper": "corner-aa G±8 / frame-integrity teal band",
         "transaction": txn_trace(serial_path, ser.archive or ""),
     }
-    out = os.path.join(art, "oscortex-round23-integrity.json")
+    out = os.path.join(art, "oscortex-round24-integrity.json")
     open(out, "w").write(json.dumps(payload, indent=2) + "\n")
-    txn_out = os.path.join(art, "oscortex-round23-transaction.json")
+    txn_out = os.path.join(art, "oscortex-round24-transaction.json")
     open(txn_out, "w").write(json.dumps({
-        "round": 23,
+        "round": 24,
         "geom_source": "WM VIS committed generation",
         "tokens": payload["transaction"],
         "frames": n,

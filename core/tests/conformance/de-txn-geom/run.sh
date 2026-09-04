@@ -9,7 +9,7 @@ PACE="$CORE_DIR/kernel/wmpace.dart"
 EXT="$CORE_DIR/kernel/wmext.dart"
 GFX="$CORE_DIR/kernel/wmgfx.dart"
 CHROME="$CORE_DIR/kernel/wmchrome.dart"
-CHIP="$CORE_DIR/scripts/chip-scan-round23.py"
+CHIP="$CORE_DIR/scripts/chip-scan-round24.py"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ck() { "$@"; }
 
@@ -83,6 +83,12 @@ if "wmPendArm" not in toggle:
     raise SystemExit("max/restore does not arm pending")
 if "wmVisPublish(" in toggle:
     raise SystemExit("max/restore publishes VIS before COMMIT")
+if "wmPopHide" not in toggle:
+    raise SystemExit("max/restore does not dismiss an open menu before HOLD")
+if "wmHoldKick" not in toggle:
+    raise SystemExit("max/restore does not retry an unpublished HOLD")
+if "wmStrHoldRe" not in toggle:
+    raise SystemExit("unpublished HOLD retry has no WM HOLD RE token")
 
 drain = fn(wmde, "wmDefDrain")
 if "osgfx_chrome_prep_present" in drain:
@@ -147,6 +153,42 @@ if "WM ATTACH" in chip and "live_files_xywh" in chip:
         raise SystemExit("chip-scan still infers AABB from ATTACH")
 if "geom_source" in chip and "WM VIS" not in chip:
     raise SystemExit("chip-scan geom_source is not committed VIS")
+watch = fn(wmde, "wmHoldWatch")
+if "wmHoldKick" not in watch:
+    raise SystemExit("watchdog does not re-enqueue a stuck HOLD")
+if "wmHoldCancel" not in watch:
+    raise SystemExit("watchdog has no timeout cancel")
+if "wmCompose" not in watch:
+    raise SystemExit("watchdog does not force compose after COMMIT")
+
+cancel = fn(wmde, "wmHoldCancel")
+if "wmStrHoldTo" not in cancel:
+    raise SystemExit("HOLD cancel has no WM HOLD TO token")
+if "wmPageWMax0" not in cancel:
+    raise SystemExit("HOLD cancel does not restash restore geom")
+
+arm = fn(wmde, "wmPendArm")
+if "wmPageWHoldArm0" not in arm:
+    raise SystemExit("wmPendArm does not stamp the watchdog arm tick")
+
+if "wmHoldWatch();" not in pace and "wmHoldWatch()" not in pace:
+    raise SystemExit("wmFrameTick does not run the HOLD watchdog")
+
+if "q.key(\"esc\")" in chip and "ensure_restored" in chip:
+    if "close+relaunch" in chip or "WM CLOSE" in chip and "FILES CSD" in chip:
+        # Chip-scan may close for lifecycle, but must not Esc+close to unstick HOLD.
+        pass
+if "ensure_restored" in chip:
+    idx = chip.find("def ensure_restored")
+    nxt = chip.find("\n    cycle", idx)
+    if nxt < 0:
+        nxt = chip.find("\n    def ", idx + 4)
+    rest = chip[idx:nxt] if nxt > idx else chip[idx:idx + 800]
+    if "q.key" in rest or "esc" in rest:
+        raise SystemExit("chip-scan still Esc-dismisses to unstick restore HOLD")
+    if "WM CLOSE" in rest:
+        raise SystemExit("chip-scan still close/relaunch-unsticks restore HOLD")
+
 print("de-txn-geom static PASS")
 PY
 echo "de-txn-geom: PASS"

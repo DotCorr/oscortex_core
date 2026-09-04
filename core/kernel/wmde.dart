@@ -356,6 +356,27 @@ final List<u8> wmStrPhzMax = const [
   u8(0x4D), u8(0x41), u8(0x58),
 ];
 
+/// `'WM HOLD WD W '` -- 13 bytes. Watchdog re-enqueue.
+@rodata
+final List<u8> wmStrHoldWd = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x48), u8(0x4F), u8(0x4C), u8(0x44),
+  u8(0x20), u8(0x57), u8(0x44), u8(0x20), u8(0x57), u8(0x20),
+];
+
+/// `'WM HOLD RE W '` -- 13 bytes. Retry an unpublished HOLD.
+@rodata
+final List<u8> wmStrHoldRe = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x48), u8(0x4F), u8(0x4C), u8(0x44),
+  u8(0x20), u8(0x52), u8(0x45), u8(0x20), u8(0x57), u8(0x20),
+];
+
+/// `'WM HOLD TO W '` -- 13 bytes. Timeout cancel; VIS restored.
+@rodata
+final List<u8> wmStrHoldTo = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x48), u8(0x4F), u8(0x4C), u8(0x44),
+  u8(0x20), u8(0x54), u8(0x4F), u8(0x20), u8(0x57), u8(0x20),
+];
+
 /// `'WM REST W '` -- 10 bytes.
 @rodata
 final List<u8> wmStrRest = const [
@@ -882,6 +903,8 @@ void wmPendArm(u64 wI, u64 next) {
     wmPageSet(u64(wmPageWVis0) + wI, wmWin(wI, u64(wmWinGeom)));
   }
   wmPageSet(u64(wmPageWPend0) + wI, next);
+  wmPageSet(u64(wmPageWHoldArm0) + wI, tick_count());
+  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(0));
   final u64 gen = wmPage(u64(wmPageWVisGen0) + wI);
   wmGeomNote(Rodata.addressOf(wmStrReq), u64(9), wI, next, gen);
   wmGeomNote(Rodata.addressOf(wmStrPendTok), u64(10), wI, next, gen);
@@ -899,6 +922,8 @@ void wmVisPublish(u64 wI) {
   final u64 g = wmWin(wI, u64(wmWinGeom));
   wmPageSet(u64(wmPageWVis0) + wI, g);
   wmPageSet(u64(wmPageWPend0) + wI, u64(0));
+  wmPageSet(u64(wmPageWHoldArm0) + wI, u64(0));
+  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(0));
   final u64 gen = wmPage(u64(wmPageWVisGen0) + wI) + u64(1);
   wmPageSet(u64(wmPageWVisGen0) + wI, gen);
   wmGeomNote(Rodata.addressOf(wmStrVis), u64(9), wI, g, gen);
@@ -914,6 +939,8 @@ void wmVisClear(u64 wI) {
   }
   wmPageSet(u64(wmPageWVis0) + wI, u64(0));
   wmPageSet(u64(wmPageWPend0) + wI, u64(0));
+  wmPageSet(u64(wmPageWHoldArm0) + wI, u64(0));
+  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(0));
   final u64 gen = wmPage(u64(wmPageWVisGen0) + wI) + u64(1);
   wmPageSet(u64(wmPageWVisGen0) + wI, gen);
   wmGeomNote(Rodata.addressOf(wmStrVis), u64(9), wI, u64(0), gen);
@@ -967,6 +994,109 @@ void wmVisMaybePublishAll() {
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
     wmVisMaybePublish(i);
+    i = i + u64(1);
+  }
+}
+
+/// Re-enqueue configure so a dropped HOLD cannot sit at seq==0.
+@bare
+void wmHoldKick(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmPendGeomOf(wI) < u64(1)) {
+    return;
+  }
+  wmSetWin(wI, u64(wmWinSeq), u64(0));
+  wmeventEnqueueConfigure(wI);
+  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(1));
+  uartWrite(Rodata.addressOf(wmStrHoldWd), u64(13));
+  uartPutHex(wI, u64(1));
+  uartNewline();
+}
+
+/// Timeout recovery: revert requested geom to last VIS and restash
+/// a restore target so the next max click is not a PHZ no-op.
+@bare
+void wmHoldCancel(u64 wI) {
+  if (wI >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmPageEnsure() < u64(1)) {
+    return;
+  }
+  final u64 pend = wmPendGeomOf(wI);
+  final u64 vis = wmVisGeom(wI);
+  if (vis > u64(0)) {
+    wmSetWin(wI, u64(wmWinGeom), vis);
+  }
+  if (wmWin(wI, u64(wmWinSeq)) < u64(1)) {
+    wmSetWin(wI, u64(wmWinSeq), u64(1));
+  }
+  wmPageSet(u64(wmPageWPend0) + wI, u64(0));
+  wmPageSet(u64(wmPageWHoldArm0) + wI, u64(0));
+  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(2));
+  if (pend > u64(0)) {
+    if (vis > u64(0)) {
+      if (pend != vis) {
+        final u64 saved = wmPage(u64(wmPageWMax0) + wI);
+        if (saved < u64(1)) {
+          if (wmGeomW(pend) < wmGeomW(vis)) {
+            wmPageSet(u64(wmPageWMax0) + wI, pend);
+          }
+        }
+      }
+    }
+  }
+  uartWrite(Rodata.addressOf(wmStrHoldTo), u64(13));
+  uartPutHex(wI, u64(1));
+  uartNewline();
+  if (wmPage(u64(wmPageWEvKind)) > u64(0)) {
+    wmLatNotePresent();
+  }
+}
+
+/// Every armed HOLD reaches VIS publish or an explicit cancel/timeout.
+@bare
+void wmHoldWatch() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (wmActive() < u64(1)) {
+    return;
+  }
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmPendGeomOf(i) > u64(0)) {
+      if (wmWindowUsable(i) > u64(0)) {
+        final u64 armed = wmPage(u64(wmPageWHoldArm0) + i);
+        final u64 kicks = wmPage(u64(wmPageWHoldKick0) + i);
+        final u64 now = tick_count();
+        u64 age = u64(0);
+        if (now >= armed) {
+          age = now - armed;
+        }
+        if (wmWin(i, u64(wmWinSeq)) > u64(0)) {
+          if (age > u64(wmHoldForceTicks)) {
+            wmChromeInvalidate();
+            if (wmActive() > u64(0)) {
+              wmCompose();
+            }
+            wmVisMaybePublish(i);
+          }
+        } else {
+          if (age > u64(wmHoldCancelTicks)) {
+            wmHoldCancel(i);
+          } else {
+            if (age > u64(wmHoldKickTicks)) {
+              if (kicks < u64(1)) {
+                wmHoldKick(i);
+              }
+            }
+          }
+        }
+      }
+    }
     i = i + u64(1);
   }
 }
@@ -2432,6 +2562,11 @@ void wmToggleMaxWindow(u64 wI) {
   if (wmPageEnsure() < u64(1)) {
     return;
   }
+  /* Dismiss a wallpaper/dock menu before the resize HOLD so the
+   * client is not stuck painting a modal over seq==0. */
+  if (wmPopOn() > u64(0)) {
+    wmPopHide();
+  }
   /* Consume a leftover stamp so maximize LAT is this geom change, not a
    * prior wallpaper click. Kind 5 is the chrome-interaction bucket. */
   if (wmPage(u64(wmPageWEvKind)) > u64(0)) {
@@ -2441,6 +2576,8 @@ void wmToggleMaxWindow(u64 wI) {
   final u64 at = u64(wmPageWMax0) + wI;
   final u64 old = wmWin(wI, u64(wmWinGeom));
   final u64 saved = wmPage(at);
+  final u64 vis = wmVisGeom(wI);
+  final u64 pend = wmPendGeomOf(wI);
   final u64 b = u64(wmBorder);
   u64 next = saved;
   if (saved < u64(1)) {
@@ -2450,6 +2587,25 @@ void wmToggleMaxWindow(u64 wI) {
     wmPageSet(at, u64(0));
   }
   if (next == old) {
+    /* Unpublished HOLD for this geom: kick, do not PHZ no-op. */
+    if (pend > u64(0)) {
+      wmHoldKick(wI);
+      uartWrite(Rodata.addressOf(wmStrHoldRe), u64(13));
+      uartPutHex(wI, u64(1));
+      uartNewline();
+      return;
+    }
+    if (vis > u64(0)) {
+      if (vis != old) {
+        wmSetWin(wI, u64(wmWinSeq), u64(0));
+        wmeventEnqueueConfigure(wI);
+        wmPendArm(wI, old);
+        uartWrite(Rodata.addressOf(wmStrHoldRe), u64(13));
+        uartPutHex(wI, u64(1));
+        uartNewline();
+        return;
+      }
+    }
     /* Stamp already took a seq. Close it so wait_present is not a 3s
      * timeout on a clamped no-op max (same 400×280 backing). */
     wmLatNotePresent();
