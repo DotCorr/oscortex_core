@@ -22,6 +22,7 @@ d15 = m24.d15
 
 SCAN_RE = re.compile(
     r"VIRTIO SCAN ([0-9A-F]+) ([0-9A-F]+) ([0-9A-F]+) ([0-9A-F]+) ([0-9A-F]+)")
+FRAME_RE = re.compile(r"WM FRAME N ([0-9A-F]+)")
 
 
 def harvest(ser):
@@ -38,10 +39,18 @@ def last_scan(ser):
     px = 0
     w = 0
     h = 0
-    for m in SCAN_RE.finditer(harvest(ser)):
+    blob = harvest(ser)
+    for m in SCAN_RE.finditer(blob):
         gen = int(m.group(5), 16)
         w = int(m.group(3), 16)
         h = int(m.group(4), 16)
+        px = w * h
+    if gen == 0:
+        # GOP / BAR: no RESOURCE_FLUSH line. Pair on composed frames.
+        for m in FRAME_RE.finditer(blob):
+            gen = int(m.group(1), 16)
+        w = 1280
+        h = 720
         px = w * h
     return gen, px, w, h
 
