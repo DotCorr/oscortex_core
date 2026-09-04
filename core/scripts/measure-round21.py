@@ -158,36 +158,17 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
 
 
 def files_close_xy(dx=0):
-    """CSD close-disc centre, pinned west of SET's left AABB."""
+    """CSD close-disc centre for FILES at origin+dx."""
     x, y, w, _h = FILES_GEOM
     bx = x + dx + w - BTN_GAP - BTN_S
     by = y + BTN_GAP
-    cx = bx + 4
-    if cx + 2 >= SET_LEFT:
-        cx = SET_LEFT - 8
-    return cx, by + BTN_S // 2
-
-
-def _click_close(q, ser, cx, cy):
-    marked = ser.read()
-    d15.place(q, ser, cx, cy)
-    time.sleep(0.06)
-    d15.button(q, cx, cy, "left", True)
-    time.sleep(0.04)
-    d15.button(q, cx, cy, "left", False)
-    return bool(d15.wait_mark(ser, "WM CLOSE", marked, 1.2))
+    return bx + BTN_S // 2, by + BTN_S // 2
 
 
 def close_files(q, ser, dx=0):
-    """Close FILES via the CSD disc at this origin. Do not spray nearby
-    discs — those are min/max and hide the window without WM CLOSE."""
-    try:
-        q.key("esc")
-    except Exception:
-        pass
-    time.sleep(0.04)
+    """Close FILES via the CSD disc centre. press() matches sit-in."""
     cx, cy = files_close_xy(dx)
-    return _click_close(q, ser, cx, cy)
+    return bool(d15.press(q, ser, cx, cy, "left", "WM CLOSE", timeout=3.0))
 
 
 def launch_files(q, ser):
@@ -237,17 +218,7 @@ def first_drags(q, ser, n=22):
             {"type": "abs", "data": {"axis": "y", "value": ay}},
         ], 3.0, want_opid=True, label="first_drag")
         d15.button(q, nx, ny, "left", False)
-        time.sleep(0.08)
-        # Restore the sit-in origin so close is the default disc (426,57),
-        # not min/max and not the SET gap.
-        d15.place(q, ser, nx, ny)
-        time.sleep(0.04)
-        d15.button(q, nx, ny, "left", True)
-        time.sleep(0.04)
-        d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
-        time.sleep(0.08)
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
-        time.sleep(0.08)
+        time.sleep(0.12)
         if wall is not None:
             walls.append(wall)
         if d15.PHASE_TIMELINES:
@@ -262,7 +233,7 @@ def first_drags(q, ser, n=22):
                     "oscortex-round21-first-drag.png"))
             except Exception as e:
                 print("first-drag shot", e)
-        if not close_files(q, ser, 0):
+        if not (close_files(q, ser, 0) or close_files(q, ser, -28)):
             print("close miss", i)
             continue
         time.sleep(0.15)
