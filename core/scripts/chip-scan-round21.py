@@ -53,30 +53,41 @@ def main():
     bad = []
     t0 = time.time()
 
-    def dump(tag):
+    def dump(tag, files_xywh=None):
         nonlocal n
         n += 1
+        if files_xywh is None:
+            files_xywh = FILES_XYWH
         path = os.path.join(framedir, "c%05d.png" % n)
         d15.shot(q, path)
-        rec = fi.inspect_png(path, files_xywh=FILES_XYWH, set_xywh=SET_XYWH)
-        aa_rec = aa.inspect_png(path, files_xywh=FILES_XYWH, set_xywh=SET_XYWH)
+        rec = fi.inspect_png(path, files_xywh=files_xywh, set_xywh=SET_XYWH)
+        aa_rec = aa.inspect_png(path, files_xywh=files_xywh, set_xywh=SET_XYWH)
         rec["tag"] = tag
         rec["aa"] = aa_rec
+        rec["files_xywh"] = list(files_xywh)
+        # Vacated wallpaper in a live body is a chip. AA at the live
+        # origin is a corner tooth. Stale sit-in AABBs are not chips.
         if rec.get("bad") or aa_rec.get("bad"):
             rec["chip"] = True
             bad.append(rec)
         return rec
 
     # Long drag + menu session, dump every transition step.
+    # Inspect the live FILES origin so a vacated strip is not scored
+    # against the sit-in AABB after the card has moved.
+    win_dx = 0
     while n < WANT:
-        d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", True)
+        d15.place(q, ser, FILES_TITLE[0] + win_dx, FILES_TITLE[1])
+        d15.button(q, FILES_TITLE[0] + win_dx, FILES_TITLE[1], "left", True)
         for dx in (0, 16, 32, 48, 64, 80, 64, 48, 32, 16, 0):
-            d15.place(q, ser, FILES_TITLE[0] + dx, FILES_TITLE[1])
-            dump("drag-%d" % dx)
+            d15.place(q, ser, FILES_TITLE[0] + win_dx + dx, FILES_TITLE[1])
+            cur = (FILES_XYWH[0] + win_dx + dx, FILES_XYWH[1],
+                   FILES_XYWH[2], FILES_XYWH[3])
+            dump("drag-%d" % (win_dx + dx), files_xywh=cur)
             if n >= WANT:
                 break
-        d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
+        d15.button(q, FILES_TITLE[0] + win_dx, FILES_TITLE[1], "left", False)
+        win_dx = 0
         if n >= WANT:
             break
         try:

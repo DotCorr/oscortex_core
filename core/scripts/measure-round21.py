@@ -24,6 +24,10 @@ FILES_TITLE = (120, 55)
 SET_TITLE = (624, 55)
 OPEN_XY = (364, 196)
 CTX_XY = (300, 180)
+FILES_GEOM = (48, 40, 400, 280)
+BTN_S = 18
+BTN_GAP = 8
+SET_LEFT = 464
 
 
 def open_serial(serial_arg):
@@ -153,26 +157,48 @@ def collect(q, ser, label, points, btn=None, want_opid=True):
     }
 
 
+def files_close_xy(dx=0):
+    """CSD close-disc centre, pinned west of SET's left AABB."""
+    x, y, w, _h = FILES_GEOM
+    bx = x + dx + w - BTN_GAP - BTN_S
+    by = y + BTN_GAP
+    cx = bx + 4
+    if cx + 2 >= SET_LEFT:
+        cx = SET_LEFT - 8
+    return cx, by + BTN_S // 2
+
+
 def close_files(q, ser, dx=0):
-    """Close FILES via the title context pop (Close is row 0)."""
-    tx, ty = FILES_TITLE[0] + dx, FILES_TITLE[1]
-    marked = ser.read()
-    d15.place(q, ser, tx, ty)
-    time.sleep(0.08)
-    d15.button(q, tx, ty, "right", True)
-    time.sleep(0.04)
-    d15.button(q, tx, ty, "right", False)
-    if not (d15.wait_mark(ser, "WM CTX TITLE", marked, 1.5)
-            or d15.wait_mark(ser, "WM WIN MENU", marked, 0.8)):
-        return False
-    # Close row centre: pad 8 + 14 inside a ~28 px row.
-    cx, cy = tx + 36, ty + 22
+    """Close FILES via the CSD disc (title pop is moved off the card)."""
+    cx, cy = files_close_xy(dx)
     marked = ser.read()
     d15.place(q, ser, cx, cy)
-    time.sleep(0.06)
+    time.sleep(0.08)
     d15.button(q, cx, cy, "left", True)
     time.sleep(0.04)
     d15.button(q, cx, cy, "left", False)
+    if d15.wait_mark(ser, "WM CLOSE", marked, 2.0):
+        return True
+    # Title pop is placed off the card (wmPopFits). Close is row 0
+    # after the menu is forced below every client.
+    tx, ty = FILES_TITLE[0] + dx, FILES_TITLE[1]
+    marked = ser.read()
+    d15.place(q, ser, tx, ty)
+    time.sleep(0.06)
+    d15.button(q, tx, ty, "right", True)
+    time.sleep(0.04)
+    d15.button(q, tx, ty, "right", False)
+    if not (d15.wait_mark(ser, "WM CTX TITLE", marked, 1.2)
+            or d15.wait_mark(ser, "WM WIN MENU", marked, 0.8)):
+        return False
+    # Below-clients origin is (16, FILES.y+h+8) = (16, 328) at default.
+    pop_x, pop_y = 16 + 84, 328 + 8 + 14
+    marked = ser.read()
+    d15.place(q, ser, pop_x, pop_y)
+    time.sleep(0.06)
+    d15.button(q, pop_x, pop_y, "left", True)
+    time.sleep(0.04)
+    d15.button(q, pop_x, pop_y, "left", False)
     return bool(d15.wait_mark(ser, "WM CLOSE", marked, 2.0))
 
 
@@ -197,16 +223,17 @@ def first_drags(q, ser, n=22):
     walls = []
     presents = []
     fresh = 0
+    # Sit-in already paid a 1px title step on the first FILES tile.
+    # Every counted sample is a new client: close that tile, spawn, drag.
+    if not close_files(q, ser, 1):
+        close_files(q, ser, 0)
+    time.sleep(0.2)
     for i in range(n):
-        if i > 0:
-            if not close_files(q, ser, 28):
-                print("close miss", i)
-            time.sleep(0.2)
-            if not launch_files(q, ser):
-                print("relaunch miss", i)
-                continue
-            fresh += 1
-            time.sleep(0.35)
+        if not launch_files(q, ser):
+            print("relaunch miss", i)
+            continue
+        fresh += 1
+        time.sleep(0.35)
         d15.place(q, ser, FILES_TITLE[0], FILES_TITLE[1])
         time.sleep(0.08)
         marked = ser.read()
@@ -230,7 +257,17 @@ def first_drags(q, ser, n=22):
             rec = d15.PHASE_TIMELINES[-1]
             if rec.get("present_ms") is not None:
                 presents.append(rec["present_ms"])
-        print("first_drag", i, wall)
+        print("first_drag", i, "fresh", fresh, wall)
+        if i == 0 and wall is not None:
+            try:
+                d15.shot(q, os.path.join(
+                    os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts"),
+                    "oscortex-round21-first-drag.png"))
+            except Exception as e:
+                print("first-drag shot", e)
+        if not close_files(q, ser, 28):
+            print("close miss", i)
+        time.sleep(0.15)
     return {
         "n": len(walls),
         "fresh_relaunches": fresh,
@@ -327,6 +364,13 @@ def main():
         print("files-open shot", e)
 
     first = first_drags(q, ser, 22)
+    if first.get("fresh_relaunches", 0) < 20:
+        print("WARN: fresh first-drags", first.get("fresh_relaunches"),
+              "< 20")
+
+    # Leave a default FILES tile for chip-scan / stress.
+    launch_files(q, ser)
+    time.sleep(0.25)
 
     # Release any leftover title grab so pointer pairing is sprite-only.
     d15.button(q, FILES_TITLE[0], FILES_TITLE[1], "left", False)
@@ -363,7 +407,8 @@ def main():
         "screen_px": SCREEN_PX,
         "note": (
             "No daily-drive claim from this file alone. "
-            "First-drag is one step after a fresh FILES launch."
+            "Each first-drag sample is the first title step on a new "
+            "FILES client after CSD close + dock spawn."
         ),
         "first_drag": first,
         "pointer": pointer,

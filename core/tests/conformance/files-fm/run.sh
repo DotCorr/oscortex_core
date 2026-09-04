@@ -306,10 +306,20 @@ ck; python3 "$SCRIPT_DIR/make-image.py" "$IMG_R" "$WORKDIR/files.elf" \
   --variant=raw \
   || fail "make-image raw failed"
 
-command -v fsck_msdos >/dev/null 2>&1 || FSCK=/sbin/fsck_msdos
-FSCK="${FSCK:-fsck_msdos}"
-ck; [[ -x "$FSCK" ]] || command -v "$FSCK" >/dev/null 2>&1 \
-  || setup_error "fsck_msdos not found"
+if command -v fsck_msdos >/dev/null 2>&1; then
+  FSCK=fsck_msdos
+elif [[ -x /sbin/fsck_msdos ]]; then
+  FSCK=/sbin/fsck_msdos
+elif command -v fsck.msdos >/dev/null 2>&1; then
+  FSCK=fsck.msdos
+elif [[ -x /sbin/fsck.msdos ]]; then
+  FSCK=/sbin/fsck.msdos
+elif command -v fsck.fat >/dev/null 2>&1; then
+  FSCK=fsck.fat
+else
+  echo "FILES-FM: SKIP — fsck_msdos not found on PATH (FAT volume certification unavailable)"
+  exit 0
+fi
 capture FSCK_OUT FSCK_STATUS -- "$FSCK" -n "$IMG_A"
 ck; [[ $FSCK_STATUS -eq 0 ]] || { echo "$FSCK_OUT" >&2; fail "fsck_msdos rejected image A"; }
 echo "IMAGE: pass  fsck_msdos accepts the planted volume"

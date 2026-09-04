@@ -33,7 +33,9 @@ def load_rgb(path):
 
 def is_wallpaper(rgb):
     r, g, b = rgb
-    if abs(r - WALL[0]) > 8 or abs(g - WALL[1]) > 16 or abs(b - WALL[2]) > 16:
+    # G±8 keeps the generative field (5BC0B7) and drops AA mixes
+    # (G≈207) that used to invent BL teeth next to cream.
+    if abs(r - WALL[0]) > 8 or abs(g - WALL[1]) > 8 or abs(b - WALL[2]) > 12:
         return False
     return (g - r) > 40
 

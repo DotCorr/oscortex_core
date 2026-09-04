@@ -173,7 +173,7 @@ ck; grep -q 'osgfx_pointer_raster' "$CORE_DIR/plat/osgfx/osgfx.h" \
   || fail "pointer sprite is not a Skia ABI"
 ck; grep -q 'wmPtrW' "$PACE_DART" \
   || fail "save-under is not sized to the Skia sprite"
-ck; grep -q 'wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH)' "$WM_DART" \
+ck; grep -Fq 'wmPtrW) * u64(wmPtrH) + u64(wmPtrW) * u64(wmPtrH)' "$WM_DART" \
   || fail "pointer present is not 640 px (2*16*20)"
 ck; grep -q 'dx < 24 && dy < 24' "$CHROME_C" \
   || fail "drag_step lost the strip-reduction path"
