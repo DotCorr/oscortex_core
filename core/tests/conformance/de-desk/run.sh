@@ -234,7 +234,7 @@ if "wmDeCsdButtons(" not in body:
 if "wmCsdNote(" not in body:
     raise SystemExit("CSD press is not instrumented")
 PY
-ck; grep -q 'wmAbsX(wI)' "$CORE_DIR/kernel/wmde.dart" \
+ck; grep -qE 'wmHitAbsX\(wI\)|wmAbsX\(wI\)' "$CORE_DIR/kernel/wmde.dart" \
   || fail "wmCloseX is not the absolute origin paint uses"
 ck; grep -q 'const int wmBtnPadY = 7' "$CORE_DIR/kernel/wmde.dart" \
   || fail "Dart title-control Y is not lockstep with SESS_BTN_PAD_Y"
