@@ -2542,7 +2542,19 @@ u64 virtgpuFbTry() {
   virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
   virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
   Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
-  u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
+  // First doorbell after DRIVER_OK can wait on host llvmpipe / Venus
+  // init. One poll bound is enough later; eight covers this door.
+  u64 used = u64(0);
+  u64 tries = u64(0);
+  while (tries < u64(8)) {
+    used = virtgpuWaitUsed(qdev, slot + u64(1));
+    if (used >= (slot + u64(1))) {
+      tries = u64(8);
+    }
+    if (used < (slot + u64(1))) {
+      tries = tries + u64(1);
+    }
+  }
   if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
