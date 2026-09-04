@@ -235,17 +235,17 @@ ck; [[ $IRQ_STATUS -eq 0 ]] || { echo "$IRQ_OUT" >&2; fail "the frame clock is n
 echo "$IRQ_OUT"
 
 # 1f. THE SERIAL LINE IS OFF THE PACED PATH AND ONLY THE PACED PATH.
-ck; grep -q 'void wmPublishFrameQ(u64 px, u64 quiet)' "$WM_DART" \
-  || fail "wm.dart has no quiet publish"
+ck; grep -q 'void wmPublishFrameQ(u64 px, u64 quiet, u64 x, u64 y, u64 w, u64 h)' "$WM_DART" \
+  || fail "wm.dart has no quiet dirty-rect publish"
 capture_sh LOG_OUT LOG_STATUS -- "python3 - '$WM_DART' '$PACE_DART' <<'PY'
 import sys
 wm = open(sys.argv[1]).read()
 pace = open(sys.argv[2]).read()
-n = wm.count('wmPublishFrameQ(px, u64(0))')
+n = wm.count('wmPublishFrameQ(px, u64(0), u64(0), u64(0), u64(0), u64(0))')
 if n != 1:
     raise SystemExit('wmPublishFrame does not forward to the quiet publish '
                      'exactly once (found %d)' % n)
-if 'wmPublishFrameQ(px, u64(1) - wmPaceLogging())' not in pace:
+if 'wmPublishFrameQ(px, u64(1) - wmPaceLogging()' not in pace:
     raise SystemExit('the pacer does not suppress WM FRAME')
 if 'wmPublishFrame(px);' not in wm:
     raise SystemExit('no event-driven present prints WM FRAME any more — every '

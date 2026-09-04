@@ -1142,12 +1142,17 @@ void wmDrawLiveClients(u64 top) {
 /// numbered frame, so a future path cannot print the line without also
 /// publishing the count the harness derives.
 @bare
-void wmPublishFrameQ(u64 px, u64 quiet) {
-  /* G5 virtio-gpu scanout is guest RAM: stores are invisible until
-   * TRANSFER_TO_HOST_2D + RESOURCE_FLUSH. GOP / Bochs BAR bases sit
-   * above virtgpuRamCeil, so virtgpuRect is a no-op on the sit-in
-   * leftover. Armed only after virtgpuc / G5. */
-  virtgpuRect(u64(0), u64(0), fbGeomWidth(), fbGeomHeight());
+void wmPublishFrameQ(u64 px, u64 quiet, u64 x, u64 y, u64 w, u64 h) {
+  /* G5 virtio-gpu scanout is guest RAM. Full-screen TRANSFER of
+   * 1280×720 on every paced frame made drag/menu subinteractive
+   * on llvmpipe. Pass the composed AABB; w=0 means the whole
+   * scanout (unpaced / first present). GOP / Bochs BAR bases sit
+   * above virtgpuRamCeil, so present is a no-op there. */
+  if (w < u64(1)) {
+    virtgpuPresent(u64(0), u64(0), fbGeomWidth(), fbGeomHeight());
+  } else {
+    virtgpuPresent(x, y, w, h);
+  }
   final u64 cx = mouseState(u64(mouseWordX));
   final u64 cy = mouseState(u64(mouseWordY));
   wmSetMeta(u64(wmMetaCurX), cx);
@@ -1184,7 +1189,7 @@ void wmPublishFrameQ(u64 px, u64 quiet) {
 
 @bare
 void wmPublishFrame(u64 px) {
-  wmPublishFrameQ(px, u64(0));
+  wmPublishFrameQ(px, u64(0), u64(0), u64(0), u64(0), u64(0));
 }
 
 /// One FULL composition pass: desktop, then every window bottom-up, then the
@@ -1867,9 +1872,19 @@ u64 wmCaptionFromReq(u64 reqW, u64 reqH) {
       return u64(3);
     }
   }
+  if (reqW == u64(280)) {
+    if (reqH == u64(200)) {
+      return u64(4);
+    }
+  }
   if (reqW == u64(64)) {
     if (reqH == u64(64)) {
       return u64(4);
+    }
+  }
+  if (reqW == u64(320)) {
+    if (reqH == u64(220)) {
+      return u64(5);
     }
   }
   if (reqW == u64(200)) {

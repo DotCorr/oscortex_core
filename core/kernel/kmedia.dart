@@ -163,17 +163,30 @@ u64 mediaNameIsPlay() {
   return u64(1);
 }
 
-/// Next live 64×64 window at or after [start], or [wmMaxWindows].
+/// Next PLAY surface at or after [start], or [wmMaxWindows].
+/// Caption 4 is the titled 280×200 PLAY card; 64×64 remains the
+/// hidden `play` / kmedia find key.
 @bare
 u64 wmMediaFindNext(u64 start) {
   u64 i = start;
   while (i < u64(wmMaxWindows)) {
     if (wmWindowUsable(i) > u64(0)) {
-      final u64 g = wmWin(i, u64(wmWinGeom));
-      if (wmGeomW(g) == u64(mediaWinW)) {
-        if (wmGeomH(g) == u64(mediaWinH)) {
-          return i;
+      u64 hit = u64(0);
+      if (wmPageAddr() > u64(0)) {
+        if (wmPage(wmPageLaunchOf(i)) == u64(4)) {
+          hit = u64(1);
         }
+      }
+      if (hit < u64(1)) {
+        final u64 g = wmWin(i, u64(wmWinGeom));
+        if (wmGeomW(g) == u64(mediaWinW)) {
+          if (wmGeomH(g) == u64(mediaWinH)) {
+            hit = u64(1);
+          }
+        }
+      }
+      if (hit > u64(0)) {
+        return i;
       }
     }
     i = i + u64(1);
@@ -271,12 +284,12 @@ u64 wmMediaCreate() {
 
 /// One row of decoder RGB into window [slot]'s frame vector.
 @bare
-void wmMediaBlitRow(u64 src, u64 w, u64 vec, u64 stride, u64 py) {
+void wmMediaBlitRow(u64 src, u64 w, u64 vec, u64 stride, u64 py, u64 dx, u64 dy) {
   u64 i = u64(0);
   while (i < w) {
     final u64 pix =
         Pointer<u32>.fromAddress(src + ((py * w + i) * u64(4))).value.toU64();
-    final u64 off = (py * stride) + (i << u64(2));
+    final u64 off = ((dy + py) * stride) + ((dx + i) << u64(2));
     final u64 phys = shmVec(vec, off >> u64(vmPageShift));
     Pointer<u32>.fromAddress(phys + (off & u64(vmPageMask))).value = pix.toU32();
     i = i + u64(1);
@@ -288,10 +301,19 @@ void wmMediaBlitRow(u64 src, u64 w, u64 vec, u64 stride, u64 py) {
 void wmMediaBlitSlot(u64 src, u64 slot) {
   final u64 r = wmWin(slot, u64(wmWinReg));
   final u64 vec = shmReg(r, u64(shmRegVec));
-  final u64 stride = wmWin(slot, u64(wmWinStride));
+  final u64 stride = wmWin(slot, u64(wmWinStride)) & u64(0xFFFFFFFF);
+  final u64 g = wmWin(slot, u64(wmWinGeom));
+  u64 dx = u64(0);
+  u64 dy = u64(0);
+  if (wmGeomW(g) > u64(mediaWinW)) {
+    dx = u64(16);
+  }
+  if (wmGeomH(g) > u64(mediaWinH)) {
+    dy = u64(40);
+  }
   u64 py = u64(0);
   while (py < u64(mediaWinH)) {
-    wmMediaBlitRow(src, u64(mediaWinW), vec, stride, py);
+    wmMediaBlitRow(src, u64(mediaWinW), vec, stride, py, dx, dy);
     py = py + u64(1);
   }
   wmBumpMeta(u64(wmMetaCommits));

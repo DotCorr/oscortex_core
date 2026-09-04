@@ -96,7 +96,7 @@ const int wmSlot1Color = 0x00485868;
 /// Start / spotlight popover.
 const int wmLaunchW = 160;
 
-const int wmLaunchH = 80;
+const int wmLaunchH = 128;
 
 const int wmLaunchColor = 0x00C86828;
 
@@ -133,7 +133,7 @@ const int wmPopLaunch = 2;
 
 const int wmPopPanel = 3;
 
-const int wmDeLaunchMax = 4;
+const int wmDeLaunchMax = 6;
 
 /// 8.3 stem inset on a launch row. Leaves the row-centre colour probe
 /// (de-sitfat / de-chrome) on the band.

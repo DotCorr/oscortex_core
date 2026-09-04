@@ -23,15 +23,15 @@ typedef unsigned int u32;
 
 #define CHUNK 512UL
 #define NAME_MAX 15U
-#define CAT_MAX 4U
-#define WIN_W 200UL
-#define WIN_H 140UL
+#define CAT_MAX 8U
+#define WIN_W 320UL
+#define WIN_H 220UL
 #define SURF_X 48UL
 #define SURF_Y 56UL
 #define SURF_FILL 0x00203040UL
 #define SURF_BAND0 0x00405060UL
 #define SURF_BAND1 0x00304050UL
-#define WIN_PAGES 32UL
+#define WIN_PAGES 69UL
 #define YIELD_SPIN 8000UL
 #define KEY_DIGIT1 0x02UL
 #define SPAWN_FLOOR 0xFFFFFFFFFFFFFF00UL
@@ -65,7 +65,11 @@ static const char msg_save[] = "STUDIO2 SAVE";
 static const char path_apps[] = "APPS.TXT";
 static const char path_sel[] = "SEL.DAT";
 static const char msg_csd[] = "STUDIO CSD";
+static const char msg_view[] = "STUDIO VIEW ";
+static const char msg_edit[] = "STUDIO EDIT ";
 static const char cap_studio[] = "STUDIO";
+static u64 view_row = 0;
+static u64 view_off = 0;
 
 static inline u64 sys3(u64 n, u64 a, u64 b, u64 c) {
   u64 r;
@@ -153,9 +157,10 @@ static u32 band_colour(u64 i) {
 static void paint_strip(u64 va, u64 names) {
   volatile u32 *p = (volatile u32 *)va;
   u64 py = 0;
-  u64 band_h = WIN_H;
+  u64 body = WIN_H - OSXUI_CSD_H;
+  u64 band_h = body;
   if (names > 1) {
-    band_h = WIN_H / names;
+    band_h = body / names;
   }
   if (band_h == 0) {
     band_h = 1;
@@ -163,12 +168,18 @@ static void paint_strip(u64 va, u64 names) {
   while (py < WIN_H) {
     u64 px = 0;
     u32 c = (u32)SURF_FILL;
-    if (names > 0) {
-      u64 row = py / band_h;
-      if (row >= names) {
-        row = names - 1;
+    if (py >= OSXUI_CSD_H) {
+      if (names > 0) {
+        u64 row = (py - OSXUI_CSD_H) / band_h;
+        if (row >= names) {
+          row = names - 1;
+        }
+        if (row == view_row) {
+          c = 0x00507080UL;
+        } else {
+          c = band_colour(row);
+        }
       }
-      c = band_colour(row);
     }
     while (px < WIN_W) {
       p[py * WIN_W + px] = c;
@@ -176,6 +187,32 @@ static void paint_strip(u64 va, u64 names) {
     }
     py = py + 1;
   }
+}
+
+static void view_open(u64 row, u64 names) {
+  u64 fd;
+  u64 got;
+  unsigned n;
+  unsigned i;
+
+  if (row >= names) {
+    return;
+  }
+  view_row = row;
+  fd = sys2(SYS_OPEN, (u64)&catalog[row][0], (u64)catlen[row]);
+  n = put(0, msg_view);
+  for (i = 0; i < catlen[row]; i++) {
+    line[n++] = (char)catalog[row][i];
+  }
+  if (fd >= FILE_ERR_FLOOR) {
+    emit(n);
+    return;
+  }
+  got = sys3(SYS_READ, fd, (u64)buf, 32);
+  sys2(SYS_CLOSE, fd, 0);
+  n = put(n, " ");
+  n = puthex(n, got & 0xFFFFFFFFUL, 4);
+  emit(n);
 }
 
 static void try_strip(u64 names) {
@@ -338,15 +375,33 @@ static void pump(u64 names) {
   u64 row;
   u64 y;
   u64 band_h;
+  u64 body;
+  unsigned n;
 
   ev = sys1(SYS_KBDEVENT, KBD_OP_POP);
   if (ev != KBD_EMPTY) {
     if ((ev & KBD_BIT_BREAK) == 0) {
-      if ((ev & KBD_BIT_EXT) == 0) {
-        sc = ev & 0xFFUL;
+      sc = ev & 0xFFUL;
+      if (sc == 0x48UL) {
+        if (view_row > 0) {
+          view_open(view_row - 1, names);
+        }
+      } else if (sc == 0x50UL) {
+        if ((view_row + 1) < names) {
+          view_open(view_row + 1, names);
+        }
+      } else if (sc == 0x1CUL) {
+        launch_row(view_row, names);
+      } else if (sc == 0x12UL) {
+        persist_row(view_row);
+        n = put(0, msg_edit);
+        n = puthex(n, view_row, 2);
+        emit(n);
+      } else if ((ev & KBD_BIT_EXT) == 0) {
         if (sc >= KEY_DIGIT1) {
           row = sc - KEY_DIGIT1;
           if (row < names) {
+            view_open(row, names);
             launch_row(row, names);
           }
         }
@@ -358,15 +413,25 @@ static void pump(u64 names) {
   if (ev != WMEVENT_EMPTY) {
     if ((ev & 0xFFUL) == WMEVENT_TYPE_PRESS) {
       y = (ev >> 32) & 0xFFFFUL;
-      band_h = WIN_H;
+      body = WIN_H - OSXUI_CSD_H;
+      band_h = body;
       if (names > 1) {
-        band_h = WIN_H / names;
+        band_h = body / names;
       }
       if (band_h == 0) {
         band_h = 1;
       }
-      row = y / band_h;
-      launch_row(row, names);
+      if (y >= OSXUI_CSD_H) {
+        row = (y - OSXUI_CSD_H) / band_h;
+        view_open(row, names);
+      }
+    } else if ((ev & 0xFFUL) == WMEVENT_TYPE_SCROLL) {
+      if (view_off < 8) {
+        view_off = view_off + 1;
+      } else {
+        view_off = 0;
+      }
+      view_open(view_row, names);
     }
   }
 }
@@ -438,6 +503,9 @@ void _start(void) {
   exhibit_have(names);
   exhibit_sel(names);
   try_strip(names);
+  if (names > 0) {
+    view_open(0, names);
+  }
   wr(msg_list, sizeof(msg_list) - 1);
   wr(msg_ready, sizeof(msg_ready) - 1);
 

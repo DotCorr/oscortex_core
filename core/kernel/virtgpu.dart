@@ -2058,6 +2058,23 @@ void virtgpuRect(u64 x, u64 y, u64 w, u64 h) {
       qdesc + u64(virtgpuMetaFlush),
       virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)) + u64(1));
   virtgpuRamPut32(qdesc + u64(virtgpuMetaDamage), w * h);
+  /* Glyph cells stay silent so G5/G7 UART is one FLUSH count per
+   * banner. Interactive presents print the generation a host pairer
+   * waits on — RESOURCE_FLUSH, not an unrelated OPID. */
+  if (w > u64(8)) {
+    virtgpuReportScan(
+        x, y, w, h, virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)));
+  } else if (h > u64(16)) {
+    virtgpuReportScan(
+        x, y, w, h, virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush)));
+  }
+}
+
+/// Named present. Same walk as [virtgpuRect]; the SCAN line is
+/// emitted there when the rectangle is larger than a glyph cell.
+@bare
+void virtgpuPresent(u64 x, u64 y, u64 w, u64 h) {
+  virtgpuRect(x, y, w, h);
 }
 
 /// One damaged glyph cell. G5 contract: 8×16 TRANSFER + FLUSH.
