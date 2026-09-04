@@ -1492,18 +1492,11 @@ __attribute__((noinline)) static void tick_body(void) {
     }
     chrome_overlay_scanout(m);
   }
-  /* ADR-0153 proof stamp — never on live DE chrome. Under wm de the
-   * (64,48) Graphite ICD rrect landed on FILES title (binary coverage =
-   * paper blot over soft-AA session chrome). Serial notes still fire. */
-  if (osgfx_graphite_ready() != 0 && g->px != 0 &&
-      (m->flags & OSGFX_GUEST_DE) == 0) {
-    uint32_t cr = osgfx_graphite_chrome_rgb();
-    if (cr == 0) {
-      cr = 0x00C45A20u;
-    }
-    (void)osgfx_graphite_fill_rrect(g->px, g->pitch, 64, 48, 120, 28, 8, cr);
-    osgfx_graphite_stamp(g->px, g->pitch, ww, hh);
-  }
+  /* ADR-0153 proof stamp is serial-only. Drawing a Graphite rrect
+   * after chrome_heap_after_paint used a rewound recorder
+   * (FAULT 0D OP 488B). Notes still fire. */
+  (void)ww;
+  (void)hh;
   osgfx_graphite_rrect_note();
   osgfx_graphite_desk_note();
   last_gen = m->gen;
