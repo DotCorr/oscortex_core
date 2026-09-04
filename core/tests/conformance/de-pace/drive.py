@@ -256,12 +256,6 @@ def main():
     # to the shell skips while that seat is live, so `wm pace` never
     # printed. A desktop click at the parked pointer (520,300) returns
     # the keyboard; the client keeps committing.
-    for _ in range(8):
-        q.cmd("input-send-event", events=[
-            {"type": "rel", "data": {"axis": "x", "value": 18}},
-            {"type": "rel", "data": {"axis": "y", "value": 6}},
-        ])
-        time.sleep(0.04)
     q.cmd("input-send-event", events=[
         {"type": "btn", "data": {"button": "left", "down": True}},
     ])
@@ -270,14 +264,6 @@ def main():
         {"type": "btn", "data": {"button": "left", "down": False}},
     ])
     time.sleep(0.15)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": True}},
-    ])
-    time.sleep(0.05)
-    q.cmd("input-send-event", events=[
-        {"type": "btn", "data": {"button": "left", "down": False}},
-    ])
-    time.sleep(0.2)
     q.line("wm pace")
     first, t0 = await_pace(serial, 1)
     if first["armed"] != 1:
