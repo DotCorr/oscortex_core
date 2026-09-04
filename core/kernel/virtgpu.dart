@@ -1343,6 +1343,22 @@ u64 virtgpuWaitUsed(u64 qdev, u64 want) {
   return used;
 }
 
+/// Repeat [virtgpuWaitUsed] up to [tries] times. First virtio-gpu-gl
+/// doorbell after DRIVER_OK waits on host llvmpipe / Venus init.
+@bare
+u64 virtgpuWaitUsedN(u64 qdev, u64 want, u64 tries) {
+  u64 used = u64(0);
+  u64 n = u64(0);
+  while (n < tries) {
+    used = virtgpuWaitUsed(qdev, want);
+    if (used >= want) {
+      return used;
+    }
+    n = n + u64(1);
+  }
+  return used;
+}
+
 /// 1 if COMMON_CFG already has DRIVER_OK, queue 0 enabled, and three
 /// programmed ring addresses. The single-owner rule: a second walker
 /// must reuse this ring, not reset or allocFrame a second set.
@@ -1416,7 +1432,7 @@ u64 virtgpuOwnerBind(u64 cfg) {
 /// [head] is the first descriptor. Returns the response type, or 0
 /// if used.idx never reached slot+1.
 @bare
-u64 virtgpuSubmit2(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 slot, u64 req, u64 reqlen, u64 resp, u64 kick) {
+u64 virtgpuSubmit2N(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 slot, u64 req, u64 reqlen, u64 resp, u64 kick, u64 tries) {
   virtgpuZero(resp, u64(24));
   virtgpuPutDesc(
       qdesc, head, req, reqlen, u64(virtgpuDescNext), head + u64(1));
@@ -1428,12 +1444,22 @@ u64 virtgpuSubmit2(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 slot,
   if (kick > u64(0)) {
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
-  final u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
+  final u64 used = virtgpuWaitUsedN(qdev, slot + u64(1), tries);
   if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
   return virtgpuRamGet32(resp);
+}
+
+/// Two-descriptor command: device-readable [req]/[reqlen], then a
+/// 24-byte write-only [resp]. [slot] is the avail-ring index;
+/// [head] is the first descriptor. Returns the response type, or 0
+/// if used.idx never reached slot+1.
+@bare
+u64 virtgpuSubmit2(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 slot, u64 req, u64 reqlen, u64 resp, u64 kick) {
+  return virtgpuSubmit2N(
+      qdesc, qdrv, qdev, naddr, head, slot, req, reqlen, resp, kick, u64(1));
 }
 
 /// G4: one 2D resource, optional attach, SET_SCANOUT, one filled
@@ -2545,46 +2571,14 @@ u64 virtgpuFbTry() {
   }
   final u64 req = qdesc + u64(0x800);
   final u64 resp = qdesc + u64(0xA00);
-  u64 slot = virtgpuAvailIdx(qdrv);
-  u64 head = (slot << u64(1)) & u64(62);
-  virtgpuPutHdr(req, u64(virtgpuTypeGetDisp));
-  virtgpuZero(resp, u64(virtgpuDispBytes));
-  virtgpuPutDesc(
-      qdesc, head, req, u64(virtgpuHdrBytes), u64(virtgpuDescNext),
-      head + u64(1));
-  virtgpuPutDesc(
-      qdesc, head + u64(1), resp, u64(virtgpuDispBytes),
-      u64(virtgpuDescWrite), u64(0));
-  virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
-  virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
-  Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
-  // First doorbell after DRIVER_OK can wait on host llvmpipe / Venus
-  // init. One poll bound is enough later; eight covers this door.
-  u64 used = u64(0);
-  u64 tries = u64(0);
-  while (tries < u64(8)) {
-    used = virtgpuWaitUsed(qdev, slot + u64(1));
-    if (used >= (slot + u64(1))) {
-      tries = u64(8);
-    }
-    if (used < (slot + u64(1))) {
-      tries = tries + u64(1);
-    }
-  }
-  if (used < (slot + u64(1))) {
-    uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
-    return u64(0);
-  }
-  u64 sw = virtgpuRamGet32(resp + u64(32));
-  u64 sh = virtgpuRamGet32(resp + u64(36));
-  // QEMU's first GET_DISPLAY_INFO on virtio-gpu-gl often names
-  // 640×480 before SET_SCANOUT. The leftover DE is 1280×720.
-  if (sw < u64(1280)) {
-    sw = u64(1280);
-  }
-  if (sh < u64(720)) {
-    sh = u64(720);
-  }
+  // GET_DISPLAY_INFO is the first doorbell and times out on
+  // virtio-gpu-gl+Venus+llvmpipe while the host renderer starts.
+  // The DE present size is 1280×720; do not abort scanout on that
+  // probe, and do not share req/resp with an in-flight GET_DISPLAY.
+  final u64 sw = u64(1280);
+  final u64 sh = u64(720);
+  u64 slot = u64(0);
+  u64 head = u64(0);
   if (virtgpuRamGet32(qdesc + u64(virtgpuMetaFlag)) > u64(0)) {
     final u64 live = fbState(u64(fbStateBase));
     if (live > u64(0)) {
@@ -2608,9 +2602,9 @@ u64 virtgpuFbTry() {
   virtgpuRamPut32(req + u64(28), u64(virtgpuFmtBgrx));
   virtgpuRamPut32(req + u64(32), sw);
   virtgpuRamPut32(req + u64(36), sh);
-  if (virtgpuSubmit2(
+  if (virtgpuSubmit2N(
           qdesc, qdrv, qdev, naddr, head, slot, req, u64(40), resp,
-          u64(1)) !=
+          u64(1), u64(16)) !=
       u64(virtgpuRespOk)) {
     return u64(0);
   }
@@ -2718,7 +2712,8 @@ u64 virtgpuFbTry() {
   virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
   virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
   Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
-  if (virtgpuWaitUsed(qdev, slot + u64(1)) < (slot + u64(1))) {
+  if (virtgpuWaitUsedN(qdev, slot + u64(1), u64(8)) < (slot + u64(1))) {
+    uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
   if (virtgpuRamGet32(resp) != u64(virtgpuRespOk)) {
@@ -2733,9 +2728,9 @@ u64 virtgpuFbTry() {
   virtgpuRamPut32(req + u64(36), sh);
   virtgpuRamPut32(req + u64(40), u64(0));
   virtgpuRamPut32(req + u64(44), u64(virtgpuResId));
-  if (virtgpuSubmit2(
+  if (virtgpuSubmit2N(
           qdesc, qdrv, qdev, naddr, head, slot, req, u64(48), resp,
-          u64(1)) !=
+          u64(1), u64(8)) !=
       u64(virtgpuRespOk)) {
     return u64(0);
   }
