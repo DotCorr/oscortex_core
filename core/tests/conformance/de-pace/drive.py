@@ -252,6 +252,18 @@ def main():
                          "gfx arm is still recomposing" % UNPACED_SECS)
 
     # ---- phase 3: the frame clock, over a measured window -----------------
+    # Attach under `wm de` focuses the client (STUDIO/PLAY keys). Drain
+    # to the shell skips while that seat is live, so `wm pace` never
+    # printed. A desktop click at the parked pointer (520,300) returns
+    # the keyboard; the client keeps committing.
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": True}},
+    ])
+    time.sleep(0.05)
+    q.cmd("input-send-event", events=[
+        {"type": "btn", "data": {"button": "left", "down": False}},
+    ])
+    time.sleep(0.15)
     q.line("wm pace")
     first, t0 = await_pace(serial, 1)
     if first["armed"] != 1:
