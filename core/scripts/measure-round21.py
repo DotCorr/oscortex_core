@@ -168,53 +168,51 @@ def files_close_xy(dx=0):
     return cx, by + BTN_S // 2
 
 
-def close_files(q, ser, dx=0):
-    """Close FILES via the CSD disc (title pop is moved off the card)."""
-    cx, cy = files_close_xy(dx)
+def _click_close(q, ser, cx, cy):
     marked = ser.read()
     d15.place(q, ser, cx, cy)
-    time.sleep(0.08)
+    time.sleep(0.06)
     d15.button(q, cx, cy, "left", True)
     time.sleep(0.04)
     d15.button(q, cx, cy, "left", False)
-    if d15.wait_mark(ser, "WM CLOSE", marked, 2.0):
+    return bool(d15.wait_mark(ser, "WM CLOSE", marked, 1.2))
+
+
+def close_files(q, ser, dx=0):
+    """Close FILES via the CSD disc. No title-pop: that card is moved
+    off the window and a miss opens WALL MENU."""
+    try:
+        q.key("esc")
+    except Exception:
+        pass
+    time.sleep(0.04)
+    trials = [dx, 0, 1, -28, 28]
+    seen = set()
+    for trial in trials:
+        if trial in seen:
+            continue
+        seen.add(trial)
+        cx, cy = files_close_xy(trial)
+        if _click_close(q, ser, cx, cy):
+            return True
+    # Maximized CSD (border 8, width 1274).
+    if _click_close(q, ser, 1260, 25):
         return True
-    # Title pop is placed off the card (wmPopFits). Close is row 0
-    # after the menu is forced below every client.
-    tx, ty = FILES_TITLE[0] + dx, FILES_TITLE[1]
-    marked = ser.read()
-    d15.place(q, ser, tx, ty)
-    time.sleep(0.06)
-    d15.button(q, tx, ty, "right", True)
-    time.sleep(0.04)
-    d15.button(q, tx, ty, "right", False)
-    if not (d15.wait_mark(ser, "WM CTX TITLE", marked, 1.2)
-            or d15.wait_mark(ser, "WM WIN MENU", marked, 0.8)):
-        return False
-    # Below-clients origin is (16, FILES.y+h+8) = (16, 328) at default.
-    pop_x, pop_y = 16 + 84, 328 + 8 + 14
-    marked = ser.read()
-    d15.place(q, ser, pop_x, pop_y)
-    time.sleep(0.06)
-    d15.button(q, pop_x, pop_y, "left", True)
-    time.sleep(0.04)
-    d15.button(q, pop_x, pop_y, "left", False)
-    return bool(d15.wait_mark(ser, "WM CLOSE", marked, 2.0))
+    return False
 
 
 def launch_files(q, ser):
     fx, fy = d15.FILES_DOCK_XY
-    for _try in range(8):
+    for _try in range(3):
         marked = ser.read()
-        if d15.press(q, ser, fx, fy, "left", "DESK LAUNCH", timeout=1.2):
+        if d15.press(q, ser, fx, fy, "left", "DESK LAUNCH", timeout=1.4):
             if (d15.wait_mark(ser, "FILES READY", marked, 6)
                     or d15.wait_mark(ser, "FILES CSD", marked, 3)):
                 return True
-        got = d15.press(q, ser, fx, fy, "left", "FILES CSD", timeout=2.0)
-        if got:
+        if d15.press(q, ser, fx, fy, "left", "FILES CSD", timeout=1.5):
             d15.wait_mark(ser, "FILES READY", ser.read(), 6)
             return True
-        time.sleep(0.2)
+        time.sleep(0.15)
     return False
 
 
@@ -241,7 +239,8 @@ def first_drags(q, ser, n=22):
         # drain so first-drag LAT is the step, not the cold DrawWindow.
         d15.wait_mark(ser, "WM DEFN COMMIT", marked, 1.5)
         time.sleep(0.05)
-        nx = FILES_TITLE[0] + 28
+        # West, so the close disc stays left of SET (464).
+        nx = FILES_TITLE[0] - 28
         ny = FILES_TITLE[1]
         ax, ay = d15.abs_xy(nx, ny)
         wall = d15.pair_inject(q, ser, [
@@ -264,8 +263,9 @@ def first_drags(q, ser, n=22):
                     "oscortex-round21-first-drag.png"))
             except Exception as e:
                 print("first-drag shot", e)
-        if not close_files(q, ser, 28):
+        if not close_files(q, ser, -28):
             print("close miss", i)
+            continue
         time.sleep(0.15)
     return {
         "n": len(walls),
