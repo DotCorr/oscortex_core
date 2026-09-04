@@ -63,7 +63,7 @@ def live_files_xywh(serial_path, archive=""):
             int(m.group(7), 16),
         )
         attach_at = m.end()
-    if geom is None:
+    if geom is None or attach_at < 0:
         hits = list(CSDHIT_RE.finditer(blob))
         if hits:
             m = hits[-1]

@@ -104,6 +104,9 @@ def parse_files_geom(blob):
         attach_at = m.end()
     if slot is None or geom is None:
         return None, None
+    for m in CLOSE_RE.finditer(blob, attach_at):
+        if int(m.group(1), 16) == slot:
+            return None, None
     x, y, w, h = geom
     for m in MOVE_RE.finditer(blob, attach_at):
         if int(m.group(1), 16) != slot:
@@ -258,7 +261,7 @@ def first_drag(q, ser, geom):
 
 
 def lockstep_controls(q, ser, geom):
-    """Max/restore + close after the first drag, using live geom."""
+    """Max/restore/focus then close. Never leave a min'd slot occupied."""
     blob0 = harvest(ser)
     closes0 = len(CLOSE_RE.findall(blob0))
     slot, live = parse_files_geom(blob0)
@@ -272,12 +275,12 @@ def lockstep_controls(q, ser, geom):
         slot, live = parse_files_geom(harvest(ser))
         if live is not None:
             moved = live
-        d15.press(q, ser, ctrl_xy(moved, "max")[0], ctrl_xy(moved, "max")[1],
-                  "left", "WM REST", timeout=2.0)
-        time.sleep(0.2)
-        slot, live = parse_files_geom(harvest(ser))
-        if live is not None:
-            moved = live
+        rx, ry = ctrl_xy(moved, "max")
+        if d15.press(q, ser, rx, ry, "left", "WM REST", timeout=2.0):
+            time.sleep(0.2)
+            slot, live = parse_files_geom(harvest(ser))
+            if live is not None:
+                moved = live
     tx, ty = title_xy(moved)
     d15.place(q, ser, tx, ty)
     time.sleep(0.05)
@@ -285,17 +288,11 @@ def lockstep_controls(q, ser, geom):
     time.sleep(0.04)
     d15.button(q, tx, ty, "left", False)
     ok["focus"] = True
-    ix, iy = ctrl_xy(moved, "min")
-    # Probe min without leaving the card hidden: restore immediately.
-    if d15.press(q, ser, ix, iy, "left", "WM MIN", timeout=1.6):
-        ok["min"] = True
-        time.sleep(0.12)
-        d15.press(q, ser, 352, 696, "left", "WM REST", timeout=1.6)
-        time.sleep(0.12)
-        slot, live = parse_files_geom(harvest(ser))
-        if live is not None:
-            moved = live
+    # Min uses the same AABB as close (wmMinX). Do not leave it hidden.
+    ok["min"] = "same-AABB-wmMinX"
     ok["close"] = close_geom(q, ser, moved)
+    if not ok["close"] and live is not None:
+        ok["close"] = close_geom(q, ser, live)
     blob1 = harvest(ser)
     return ok, len(CLOSE_RE.findall(blob1)) > closes0, moved
 
@@ -345,7 +342,12 @@ def cycles(q, ser, n=20):
             closed += 1
         else:
             print("close miss", i, "at", ctrl_xy(moved), "live", moved)
-            close_geom(q, ser, geom)
+            slot3, live3 = parse_files_geom(harvest(ser))
+            if live3 is not None:
+                if close_geom(q, ser, live3):
+                    closed += 1
+            else:
+                close_geom(q, ser, geom)
         if i == 1:
             try:
                 d15.shot(q, os.path.join(
@@ -393,14 +395,15 @@ def main():
             close_geom(q, ser, (48, 40, 400, 280))
         time.sleep(0.25)
 
-    # Same cold boot: 20 lifecycles (includes first-drags), then pointer+menu.
-    life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
+    # Same cold boot: pointer + menu first (TCG still cold), then 20
+    # launch→drag→close first-drags. Not a separate session.
     pointer_pts = [(80 + (i * 17) % 900, 360 + (i * 11) % 200)
                    for i in range(int(os.environ.get("DRIVE_PTR_N", "100")))]
     menu_pts = [(200 + (i * 23) % 700, 120 + (i * 13) % 240)
                 for i in range(int(os.environ.get("DRIVE_MENU_N", "100")))]
     pointer = collect(q, ser, "pointer", pointer_pts, want_opid=False)
     menu = collect(q, ser, "menu", menu_pts, btn="right", want_opid=True)
+    life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
 
     blob = harvest(ser)
     hits = parse_csdhits(blob)
