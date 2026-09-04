@@ -150,9 +150,12 @@ if "wmCommitPath" not in commit:
 if "full < u64(1)" not in commit:
     raise SystemExit("body/scroll after drag still forces a session compose")
 
-kick = fn(gfx, "wmGfxKick")
-if "wmViewGeom" not in kick:
+mail = fn(gfx, "wmGfxMail")
+if "wmViewGeom" not in mail:
     raise SystemExit("chrome mailbox still uses requested geom on HOLD")
+kick = fn(gfx, "wmGfxKick")
+if "wmGfxMail" not in kick:
+    raise SystemExit("wmGfxKick does not mail before a session owe")
 
 if "WM VIS W" not in chip:
     raise SystemExit("chip-scan-round23 does not parse WM VIS")
