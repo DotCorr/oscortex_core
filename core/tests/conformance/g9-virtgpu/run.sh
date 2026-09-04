@@ -184,7 +184,7 @@ EV_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
   | awk '$4=="OBJECT" && $8=="wmeventStore"{print $3+0; exit}')
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
-ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing}"
+ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing}"
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
   || fail "wmeventStore is not last in kmain.o .bss"
 

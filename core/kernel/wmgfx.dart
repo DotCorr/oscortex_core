@@ -376,11 +376,11 @@ void wmGfxKick() {
     if (wmPageAddr() > u64(0)) {
       u64 mail = u64(0);
       if (win0Slot < u64(wmMaxWindows)) {
-        mail = wmPage(u64(wmPageWLaunch0) + win0Slot) & u64(0xFF);
+        mail = wmPage(wmPageLaunchOf(win0Slot)) & u64(0xFF);
       }
       if (win1Slot < u64(wmMaxWindows)) {
         mail = mail |
-            ((wmPage(u64(wmPageWLaunch0) + win1Slot) & u64(0xFF)) << u64(8));
+            ((wmPage(wmPageLaunchOf(win1Slot)) & u64(0xFF)) << u64(8));
       }
       wmPageSet(u64(wmPageWCapMail), mail);
     }

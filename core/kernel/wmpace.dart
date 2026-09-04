@@ -333,6 +333,15 @@ const int wmPageWHoldKick0 = 462;
 /// 1 if the down-edge already fired a CSD button. Release must not
 /// toggle max/close again (press() is down+up in 50 ms).
 const int wmPageWCsdArmed = 466;
+/// Slots 4–7 live past the four-wide banks at 370/378/446 so a
+/// DESK + six dock apps do not smash paint/scratch/event words.
+const int wmPageWLaunchHi = 467;
+const int wmPageWMaxHi = 471;
+const int wmPageWVisHi = 475;
+const int wmPageWPendHi = 479;
+const int wmPageWVisGenHi = 483;
+const int wmPageWHoldArmHi = 487;
+const int wmPageWHoldKickHi = 491;
 const int wmHoldKickTicks = 50;
 const int wmHoldForceTicks = 80;
 const int wmHoldCancelTicks = 200;
@@ -716,6 +725,50 @@ void wmPageSet(u64 i, u64 v) {
     return;
   }
   Pointer<u64>.fromAddress(p + (i << u64(3))).value = v;
+}
+
+/// Slot 0–3 stay on the original four-wide bank; 4–7 use the hi bank.
+@bare
+u64 wmPageSlotWord(u64 lo, u64 hi, u64 slot) {
+  if (slot < u64(4)) {
+    return lo + slot;
+  }
+  return hi + (slot - u64(4));
+}
+
+@bare
+u64 wmPageLaunchOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWLaunch0), u64(wmPageWLaunchHi), slot);
+}
+
+@bare
+u64 wmPageMaxOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWMax0), u64(wmPageWMaxHi), slot);
+}
+
+@bare
+u64 wmPageVisOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWVis0), u64(wmPageWVisHi), slot);
+}
+
+@bare
+u64 wmPagePendOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWPend0), u64(wmPageWPendHi), slot);
+}
+
+@bare
+u64 wmPageVisGenOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWVisGen0), u64(wmPageWVisGenHi), slot);
+}
+
+@bare
+u64 wmPageHoldArmOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWHoldArm0), u64(wmPageWHoldArmHi), slot);
+}
+
+@bare
+u64 wmPageHoldKickOf(u64 slot) {
+  return wmPageSlotWord(u64(wmPageWHoldKick0), u64(wmPageWHoldKickHi), slot);
 }
 
 /// Stamps the PIT tick and kind of an input that must present.

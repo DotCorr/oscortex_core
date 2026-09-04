@@ -19,8 +19,8 @@
 #   * kernel device line is class 03/80, not 03/00
 #   * xp of the printed VIRTIO BACK address matches fbFont8x16
 #   * VIRTIO FLUSH equals 51 (one per banner glyph cell)
-#   * `fb` prints `FB NONE -- no VGA-class device with a memory BAR0
-#     on bus 0`
+#   * `fb` prints `FB VIRTIO WWWWxHHHH` (class 03/80 present path)
+#     and must not print VIRTIO BACK / VIRTIO FLUSH
 #
 # Anti-vacuity: a VGA-class device on the bus is a fail. Flush 0 on
 # the positive boot is a fail. `FB BAR` / `FB NOVBE` on this machine
@@ -331,9 +331,9 @@ drive_session "$WORKDIR/nof" "virtgpue" "$KEYS_NOFLUSH" \
   -vga none -device "virtio-gpu-pci,xres=${XRES},yres=${YRES}"
 
 echo
-echo "=== BOOT virtio-gpu-pci fb (ADR-0064 NONE) ==="
+echo "=== BOOT virtio-gpu-pci fb (FB VIRTIO present) ==="
 DUMP_ARGS=()
-drive_session "$WORKDIR/fb" "fb-none" "$KEYS_FB" \
+drive_session "$WORKDIR/fb" "fb-virtio" "$KEYS_FB" \
   -vga none -device "virtio-gpu-pci,xres=${XRES},yres=${YRES}"
 
 echo
@@ -463,21 +463,22 @@ check_console "$WORKDIR/nof/serial.txt" "$WORKDIR/nof/info-pci.txt" \
   "$WORKDIR/nof/info-pci.txt" 0 "virtgpue"
 echo "ASSERT: pass  virtio-gpu-pci virtgpue  backing glyphs match  FLUSH 0 — flush count measures the device round trip"
 
-check_no_vga "$WORKDIR/fb/info-pci.txt" "fb-none"
-ck; python3 - "$WORKDIR/fb/serial.txt" "$WORKDIR/fb/info-pci.txt" <<'PY' || fail "fb on virtio-gpu-pci did not print FB NONE"
+check_no_vga "$WORKDIR/fb/info-pci.txt" "fb-virtio"
+ck; python3 - "$WORKDIR/fb/serial.txt" "$WORKDIR/fb/info-pci.txt" <<'PY' || fail "fb on virtio-gpu-pci did not print FB VIRTIO"
 import re, sys
 serial = open(sys.argv[1], "rb").read().decode("latin-1")
 fails = []
-none = [ln for ln in serial.splitlines()
-        if ln.startswith("FB NONE -- no VGA-class device with a memory BAR0 on bus 0")]
-if len(none) != 1:
-    fails.append("expected one FB NONE line, found %d: %r" % (len(none), none))
+virt = [ln for ln in serial.splitlines() if ln.startswith("FB VIRTIO ")]
+if len(virt) != 1:
+    fails.append("expected one FB VIRTIO line, found %d: %r" % (len(virt), virt))
 if re.search(r"^FB BAR ", serial, re.M):
     fails.append("fb printed FB BAR — a VGA-class BAR answered on a no-VGA machine")
 if re.search(r"^FB NOVBE ", serial, re.M):
     fails.append("fb printed FB NOVBE — that string is for a VGA BAR without dispi; this machine has no VGA class")
 if re.search(r"^FB GOP ", serial, re.M):
     fails.append("fb printed FB GOP — -kernel has no GOP tag")
+if re.search(r"^FB NONE ", serial, re.M):
+    fails.append("fb printed FB NONE — class 03/80 must win the present path")
 if "VIRTIO BACK " in serial:
     fails.append("bare fb printed VIRTIO BACK — G7 must not steal fb into the VirtIO walk")
 if "VIRTIO FLUSH " in serial:
@@ -487,7 +488,7 @@ if fails:
         print("    - " + f, file=sys.stderr)
     sys.exit(1)
 PY
-echo "ASSERT: pass  fb on virtio-gpu-pci prints FB NONE (ADR-0064); no BAR, no NOVBE, no GOP"
+echo "ASSERT: pass  fb on virtio-gpu-pci prints FB VIRTIO; no BAR, no NOVBE, no GOP, no BACK/FLUSH"
 
 ck; python3 - "$WORKDIR/std/serial.txt" "$WORKDIR/std/info-pci.txt" <<'PY' || fail "std-vga negative control did not hold"
 import re, sys
@@ -510,4 +511,4 @@ PY
 echo "ASSERT: pass  -vga std prints VIRTIO NONE and no BACK/FLUSH"
 
 require_assertions "$ASSERTIONS_REQUIRED"
-echo "G7-virtgpu: PASS — virtio-gpu-pci with no VGA-class device; FB NONE; G5 console+flush on backing; virtgpue FLUSH 0; -vga std is VIRTIO NONE"
+echo "G7-virtgpu: PASS — virtio-gpu-pci with no VGA-class device; FB VIRTIO; G5 console+flush on backing; virtgpue FLUSH 0; -vga std is VIRTIO NONE"

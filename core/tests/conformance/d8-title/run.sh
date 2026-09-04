@@ -148,7 +148,7 @@ ck; [[ "$T_COLOR" -ne "$B_FILL" ]] \
 ck; [[ "$T_COLOR" -ne "$FOCUS" ]] \
   || fail "wmTitleColor equals the focus border"
 ck; [[ "$CH_META" -eq 19 ]] || fail "wmMetaChrome is $CH_META, expected spare word 19"
-ck; [[ "$STORE" -eq 448 ]] || fail "wmStoreBytes is $STORE, expected 448 — titles must not grow the block"
+ck; [[ "$STORE" -eq 704 ]] || fail "wmStoreBytes is $STORE, expected 704 — titles must not grow the block"
 
 TITLE_HEX=$(printf '%08X' "$T_COLOR")
 FILL_HEX=$(printf '%08X' "$A_FILL")
@@ -240,14 +240,14 @@ EV_SIZE=$(bsssize wmeventStore)
 EV_OFF=$(bssoff wmeventStore)
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
-ck; [[ "$WM_SIZE" -eq 448 ]] || fail "the image has wmStore ${WM_SIZE:-missing}, expected 448"
-ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 384"
+ck; [[ "$WM_SIZE" -eq 704 ]] || fail "the image has wmStore ${WM_SIZE:-missing}, expected 704"
+ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 768"
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
   || fail "wmeventStore is not last in .bss"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 31584 ]] \
-  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 31584 — titles still reuse wmMetaChrome and still add no block; the total moved under them: ADR-0155 doubled pmmMaxFrames to 65536 (pmmStore 4672 -> 8768, shmStore 4480 -> 8576), ADR-0189 grew vmStore to 240, and ADR-0064's fallback chain put two geometry words in fbStateBlock (32 -> 48)"
+ck; [[ "$TOTAL_BSS" -eq 36576 ]] \
+  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 36576 — titles still reuse wmMetaChrome and still add no block; the total moved under them: ADR-0155 doubled pmmMaxFrames to 65536 (pmmStore 4672 -> 8768, shmStore 4480 -> 8576), ADR-0189 grew vmStore to 240, and ADR-0064's fallback chain put two geometry words in fbStateBlock (32 -> 48)"
 echo "STRUCTURAL: pass  no new @bss, part not last, no help line, no syscall, wmStore $WM_SIZE, total .bss $TOTAL_BSS"
 
 echo

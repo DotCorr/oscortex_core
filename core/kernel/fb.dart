@@ -100,6 +100,13 @@ final List<u8> fbStrOk = const [
 
 /// Printed when the PCI walk found no display controller.
 ///
+/// `"FB VIRTIO "` -- 10 bytes. Quiet class 03/80 present path.
+@rodata
+final List<u8> fbStrVirtio = const [
+  u8(0x46), u8(0x42), u8(0x20), u8(0x56), u8(0x49), u8(0x52), u8(0x54),
+  u8(0x49), u8(0x4F), u8(0x20),
+];
+
 /// `"FB NONE -- no VGA-class device with a memory BAR0 on bus 0\n"` -- 59 bytes.
 @rodata
 final List<u8> fbStrNoDev = const [
@@ -302,6 +309,7 @@ void fbInit() {
 /// PCI class 0x03 subclass 0x00 is a VGA-compatible display controller.
 const int pciClassDisplay = 0x03;
 const int pciSubclassVga = 0x00;
+const int pciSubclassOther = 0x80;
 
 /// Configuration-space offset of BAR0.
 const int pciRegBar0 = 0x10;
@@ -1020,9 +1028,11 @@ void fbPaintBanner() {
 
 /// `fb` -- probe scanout in one order, never hang, print which path won.
 ///
-/// 1. GOP tag + successful map -- `gopTry` prints `FB GOP …` and returns.
-/// 2. Else Bochs/VBE BAR -- this function prints `FB BAR … MODE … OK`.
-/// 3. Else `FB NONE` (or `FB NOVBE` if a VGA BAR answered but dispi did
+/// 1. VirtIO-GPU class 03/80 -- `virtgpuFbTry` prints `FB VIRTIO …`
+///    and arms SET_SCANOUT on guest RAM. No VIRTIO BACK / FLUSH.
+/// 2. Else GOP tag + successful map -- `gopTry` prints `FB GOP …`.
+/// 3. Else Bochs/VBE BAR -- this function prints `FB BAR … MODE … OK`.
+/// 4. Else `FB NONE` (or `FB NOVBE` if a VGA BAR answered but dispi did
 ///    not). VGA text 80×25 and COM1 stay up either way.
 ///
 /// A GOP tag that cannot be mapped returns 0 from [gopTry] and falls
@@ -1042,6 +1052,9 @@ void fbPaintBanner() {
 /// looking at the screen.
 @bare
 void shellFb() {
+  if (virtgpuFbTry() > u64(0)) {
+    return;
+  }
   if (gopTry() > u64(0)) {
     return;
   }

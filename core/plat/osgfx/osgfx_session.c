@@ -877,8 +877,9 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
   if (w < 8 || h < 8) {
     return;
   }
-  /* PLAY is a 64×64 video surface (ADR-0196) — no session chrome. */
-  if (cap_code == 4 || h < 80) {
+  /* PLAY is 64×64 (ADR-0196). Still paint traffic lights so close /
+   * min / max are usable. Caption needs a taller title band. */
+  if (w < 54 || h < 22) {
     return;
   }
   by = win_btn_y(y);
@@ -888,6 +889,13 @@ static void paint_de_title_controls(OsGfx *g, uint32_t *fb, int pitch, int ww,
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_MIN, SESS_MIN_RIM);
   bx = win_close_x(x, w);
   paint_traffic(g, fb, pitch, ww, hh, bx, by, SESS_CLOSE, SESS_CLOSE_RIM);
+  if (cap_code == 4 || h < 80) {
+    if (title_noted == 0) {
+      title_noted = 1;
+      com1_puts("OSGFX TITLE CLOSE\n");
+    }
+    return;
+  }
   if (title_noted == 0) {
     title_noted = 1;
     com1_puts("OSGFX TITLE CLOSE\n");

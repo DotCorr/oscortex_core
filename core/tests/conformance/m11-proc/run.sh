@@ -304,7 +304,7 @@ KDATA_BSS=$DART_BSS
 D7_OFF_HEX=$(bssoff wmeventStore)
 ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
 D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
-ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D7_BSS" -eq 768 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 768. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
 D2_OFF_HEX=$(bssoff kbdqStore)
 ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
@@ -314,12 +314,12 @@ KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 704 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 704. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8832 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8832 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -383,15 +383,15 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 13952 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 13952 (5496 through M10, plus 4224 for the process table -- 4160 at M11 and 64 more for M18's scheduler header, ADR-0022 -- and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
+ck; [[ "$KDATA_BSS" -eq 18048 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 18048 (5496 through M10, plus 4224 for the process table -- 4160 at M11 and 64 more for M18's scheduler header, ADR-0022 -- and 8 for the alignment its align: 16 forces). If you meant to grow it, say so in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 PROC_STORE=$(bsssize procStore)
-ck; [[ "$PROC_STORE" == "4224" ]] || fail "procStore is ${PROC_STORE:-missing} bytes, expected 4224 (4160 at M11, plus M18's eight extra header words)"
+ck; [[ "$PROC_STORE" == "8320" ]] || fail "procStore is ${PROC_STORE:-missing} bytes, expected 4224 (4160 at M11, plus M18's eight extra header words)"
 ELF_STORE_OFF_HEX=$(bssoff elfStore)
 ELF_STORE_SZ=$(bsssize elfStore)
 # The offset arithmetic runs inside the DCDart half (ASM_BSS is 96 bytes of
 # assembly-owned words that are NOT at the end of it), so subtract it back out.
-ck; [[ $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )) -eq 4232 ]] \
-  || fail "the mutable static bytes past the end of elfStore are $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )), expected 4232"
+ck; [[ $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )) -eq 8328 ]] \
+  || fail "the mutable static bytes past the end of elfStore are $(( KDATA_BSS - ASM_BSS - 16#$ELF_STORE_OFF_HEX - ELF_STORE_SZ )), expected 8328"
 # M17: scan BOTH objects, and only their .bss sections. The storage moved to
 # kmain.o, so a scan of kdata.o alone would now find nothing and pass for the
 # wrong reason. The migration this check was written to protect has happened;
@@ -845,7 +845,7 @@ for sym in sse_enabled cr4_read fx_save fx_restore; do
 done
 # M11's fifth was `proc_store_addr` (asserted absent above). What it addressed is
 # now `procStore`, the 4224-byte @bss block asserted at check 3a.
-ck; [[ "$(bsssize procStore)" == "4224" ]] || fail "procStore is not a 4224-byte object in kmain.o's .bss — M11's process table did not survive the ADR-0021 migration, or M18's scheduler header did not land in it"
+ck; [[ "$(bsssize procStore)" == "8320" ]] || fail "procStore is not a 4224-byte object in kmain.o's .bss — M11's process table did not survive the ADR-0021 migration, or M18's scheduler header did not land in it"
 ck; grep -qE 'FREESTANDING: pass +.*kdata\.o$' <<<"$VERIFY_OUT" || fail "kdata.o no longer passes verify-freestanding.sh with zero declared externs (GAP-0056)"
 echo "FREESTANDING: $EXTERN_COUNT declared externs on kmain.o — 40 from M10 plus exactly four (M11's fifth, proc_store_addr, is gone with ADR-0021), and kdata.o still passes standalone"
 

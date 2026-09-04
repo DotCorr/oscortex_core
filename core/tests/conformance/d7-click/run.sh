@@ -107,7 +107,7 @@ ck; [[ "$E_SYS" -eq "$SYSNO" ]] || fail "the model and the kernel disagree about
 ck; [[ "$E_SLOTS" -eq "$W_MAX" ]] || fail "wmeventSlots is $E_SLOTS and wmMaxWindows is $W_MAX"
 ck; [[ $(( E_SLOTS * E_SLOTB )) -eq "$E_STORE" ]] \
   || fail "wmeventSlots * wmeventSlotBytes = $(( E_SLOTS * E_SLOTB )), store is $E_STORE"
-ck; [[ "$E_STORE" -eq 384 ]] || fail "wmeventStoreBytes is $E_STORE, expected 384"
+ck; [[ "$E_STORE" -eq 768 ]] || fail "wmeventStoreBytes is $E_STORE, expected 768"
 ck; [[ "$E_DEPTH" -eq 8 ]] || fail "wmeventDepth is $E_DEPTH, expected 8"
 
 capture_sh REG_OUT REG_STATUS -- "bash '$CORE_DIR/scripts/verify-syscall-registry.sh' 2>&1"
@@ -128,9 +128,9 @@ WM_SIZE=$(bsssize wmStore)
 EV_OFF=$(bssoff wmeventStore)
 KBDQ_OFF=$(bssoff kbdqStore)
 WM_OFF=$(bssoff wmStore)
-ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 384"
+ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 768"
 ck; [[ "$KBDQ_SIZE" -eq 288 ]] || fail "kbdqStore is ${KBDQ_SIZE:-missing} bytes, expected 288"
-ck; [[ "$WM_SIZE" -eq 448 ]] || fail "wmStore is ${WM_SIZE:-missing} bytes, expected 448"
+ck; [[ "$WM_SIZE" -eq 704 ]] || fail "wmStore is ${WM_SIZE:-missing} bytes, expected 704"
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
@@ -141,8 +141,8 @@ ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq $(( 16#$KBDQ_OFF )) ]] \
   || fail "wmStore is not immediately before kbdqStore"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 31584 ]] \
-  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 31584 — ADR-0109's 23264, plus four authorised growths that all sit BELOW this milestone: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536 and pmmBoundMib to 256), shmStore +4096 (the bit-plane must describe exactly pmmMaxFrames, asserted in m21-shmem), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB, vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words). See GAP-0053's ledger. D7 itself must still add nothing."
+ck; [[ "$TOTAL_BSS" -eq 36576 ]] \
+  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 36576 — ADR-0109's 23264, plus four authorised growths that all sit BELOW this milestone: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536 and pmmBoundMib to 256), shmStore +4096 (the bit-plane must describe exactly pmmMaxFrames, asserted in m21-shmem), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB, vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words). See GAP-0053's ledger. D7 itself must still add nothing."
 echo "STRUCTURAL: pass  wmeventStore is last ($EV_SIZE bytes), kbdqStore immediately before it; total .bss $TOTAL_BSS"
 
 # Negative control on the HOST: delivering the click to the bottom surface

@@ -180,7 +180,7 @@ EV_SIZE=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="wmeventStore"{print $3+0; exit}')
 EV_OFF=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="wmeventStore"{print $2; exit}')
-ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 384"
+ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 768"
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$BUILD_DIR/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \

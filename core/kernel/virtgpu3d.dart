@@ -310,7 +310,7 @@ u64 virtgpu3dSubmit2(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 slo
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 used = virtgpu3dWaitUsed(qdev, slot + u64(1));
-  if (used != slot + u64(1)) {
+  if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
@@ -663,7 +663,7 @@ u64 virtgpu3dAttachDst(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 s
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 used = virtgpu3dWaitUsed(qdev, slot + u64(1));
-  if (used != slot + u64(1)) {
+  if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
@@ -768,7 +768,7 @@ void virtgpu3dPaint(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 sw, u64 sh, u6
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 usedS = virtgpu3dWaitUsed(qdev, slot + u64(1));
-  if (usedS != slot + u64(1)) {
+  if (usedS < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     virtgpu3dReportPaint(u64(2));
     return;
@@ -1217,7 +1217,7 @@ u64 virtgpu3dAttachOsgfx(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 used = virtgpu3dWaitUsed(qdev, slot + u64(1));
-  if (used != slot + u64(1)) {
+  if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
@@ -1702,46 +1702,32 @@ void virtgpu3dVenusOne(u64 bus, u64 dev, u64 fn, u64 cfg) {
   }
   final u64 noff = virtgpuCfgGet16(cfg, u64(virtgpuCfgQNotifyOff));
   final u64 naddr = ntfy + (noff * mul);
-  final u64 qdesc = allocFrame();
-  if (qdesc < u64(1)) {
+  if (virtgpuOwnerBind(cfg) < u64(1)) {
     virtgpu3dVenusOffer(u64(0));
     return;
   }
-  vmZeroFrame(qdesc);
-  final u64 qdrv = allocFrame();
-  if (qdrv < u64(1)) {
-    virtgpu3dVenusOffer(u64(0));
-    return;
-  }
-  vmZeroFrame(qdrv);
-  final u64 qdev = allocFrame();
-  if (qdev < u64(1)) {
-    virtgpu3dVenusOffer(u64(0));
-    return;
-  }
-  vmZeroFrame(qdev);
-  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), qdesc);
-  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), qdrv);
-  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDevice), qdev);
-  virtgpuCfgPut16(cfg, u64(virtgpuCfgQEn), u64(1));
   virtgpuStatusOr(cfg, u64(virtgpuStatusDriverOk));
+  final u64 qdesc = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDesc));
+  final u64 qdrv = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDriver));
+  final u64 qdev = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDevice));
   final u64 req = qdesc + u64(0x800);
   final u64 resp = qdesc + u64(0xA00);
-  virtgpuRamPut16(qdrv, u64(virtgpuAvailNoInt));
   while (i < ncap) {
+    final u64 slot = virtgpuAvailIdx(qdrv);
+    final u64 head = (slot << u64(1)) & u64(62);
     virtgpuPutHdr(req, u64(virtgpuTypeCapInfo));
     virtgpuRamPut32(req + u64(24), i);
     virtgpuRamPut32(req + u64(28), u64(0));
     virtgpuZero(resp, u64(40));
     virtgpuPutDesc(
-        qdesc, i << u64(1), req, u64(32), u64(virtgpuDescNext), (i << u64(1)) + u64(1));
+        qdesc, head, req, u64(32), u64(virtgpuDescNext), head + u64(1));
     virtgpuPutDesc(
-        qdesc, (i << u64(1)) + u64(1), resp, u64(40), u64(virtgpuDescWrite), u64(0));
-    virtgpuRamPut16(qdrv + u64(4) + (i << u64(1)), i << u64(1));
-    virtgpuRamPut16(qdrv + u64(2), i + u64(1));
+        qdesc, head + u64(1), resp, u64(40), u64(virtgpuDescWrite), u64(0));
+    virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
+    virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
-    final u64 used = virtgpu3dWaitUsed(qdev, i + u64(1));
-    if (used != i + u64(1)) {
+    final u64 used = virtgpu3dWaitUsed(qdev, slot + u64(1));
+    if (used < (slot + u64(1))) {
       uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
       virtgpu3dVenusOffer(u64(0));
       return;
@@ -1839,6 +1825,17 @@ u64 virtgpu3dNegotiateVenus(u64 bus, u64 dev, u64 fn) {
       u64(virtgpu3dFeatCtxInit);
   if (cfg == u64(0)) {
     return u64(0);
+  }
+  if ((virtgpuStatusGet(cfg) & u64(virtgpuStatusDriverOk)) > u64(0)) {
+    virtgpuCfgPut32(cfg, u64(virtgpuCfgDrvSel), u64(0));
+    final u64 have = virtgpuCfgGet32(cfg, u64(virtgpuCfgDrvFeat));
+    if ((have & u64(virtgpu3dFeatCtxInit)) < u64(1)) {
+      return u64(0);
+    }
+    if ((have & u64(virtgpu3dFeatBlob)) < u64(1)) {
+      return u64(0);
+    }
+    return u64(1);
   }
   if (virtgpuReset(cfg) == u64(0)) {
     return u64(0);
@@ -1957,41 +1954,25 @@ u64 osgfx_venus_spirv_wire(u64 code, u64 nbytes) {
         }
         final u64 noff = virtgpuCfgGet16(cfg, u64(virtgpuCfgQNotifyOff));
         final u64 naddr = ntfy + (noff * mul);
-        final u64 qdesc = allocFrame();
-        final u64 qdrv = allocFrame();
-        final u64 qdev = allocFrame();
-        final u64 stream = allocFrame();
-        if (qdesc < u64(1)) {
+        if (virtgpuOwnerBind(cfg) < u64(1)) {
           virtgpu3dVenusSpirvFail(u64(0x14));
           return u64(0);
         }
-        if (qdrv < u64(1)) {
-          virtgpu3dVenusSpirvFail(u64(0x15));
-          return u64(0);
-        }
-        if (qdev < u64(1)) {
-          virtgpu3dVenusSpirvFail(u64(0x16));
-          return u64(0);
-        }
+        final u64 stream = allocFrame();
         if (stream < u64(1)) {
           virtgpu3dVenusSpirvFail(u64(0x17));
           return u64(0);
         }
-        vmZeroFrame(qdesc);
-        vmZeroFrame(qdrv);
-        vmZeroFrame(qdev);
         vmZeroFrame(stream);
         virtgpu3dCopyGuest(stream, code, nbytes);
-        virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), qdesc);
-        virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), qdrv);
-        virtgpuCfgPut64(cfg, u64(virtgpuCfgQDevice), qdev);
-        virtgpuCfgPut16(cfg, u64(virtgpuCfgQEn), u64(1));
         virtgpuStatusOr(cfg, u64(virtgpuStatusDriverOk));
+        final u64 qdesc = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDesc));
+        final u64 qdrv = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDriver));
+        final u64 qdev = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDevice));
         final u64 req = qdesc + u64(0x800);
         final u64 resp = qdesc + u64(0xA00);
-        u64 head = u64(0);
-        u64 slot = u64(0);
-        virtgpuRamPut16(qdrv, u64(virtgpuAvailNoInt));
+        u64 slot = virtgpuAvailIdx(qdrv);
+        u64 head = (slot << u64(1)) & u64(62);
 
         /* CTX_CREATE with context_init = Venus (4). */
         virtgpu3dPutHdr(req, u64(virtgpu3dTypeCtxNew), u64(virtgpu3dVenusCtx));
@@ -2062,7 +2043,7 @@ u64 osgfx_venus_spirv_wire(u64 code, u64 nbytes) {
         virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
         Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
         final u64 usedS = virtgpu3dWaitUsed(qdev, slot + u64(1));
-        if (usedS != slot + u64(1)) {
+        if (usedS < (slot + u64(1))) {
           /* SUBMIT timeout — CONTEXT_INIT + SPIR-V on the wire still counts. */
           uartWrite(Rodata.addressOf(virtgpu3dStrVenusSpirv), u64(18));
           uartPutHex(nbytes, u64(8));

@@ -81,13 +81,13 @@ part of 'kmain.dart';
 /// a design limit: a fifth `procCreate` is refused by name (`procErrNoSlot`) and
 /// says so, which is the difference between a bounded table and a table that
 /// overruns. Raising it is `procStoreBytes` and one number in `kdata.S`.
-const int procMax = 4;
+const int procMax = 8;
 
 /// `procMax`, and `procMax - 1`, as their own literals. `@bare` DCDart has no
 /// `>=` or `<=` (GAP-0023), so a half-open bound needs the number on each side
 /// of the comparison and `dcc` will not fold `procMax - 1` inside `u64(...)`.
-const int procMaxSlot = 3;
-const int procMaxWrap = 5;
+const int procMaxSlot = 7;
+const int procMaxWrap = 9;
 
 /// The whole donated block, and the three regions inside it. See `proc_store`
 /// in `core/boot/kdata.S`.
@@ -102,10 +102,10 @@ const int procMaxWrap = 5;
 /// functions, and the seam is still three call sites. The cost is that every
 /// harness that subtracts this block out of the kernel's `.bss` total moves by
 /// 64 bytes, and each of those numbers is spelled out in ADR-0022 §4.
-const int procStoreBytes = 4224;
+const int procStoreBytes = 8320;
 const int procHeadWords = 16;
 const int procTableOffset = 128;
-const int procFxOffset = 2176;
+const int procFxOffset = 4224;
 
 /// One slot: 512 bytes, 64 `u64` words.
 const int procSlotBytes = 512;

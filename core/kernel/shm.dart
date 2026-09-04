@@ -72,7 +72,7 @@ part of 'kmain.dart';
 /// FILES body. First-fit is per address space (per-client windows):
 /// other processes may reuse the same VA. Four regions still share
 /// the slot table.
-const int shmMax = 4;
+const int shmMax = 8;
 
 /// Pages of window address space reserved per region SLOT, whatever the region
 /// in it actually asked for.
@@ -120,7 +120,7 @@ const int shmRegBytes = 64;
 /// table there is millions of volatile loads. A bit-plane makes the test in
 /// `freeFrame` ONE BIT-TEST, which is the same operation `pmmAllocatable`
 /// already does on the same path.
-const int shmPlaneOffset = 384; // 128 + 4 * 64
+const int shmPlaneOffset = 640; // 128 + 8 * 64
 const int shmPlaneBytes = 8192;
 
 /// Frames the plane can describe: `shmPlaneBytes * 8`. Equal to `pmmMaxFrames`,
@@ -129,8 +129,8 @@ const int shmPlaneBytes = 8192;
 /// memory.
 const int shmPlaneFrames = 65536;
 
-/// 128 + 4 * 64 + 8192.
-const int shmStoreBytes = 8576;
+/// 128 + 8 * 64 + 8192.
+const int shmStoreBytes = 8832;
 
 // Global counter words.
 const int shmMetaCreates = 0;

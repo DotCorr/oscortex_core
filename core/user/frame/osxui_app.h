@@ -108,6 +108,18 @@ static inline unsigned long osxui_app_desk_key(void) {
   return r;
 }
 
+static inline unsigned long osxui_app_tasks_hi(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_TASKS_HI;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
 static inline unsigned long osxui_app_task(unsigned long t, unsigned long i) {
   return (t >> (i * 8UL)) & 0xFFUL;
 }

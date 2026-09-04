@@ -43,9 +43,9 @@ const int wmeventWordEvents = 4;
 const int wmeventMetaWords = 4;
 const int wmeventSlotWords = 12; // 4 + 8
 const int wmeventSlotBytes = 96;
-const int wmeventSlots = 4; // == wmMaxWindows; d7-click asserts the equality
-const int wmeventStoreWords = 48;
-const int wmeventStoreBytes = 384;
+const int wmeventSlots = 8; // == wmMaxWindows; d7-click asserts the equality
+const int wmeventStoreWords = 96;
+const int wmeventStoreBytes = 768;
 
 /// Packed-event field: bits 0-7. 1 is a left press. 2 is configure
 /// (ADR-0142). 3 is enter, 4 is leave. 0 is empty, and is never stored

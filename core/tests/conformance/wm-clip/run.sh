@@ -59,7 +59,7 @@ ck; grep -q 'wmOpTake = 4' "$CORE_DIR/kernel/wmext.dart" || fail "wmOpTake missi
 ck; grep -q 'shmMetaClipReg = 9' "$CORE_DIR/kernel/shm.dart" || fail "clip meta missing"
 ck; grep -q 'part .wmext.dart.' "$CORE_DIR/kernel/kmain.dart" || fail "wmext not in kmain"
 STORE=$(awk '/^const int wmStoreBytes = /{print $5}' "$CORE_DIR/kernel/wm.dart" | tr -d ';')
-ck; [[ "$STORE" -eq 448 ]] || fail "wmStoreBytes is $STORE, expected 448"
+ck; [[ "$STORE" -eq 704 ]] || fail "wmStoreBytes is $STORE, expected 704"
 LAST_BSS=$(x86_64-elf-objdump -t "$CORE_DIR/build/kmain.o" \
   | awk '$4==".bss" && $6!=".bss" {print $1,$6}' | sort | tail -1 | awk '{print $2}')
 ck; [[ "$LAST_BSS" == "wmeventStore" ]] || fail "last .bss is $LAST_BSS"
@@ -70,7 +70,7 @@ ck; ! grep -qE 'const int \w+SysNo = 11;' "$CORE_DIR/kernel/"*.dart \
 HELP_SIZE=$(x86_64-elf-readelf -sW "$CORE_DIR/build/kmain.o" \
   | awk '$8=="shellStrHelp"{print $3+0; exit}')
 ck; [[ "$HELP_SIZE" -eq 2511 ]] || fail "shellStrHelp is ${HELP_SIZE:-missing}"
-echo "STRUCTURAL: pass  offer/take, wmStore=448, wmevent last, fdwait=11"
+echo "STRUCTURAL: pass  offer/take, wmStore=704, wmevent last, fdwait=11"
 
 echo
 echo "=== PROGRAMS ==="

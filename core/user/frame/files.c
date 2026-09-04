@@ -1380,35 +1380,9 @@ static void try_strip(u64 names, u32 swatch) {
     return;
   }
   va = va + SURF_OFFSET;
-  /* Grow to native-max capacity now, while SET has not yet taken the
-   * hole above this region. In-place SHMGROW keeps the attach VA. */
-  {
-    u64 want = (SURF_OFFSET + (MAX_W * 4UL) * MAX_H + 4095UL) / 4096UL;
-    u64 grown = sys2(SYS_SHMGROW, h, want);
-    if (grown < WM_RET_FLOOR) {
-      if (grown > 0) {
-        va = grown + SURF_OFFSET;
-      }
-      desc[WM_DESC_OP] = WM_OP_BACKING;
-      desc[WM_DESC_HANDLE] = h;
-      desc[WM_DESC_STRIDE] = MAX_W * 4UL;
-      if (sys1(SYS_WMSURFACE, (u64)&desc[0]) < WM_RET_FLOOR) {
-        files_stride = MAX_W * 4UL;
-        files_cap_w = MAX_W;
-        files_cap_h = MAX_H;
-        {
-          unsigned at = put(0, "FILES GROW ");
-          at = putdec(at, want);
-          at = put(at, " W ");
-          at = putdec(at, MAX_W);
-          at = put(at, " H ");
-          at = putdec(at, MAX_H);
-          emit(at);
-        }
-        wr(msg_phz_grow, sizeof(msg_phz_grow) - 1);
-      }
-    }
-  }
+  /* Grow on maximize only. Eager native-max (829 pages) starved later
+   * shmcreate when slots were 4; with 8 slots the cost is still a
+   * per-client hog, so attach stays at the window's first size. */
 
   files_h = h;
   files_va = va;

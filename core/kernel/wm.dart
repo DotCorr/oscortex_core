@@ -423,7 +423,7 @@ const int wmSysSurfaceNo = 23;
 /// pixels live in a shared region and [shmMax] is 4 (ADR-0109), so four
 /// windows is the most that can simultaneously exist on this machine.
 /// d2-compositor asserts the two numbers stay equal.
-const int wmMaxWindows = 4;
+const int wmMaxWindows = 8;
 
 /// Operations a descriptor's word 0 may carry.
 const int wmOpAttach = 1;
@@ -547,7 +547,7 @@ const int wmMetaBytes = 192;
 const int wmWinWords = 8;
 const int wmWinBytes = 64;
 const int wmWinOffset = 192;
-const int wmStoreBytes = 448; // 192 + 4 * 64
+const int wmStoreBytes = 704; // 192 + 8 * 64
 
 @bss
 final Bss wmStore = const Bss(bytes: wmStoreBytes);
@@ -2011,8 +2011,8 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmSetWin(slot, u64(wmWinState), u64(wmWinLive));
   final u64 cap = wmCaptionFromReq(reqW, reqH);
   if (wmPageAddr() > u64(0)) {
-    wmPageSet(u64(wmPageWMax0) + slot, u64(0));
-    wmPageSet(u64(wmPageWLaunch0) + slot, cap);
+    wmPageSet(wmPageMaxOf(slot), u64(0));
+    wmPageSet(wmPageLaunchOf(slot), cap);
     wmVisClear(slot);
     wmDefClear(slot);
   }
@@ -2536,8 +2536,8 @@ void wmReapOne(u64 i) {
     wmSeatFocusSet(u64(1), u64(wmMaxWindows));
   }
   if (wmPageAddr() > u64(0)) {
-    wmPageSet(u64(wmPageWLaunch0) + i, u64(0));
-    wmPageSet(u64(wmPageWMax0) + i, u64(0));
+    wmPageSet(wmPageLaunchOf(i), u64(0));
+    wmPageSet(wmPageMaxOf(i), u64(0));
     wmPageSet(u64(wmPageWLifeReap),
         wmPage(u64(wmPageWLifeReap)) + u64(1));
   }

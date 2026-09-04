@@ -92,8 +92,8 @@ KBDQ_OFF=$(bssoff kbdqStore)
 WM_OFF=$(bssoff wmStore)
 EV_OFF=$(bssoff wmeventStore)
 ck; [[ "$KBDQ_SIZE" -eq 288 ]] || fail "kbdqStore is ${KBDQ_SIZE:-missing} bytes, expected 288"
-ck; [[ "$WM_SIZE" -eq 448 ]] || fail "wmStore is ${WM_SIZE:-missing} bytes, expected 448"
-ck; [[ "$EV_SIZE" -eq 384 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 384"
+ck; [[ "$WM_SIZE" -eq 704 ]] || fail "wmStore is ${WM_SIZE:-missing} bytes, expected 704"
+ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 768"
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
@@ -104,8 +104,8 @@ ck; [[ $(( 16#$WM_OFF + WM_SIZE )) -eq $(( 16#$KBDQ_OFF )) ]] \
   || fail "wmStore is not immediately before kbdqStore"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
 TOTAL_BSS=$(( DART_BSS + 16#$ASM_BSS_HEX ))
-ck; [[ "$TOTAL_BSS" -eq 31584 ]] \
-  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 31584 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48)"
+ck; [[ "$TOTAL_BSS" -eq 36576 ]] \
+  || fail "the kernel's mutable static storage is $TOTAL_BSS bytes, expected 36576 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48)"
 echo "STRUCTURAL: pass  wmeventStore is last ($EV_SIZE bytes), kbdqStore immediately before it; total .bss $TOTAL_BSS"
 
 capture_sh VERIFY_OUT VERIFY_STATUS -- 'cd "$CORE_DIR" && bash scripts/verify-freestanding.sh build/kmain.o && bash scripts/verify-freestanding.sh build/kdata.o'

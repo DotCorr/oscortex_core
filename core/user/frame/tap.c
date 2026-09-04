@@ -70,6 +70,8 @@ static char line[40];
 static const char msg_ready[] = "TAP READY\n";
 static const char msg_miss[] = "TAP MISS\n";
 static const char msg_csd[] = "TAP CSD";
+static const char msg_die_shm[] = "TAP DIE SHMCREATE\n";
+static const char msg_die_att[] = "TAP DIE ATTACH\n";
 static const char cap_tap[] = "TAP";
 
 static unsigned put(unsigned at, const char *s) {
@@ -191,6 +193,7 @@ static u64 press_in_ctl(u64 ev) {
 void _start(void) {
   shm_h = sys1(SYS_SHMCREATE, WIN_PAGES);
   if (shm_h >= WM_RET_FLOOR) {
+    wr(msg_die_shm, sizeof(msg_die_shm) - 1);
     die(0xA0000002UL);
   }
 
@@ -204,6 +207,7 @@ void _start(void) {
   desc[WM_DESC_OFFSET] = 0;
   pix_va = sys1(SYS_WMSURFACE, (u64)&desc[0]);
   if (pix_va >= WM_RET_FLOOR) {
+    wr(msg_die_att, sizeof(msg_die_att) - 1);
     die(0xA0000003UL | (pix_va << 32));
   }
 

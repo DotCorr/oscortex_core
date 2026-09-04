@@ -661,8 +661,11 @@ window records, one per shared region) = the D1/M21 merge total of 22016 becomes
 **+ 192 (`wmeventStore`, ADR-0055 — two per-window rings of four header words and
 8 event slots) = 22816 at D7.** **ADR-0109 grew the three tables in place
 (`shmStore` +128, `wmStore` +128, `wmeventStore` +192) = 23264.**
-**Four authorised growths take it to 31584, which is the number every harness
-pins today.** In ledger order, and each traceable to the ADR that required it:
+**Four authorised growths take it to 31584.** Round 27 then raised the three
+tables and the process table so DESK + six dock apps coexist:
+**+ 256 (`wmStore` 448 → 704)**, **+ 256 (`shmStore` 8576 → 8832)**,
+**+ 384 (`wmeventStore` 384 → 768)**, **+ 4096 (`procStore` 4224 → 8320)**.
+Harnesses pin **36576** (31584 + 4992) today. In ledger order, and each traceable to the ADR that required it:
 **+ 4096 (`pmmStore`, 4672 → 8768: ADR-0155 doubled `pmmMaxFrames` 32768 →
 65536 and `pmmBoundMib` 128 → 256 so a measured `libcef` slice fits, and the
 bitmap is one bit per managed frame)**, **+ 4096 (`shmStore`, 4480 → 8576: the
@@ -673,7 +676,7 @@ too, 4096 → 8192 of plane)**, **+ 112 (`vmStore`, 128 → 240: ADR-0189 took
 6 → 20 so a driver-reported mode can be mapped)**, **+ 16 (`fbStateBlock`,
 32 → 48: ADR-0064's scanout fallback chain added the geometry width and height
 words so a VirtIO scanout can outrank Bochs's 800x600 default)**.
-23264 + 4096 + 4096 + 112 + 16 = **31584**, section total including the 8 bytes
+23264 + 4096 + 4096 + 112 + 16 = **31584**; plus Round 27's 4992 = **36576**, section total including the 8 bytes
 of alignment padding and `kdata.o`'s own blocks. `wmeventStore` is now the LAST block, `kbdqStore`
 the one immediately before it, `wmStore` before that. **Every harness that
 subtracted `kbdqStore` first now subtracts `wmeventStore` first**, then

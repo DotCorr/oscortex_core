@@ -173,7 +173,7 @@ m = re.search(r"^const int wmStoreBytes = (\d+);", src, re.M)
 print(int(m.group(1)) if m else "")
 PY
 )
-ck; [[ "$STORE" -eq 448 ]] || fail "wmStoreBytes is $STORE, expected 448"
+ck; [[ "$STORE" -eq 704 ]] || fail "wmStoreBytes is $STORE, expected 704"
 LAST_BSS=$(x86_64-elf-objdump -t "$CORE_DIR/build/kmain.o" \
   | awk '$4==".bss" && $6!=".bss" {print $1,$6}' | sort | tail -1 | awk '{print $2}')
 ck; [[ "$LAST_BSS" == "wmeventStore" ]] \

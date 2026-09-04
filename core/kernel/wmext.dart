@@ -699,7 +699,7 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     u64 packed = u64(0);
     u64 n = u64(0);
     u64 i = u64(0);
-    while (i < u64(wmMaxWindows)) {
+    while (i < u64(4)) {
       u64 b = u64(0);
       if (wmWindowHeld(i) > u64(0)) {
         if (wmWinOverlay(i) < u64(1)) {
@@ -733,7 +733,7 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     }
     u64 cap = u64(0);
     if (wmPageAddr() > u64(0)) {
-      cap = wmPage(u64(wmPageWLaunch0) + slot);
+      cap = wmPage(wmPageLaunchOf(slot));
     }
     userSetFrame(frame, u64(userFrameRax), wmPack8(wmCapStem(cap)));
     return;
@@ -766,6 +766,32 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
       return;
     }
     userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWDeskHave)));
+    return;
+  }
+  if (kind == u64(6)) {
+    u64 packed = u64(0);
+    u64 n = u64(0);
+    u64 i = u64(4);
+    while (i < u64(wmMaxWindows)) {
+      u64 b = u64(0);
+      if (wmWindowHeld(i) > u64(0)) {
+        if (wmWinOverlay(i) < u64(1)) {
+          b = b | u64(0x80);
+          if (wmIsPanel(i) > u64(0)) {
+            b = b | u64(0x40);
+          }
+          if (wmMeta(u64(wmMetaFocus)) == (i + u64(1))) {
+            b = b | u64(0x20);
+          }
+          b = b | (wmWin(i, u64(wmWinOwner)) & u64(0x1F));
+          packed = packed | (b << ((i - u64(4)) * u64(8)));
+          n = n + u64(1);
+        }
+      }
+      i = i + u64(1);
+    }
+    packed = packed | (n << u64(32));
+    userSetFrame(frame, u64(userFrameRax), packed);
     return;
   }
   userSetFrame(frame, u64(userFrameRax), u64(0));

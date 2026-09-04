@@ -928,7 +928,7 @@ void wmContextShow(u64 x, u64 y) {
     wmContextFocus(hit);
     u64 cap = u64(0);
     if (wmPageAddr() > u64(0)) {
-      cap = wmPage(u64(wmPageWLaunch0) + hit);
+      cap = wmPage(wmPageLaunchOf(hit));
     }
     wmCtxClient(cap);
     final u64 wx = wmAbsX(hit);

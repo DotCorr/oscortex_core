@@ -1127,13 +1127,33 @@ void virtgpuReportScan(u64 x, u64 y, u64 w, u64 h, u64 en) {
 /// not SET_SCANOUT.
 @bare
 void virtgpuNegotiate(u64 bus, u64 dev, u64 fn) {
+  virtgpuNegotiateAt(bus, dev, fn, u64(1));
+}
+
+/// VirtIO §3.1.1. [talk] 1 prints FEAT / QUEUES / STATUS (G2).
+/// [talk] 0 is the quiet `fb` owner path. Already-DRIVER_OK skips
+/// reset so Venus and 2D scanout share one control queue. First
+/// owner accepts VERSION_1 plus offered VIRGL / BLOB / CONTEXT_INIT
+/// so a later Venus walker does not need a second negotiate.
+@bare
+void virtgpuNegotiateAt(u64 bus, u64 dev, u64 fn, u64 talk) {
   final u64 cfg = virtgpuCommonCfg(bus, dev, fn);
   if (cfg == u64(0)) {
-    uartWrite(Rodata.addressOf(virtgpuStrNoCfg), u64(13));
+    if (talk > u64(0)) {
+      uartWrite(Rodata.addressOf(virtgpuStrNoCfg), u64(13));
+    }
+    return;
+  }
+  if ((virtgpuStatusGet(cfg) & u64(virtgpuStatusDriverOk)) > u64(0)) {
+    if (talk > u64(0)) {
+      virtgpuReportStatus(virtgpuStatusGet(cfg));
+    }
     return;
   }
   if (virtgpuReset(cfg) == u64(0)) {
-    uartWrite(Rodata.addressOf(virtgpuStrReset), u64(13));
+    if (talk > u64(0)) {
+      uartWrite(Rodata.addressOf(virtgpuStrReset), u64(13));
+    }
     return;
   }
   virtgpuStatusOr(cfg, u64(virtgpuStatusAck));
@@ -1143,25 +1163,35 @@ void virtgpuNegotiate(u64 bus, u64 dev, u64 fn) {
   final u64 featLo = virtgpuCfgGet32(cfg, u64(virtgpuCfgFeat));
   virtgpuCfgPut32(cfg, u64(virtgpuCfgFeatSel), u64(1));
   final u64 featHi = virtgpuCfgGet32(cfg, u64(virtgpuCfgFeat));
-  virtgpuReportFeat(featLo, featHi);
+  if (talk > u64(0)) {
+    virtgpuReportFeat(featLo, featHi);
+  }
 
   final u64 nq = virtgpuCfgGet16(cfg, u64(virtgpuCfgNumQueues));
-  virtgpuReportQueues(nq);
+  if (talk > u64(0)) {
+    virtgpuReportQueues(nq);
+  }
 
+  final u64 wantLo = u64(virtgpu3dFeatVirgl) | u64(virtgpu3dFeatBlob) |
+      u64(virtgpu3dFeatCtxInit);
   virtgpuCfgPut32(cfg, u64(virtgpuCfgDrvSel), u64(0));
-  virtgpuCfgPut32(cfg, u64(virtgpuCfgDrvFeat), u64(0));
+  virtgpuCfgPut32(cfg, u64(virtgpuCfgDrvFeat), featLo & wantLo);
   virtgpuCfgPut32(cfg, u64(virtgpuCfgDrvSel), u64(1));
   virtgpuCfgPut32(cfg, u64(virtgpuCfgDrvFeat), u64(virtgpuFeatVersion1));
 
   virtgpuStatusOr(cfg, u64(virtgpuStatusFeatOk));
   final u64 afterOk = virtgpuStatusGet(cfg);
   if ((afterOk & u64(virtgpuStatusFeatOk)) < u64(1)) {
-    uartWrite(Rodata.addressOf(virtgpuStrFeatOkClear), u64(20));
-    virtgpuReportStatus(afterOk);
+    if (talk > u64(0)) {
+      uartWrite(Rodata.addressOf(virtgpuStrFeatOkClear), u64(20));
+      virtgpuReportStatus(afterOk);
+    }
     return;
   }
   virtgpuStatusOr(cfg, u64(virtgpuStatusDriverOk));
-  virtgpuReportStatus(virtgpuStatusGet(cfg));
+  if (talk > u64(0)) {
+    virtgpuReportStatus(virtgpuStatusGet(cfg));
+  }
 }
 
 ///     VIRTIO PIX 00001100
@@ -1294,20 +1324,91 @@ u64 virtgpuEntBase(u64 e0, u64 e1, u64 e2, u64 e3, u64 ef) {
   return e3;
 }
 
-/// Poll used.idx until it equals [want], or the bound expires.
-/// Returns the last used.idx read (0 if it never moved).
+/// Poll used.idx until it is at least [want], or the bound expires.
+/// Equals was wrong once a later walker reused a live control queue:
+/// Venus GET_CAPSET_INFO leaves used.idx at 3+, and a G5 wait for
+/// used==2 then printed QTIMEOUT forever. Returns the last used.idx
+/// read (0 if it never moved).
 @bare
 u64 virtgpuWaitUsed(u64 qdev, u64 want) {
   u64 used = u64(0);
   u64 n = u64(virtgpuPollBound);
   while (n > u64(0)) {
     used = virtgpuRamGet16(qdev + u64(2));
-    if (used == want) {
+    if (used >= want) {
       return used;
     }
     n = n - u64(1);
   }
   return used;
+}
+
+/// 1 if COMMON_CFG already has DRIVER_OK, queue 0 enabled, and three
+/// programmed ring addresses. The single-owner rule: a second walker
+/// must reuse this ring, not reset or allocFrame a second set.
+@bare
+u64 virtgpuQueueLive(u64 cfg) {
+  if ((virtgpuStatusGet(cfg) & u64(virtgpuStatusDriverOk)) < u64(1)) {
+    return u64(0);
+  }
+  virtgpuCfgPut16(cfg, u64(virtgpuCfgQSel), u64(0));
+  if (virtgpuCfgGet16(cfg, u64(virtgpuCfgQEn)) < u64(1)) {
+    return u64(0);
+  }
+  if (virtgpuCfgGet64(cfg, u64(virtgpuCfgQDesc)) < u64(1)) {
+    return u64(0);
+  }
+  if (virtgpuCfgGet64(cfg, u64(virtgpuCfgQDriver)) < u64(1)) {
+    return u64(0);
+  }
+  if (virtgpuCfgGet64(cfg, u64(virtgpuCfgQDevice)) < u64(1)) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
+/// Next avail.idx. Callers submit at this slot and wait used >= slot+1.
+@bare
+u64 virtgpuAvailIdx(u64 qdrv) {
+  return virtgpuRamGet16(qdrv + u64(2));
+}
+
+/// Program queue 0 once. Reuses a live ring. Returns 1 when ready.
+@bare
+u64 virtgpuOwnerBind(u64 cfg) {
+  if (virtgpuQueueLive(cfg) > u64(0)) {
+    return u64(1);
+  }
+  virtgpuCfgPut16(cfg, u64(virtgpuCfgQSel), u64(0));
+  u64 qsz = virtgpuCfgGet16(cfg, u64(virtgpuCfgQSize));
+  if (qsz == u64(0)) {
+    return u64(0);
+  }
+  if (qsz > u64(virtgpuQSizeCap)) {
+    qsz = u64(virtgpuQSizeCap);
+    virtgpuCfgPut16(cfg, u64(virtgpuCfgQSize), qsz);
+  }
+  final u64 qdesc = allocFrame();
+  if (qdesc < u64(1)) {
+    return u64(0);
+  }
+  vmZeroFrame(qdesc);
+  final u64 qdrv = allocFrame();
+  if (qdrv < u64(1)) {
+    return u64(0);
+  }
+  vmZeroFrame(qdrv);
+  final u64 qdev = allocFrame();
+  if (qdev < u64(1)) {
+    return u64(0);
+  }
+  vmZeroFrame(qdev);
+  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), qdesc);
+  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), qdrv);
+  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDevice), qdev);
+  virtgpuCfgPut16(cfg, u64(virtgpuCfgQEn), u64(1));
+  virtgpuRamPut16(qdrv, u64(virtgpuAvailNoInt));
+  return u64(1);
 }
 
 /// Two-descriptor command: device-readable [req]/[reqlen], then a
@@ -1322,13 +1423,13 @@ u64 virtgpuSubmit2(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 slot,
   virtgpuPutDesc(
       qdesc, head + u64(1), resp, u64(virtgpuHdrBytes), u64(virtgpuDescWrite),
       u64(0));
-  virtgpuRamPut16(qdrv + u64(4) + (slot << u64(1)), head);
+  virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
   virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
   if (kick > u64(0)) {
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
-  if (used != slot + u64(1)) {
+  if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
@@ -1348,8 +1449,8 @@ void virtgpuPix(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 w, u64 h, u64 colo
   }
   final u64 req = qdesc + u64(0x800);
   final u64 resp = qdesc + u64(0xA00);
-  u64 head = u64(2);
-  u64 slot = u64(1);
+  u64 slot = virtgpuAvailIdx(qdrv);
+  u64 head = (slot << u64(1)) & u64(62);
 
   virtgpuPutHdr(req, u64(virtgpuTypeRes2d));
   virtgpuRamPut32(req + u64(24), u64(virtgpuResId));
@@ -1479,7 +1580,7 @@ void virtgpuPix(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 w, u64 h, u64 colo
       Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
     }
     final u64 usedA = virtgpuWaitUsed(qdev, slot + u64(1));
-    if (usedA != slot + u64(1)) {
+    if (usedA < (slot + u64(1))) {
       uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
       virtgpuReportPix(u64(0));
       return;
@@ -1576,7 +1677,7 @@ u64 virtgpuSubmitCell(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 head, u64 re
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
-  if (used != slot + u64(1)) {
+  if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
@@ -1595,10 +1696,28 @@ void virtgpuConsole(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 w, u64 h, u64 
   if (h < u64(1)) {
     return;
   }
+  if (virtgpuRamGet32(qdesc + u64(virtgpuMetaFlag)) > u64(0)) {
+    final u64 live = fbState(u64(fbStateBase));
+    if (live > u64(0)) {
+      if (live < u64(virtgpuRamCeil)) {
+        virtgpuReportBack(live);
+        virtgpuRamPut32(qdesc + u64(virtgpuMetaFlag), doFlush);
+        fbSetState(u64(fbStateCol), u64(0));
+        fbSetState(u64(fbStateRow), u64(0));
+        fbFill(u64(fbColorBg));
+        fbPaintBanner();
+        final u64 flush0 = virtgpuRamGet32(qdesc + u64(virtgpuMetaFlush));
+        final u64 dmg0 = virtgpuRamGet32(qdesc + u64(virtgpuMetaDamage));
+        virtgpuReportFlush(flush0);
+        virtgpuReportDamage(dmg0);
+        return;
+      }
+    }
+  }
   final u64 req = qdesc + u64(0x800);
   final u64 resp = qdesc + u64(0xA00);
-  u64 head = u64(2);
-  u64 slot = u64(1);
+  u64 slot = virtgpuAvailIdx(qdrv);
+  u64 head = (slot << u64(1)) & u64(62);
 
   virtgpuPutHdr(req, u64(virtgpuTypeRes2d));
   virtgpuRamPut32(req + u64(24), u64(virtgpuResId));
@@ -1729,7 +1848,7 @@ void virtgpuConsole(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 w, u64 h, u64 
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 usedA = virtgpuWaitUsed(qdev, slot + u64(1));
-  if (usedA != slot + u64(1)) {
+  if (usedA < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return;
   }
@@ -2038,7 +2157,7 @@ u64 virtgpuMake2d(u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 resId, u64 w, u6
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
   final u64 usedA = virtgpuWaitUsed(qdev, slot + u64(1));
-  if (usedA != slot + u64(1)) {
+  if (usedA < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return u64(0);
   }
@@ -2182,17 +2301,19 @@ void virtgpuCapset(u64 dcfg, u64 qdesc, u64 qdrv, u64 qdev, u64 naddr, u64 kick,
     virtgpuRamPut32(req + u64(24), u64(0));
     virtgpuRamPut32(req + u64(28), u64(0));
     virtgpuZero(resp, u64(40));
+    final u64 slot = virtgpuAvailIdx(qdrv);
+    final u64 head = (slot << u64(1)) & u64(62);
     virtgpuPutDesc(
-        qdesc, u64(2), req, u64(32), u64(virtgpuDescNext), u64(3));
+        qdesc, head, req, u64(32), u64(virtgpuDescNext), head + u64(1));
     virtgpuPutDesc(
-        qdesc, u64(3), resp, u64(40), u64(virtgpuDescWrite), u64(0));
-    virtgpuRamPut16(qdrv + u64(4) + (u64(1) << u64(1)), u64(2));
-    virtgpuRamPut16(qdrv + u64(2), u64(2));
+        qdesc, head + u64(1), resp, u64(40), u64(virtgpuDescWrite), u64(0));
+    virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
+    virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
     if (kick > u64(0)) {
       Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
     }
-    final u64 used = virtgpuWaitUsed(qdev, u64(2));
-    if (used != u64(2)) {
+    final u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
+    if (used < (slot + u64(1))) {
       uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
       return;
     }
@@ -2247,63 +2368,67 @@ void virtgpuOneCmd(u64 bus, u64 dev, u64 fn, u64 cfg, u64 kick, u64 pix, u64 col
   final u64 noff = virtgpuCfgGet16(cfg, u64(virtgpuCfgQNotifyOff));
   final u64 naddr = ntfy + (noff * mul);
 
-  final u64 qdesc = allocFrame();
-  if (qdesc < u64(1)) {
-    uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
-    return;
+  u64 qdesc = u64(0);
+  u64 qdrv = u64(0);
+  u64 qdev = u64(0);
+  u64 live = virtgpuQueueLive(cfg);
+  if (live > u64(0)) {
+    qdesc = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDesc));
+    qdrv = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDriver));
+    qdev = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDevice));
   }
-  vmZeroFrame(qdesc);
-  final u64 qdrv = allocFrame();
-  if (qdrv < u64(1)) {
-    uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
-    return;
+  if (live < u64(1)) {
+    qdesc = allocFrame();
+    if (qdesc < u64(1)) {
+      uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
+      return;
+    }
+    vmZeroFrame(qdesc);
+    qdrv = allocFrame();
+    if (qdrv < u64(1)) {
+      uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
+      return;
+    }
+    vmZeroFrame(qdrv);
+    qdev = allocFrame();
+    if (qdev < u64(1)) {
+      uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
+      return;
+    }
+    vmZeroFrame(qdev);
+    virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), qdesc);
+    virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), qdrv);
+    virtgpuCfgPut64(cfg, u64(virtgpuCfgQDevice), qdev);
+    virtgpuCfgPut16(cfg, u64(virtgpuCfgQEn), u64(1));
+    virtgpuRamPut16(qdrv, u64(virtgpuAvailNoInt));
   }
-  vmZeroFrame(qdrv);
-  final u64 qdev = allocFrame();
-  if (qdev < u64(1)) {
-    uartWrite(Rodata.addressOf(virtgpuStrNoFrm), u64(13));
-    return;
-  }
-  vmZeroFrame(qdev);
-
-  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDesc), qdesc);
-  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDriver), qdrv);
-  virtgpuCfgPut64(cfg, u64(virtgpuCfgQDevice), qdev);
-  virtgpuCfgPut16(cfg, u64(virtgpuCfgQEn), u64(1));
 
   // Request and response sit in leftover of the descriptor frame,
   // past the 16*qsz table (1024 bytes at size 64).
   final u64 req = qdesc + u64(0x800);
   final u64 resp = qdesc + u64(0xA00);
+  final u64 slot = virtgpuAvailIdx(qdrv);
+  final u64 head = (slot << u64(1)) & u64(62);
   virtgpuRamPut32(req, u64(virtgpuTypeGetDisp));
 
   virtgpuPutDesc(
-      qdesc, u64(0), req, u64(virtgpuHdrBytes), u64(virtgpuDescNext), u64(1));
+      qdesc, head, req, u64(virtgpuHdrBytes), u64(virtgpuDescNext),
+      head + u64(1));
   virtgpuPutDesc(
-      qdesc, u64(1), resp, u64(virtgpuDispBytes), u64(virtgpuDescWrite), u64(0));
+      qdesc, head + u64(1), resp, u64(virtgpuDispBytes),
+      u64(virtgpuDescWrite), u64(0));
 
-  virtgpuRamPut16(qdrv, u64(virtgpuAvailNoInt));
-  virtgpuRamPut16(qdrv + u64(4), u64(0));
-  virtgpuRamPut16(qdrv + u64(2), u64(1));
+  virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
+  virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
 
   if (kick > u64(0)) {
     Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
   }
 
-  u64 used = u64(0);
-  u64 n = u64(virtgpuPollBound);
-  while (n > u64(0)) {
-    used = virtgpuRamGet16(qdev + u64(2));
-    if (used > u64(0)) {
-      n = u64(0);
-    }
-    if (used == u64(0)) {
-      n = n - u64(1);
-    }
-  }
+  u64 used = virtgpuWaitUsed(qdev, slot + u64(1));
 
   virtgpuReportUsed(used);
-  if (used == u64(0)) {
+  if (used < (slot + u64(1))) {
     uartWrite(Rodata.addressOf(virtgpuStrQTimeout), u64(16));
     return;
   }
@@ -2350,6 +2475,250 @@ void virtgpuOneCmd(u64 bus, u64 dev, u64 fn, u64 cfg, u64 kick, u64 pix, u64 col
       virtgpuCapset(dcfg, qdesc, qdrv, qdev, naddr, kick, submit);
     }
   }
+}
+
+/// Quiet class 03/80 present path for `fb`. Arms SET_SCANOUT on
+/// guest RAM, points fbState at the backing, prints only
+/// `FB VIRTIO WWWWxHHHH`. Returns 1 on success. GOP / Bochs run
+/// when this returns 0.
+@bare
+u64 virtgpuFbTry() {
+  u64 dev = u64(0);
+  u64 found = u64(32);
+  while (dev < u64(32)) {
+    final u64 id = pciRead32(u64(0), dev, u64(0), u64(pciRegId));
+    if ((id & u64(0xFFFF)) == u64(virtgpuVendor)) {
+      if (((id >> u64(16)) & u64(0xFFFF)) == u64(virtgpuDevice)) {
+        final u64 classReg = pciRead32(u64(0), dev, u64(0), u64(pciRegClass));
+        if (((classReg >> u64(24)) & u64(0xFF)) == u64(pciClassDisplay)) {
+          if (((classReg >> u64(16)) & u64(0xFF)) == u64(pciSubclassOther)) {
+            found = dev;
+            dev = u64(32);
+          }
+        }
+      }
+    }
+    if (found > u64(31)) {
+      if (dev < u64(32)) {
+        dev = dev + u64(1);
+      }
+    }
+  }
+  if (found > u64(31)) {
+    return u64(0);
+  }
+  virtgpuEnableMaster(u64(0), found, u64(0));
+  virtgpuNegotiateAt(u64(0), found, u64(0), u64(0));
+  final u64 cfg = virtgpuCommonCfg(u64(0), found, u64(0));
+  if (cfg == u64(0)) {
+    return u64(0);
+  }
+  if ((virtgpuStatusGet(cfg) & u64(virtgpuStatusDriverOk)) < u64(1)) {
+    return u64(0);
+  }
+  if (virtgpuOwnerBind(cfg) < u64(1)) {
+    return u64(0);
+  }
+  virtgpuCfgPut16(cfg, u64(virtgpuCfgQSel), u64(0));
+  final u64 qdesc = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDesc));
+  final u64 qdrv = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDriver));
+  final u64 qdev = virtgpuCfgGet64(cfg, u64(virtgpuCfgQDevice));
+  final u64 naddr = virtgpuNotifyAddr(u64(0), found, u64(0), cfg);
+  if (naddr == u64(0)) {
+    return u64(0);
+  }
+  final u64 req = qdesc + u64(0x800);
+  final u64 resp = qdesc + u64(0xA00);
+  u64 slot = virtgpuAvailIdx(qdrv);
+  u64 head = (slot << u64(1)) & u64(62);
+  virtgpuRamPut32(req, u64(virtgpuTypeGetDisp));
+  virtgpuPutDesc(
+      qdesc, head, req, u64(virtgpuHdrBytes), u64(virtgpuDescNext),
+      head + u64(1));
+  virtgpuPutDesc(
+      qdesc, head + u64(1), resp, u64(virtgpuDispBytes),
+      u64(virtgpuDescWrite), u64(0));
+  virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
+  virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
+  Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
+  if (virtgpuWaitUsed(qdev, slot + u64(1)) < (slot + u64(1))) {
+    return u64(0);
+  }
+  u64 sw = virtgpuRamGet32(resp + u64(32));
+  u64 sh = virtgpuRamGet32(resp + u64(36));
+  if (sw < u64(64)) {
+    sw = u64(1280);
+  }
+  if (sh < u64(64)) {
+    sh = u64(720);
+  }
+  if (virtgpuRamGet32(qdesc + u64(virtgpuMetaFlag)) > u64(0)) {
+    final u64 live = fbState(u64(fbStateBase));
+    if (live > u64(0)) {
+      if (live < u64(virtgpuRamCeil)) {
+        fbSetState(u64(fbStateGeomW), sw);
+        fbSetState(u64(fbStateGeomH), sh);
+        uartWrite(Rodata.addressOf(fbStrVirtio), u64(10));
+        uartPutHex(sw, u64(4));
+        uartWrite(Rodata.addressOf(fbStrBy), u64(1));
+        uartPutHex(sh, u64(4));
+        uartNewline();
+        return u64(1);
+      }
+    }
+  }
+  slot = virtgpuAvailIdx(qdrv);
+  head = (slot << u64(1)) & u64(62);
+  virtgpuPutHdr(req, u64(virtgpuTypeRes2d));
+  virtgpuRamPut32(req + u64(24), u64(virtgpuResId));
+  virtgpuRamPut32(req + u64(28), u64(virtgpuFmtBgrx));
+  virtgpuRamPut32(req + u64(32), sw);
+  virtgpuRamPut32(req + u64(36), sh);
+  if (virtgpuSubmit2(
+          qdesc, qdrv, qdev, naddr, head, slot, req, u64(40), resp,
+          u64(1)) !=
+      u64(virtgpuRespOk)) {
+    return u64(0);
+  }
+  final u64 nbytes = (sw * sh) << u64(2);
+  u64 nframes = (nbytes + u64(4095)) ~/ u64(4096);
+  if (nframes < u64(1)) {
+    nframes = u64(1);
+  }
+  if (nframes > u64(virtgpuBackCap)) {
+    return u64(0);
+  }
+  final u64 ebytes = nframes << u64(4);
+  u64 eframes = (ebytes + u64(4095)) ~/ u64(4096);
+  if (eframes < u64(1)) {
+    eframes = u64(1);
+  }
+  if (eframes > u64(virtgpuEntCap)) {
+    return u64(0);
+  }
+  final u64 e0 = allocFrame();
+  if (e0 < u64(1)) {
+    return u64(0);
+  }
+  vmZeroFrame(e0);
+  u64 e1 = u64(0);
+  u64 e2 = u64(0);
+  u64 e3 = u64(0);
+  if (eframes > u64(1)) {
+    e1 = allocFrame();
+    if (e1 < u64(1)) {
+      return u64(0);
+    }
+    vmZeroFrame(e1);
+  }
+  if (eframes > u64(2)) {
+    e2 = allocFrame();
+    if (e2 < u64(1)) {
+      return u64(0);
+    }
+    vmZeroFrame(e2);
+  }
+  if (eframes > u64(3)) {
+    e3 = allocFrame();
+    if (e3 < u64(1)) {
+      return u64(0);
+    }
+    vmZeroFrame(e3);
+  }
+  u64 first = u64(0);
+  u64 ei = u64(0);
+  while (ei < nframes) {
+    final u64 fr = allocFrame();
+    if (fr < u64(1)) {
+      return u64(0);
+    }
+    vmZeroFrame(fr);
+    if (ei == u64(0)) {
+      first = fr;
+    }
+    if (fr != first + (ei << u64(12))) {
+      return u64(0);
+    }
+    final u64 eoff = ei << u64(4);
+    final u64 ep = virtgpuEntBase(e0, e1, e2, e3, eoff >> u64(12)) +
+        (eoff & u64(0xFFF));
+    virtgpuRamPut32(ep, fr);
+    virtgpuRamPut32(ep + u64(4), u64(0));
+    virtgpuRamPut32(ep + u64(8), u64(4096));
+    virtgpuRamPut32(ep + u64(12), u64(0));
+    ei = ei + u64(1);
+  }
+  slot = virtgpuAvailIdx(qdrv);
+  head = (slot << u64(1)) & u64(62);
+  virtgpuPutHdr(req, u64(virtgpuTypeAttach));
+  virtgpuRamPut32(req + u64(24), u64(virtgpuResId));
+  virtgpuRamPut32(req + u64(28), nframes);
+  virtgpuZero(resp, u64(24));
+  virtgpuPutDesc(
+      qdesc, head, req, u64(32), u64(virtgpuDescNext), head + u64(1));
+  u64 ef = u64(0);
+  while (ef < eframes) {
+    u64 elen = u64(4096);
+    if (ef + u64(1) == eframes) {
+      elen = ebytes - (ef << u64(12));
+    }
+    virtgpuPutDesc(
+        qdesc,
+        head + u64(1) + ef,
+        virtgpuEntBase(e0, e1, e2, e3, ef),
+        elen,
+        u64(virtgpuDescNext),
+        head + u64(2) + ef);
+    ef = ef + u64(1);
+  }
+  virtgpuPutDesc(
+      qdesc,
+      head + u64(1) + eframes,
+      resp,
+      u64(virtgpuHdrBytes),
+      u64(virtgpuDescWrite),
+      u64(0));
+  virtgpuRamPut16(qdrv + u64(4) + ((slot & u64(63)) << u64(1)), head);
+  virtgpuRamPut16(qdrv + u64(2), slot + u64(1));
+  Volatile<u16>.fromAddress(naddr).value = u64(0).toU16();
+  if (virtgpuWaitUsed(qdev, slot + u64(1)) < (slot + u64(1))) {
+    return u64(0);
+  }
+  if (virtgpuRamGet32(resp) != u64(virtgpuRespOk)) {
+    return u64(0);
+  }
+  slot = virtgpuAvailIdx(qdrv);
+  head = (slot << u64(1)) & u64(62);
+  virtgpuPutHdr(req, u64(virtgpuTypeSetScan));
+  virtgpuRamPut32(req + u64(24), u64(0));
+  virtgpuRamPut32(req + u64(28), u64(0));
+  virtgpuRamPut32(req + u64(32), sw);
+  virtgpuRamPut32(req + u64(36), sh);
+  virtgpuRamPut32(req + u64(40), u64(0));
+  virtgpuRamPut32(req + u64(44), u64(virtgpuResId));
+  if (virtgpuSubmit2(
+          qdesc, qdrv, qdev, naddr, head, slot, req, u64(48), resp,
+          u64(1)) !=
+      u64(virtgpuRespOk)) {
+    return u64(0);
+  }
+  virtgpuRamPut32(qdesc + u64(virtgpuMetaFlag), u64(1));
+  virtgpuRamPut32(qdesc + u64(virtgpuMetaFlush), u64(0));
+  virtgpuRamPut32(qdesc + u64(virtgpuMetaDamage), u64(0));
+  virtgpuRamPut32(qdesc + u64(virtgpuMetaRes), u64(virtgpuResId));
+  fbSetState(u64(fbStateBase), first);
+  fbSetState(u64(fbStatePitch), sw * u64(fbBytesPerPixel));
+  fbSetState(u64(fbStateCol), u64(0));
+  fbSetState(u64(fbStateRow), u64(0));
+  fbSetState(u64(fbStateGeomW), sw);
+  fbSetState(u64(fbStateGeomH), sh);
+  fbFill(u64(fbColorBg));
+  uartWrite(Rodata.addressOf(fbStrVirtio), u64(10));
+  uartPutHex(sw, u64(4));
+  uartWrite(Rodata.addressOf(fbStrBy), u64(1));
+  uartPutHex(sh, u64(4));
+  uartNewline();
+  return u64(1);
 }
 
 /// Shared command body. [kick] is 1 for `virtgpu` (notify written)

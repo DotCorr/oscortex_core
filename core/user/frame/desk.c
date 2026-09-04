@@ -88,6 +88,7 @@ static u64 bar_y;
 static u64 scr_w;
 static u64 scr_h;
 static u64 last_tasks;
+static u64 last_tasks_hi;
 static u64 last_screen;
 static u64 last_pop;
 static u64 seq;
@@ -108,9 +109,9 @@ static char date_lab[] = "Oct 30";
 static char stat_lab[] = "1 C";
 static char slot_stem[9];
 #define SLOT_X0 (LEFT_X + LEFT_W + 8UL)
-#define SLOT_W 72UL
+#define SLOT_W 56UL
 #define SLOT_H 28UL
-#define SLOT_PITCH 80UL
+#define SLOT_PITCH 64UL
 #define SLOT_Y (ISLAND_Y + 6UL)
 #define SLOT_FILL 0x00E4ECF4UL
 #define SLOT_FOCUS 0x00B8C8D8UL
@@ -365,7 +366,7 @@ static void paint_frost_islands(u64 wall_key) {
   }
 }
 
-static void paint_slots(u64 tasks) {
+static void paint_slots(u64 tasks, u64 tasks_hi) {
   u64 i;
   u64 n;
   u64 sx;
@@ -373,8 +374,15 @@ static void paint_slots(u64 tasks) {
   char *lab;
   i = 0;
   n = 0;
-  while (i < 4UL) {
-    u64 st = osxui_app_task(tasks, i);
+  while (i < 8UL) {
+    u64 bank = tasks;
+    u64 idx = i;
+    u64 st;
+    if (i >= 4UL) {
+      bank = tasks_hi;
+      idx = i - 4UL;
+    }
+    st = osxui_app_task(bank, idx);
     if ((st & WM_TASK_LIVE) != 0) {
       if ((st & WM_TASK_PANEL) == 0) {
         sx = SLOT_X0 + n * SLOT_PITCH;
@@ -420,7 +428,7 @@ static void paint_slots(u64 tasks) {
   }
 }
 
-static void paint_bar(u64 tasks) {
+static void paint_bar(u64 tasks, u64 tasks_hi) {
   u64 i;
   u64 ix;
   u64 hy;
@@ -434,7 +442,7 @@ static void paint_bar(u64 tasks) {
                  WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG_MUTED);
   osxui_app_text(shm_h, LEFT_X + 100UL, ISLAND_Y + 12UL, stat_lab, 3,
                  WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG_MUTED);
-  paint_slots(tasks);
+  paint_slots(tasks, tasks_hi);
   hy = ISLAND_Y + 12UL;
   osxui_app_rrect(shm_h, LEFT_X + HAM_OFF + 8UL, hy, 20UL, 2UL, 1UL,
                   OSXUI_GLASS_FG);
@@ -660,7 +668,7 @@ static void paint_desk_menu(u64 kind) {
   }
   if (kind == 2UL) {
     i = 0;
-    while (i < 4UL) {
+    while (i < ICON_N) {
       u64 n = stem_into(stem, osxui_app_launch(i));
       u64 ry = OSXUI_MENU_PAD + i * 20UL;
       u64 rgb = OSXUI_MENU_ROW0;
@@ -836,7 +844,8 @@ void desk_main(u64 sp) {
   }
 
   last_tasks = osxui_app_tasks();
-  paint_bar(last_tasks);
+  last_tasks_hi = osxui_app_tasks_hi();
+  paint_bar(last_tasks, last_tasks_hi);
   wr("DESK PAINT\n", 11);
   {
     const u64 m2 =
@@ -879,11 +888,20 @@ void desk_main(u64 sp) {
       }
     }
     tasks = osxui_app_tasks();
-    if (tasks != last_tasks) {
-      last_tasks = tasks;
-      paint_bar(tasks);
-      commit_all();
-      wr("DESK RESTRIP\n", 13);
+    {
+      u64 tasks_hi = osxui_app_tasks_hi();
+      if (tasks != last_tasks) {
+        last_tasks = tasks;
+        last_tasks_hi = tasks_hi;
+        paint_bar(tasks, tasks_hi);
+        commit_all();
+        wr("DESK RESTRIP\n", 13);
+      } else if (tasks_hi != last_tasks_hi) {
+        last_tasks_hi = tasks_hi;
+        paint_bar(tasks, tasks_hi);
+        commit_all();
+        wr("DESK RESTRIP\n", 13);
+      }
     }
   }
 }

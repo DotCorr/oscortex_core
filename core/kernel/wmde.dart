@@ -848,7 +848,7 @@ u64 wmVisGeom(u64 wI) {
   if (wmPageAddr() < u64(1)) {
     return wmWin(wI, u64(wmWinGeom));
   }
-  final u64 v = wmPage(u64(wmPageWVis0) + wI);
+  final u64 v = wmPage(wmPageVisOf(wI));
   if (v < u64(1)) {
     return wmWin(wI, u64(wmWinGeom));
   }
@@ -864,7 +864,7 @@ u64 wmPendGeomOf(u64 wI) {
   if (wmPageAddr() < u64(1)) {
     return u64(0);
   }
-  return wmPage(u64(wmPageWPend0) + wI);
+  return wmPage(wmPagePendOf(wI));
 }
 
 /// Compose / blit destination: VIS while a size HOLD is open (pend set
@@ -956,12 +956,12 @@ void wmPendArm(u64 wI, u64 next) {
   }
   final u64 vis = wmVisGeom(wI);
   if (vis < u64(1)) {
-    wmPageSet(u64(wmPageWVis0) + wI, wmWin(wI, u64(wmWinGeom)));
+    wmPageSet(wmPageVisOf(wI), wmWin(wI, u64(wmWinGeom)));
   }
-  wmPageSet(u64(wmPageWPend0) + wI, next);
-  wmPageSet(u64(wmPageWHoldArm0) + wI, tick_count());
-  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(0));
-  final u64 gen = wmPage(u64(wmPageWVisGen0) + wI);
+  wmPageSet(wmPagePendOf(wI), next);
+  wmPageSet(wmPageHoldArmOf(wI), tick_count());
+  wmPageSet(wmPageHoldKickOf(wI), u64(0));
+  final u64 gen = wmPage(wmPageVisGenOf(wI));
   wmGeomNote(Rodata.addressOf(wmStrReq), u64(9), wI, next, gen);
   wmGeomNote(Rodata.addressOf(wmStrPendTok), u64(10), wI, next, gen);
 }
@@ -976,12 +976,12 @@ void wmVisPublish(u64 wI) {
     return;
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  wmPageSet(u64(wmPageWVis0) + wI, g);
-  wmPageSet(u64(wmPageWPend0) + wI, u64(0));
-  wmPageSet(u64(wmPageWHoldArm0) + wI, u64(0));
-  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(0));
-  final u64 gen = wmPage(u64(wmPageWVisGen0) + wI) + u64(1);
-  wmPageSet(u64(wmPageWVisGen0) + wI, gen);
+  wmPageSet(wmPageVisOf(wI), g);
+  wmPageSet(wmPagePendOf(wI), u64(0));
+  wmPageSet(wmPageHoldArmOf(wI), u64(0));
+  wmPageSet(wmPageHoldKickOf(wI), u64(0));
+  final u64 gen = wmPage(wmPageVisGenOf(wI)) + u64(1);
+  wmPageSet(wmPageVisGenOf(wI), gen);
   wmGeomNote(Rodata.addressOf(wmStrVis), u64(9), wI, g, gen);
 }
 
@@ -993,12 +993,12 @@ void wmVisClear(u64 wI) {
   if (wmPageAddr() < u64(1)) {
     return;
   }
-  wmPageSet(u64(wmPageWVis0) + wI, u64(0));
-  wmPageSet(u64(wmPageWPend0) + wI, u64(0));
-  wmPageSet(u64(wmPageWHoldArm0) + wI, u64(0));
-  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(0));
-  final u64 gen = wmPage(u64(wmPageWVisGen0) + wI) + u64(1);
-  wmPageSet(u64(wmPageWVisGen0) + wI, gen);
+  wmPageSet(wmPageVisOf(wI), u64(0));
+  wmPageSet(wmPagePendOf(wI), u64(0));
+  wmPageSet(wmPageHoldArmOf(wI), u64(0));
+  wmPageSet(wmPageHoldKickOf(wI), u64(0));
+  final u64 gen = wmPage(wmPageVisGenOf(wI)) + u64(1);
+  wmPageSet(wmPageVisGenOf(wI), gen);
   wmGeomNote(Rodata.addressOf(wmStrVis), u64(9), wI, u64(0), gen);
 }
 
@@ -1020,8 +1020,8 @@ void wmVisMaybePublish(u64 wI) {
     return;
   }
   final u64 g = wmWin(wI, u64(wmWinGeom));
-  final u64 raw = wmPage(u64(wmPageWVis0) + wI);
-  final u64 pend = wmPage(u64(wmPageWPend0) + wI);
+  final u64 raw = wmPage(wmPageVisOf(wI));
+  final u64 pend = wmPage(wmPagePendOf(wI));
   if (pend > u64(0)) {
     wmVisPublish(wI);
     return;
@@ -1065,7 +1065,7 @@ void wmHoldKick(u64 wI) {
   }
   wmSetWin(wI, u64(wmWinSeq), u64(0));
   wmeventEnqueueConfigure(wI);
-  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(1));
+  wmPageSet(wmPageHoldKickOf(wI), u64(1));
   uartWrite(Rodata.addressOf(wmStrHoldWd), u64(13));
   uartPutHex(wI, u64(1));
   uartNewline();
@@ -1089,16 +1089,16 @@ void wmHoldCancel(u64 wI) {
   if (wmWin(wI, u64(wmWinSeq)) < u64(1)) {
     wmSetWin(wI, u64(wmWinSeq), u64(1));
   }
-  wmPageSet(u64(wmPageWPend0) + wI, u64(0));
-  wmPageSet(u64(wmPageWHoldArm0) + wI, u64(0));
-  wmPageSet(u64(wmPageWHoldKick0) + wI, u64(2));
+  wmPageSet(wmPagePendOf(wI), u64(0));
+  wmPageSet(wmPageHoldArmOf(wI), u64(0));
+  wmPageSet(wmPageHoldKickOf(wI), u64(2));
   if (pend > u64(0)) {
     if (vis > u64(0)) {
       if (pend != vis) {
-        final u64 saved = wmPage(u64(wmPageWMax0) + wI);
+        final u64 saved = wmPage(wmPageMaxOf(wI));
         if (saved < u64(1)) {
           if (wmGeomW(pend) < wmGeomW(vis)) {
-            wmPageSet(u64(wmPageWMax0) + wI, pend);
+            wmPageSet(wmPageMaxOf(wI), pend);
           }
         }
       }
@@ -1125,8 +1125,8 @@ void wmHoldWatch() {
   while (i < u64(wmMaxWindows)) {
     if (wmPendGeomOf(i) > u64(0)) {
       if (wmWindowUsable(i) > u64(0)) {
-        final u64 armed = wmPage(u64(wmPageWHoldArm0) + i);
-        final u64 kicks = wmPage(u64(wmPageWHoldKick0) + i);
+        final u64 armed = wmPage(wmPageHoldArmOf(i));
+        final u64 kicks = wmPage(wmPageHoldKickOf(i));
         final u64 now = tick_count();
         u64 age = u64(0);
         if (now >= armed) {
@@ -2132,8 +2132,8 @@ void wmCloseWindow(u64 wI) {
   final u64 oh = wmGeomH(g) + b + b;
   wmeventResetSlot(wI);
   if (wmPageAddr() > u64(0)) {
-    wmPageSet(u64(wmPageWLaunch0) + wI, u64(0));
-    wmPageSet(u64(wmPageWMax0) + wI, u64(0));
+    wmPageSet(wmPageLaunchOf(wI), u64(0));
+    wmPageSet(wmPageMaxOf(wI), u64(0));
     wmPageSet(u64(wmPageWChromeHave), u64(0));
     wmVisClear(wI);
     wmDefClear(wI);
@@ -2406,7 +2406,7 @@ void wmIdlePrep(u64 fromSlot) {
   if (fromSlot >= u64(wmMaxWindows)) {
     return;
   }
-  final u64 fromCap = wmPage(u64(wmPageWLaunch0) + fromSlot);
+  final u64 fromCap = wmPage(wmPageLaunchOf(fromSlot));
   if (fromCap < u64(1)) {
     return;
   }
@@ -2422,7 +2422,7 @@ void wmIdlePrep(u64 fromSlot) {
   u64 slot = u64(wmMaxWindows);
   u64 i = u64(0);
   while (i < u64(wmMaxWindows)) {
-    if (wmPage(u64(wmPageWLaunch0) + i) == u64(1)) {
+    if (wmPage(wmPageLaunchOf(i)) == u64(1)) {
       if (wmWindowUsable(i) > u64(0)) {
         if (wmGeomW(wmWin(i, u64(wmWinGeom))) >= u64(400)) {
           slot = i;
@@ -2637,7 +2637,7 @@ void wmToggleMaxWindow(u64 wI) {
     wmLatNotePresent();
   }
   wmLatStamp(u64(wmLatKindFocus));
-  final u64 at = u64(wmPageWMax0) + wI;
+  final u64 at = wmPageMaxOf(wI);
   final u64 old = wmWin(wI, u64(wmWinGeom));
   final u64 saved = wmPage(at);
   final u64 vis = wmVisGeom(wI);

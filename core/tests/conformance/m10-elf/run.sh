@@ -308,7 +308,7 @@ ck; [[ -n "$M11_ELF_OFF_HEX" ]] || fail "elf_store has no .bss offset in kdata.o
 D7_OFF_HEX=$(bssoff wmeventStore)
 ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
 D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
-ck; [[ "$D7_BSS" -eq 384 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 384. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D7_BSS" -eq 768 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 768. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
 D2_OFF_HEX=$(bssoff kbdqStore)
 ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"
@@ -318,12 +318,12 @@ KDATA_BSS=$(( KDATA_BSS - D2_BSS ))
 D4_OFF_HEX=$(bssoff wmStore)
 ck; [[ -n "$D4_OFF_HEX" ]] || fail "wmStore has no .bss offset in kmain.o -- D4's compositor block (ADR-0050) is missing"
 D4_BSS=$(( KDATA_BSS - 16#$D4_OFF_HEX ))
-ck; [[ "$D4_BSS" -eq 448 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 448. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D4_BSS" -eq 704 ]] || fail "the bytes from D4's wmStore to D2's kbdqStore are $D4_BSS, expected 704. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D4_BSS ))
 M21_OFF_HEX=$(bssoff shmStore)
 ck; [[ -n "$M21_OFF_HEX" ]] || fail "shmStore has no .bss offset in kmain.o -- M21's shared-memory block (ADR-0041) is missing"
 M21_BSS=$(( KDATA_BSS - 16#$M21_OFF_HEX ))
-ck; [[ "$M21_BSS" -eq 8576 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8576 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$M21_BSS" -eq 8832 ]] || fail "the bytes from M21's shmStore to D4's wmStore are $M21_BSS, expected 8832 — ADR-0109 made it 4480, and ADR-0155 doubled `pmmMaxFrames` to 65536, which the bit-plane must track (`shmPlaneFrames == pmmMaxFrames`, asserted in m21-shmem), so the plane went 4096 -> 8192. If that block changed size, change it in ADR-0109/ADR-0155, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M21_BSS ))
 S0_OFF_HEX=$(bssoff ioctlStore)
 ck; [[ -n "$S0_OFF_HEX" ]] || fail "ioctlStore has no .bss offset in kmain.o -- S0's ioctl block (ADR-0033) is missing"
@@ -388,7 +388,7 @@ ck; [[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o —
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
-ck; [[ "$M11_BSS" -eq 4232 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 4232 (M11's proc_store, grown to 4224 by M18's scheduler header, plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M11_BSS" -eq 8328 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 8328 (M11's proc_store, grown to 4224 by M18's scheduler header, plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 ck; [[ $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) -eq 9720 ]] || fail "the kernel's mutable static storage is $(( KDATA_BSS + ASM_BSS )) bytes, of which $M11_BSS are M11's process table and $M14_BSS are M14's filesystem block, leaving $(( KDATA_BSS + ASM_BSS - M11_BSS - M14_BSS )) — expected 9720 (5368 through M9, plus 128 for the ELF loader's state). If you meant to grow it, say so in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 # M17: scan BOTH objects. The storage moved to kmain.o, so a scan of kdata.o
 # alone would now find nothing and pass for the wrong reason.

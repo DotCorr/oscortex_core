@@ -117,8 +117,8 @@ def main():
     ping_h = cdefine(pingc, "PING_H")
     ping_fill = cdefine(pingc, "PING_FILL")
 
-    if store != 448:
-        raise SystemExit("derive: wmStoreBytes is %d, expected 448" % store)
+    if store != 704:
+        raise SystemExit("derive: wmStoreBytes is %d, expected 704" % store)
     if level != 2:
         raise SystemExit("derive: wmDeLevel is %d, expected 2" % level)
     if pop_launch != 2 or pop_panel != 3:
