@@ -904,6 +904,16 @@ void wmVisMaybePublish(u64 wI) {
   }
 }
 
+/// Drop the chrome cache so a HOLD completion cannot geom-only uncover
+/// sibling titles with wallpaper (SET title after FILES max/restore).
+@bare
+void wmChromeInvalidate() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWChromeHave), u64(0));
+}
+
 @bare
 void wmVisMaybePublishAll() {
   u64 i = u64(0);

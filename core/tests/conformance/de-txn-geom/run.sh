@@ -91,6 +91,11 @@ if "wmWinSeq" not in maybe:
 commit = fn(wm, "wmComposeCommit")
 if "wmVisMaybePublish" not in commit and "wmVisMaybePublishAll" not in commit:
     raise SystemExit("compose commit does not publish VIS")
+wm_commit = fn(wm, "wmCommit")
+if "wmChromeInvalidate" not in wm_commit:
+    raise SystemExit("HOLD commit does not invalidate chrome for sibling titles")
+if "wmPendGeomOf" not in wm_commit:
+    raise SystemExit("HOLD commit does not consult pending before chrome invalidate")
 
 resize = fn(wm, "wmResizeStep")
 if "wmPendArm" not in resize:

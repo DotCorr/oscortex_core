@@ -2071,6 +2071,9 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
   }
   wmSetWin(slot, u64(wmWinSeq), seq);
   wmBumpMeta(u64(wmMetaCommits));
+  if (wmPendGeomOf(slot) > u64(0)) {
+    wmChromeInvalidate();
+  }
   wmDefDrain();
   uartWrite(Rodata.addressOf(wmStrCommit), u64(12));
   uartPutHex(slot, u64(1));

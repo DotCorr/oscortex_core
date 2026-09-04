@@ -106,7 +106,7 @@ def main():
         time.sleep(0.3)
 
     files_xywh = cs.live_files_xywh(serial_path, ser.archive or "")
-    set_xywh = SET_XYWH
+    set_xywh = cs.live_set_xywh(serial_path, ser.archive or "") or SET_XYWH
     all_recs = []
     bad = []
     menus = 0
@@ -116,10 +116,13 @@ def main():
     seq_gaps = 0
 
     def live():
-        nonlocal files_xywh
+        nonlocal files_xywh, set_xywh
         g = cs.live_files_xywh(serial_path, ser.archive or "")
         if g is not None:
             files_xywh = g
+        sg = cs.live_set_xywh(serial_path, ser.archive or "")
+        if sg is not None:
+            set_xywh = sg
         return files_xywh
 
     def take(tag):

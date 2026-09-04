@@ -56,14 +56,14 @@ def _blob(serial_path, archive=""):
     return text + "\n" + (archive or "")
 
 
-def files_slot(blob):
-    """Latest FILES slot from ATTACH identity only (cap 1, w>=240)."""
+def _cap_slot(blob, cap, min_w):
+    """Latest live slot for an ATTACH caption code (identity, not geom)."""
     slot = None
     attach_at = -1
     for m in ATTACH_RE.finditer(blob):
-        if int(m.group(3), 16) != 1:
+        if int(m.group(3), 16) != cap:
             continue
-        if int(m.group(6), 16) < 240:
+        if int(m.group(6), 16) < min_w:
             continue
         slot = int(m.group(1), 16)
         attach_at = m.end()
@@ -75,10 +75,17 @@ def files_slot(blob):
     return slot
 
 
-def live_files_xywh(serial_path, archive=""):
-    """Committed FILES AABB from the latest WM VIS of the live FILES slot."""
-    blob = _blob(serial_path, archive)
-    slot = files_slot(blob)
+def files_slot(blob):
+    """Latest FILES slot from ATTACH identity only (cap 1, w>=240)."""
+    return _cap_slot(blob, 1, 240)
+
+
+def set_slot(blob):
+    """Latest SET slot from ATTACH identity only (cap 2)."""
+    return _cap_slot(blob, 2, 240)
+
+
+def _vis_xywh(blob, slot, min_w=240, min_h=200):
     if slot is None:
         return None
     geom = None
@@ -87,18 +94,27 @@ def live_files_xywh(serial_path, archive=""):
             continue
         w = int(m.group(4), 16)
         h = int(m.group(5), 16)
-        if w < 240 or h < 200:
+        if w < min_w or h < min_h:
             continue
         geom = (
             int(m.group(2), 16),
             int(m.group(3), 16),
             w,
             h,
-            int(m.group(6), 16),
         )
-    if geom is None:
-        return None
-    return geom[:4]
+    return geom
+
+
+def live_files_xywh(serial_path, archive=""):
+    """Committed FILES AABB from the latest WM VIS of the live FILES slot."""
+    blob = _blob(serial_path, archive)
+    return _vis_xywh(blob, files_slot(blob))
+
+
+def live_set_xywh(serial_path, archive=""):
+    """Committed SET AABB from the latest WM VIS of the live SET slot."""
+    blob = _blob(serial_path, archive)
+    return _vis_xywh(blob, set_slot(blob), min_w=200, min_h=200)
 
 
 def vis_count(serial_path, archive=""):
@@ -186,10 +202,11 @@ def main():
         nonlocal n
         n += 1
         geom = live_files_xywh(serial_path, ser.archive or "")
+        set_geom = live_set_xywh(serial_path, ser.archive or "") or SET_XYWH
         path = os.path.join(framedir, "c%05d.png" % n)
         d15.shot(q, path)
-        rec = fi.inspect_png(path, files_xywh=geom, set_xywh=SET_XYWH)
-        aa_rec = aa.inspect_png(path, files_xywh=geom, set_xywh=SET_XYWH)
+        rec = fi.inspect_png(path, files_xywh=geom, set_xywh=set_geom)
+        aa_rec = aa.inspect_png(path, files_xywh=geom, set_xywh=set_geom)
         rec["tag"] = tag
         rec["aa"] = aa_rec
         rec["files_xywh"] = list(geom) if geom else None
