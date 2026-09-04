@@ -126,7 +126,6 @@ static unsigned recent_nlen[RECENT_MAX];
 static u64 recent_n;
 static char find_buf[FIND_MAX + 1];
 static u64 find_n;
-static u64 find_on;
 static u64 find_at;
 static const char path_ow[] = "OPENWITH.DAT";
 static const char msg_tab[] = "STUDIO TAB ";

@@ -733,6 +733,7 @@ static void files_set_sel(u64 row);
 static void files_retry(void);
 static void files_show_empty(void);
 static void files_show_error(void);
+static void files_restore_root(void);
 static void files_repaint(void);
 static u64 files_load_listing(const char *path, unsigned nlen);
 static void emit_name(const char *s, unsigned n);
