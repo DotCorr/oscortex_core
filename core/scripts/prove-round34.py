@@ -324,7 +324,8 @@ def main():
             relaunch_theme = line.strip()
     set_persist = bool(theme_line) and (
         (not relaunch_theme) or relaunch_theme == theme_line)
-    pref_ack = "WM PREF ACK" in harvest(ser) or "WM PREF" in harvest(ser)
+    pref_ack = ("WM PREF ACK" in harvest(ser) or "WM PREF" in harvest(ser)
+                or "WM PREF ACK" in theme_blob or "WM PREF" in theme_blob)
     time.sleep(0.4)
 
     browse_xy, play_xy, tap_xy = dock_xy(2), dock_xy(3), dock_xy(5)
