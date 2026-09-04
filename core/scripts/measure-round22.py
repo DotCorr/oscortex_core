@@ -32,7 +32,7 @@ CSDHIT_RE = re.compile(
     r" CX ([0-9A-F]+) CY ([0-9A-F]+) PX ([0-9A-F]+) PY ([0-9A-F]+)"
     r" D ([0-9A-F]+) K ([0-9A-F]+)")
 LIFE_RE = re.compile(
-    r"WM LIFE LV ([0-9A-F]+) SHM ([0-9A-F]+) CH ([0-9A-F]+)"
+    r"WM LIFE\s+LV ([0-9A-F]+) SHM ([0-9A-F]+) CH ([0-9A-F]+)"
     r" R ([0-9A-F]+) C ([0-9A-F]+)")
 CLOSE_RE = re.compile(r"WM CLOSE W ([0-9A-F]+)")
 
@@ -330,14 +330,13 @@ def cycles(q, ser, n=20):
         print("first_drag", i, "fresh", fresh, "geom", geom, "moved", moved,
               wall)
         if i == 0:
-            lockstep, closed0, moved = lockstep_controls(q, ser, geom)
-            if closed0:
-                closed += 1
             try:
                 d15.shot(q, os.path.join(art, "oscortex-round22-csd-close.png"))
             except Exception as e:
                 print("csd-close shot", e)
-            continue
+        # Close from live attach+move only. Max/restore is a separate
+        # probe — WM MAX rewrites geom without WM MOVE and used to leave
+        # the slot occupied.
         if close_geom(q, ser, moved):
             closed += 1
         else:
@@ -401,8 +400,12 @@ def main():
                    for i in range(int(os.environ.get("DRIVE_PTR_N", "100")))]
     menu_pts = [(200 + (i * 23) % 700, 120 + (i * 13) % 240)
                 for i in range(int(os.environ.get("DRIVE_MENU_N", "100")))]
-    pointer = collect(q, ser, "pointer", pointer_pts, want_opid=False)
-    menu = collect(q, ser, "menu", menu_pts, btn="right", want_opid=True)
+    if os.environ.get("DRIVE_SKIP_LAT", "0") == "1":
+        pointer = {"n": 0, "event_present_ms": {"n": 0, "p50": None, "p95": None, "max": None, "samples": []}}
+        menu = {"n": 0, "event_present_ms": {"n": 0, "p50": None, "p95": None, "max": None, "samples": []}}
+    else:
+        pointer = collect(q, ser, "pointer", pointer_pts, want_opid=False)
+        menu = collect(q, ser, "menu", menu_pts, btn="right", want_opid=True)
     life = cycles(q, ser, int(os.environ.get("DRIVE_LIFE_N", "20")))
 
     blob = harvest(ser)
