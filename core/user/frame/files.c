@@ -403,6 +403,8 @@ static unsigned dest_from(const char *src, unsigned nlen, char *out,
   return n;
 }
 
+static u64 files_visible(void);
+
 static u32 band_colour(u64 i) {
   if ((i & 1UL) == 0) {
     return (u32)SURF_BAND0;
@@ -724,6 +726,100 @@ static void files_repaint_body(void) {
   }
   body_h = files_height - TITLE_H;
   commit_files_rect(TITLE_H, body_h);
+}
+
+/* One visible row. Used after a translate so the first body click
+ * does not Skia-replay every label (the 120 ms cold hitch). */
+static void files_paint_one_row(u64 src) {
+  u64 band_h = ROW_H;
+  u64 visible = files_visible();
+  u64 row;
+  u64 iy;
+  u32 c;
+  volatile u32 *p;
+  u64 stride_px;
+  u64 span_w;
+  u64 py;
+  if (files_h == 0 || src < scroll_off) {
+    return;
+  }
+  row = src - scroll_off;
+  if (row >= visible) {
+    return;
+  }
+  iy = TITLE_H + row * band_h;
+  if (iy + band_h > files_height) {
+    return;
+  }
+  p = (volatile u32 *)files_va;
+  stride_px = files_stride / 4UL;
+  span_w = files_w;
+  if (span_w > stride_px) {
+    span_w = stride_px;
+  }
+  if (src == list_sel) {
+    c = (u32)SURF_SEL;
+  } else {
+    c = band_colour(src);
+  }
+  py = iy;
+  while (py < (iy + band_h)) {
+    if (py < files_height) {
+      fill_dwords(p + py * stride_px, span_w, c);
+    }
+    py = py + 1;
+  }
+#if FILES_NO_ICON == 0
+  {
+    u64 wh = (files_w << 32) | files_height;
+    unsigned nlab;
+    osxui_icon_fb(files_va, files_stride, wh, (ICON_PAD_X << 32) | iy, ICON_FG);
+    nlab = dotlen[src];
+    if (nlab > 11U) {
+      nlab = 11U;
+    }
+    if (nlab > 0U) {
+      u64 fill = (src & 1UL) ? SURF_BAND1 : SURF_BAND0;
+      if (src == list_sel) {
+        fill = SURF_SEL;
+      }
+      osxui_app_rrect(files_h, 6UL, iy + 2UL, files_w - 12UL, band_h - 4UL,
+                      10UL, fill);
+      (void)osxui_app_label_box(files_h, LAB_PAD_X, iy, 0, band_h, dotted[src],
+                                nlab, WM_TEXT_LABEL_PX, WM_TEXT_REGULAR,
+                                LAB_FG);
+    }
+  }
+#endif
+}
+
+static void files_repaint_sel(u64 old_row) {
+  u64 y0;
+  u64 y1;
+  u64 h;
+  if (files_h == 0 || files_height <= TITLE_H) {
+    return;
+  }
+  files_paint_one_row(old_row);
+  files_paint_one_row(list_sel);
+  y0 = TITLE_H;
+  if (old_row >= scroll_off) {
+    y0 = TITLE_H + (old_row - scroll_off) * ROW_H;
+  }
+  y1 = y0;
+  if (list_sel >= scroll_off) {
+    y1 = TITLE_H + (list_sel - scroll_off) * ROW_H;
+  }
+  if (y1 < y0) {
+    u64 t = y0;
+    y0 = y1;
+    y1 = t;
+  }
+  h = (y1 - y0) + ROW_H;
+  if ((y0 + h) > files_height) {
+    h = files_height - y0;
+  }
+  commit_files_rect(y0, h);
 }
 
 static u64 files_visible(void) {
@@ -1226,8 +1322,14 @@ static void files_on_event(u64 ev) {
     if (menu_on == 0) {
       u64 row = row_at_y(ry, files_names);
       if (row < files_names) {
+        u64 prev = list_sel;
+        u64 before_off = scroll_off;
         files_set_sel(row);
-        files_repaint_body();
+        if (scroll_off != before_off) {
+          files_repaint_body();
+        } else {
+          files_repaint_sel(prev);
+        }
       }
       return;
     }
