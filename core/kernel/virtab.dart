@@ -385,13 +385,13 @@ void virtabApply(u64 hdr, u64 ev) {
           if (magnitude > u64(127)) {
             magnitude = u64(127);
           }
-          virtgpuRamPut32(hdr + u64(40), magnitude);
+          virtgpuRamPut32(hdr + u64(44), magnitude);
         } else {
           u64 magnitude = low;
           if (magnitude > u64(127)) {
             magnitude = u64(127);
           }
-          virtgpuRamPut32(hdr + u64(40), u64(0x100) - magnitude);
+          virtgpuRamPut32(hdr + u64(44), u64(0x100) - magnitude);
         }
       }
     }
@@ -399,10 +399,12 @@ void virtabApply(u64 hdr, u64 ev) {
   }
   if (typ == u64(virtabEvSyn)) {
     if (code == u64(0)) {
-      final u64 wheel = virtgpuRamGet32(hdr + u64(40));
+      /* Wheel is hdr+44. hdr+40 is last announced Y — treating Y as a
+       * REL_WHEEL fired FILES paint_all on the first body SYN after
+       * drag (cold 120 ms). */
+      final u64 wheel = virtgpuRamGet32(hdr + u64(44));
       if (wheel > u64(0)) {
-        virtgpuRamPut32(hdr + u64(36), u64(0));
-        virtgpuRamPut32(hdr + u64(40), u64(0));
+        virtgpuRamPut32(hdr + u64(44), u64(0));
         virtabCommit(hdr);
         wmeventEnqueueScroll(
             mouseState(u64(mouseWordX)), mouseState(u64(mouseWordY)), wheel);
