@@ -120,6 +120,57 @@ static inline unsigned long osxui_app_tasks_hi(void) {
   return r;
 }
 
+static inline unsigned long osxui_app_tasks_mid(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_TASKS_MID;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
+static inline unsigned long osxui_app_tasks_lo(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_TASKS_LO;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
+static inline unsigned long osxui_app_task_min(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_TASK_MIN;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
+/* act: 0 focus, 1 min/rest, 2 context, 3 close, 4 page (handle = delta). */
+static inline unsigned long osxui_app_task_act(unsigned long slot,
+                                              unsigned long act) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = act;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_TASK_ACT;
+  osxui_app_desc[OSXUI_APP_XY] = slot;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
 static inline unsigned long osxui_app_task(unsigned long t, unsigned long i) {
   return (t >> (i * 8UL)) & 0xFFUL;
 }

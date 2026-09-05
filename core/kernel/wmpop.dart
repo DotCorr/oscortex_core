@@ -967,6 +967,13 @@ void wmContextFocus(u64 hit) {
 void wmContextShow(u64 x, u64 y) {
   if (wmChromeHit(x, y) > u64(0)) {
     if (wmDeOn() > u64(0)) {
+      final u64 pill = wmSlotHit(x, y);
+      if (pill < u64(wmMaxWindows)) {
+        uartWrite(Rodata.addressOf(wmStrCtxSlot), u64(11));
+        uartNewline();
+        wmTaskAct(pill, u64(2));
+        return;
+      }
       if (x >= (fbGeomWidth() ~/ u64(2))) {
         uartWrite(Rodata.addressOf(wmStrCtxDock), u64(11));
         uartNewline();
@@ -982,6 +989,7 @@ void wmContextShow(u64 x, u64 y) {
   if (slot < u64(wmMaxWindows)) {
     uartWrite(Rodata.addressOf(wmStrCtxSlot), u64(11));
     uartNewline();
+    wmTaskAct(slot, u64(2));
     return;
   }
   u64 hit = wmHit(x, y);

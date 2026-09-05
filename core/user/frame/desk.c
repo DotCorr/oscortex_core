@@ -108,7 +108,18 @@ static u64 scr_w;
 static u64 scr_h;
 static u64 last_tasks;
 static u64 last_tasks_hi;
+static u64 last_tasks_mid;
+static u64 last_tasks_lo;
+static u64 last_task_min;
 static u64 last_screen;
+static u64 slot_ids[SLOT_MAX];
+static u64 slot_sts[SLOT_MAX];
+static u64 slot_n;
+static u64 slot_vis;
+static u64 slot_off_vis;
+static u64 slot_pitch;
+static u64 slot_tap_i;
+static u64 slot_overflow;
 static u64 last_pop;
 static u64 last_launch_sel;
 static u64 last_launch_paint;
@@ -184,15 +195,20 @@ static char date_lab[] = "Oct 30";
 static char stat_lab[] = "1 C";
 static char slot_stem[9];
 #define SLOT_X0 (LEFT_X + LEFT_W + 8UL)
-#define SLOT_W 56UL
+#define SLOT_W 72UL
 #define SLOT_H 28UL
-#define SLOT_PITCH 64UL
+#define SLOT_PITCH 80UL
+#define SLOT_PITCH_MIN 36UL
+#define SLOT_PITCH_OVF 56UL
+#define SLOT_CHEV 16UL
 #define SLOT_Y (ISLAND_Y + 6UL)
 #define SLOT_FILL 0x00E4ECF4UL
+#define SLOT_MIN_FILL 0x00C8D0D8UL
 #define SLOT_FOCUS 0x00B8C8D8UL
 #define SLOT_FOCUS_A1 0x00A0C8F0UL
 #define SLOT_FOCUS_A2 0x00C8B0E0UL
 #define SLOT_FOCUS_A3 0x00C0D890UL
+#define SLOT_MAX 16UL
 static char name_set[] = "SET.ELF";
 static char name_files[] = "FILES.ELF";
 static char name_web[] = "BROWSE.ELF";
@@ -509,64 +525,206 @@ static void paint_frost_islands(u64 wall_key) {
 
 static u64 slot_focus_rgb(void);
 
-static void paint_slots(u64 tasks, u64 tasks_hi) {
+static u64 task_bank_of(u64 i, u64 tasks, u64 tasks_hi) {
+  if (i < 4UL) {
+    return tasks;
+  }
+  if (i < 8UL) {
+    return tasks_hi;
+  }
+  if (i < 12UL) {
+    return last_tasks_mid;
+  }
+  return last_tasks_lo;
+}
+
+static u64 collect_slots(u64 tasks, u64 tasks_hi) {
   u64 i;
   u64 n;
-  u64 sx;
-  u64 rgb;
-  char *lab;
-  i = 0;
   n = 0;
-  while (i < 8UL) {
-    u64 bank = tasks;
-    u64 idx = i;
-    u64 st;
-    if (i >= 4UL) {
-      bank = tasks_hi;
-      idx = i - 4UL;
-    }
-    st = osxui_app_task(bank, idx);
+  slot_tap_i = SLOT_MAX;
+  i = 0;
+  while (i < SLOT_MAX) {
+    u64 bank = task_bank_of(i, tasks, tasks_hi);
+    u64 idx = i & 3UL;
+    u64 st = osxui_app_task(bank, idx);
     if ((st & WM_TASK_LIVE) != 0) {
       if ((st & WM_TASK_PANEL) == 0) {
-        sx = SLOT_X0 + n * SLOT_PITCH;
-        rgb = SLOT_FILL;
-        if ((st & WM_TASK_FOCUS) != 0) {
-          rgb = slot_focus_rgb();
-        }
-        osxui_app_rrect(shm_h, sx, SLOT_Y, SLOT_W, SLOT_H, 8UL, rgb);
+        slot_ids[n] = i;
+        slot_sts[n] = st;
         {
           u64 packed = osxui_app_name(i);
-          u64 k = 0;
-          u64 nn = 0;
-          while (k < 8UL) {
-            slot_stem[k] = (char)((packed >> (k * 8UL)) & 0xFFUL);
-            k = k + 1UL;
-          }
-          slot_stem[8] = 0;
-          while (nn < 8UL) {
-            if (slot_stem[nn] == 0) {
-              break;
+          if ((packed & 0xFFUL) == (u64)'T') {
+            if (((packed >> 8) & 0xFFUL) == (u64)'A') {
+              if (((packed >> 16) & 0xFFUL) == (u64)'P') {
+                slot_tap_i = n;
+              }
             }
-            nn = nn + 1UL;
           }
-          if (nn == 0UL) {
-            slot_stem[0] = 'W';
-            slot_stem[1] = '0' + (char)n;
-            slot_stem[2] = 0;
-            nn = 2UL;
-          }
-          lab = slot_stem;
-          osxui_app_text(shm_h, sx + 6UL, SLOT_Y + 6UL, lab, nn,
-                         WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_GLASS_FG);
         }
         n = n + 1;
       }
     }
     i = i + 1;
   }
+  slot_n = n;
+  return n;
+}
+
+static void layout_slots(u64 n) {
+  u64 avail = 0;
+  if (right_x > (SLOT_X0 + 8UL)) {
+    avail = right_x - SLOT_X0;
+  }
+  slot_overflow = 0;
+  slot_off_vis = 0;
+  slot_pitch = SLOT_PITCH;
+  slot_vis = n;
+  if (n < 1UL) {
+    slot_vis = 0;
+    return;
+  }
+  if ((n * SLOT_PITCH_MIN) > avail) {
+    u64 room = avail;
+    slot_overflow = 1;
+    slot_pitch = SLOT_PITCH_OVF;
+    if (room > (SLOT_CHEV + SLOT_CHEV)) {
+      room = room - (SLOT_CHEV + SLOT_CHEV);
+    }
+    slot_vis = room / slot_pitch;
+    if (slot_vis < 1UL) {
+      slot_vis = 1UL;
+    }
+    if (slot_vis > n) {
+      slot_vis = n;
+    }
+    return;
+  }
+  if ((n * SLOT_PITCH) > avail) {
+    slot_pitch = avail / n;
+    if (slot_pitch < SLOT_PITCH_MIN) {
+      slot_pitch = SLOT_PITCH_MIN;
+    }
+  }
+}
+
+static void paint_one_slot(u64 win, u64 st, u64 sx, u64 nlab) {
+  u64 rgb;
+  char *lab;
+  u64 sw;
+  rgb = SLOT_FILL;
+  if ((last_task_min & (1UL << win)) != 0) {
+    rgb = SLOT_MIN_FILL;
+  }
+  if ((st & WM_TASK_FOCUS) != 0) {
+    rgb = slot_focus_rgb();
+  }
+  sw = slot_pitch;
+  if (sw > 8UL) {
+    sw = sw - 8UL;
+  }
+  if (sw < 24UL) {
+    sw = 24UL;
+  }
+  osxui_app_rrect(shm_h, sx, SLOT_Y, sw, SLOT_H, 8UL, rgb);
+  {
+    u64 packed = osxui_app_name(win);
+    u64 k = 0;
+    u64 nn = 0;
+    while (k < 8UL) {
+      slot_stem[k] = (char)((packed >> (k * 8UL)) & 0xFFUL);
+      k = k + 1UL;
+    }
+    slot_stem[8] = 0;
+    while (nn < 8UL) {
+      if (slot_stem[nn] == 0) {
+        break;
+      }
+      nn = nn + 1UL;
+    }
+    if (nn == 0UL) {
+      slot_stem[0] = 'W';
+      slot_stem[1] = '0' + (char)nlab;
+      slot_stem[2] = 0;
+      nn = 2UL;
+    }
+    lab = slot_stem;
+    osxui_app_text(shm_h, sx + 4UL, SLOT_Y + 6UL, lab, nn, WM_TEXT_LABEL_PX,
+                   WM_TEXT_REGULAR, OSXUI_GLASS_FG);
+  }
+}
+
+static void paint_slots(u64 tasks, u64 tasks_hi) {
+  u64 n;
+  u64 i;
+  u64 painted;
+  n = collect_slots(tasks, tasks_hi);
+  layout_slots(n);
+  painted = 0;
+  if (slot_overflow != 0) {
+    u64 vis_s = slot_vis;
+    u64 scroll_n = n;
+    u64 tap = slot_tap_i;
+    u64 sx;
+    if (tap < n) {
+      if (vis_s > 0) {
+        vis_s = vis_s - 1UL;
+      }
+      if (scroll_n > 0) {
+        scroll_n = scroll_n - 1UL;
+      }
+    }
+    osxui_app_rrect(shm_h, SLOT_X0, SLOT_Y + 8UL, 10UL, 12UL, 3UL,
+                    OSXUI_GLASS_FG_MUTED);
+    {
+      u64 skipped = 0;
+      i = 0;
+      while (i < n) {
+        if (i != tap) {
+          if (skipped < slot_off_vis) {
+            skipped = skipped + 1;
+          } else {
+            if (painted < vis_s) {
+              sx = SLOT_X0 + SLOT_CHEV + painted * slot_pitch;
+              paint_one_slot(slot_ids[i], slot_sts[i], sx, painted);
+              painted = painted + 1;
+            }
+          }
+        }
+        i = i + 1;
+      }
+    }
+    if (tap < n) {
+      sx = SLOT_X0 + SLOT_CHEV + vis_s * slot_pitch;
+      paint_one_slot(slot_ids[tap], slot_sts[tap], sx, painted);
+      painted = painted + 1;
+    }
+    {
+      u64 rx = SLOT_X0 + SLOT_CHEV + slot_vis * slot_pitch;
+      osxui_app_rrect(shm_h, rx, SLOT_Y + 8UL, 10UL, 12UL, 3UL,
+                      OSXUI_GLASS_FG_MUTED);
+    }
+    (void)scroll_n;
+  } else {
+    i = 0;
+    while (i < n) {
+      u64 sx = SLOT_X0 + i * slot_pitch;
+      paint_one_slot(slot_ids[i], slot_sts[i], sx, i);
+      painted = painted + 1;
+      i = i + 1;
+    }
+  }
   if (n > 0) {
     u64 at = put(0, "DESK TASK ");
-    at = put_hex(at, n, 1);
+    at = put_hex(at, n, 2);
+    at = put(at, " V ");
+    at = put_hex(at, slot_vis, 2);
+    at = put(at, " P ");
+    at = put_hex(at, slot_pitch, 2);
+    if (slot_tap_i < n) {
+      at = put(at, " TAP ");
+      at = put_hex(at, slot_ids[slot_tap_i], 2);
+    }
     emit(at);
   }
 }
@@ -779,8 +937,12 @@ static void handle_press(u64 ev) {
   u64 ix;
   u64 span;
   u64 at;
-  if ((ev & 0xFFUL) != WMEVENT_TYPE_PRESS) {
-    return;
+  u64 typ;
+  typ = ev & 0xFFUL;
+  if (typ != WMEVENT_TYPE_PRESS) {
+    if (typ != WMEVENT_TYPE_CONTEXT) {
+      return;
+    }
   }
   rx = (ev >> 16) & 0xFFFFUL;
   ry = (ev >> 32) & 0xFFFFUL;
@@ -796,6 +958,29 @@ static void handle_press(u64 ev) {
     return;
   }
   if (rx < right_x) {
+    if (slot_overflow != 0) {
+      if (rx < (SLOT_X0 + SLOT_CHEV)) {
+        if (slot_off_vis > 0) {
+          slot_off_vis = slot_off_vis - 1UL;
+          osxui_app_task_act(0, WM_TASK_ACT_PAGE);
+          paint_bar(last_tasks, last_tasks_hi);
+          commit_all();
+        }
+        return;
+      }
+      {
+        u64 rxchev = SLOT_X0 + SLOT_CHEV + slot_vis * slot_pitch;
+        if (rx >= rxchev) {
+          if (rx < right_x) {
+            slot_off_vis = slot_off_vis + 1UL;
+            osxui_app_task_act(1, WM_TASK_ACT_PAGE);
+            paint_bar(last_tasks, last_tasks_hi);
+            commit_all();
+          }
+          return;
+        }
+      }
+    }
     return;
   }
   if (icon_n > icon_vis) {
@@ -1062,6 +1247,10 @@ static void paint_desk_menu(u64 kind) {
         }
         osxui_app_rrect(menu_h, cx, cy, SWITCH_CARD_W, SWITCH_CARD_H, 10UL,
                         rgb);
+        osxui_app_rrect(menu_h, cx + SWITCH_CARD_W - 32UL, cy + 4UL, 12UL, 12UL,
+                        3UL, 0x00E0D090UL);
+        osxui_app_rrect(menu_h, cx + SWITCH_CARD_W - 16UL, cy + 4UL, 12UL, 12UL,
+                        3UL, 0x00E08080UL);
         {
           char hex[2];
           u64 hi = (slot >> 4) & 0xFUL;
@@ -1383,6 +1572,9 @@ void desk_main(u64 sp) {
 
   last_tasks = osxui_app_tasks();
   last_tasks_hi = osxui_app_tasks_hi();
+  last_tasks_mid = osxui_app_tasks_mid();
+  last_tasks_lo = osxui_app_tasks_lo();
+  last_task_min = osxui_app_task_min();
   paint_bar(last_tasks, last_tasks_hi);
   wr("DESK PAINT\n", 11);
   {
@@ -1461,14 +1653,17 @@ void desk_main(u64 sp) {
     tasks = osxui_app_tasks();
     {
       u64 tasks_hi = osxui_app_tasks_hi();
-      if (tasks != last_tasks) {
+      u64 tasks_mid = osxui_app_tasks_mid();
+      u64 tasks_lo = osxui_app_tasks_lo();
+      u64 task_min = osxui_app_task_min();
+      if (tasks != last_tasks || tasks_hi != last_tasks_hi ||
+          tasks_mid != last_tasks_mid || tasks_lo != last_tasks_lo ||
+          task_min != last_task_min) {
         last_tasks = tasks;
         last_tasks_hi = tasks_hi;
-        paint_bar(tasks, tasks_hi);
-        commit_all();
-        wr("DESK RESTRIP\n", 13);
-      } else if (tasks_hi != last_tasks_hi) {
-        last_tasks_hi = tasks_hi;
+        last_tasks_mid = tasks_mid;
+        last_tasks_lo = tasks_lo;
+        last_task_min = task_min;
         paint_bar(tasks, tasks_hi);
         commit_all();
         wr("DESK RESTRIP\n", 13);

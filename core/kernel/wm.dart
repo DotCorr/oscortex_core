@@ -333,6 +333,16 @@ final List<u8> wmStrCPath = const [
   u8(0x20),
 ];
 
+/// First DESK chrome full compose (empty HAVE). Not an interaction
+/// CPATH 3. Diagnostics count this separately.
+///
+/// `'WM BOOT FULL'` -- 12 bytes.
+@rodata
+final List<u8> wmStrBootFull = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x42), u8(0x4F), u8(0x4F), u8(0x54),
+  u8(0x20), u8(0x46), u8(0x55), u8(0x4C), u8(0x4C),
+];
+
 /// Button-up after a translate. One configure; no per-pixel COMMIT.
 ///
 /// `'WM DRAGEND '` -- 11 bytes.
@@ -1662,6 +1672,8 @@ void wmComposeCommitGfx(u64 slot, u64 full, u64 dx, u64 dy, u64 dw, u64 dh) {
 
 /// UART phase: 1 echo skip, 2 gfx damage, 3 session compose.
 /// Why on path 3: 1 empty HAVE (boot/mode), 2 HOLD pend.
+/// Path 3 + why 1 is mandatory DESK chrome init — emit BOOT FULL,
+/// not CPATH 3, so interaction diagnostics stay at CPATH3=0.
 @bare
 void wmCommitPath(u64 path) {
   wmCommitPathWhy(path, u64(0));
@@ -1669,6 +1681,13 @@ void wmCommitPath(u64 path) {
 
 @bare
 void wmCommitPathWhy(u64 path, u64 why) {
+  if (path == u64(3)) {
+    if (why == u64(1)) {
+      uartWrite(Rodata.addressOf(wmStrBootFull), u64(12));
+      uartNewline();
+      return;
+    }
+  }
   uartWrite(Rodata.addressOf(wmStrCPath), u64(9));
   uartPutHex(path, u64(1));
   if (why > u64(0)) {
@@ -2137,21 +2156,71 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   final u64 step = u64(32);
   final u64 ox = u64(24);
   final u64 oy = u64(24);
-  // TAP 240×160 parks on the clear right field. Cascade step 32 at
-  // n=15 lands on (504,504) under later FILES cards and the panel.
+  // TAP 240×160 parks past the second-column FILES right edge
+  // (520+400=920). 860 buried the left title under that column.
   if (w == u64(240)) {
     if (h == u64(160)) {
-      return (u64(860) << u64(32)) | u64(56);
+      u64 tx = fbGeomWidth() - w - u64(80);
+      if (tx < u64(960)) {
+        tx = u64(960);
+      }
+      if ((tx + w + u64(16)) > fbGeomWidth()) {
+        if (fbGeomWidth() > (w + u64(16))) {
+          tx = fbGeomWidth() - w - u64(16);
+        }
+      }
+      return (tx << u64(32)) | u64(56);
     }
+  }
+  // Recompute from live occupancy so a closed hole is reused and
+  // every new card gets a reserved 32×32 title strip.
+  u64 k = u64(0);
+  while (k < u64(16)) {
+    u64 cx = ox + (k * step);
+    u64 cy = oy + (k * step);
+    if (k > u64(9)) {
+      final u64 j = k - u64(10);
+      cx = u64(520) + (j * step);
+      cy = oy + (j * step);
+    }
+    u64 taken = u64(0);
+    u64 i = u64(0);
+    while (i < u64(wmMaxWindows)) {
+      if (wmIsOrdinary(i) > u64(0)) {
+        final u64 g = wmWin(i, u64(wmWinGeom));
+        final u64 px = wmGeomX(g);
+        final u64 py = wmGeomY(g);
+        u64 dx = u64(0);
+        u64 dy = u64(0);
+        if (px > cx) {
+          dx = px - cx;
+        } else {
+          dx = cx - px;
+        }
+        if (py > cy) {
+          dy = py - cy;
+        } else {
+          dy = cy - py;
+        }
+        if (dx < u64(8)) {
+          if (dy < u64(8)) {
+            taken = u64(1);
+          }
+        }
+      }
+      i = i + u64(1);
+    }
+    if (taken < u64(1)) {
+      return (cx << u64(32)) | cy;
+    }
+    k = k + u64(1);
   }
   u64 nx = ox + (n * step);
   u64 ny = oy + (n * step);
-  // Second title column after ten cards so high slots stay above
-  // the panel instead of wrapping onto the same buried origin.
   if (n > u64(9)) {
-    final u64 k = n - u64(10);
-    nx = u64(520) + (k * step);
-    ny = oy + (k * step);
+    final u64 kk = n - u64(10);
+    nx = u64(520) + (kk * step);
+    ny = oy + (kk * step);
   }
   if (nx < b) {
     nx = b;

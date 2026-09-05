@@ -143,10 +143,19 @@
 #define WM_SCREEN_PREF 9UL
 #define WM_SCREEN_SWITCH 10UL
 #define WM_SCREEN_PREF_SET 11UL
+#define WM_SCREEN_TASKS_MID 12UL
+#define WM_SCREEN_TASKS_LO 13UL
+#define WM_SCREEN_TASK_ACT 14UL
+#define WM_SCREEN_TASK_MIN 15UL
 #define WM_TASK_LIVE 0x80UL
 #define WM_TASK_PANEL 0x40UL
 #define WM_TASK_FOCUS 0x20UL
 #define WM_TASK_PID 0x1FUL
+#define WM_TASK_ACT_FOCUS 0UL
+#define WM_TASK_ACT_MIN 1UL
+#define WM_TASK_ACT_CTX 2UL
+#define WM_TASK_ACT_CLOSE 3UL
+#define WM_TASK_ACT_PAGE 4UL
 
 /* PAINT kinds. MEASURE touches no pixels and answers the advance of a run,
  * which is what a client needs before it can centre a label. */

@@ -19,6 +19,8 @@ const int wmScanF4 = 0x3E;
 const int wmScanBksp = 0x0E;
 const int wmScanUp = 0x48;
 const int wmScanDown = 0x50;
+const int wmScanLeft = 0x4B;
+const int wmScanRight = 0x4D;
 const int wmScanLGui = 0x5B;
 const int wmScanF9 = 0x43;
 const int wmScanF10 = 0x44;
@@ -462,6 +464,7 @@ u64 wmSwitchY() {
 }
 
 @bare
+/// 0 miss, 1 select+commit, 2 close chip, 3 min chip.
 u64 wmSwitchHit(u64 x, u64 y) {
   if (wmPopKind() != u64(wmPopSwitch)) {
     return u64(0);
@@ -496,8 +499,66 @@ u64 wmSwitchHit(u64 x, u64 y) {
     wmSwitchWrite(vis, n);
     wmSetMeta(u64(wmMetaPop),
         u64(wmPopSwitch) | ((vis & u64(0xFF)) << u64(8)));
+    final u64 cx = u64(wmSwitchWPad) +
+        (col * (u64(wmSwitchCardW) + u64(wmSwitchGap)));
+    final u64 cy = u64(wmSwitchTop) +
+        (row * (u64(wmSwitchCardH) + u64(wmSwitchGap)));
+    final u64 relx = lx - cx;
+    final u64 rely = ly - cy;
+    if (rely < u64(16)) {
+      if (relx + u64(16) >= u64(wmSwitchCardW)) {
+        return u64(2);
+      }
+      if (relx + u64(32) >= u64(wmSwitchCardW)) {
+        if (relx + u64(16) < u64(wmSwitchCardW)) {
+          return u64(3);
+        }
+      }
+    }
   }
   return u64(1);
+}
+
+@bare
+void wmSwitchMove(u64 dir) {
+  u64 n = wmSwitchCount();
+  if (n < u64(1)) {
+    return;
+  }
+  u64 sel = u64(0);
+  if (wmPageAddr() > u64(0)) {
+    sel = wmPage(u64(wmPageWSwitch)) & u64(0xFF);
+  }
+  final u64 cols = wmSwitchCols();
+  if (dir == u64(0)) {
+    if (sel >= cols) {
+      sel = sel - cols;
+    }
+  }
+  if (dir == u64(1)) {
+    if ((sel + cols) < n) {
+      sel = sel + cols;
+    }
+  }
+  if (dir == u64(2)) {
+    if (sel > u64(0)) {
+      sel = sel - u64(1);
+    }
+  }
+  if (dir == u64(3)) {
+    if ((sel + u64(1)) < n) {
+      sel = sel + u64(1);
+    }
+  }
+  wmSwitchWrite(sel, n);
+  wmSetMeta(u64(wmMetaPop),
+      u64(wmPopSwitch) | ((sel & u64(0xFF)) << u64(8)));
+  wmSetMeta(u64(wmMetaPopXY), (wmSwitchX() << u64(32)) | wmSwitchY());
+  uartWrite(Rodata.addressOf(wmStrSwitchShow), u64(15));
+  uartPutHex(n, u64(2));
+  uartNewline();
+  wmOverlayPresentKind(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
+      wmSwitchBoxH(), u64(wmOpKindSwitch));
 }
 
 @bare
@@ -561,9 +622,11 @@ void wmSwitchWrite(u64 sel, u64 n) {
   }
   final u64 alt = (wmPage(u64(wmPageWSwitch)) >> u64(16)) & u64(0xFF);
   final u64 gui = (wmPage(u64(wmPageWSwitch)) >> u64(24)) & u64(0xFF);
+  final u64 off = (wmPage(u64(wmPageWSwitch)) >> u64(32)) & u64(0xFF);
   wmPageSet(u64(wmPageWSwitch),
       (sel & u64(0xFF)) | ((n & u64(0xFF)) << u64(8)) |
-          ((alt & u64(0xFF)) << u64(16)) | (gui << u64(24)));
+          ((alt & u64(0xFF)) << u64(16)) | (gui << u64(24)) |
+          (off << u64(32)));
 }
 
 @bare
@@ -830,6 +893,24 @@ u64 wmDeKey(u64 ev) {
     if (scan == u64(wmScanEnter)) {
       wmSwitchCommit();
       return u64(1);
+    }
+    if ((ev & u64(kbdqBitExt)) > u64(0)) {
+      if (scan == u64(wmScanUp)) {
+        wmSwitchMove(u64(0));
+        return u64(1);
+      }
+      if (scan == u64(wmScanDown)) {
+        wmSwitchMove(u64(1));
+        return u64(1);
+      }
+      if (scan == u64(wmScanLeft)) {
+        wmSwitchMove(u64(2));
+        return u64(1);
+      }
+      if (scan == u64(wmScanRight)) {
+        wmSwitchMove(u64(3));
+        return u64(1);
+      }
     }
     return u64(1);
   }

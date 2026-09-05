@@ -127,6 +127,13 @@ final List<u8> wmStrFocusG = const [
   u8(0x53), u8(0x20), u8(0x47), u8(0x20),
 ];
 
+/// `'WM TASK A '` -- 10 bytes. Slot action from DESK / task pills.
+@rodata
+final List<u8> wmStrTaskA = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x54), u8(0x41), u8(0x53), u8(0x4B),
+  u8(0x20), u8(0x41), u8(0x20),
+];
+
 /// `' S '` -- 3 bytes.
 @rodata
 final List<u8> wmStrS = const [
@@ -692,6 +699,81 @@ u64 wmPack8(u64 addr) {
   return v;
 }
 
+/// Four window-slot bytes starting at [base], plus the live count in
+/// bits 32..39. Ordinary + panel; overlays stay out. MIN is a
+/// separate mask (kind 15) so the owner pid keeps five bits.
+@bare
+u64 wmPackTaskBank(u64 base) {
+  u64 packed = u64(0);
+  u64 n = u64(0);
+  u64 i = u64(0);
+  while (i < u64(4)) {
+    final u64 slot = base + i;
+    u64 b = u64(0);
+    if (slot < u64(wmMaxWindows)) {
+      if (wmWindowHeld(slot) > u64(0)) {
+        if (wmWinOverlay(slot) < u64(1)) {
+          b = b | u64(0x80);
+          if (wmIsPanel(slot) > u64(0)) {
+            b = b | u64(0x40);
+          }
+          if (wmMeta(u64(wmMetaFocus)) == (slot + u64(1))) {
+            b = b | u64(0x20);
+          }
+          b = b | (wmWin(slot, u64(wmWinOwner)) & u64(0x1F));
+          n = n + u64(1);
+        }
+      }
+    }
+    packed = packed | (b << (i * u64(8)));
+    i = i + u64(1);
+  }
+  packed = packed | (n << u64(32));
+  return packed;
+}
+
+/// Raise / min / context / close / page a task-slot window.
+@bare
+void wmTaskAct(u64 slot, u64 act) {
+  uartWrite(Rodata.addressOf(wmStrTaskA), u64(10));
+  uartPutHex(slot, u64(2));
+  uartWrite(Rodata.addressOf(wmStrR), u64(3));
+  uartPutHex(act, u64(2));
+  uartNewline();
+  if (act == u64(4)) {
+    wmSlotPageBy(slot);
+    return;
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmSlotSkip(slot) > u64(0)) {
+    return;
+  }
+  if (act == u64(3)) {
+    wmCloseWindow(slot);
+    return;
+  }
+  if (act == u64(1)) {
+    if (wmWin(slot, u64(wmWinState)) == u64(wmWinMin)) {
+      wmRestWindow(slot);
+    } else {
+      wmMinWindow(slot);
+    }
+    return;
+  }
+  if (wmWin(slot, u64(wmWinState)) == u64(wmWinMin)) {
+    wmRestWindow(slot);
+  }
+  wmSetMeta(u64(wmMetaTop), slot);
+  wmFocusTo(slot);
+  wmMruTouch(slot);
+  if (act == u64(2)) {
+    final u64 y = fbGeomHeight() - u64(wmChromeH);
+    wmPopShowKind(wmSlotX(slot), y, u64(wmPopWin));
+  }
+}
+
 /// `op = wmOpScreen`. Word 2 is WM_SCREEN_*; answer in rax.
 @bare
 void wmScreenOp(u64 frame, u64 ptr, u64 id) {
@@ -711,29 +793,7 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     return;
   }
   if (kind == u64(1)) {
-    u64 packed = u64(0);
-    u64 n = u64(0);
-    u64 i = u64(0);
-    while (i < u64(4)) {
-      u64 b = u64(0);
-      if (wmWindowHeld(i) > u64(0)) {
-        if (wmWinOverlay(i) < u64(1)) {
-          b = b | u64(0x80);
-          if (wmIsPanel(i) > u64(0)) {
-            b = b | u64(0x40);
-          }
-          if (wmMeta(u64(wmMetaFocus)) == (i + u64(1))) {
-            b = b | u64(0x20);
-          }
-          b = b | (wmWin(i, u64(wmWinOwner)) & u64(0x1F));
-          packed = packed | (b << (i * u64(8)));
-          n = n + u64(1);
-        }
-      }
-      i = i + u64(1);
-    }
-    packed = packed | (n << u64(32));
-    userSetFrame(frame, u64(userFrameRax), packed);
+    userSetFrame(frame, u64(userFrameRax), wmPackTaskBank(u64(0)));
     return;
   }
   if (kind == u64(2)) {
@@ -784,29 +844,7 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     return;
   }
   if (kind == u64(6)) {
-    u64 packed = u64(0);
-    u64 n = u64(0);
-    u64 i = u64(4);
-    while (i < u64(wmMaxWindows)) {
-      u64 b = u64(0);
-      if (wmWindowHeld(i) > u64(0)) {
-        if (wmWinOverlay(i) < u64(1)) {
-          b = b | u64(0x80);
-          if (wmIsPanel(i) > u64(0)) {
-            b = b | u64(0x40);
-          }
-          if (wmMeta(u64(wmMetaFocus)) == (i + u64(1))) {
-            b = b | u64(0x20);
-          }
-          b = b | (wmWin(i, u64(wmWinOwner)) & u64(0x1F));
-          packed = packed | (b << ((i - u64(4)) * u64(8)));
-          n = n + u64(1);
-        }
-      }
-      i = i + u64(1);
-    }
-    packed = packed | (n << u64(32));
-    userSetFrame(frame, u64(userFrameRax), packed);
+    userSetFrame(frame, u64(userFrameRax), wmPackTaskBank(u64(4)));
     return;
   }
   if (kind == u64(7)) {
@@ -861,6 +899,35 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     }
     wmPrefAckUart();
     userSetFrame(frame, u64(userFrameRax), wmPage(u64(wmPageWPref)));
+    return;
+  }
+  if (kind == u64(12)) {
+    userSetFrame(frame, u64(userFrameRax), wmPackTaskBank(u64(8)));
+    return;
+  }
+  if (kind == u64(13)) {
+    userSetFrame(frame, u64(userFrameRax), wmPackTaskBank(u64(12)));
+    return;
+  }
+  if (kind == u64(14)) {
+    final u64 slot = wmDesc(ptr, u64(wmDescY));
+    final u64 act = wmDesc(ptr, u64(wmDescHandle));
+    wmTaskAct(slot, act);
+    userSetFrame(frame, u64(userFrameRax), slot);
+    return;
+  }
+  if (kind == u64(15)) {
+    u64 mask = u64(0);
+    u64 i = u64(0);
+    while (i < u64(16)) {
+      if (wmWindowHeld(i) > u64(0)) {
+        if (wmWin(i, u64(wmWinState)) == u64(wmWinMin)) {
+          mask = mask | (u64(1) << i);
+        }
+      }
+      i = i + u64(1);
+    }
+    userSetFrame(frame, u64(userFrameRax), mask);
     return;
   }
   userSetFrame(frame, u64(userFrameRax), u64(0));

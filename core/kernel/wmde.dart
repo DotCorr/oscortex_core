@@ -1341,6 +1341,9 @@ u64 wmSlotPitchLive() {
   if (n < u64(1)) {
     return u64(wmSlotPitch);
   }
+  if ((n * u64(36)) > avail) {
+    return u64(56);
+  }
   if ((n * u64(wmSlotPitch)) <= avail) {
     return u64(wmSlotPitch);
   }
@@ -1360,11 +1363,202 @@ u64 wmSlotWLive() {
   return p;
 }
 
+@bare
+u64 wmSlotAvail() {
+  final u64 x0 =
+      u64(wmIsleLeftX) + u64(wmIsleLeftW) + u64(wmIsleGapPad);
+  if (wmIsleRightX() > x0) {
+    return wmIsleRightX() - x0;
+  }
+  return u64(0);
+}
+
+/// TAP parks at 240×160. Same test wmPlaceClient uses.
+@bare
+u64 wmSlotIsTap(u64 wI) {
+  if (wmSlotSkip(wI) > u64(0)) {
+    return u64(0);
+  }
+  final u64 g = wmWin(wI, u64(wmWinGeom));
+  if (wmGeomW(g) == u64(240)) {
+    if (wmGeomH(g) == u64(160)) {
+      return u64(1);
+    }
+  }
+  return u64(0);
+}
+
+@bare
+u64 wmSlotTapI() {
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmSlotIsTap(i) > u64(0)) {
+      return i;
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// 1 when n×min-pitch cannot fit the island gap (800-wide 16-client).
+@bare
+u64 wmSlotOverflow() {
+  final u64 n = wmSwitchCount();
+  if ((n * u64(36)) > wmSlotAvail()) {
+    return u64(1);
+  }
+  return u64(0);
+}
+
+@bare
+u64 wmSlotOff() {
+  if (wmPageAddr() < u64(1)) {
+    return u64(0);
+  }
+  return (wmPage(u64(wmPageWSwitch)) >> u64(32)) & u64(0xFF);
+}
+
+@bare
+void wmSlotSetOff(u64 off) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 cur = wmPage(u64(wmPageWSwitch));
+  wmPageSet(u64(wmPageWSwitch), (cur & u64(0xFFFFFFFF)) | ((off & u64(0xFF)) << u64(32)));
+}
+
+@bare
+u64 wmSlotScrollN() {
+  u64 n = wmSwitchCount();
+  if (wmSlotTapI() < u64(wmMaxWindows)) {
+    if (n > u64(0)) {
+      n = n - u64(1);
+    }
+  }
+  return n;
+}
+
+@bare
+u64 wmSlotVisN() {
+  final u64 n = wmSwitchCount();
+  if (n < u64(1)) {
+    return u64(1);
+  }
+  if (wmSlotOverflow() < u64(1)) {
+    return n;
+  }
+  u64 room = wmSlotAvail();
+  if (room > u64(32)) {
+    room = room - u64(32);
+  }
+  u64 vis = room ~/ u64(56);
+  if (vis < u64(1)) {
+    vis = u64(1);
+  }
+  if (vis > n) {
+    vis = n;
+  }
+  return vis;
+}
+
+@bare
+void wmSlotClampOff() {
+  u64 off = wmSlotOff();
+  u64 vis = wmSlotVisN();
+  u64 tap = wmSlotTapI();
+  u64 scrollN = wmSlotScrollN();
+  u64 visS = vis;
+  if (tap < u64(wmMaxWindows)) {
+    if (visS > u64(0)) {
+      visS = visS - u64(1);
+    }
+  }
+  if (visS < u64(1)) {
+    visS = u64(1);
+  }
+  if (off + visS > scrollN) {
+    if (scrollN > visS) {
+      off = scrollN - visS;
+    } else {
+      off = u64(0);
+    }
+    wmSlotSetOff(off);
+  }
+}
+
+@bare
+void wmSlotPageBy(u64 dir) {
+  wmSlotClampOff();
+  u64 off = wmSlotOff();
+  if (dir < u64(1)) {
+    if (off > u64(0)) {
+      off = off - u64(1);
+    }
+  } else {
+    off = off + u64(1);
+  }
+  wmSlotSetOff(off);
+  wmSlotClampOff();
+}
+
+/// Packed-card index among non-TAP ordinary windows.
+@bare
+u64 wmSlotScrollOrd(u64 wI) {
+  if (wmSlotSkip(wI) > u64(0)) {
+    return u64(wmMaxWindows);
+  }
+  if (wmSlotIsTap(wI) > u64(0)) {
+    return u64(wmMaxWindows);
+  }
+  u64 n = u64(0);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmSlotSkip(i) < u64(1)) {
+      if (wmSlotIsTap(i) < u64(1)) {
+        if (i == wI) {
+          return n;
+        }
+        n = n + u64(1);
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
 /// Taskbar-slot origin X for window [wI] — island gap, packed cards only.
 @bare
 u64 wmSlotX(u64 wI) {
-  return u64(wmIsleLeftX) + u64(wmIsleLeftW) + u64(wmIsleGapPad) +
-      (wmSlotOrd(wI) * wmSlotPitchLive());
+  final u64 x0 =
+      u64(wmIsleLeftX) + u64(wmIsleLeftW) + u64(wmIsleGapPad);
+  if (wmSlotOverflow() < u64(1)) {
+    return x0 + (wmSlotOrd(wI) * wmSlotPitchLive());
+  }
+  wmSlotClampOff();
+  final u64 pitch = u64(56);
+  if (wmSlotIsTap(wI) > u64(0)) {
+    u64 visS = wmSlotVisN();
+    if (visS > u64(0)) {
+      visS = visS - u64(1);
+    }
+    return x0 + u64(16) + (visS * pitch);
+  }
+  final u64 so = wmSlotScrollOrd(wI);
+  if (so >= u64(wmMaxWindows)) {
+    return x0;
+  }
+  final u64 off = wmSlotOff();
+  if (so < off) {
+    return u64(0xFFFF);
+  }
+  u64 visS = wmSlotVisN();
+  if (visS > u64(0)) {
+    visS = visS - u64(1);
+  }
+  if (so >= (off + visS)) {
+    return u64(0xFFFF);
+  }
+  return x0 + u64(16) + ((so - off) * pitch);
 }
 
 /// The held window whose taskbar slot contains ([x], [y]), or
@@ -3384,7 +3578,27 @@ u64 wmDeGrab(u64 x, u64 y) {
     wmDePopHide();
   }
   if (k == u64(wmPopSwitch)) {
-    if (wmSwitchHit(x, y) > u64(0)) {
+    final u64 sh = wmSwitchHit(x, y);
+    if (sh > u64(0)) {
+      u64 sel = u64(0);
+      if (wmPageAddr() > u64(0)) {
+        sel = wmPage(u64(wmPageWSwitch)) & u64(0xFF);
+      }
+      final u64 w = wmSwitchAt(sel);
+      if (sh == u64(2)) {
+        wmDePopHide();
+        if (w < u64(wmMaxWindows)) {
+          wmCloseWindow(w);
+        }
+        return u64(1);
+      }
+      if (sh == u64(3)) {
+        wmDePopHide();
+        if (w < u64(wmMaxWindows)) {
+          wmMinWindow(w);
+        }
+        return u64(1);
+      }
       wmSwitchCommit();
       return u64(1);
     }
@@ -3406,19 +3620,12 @@ u64 wmDeGrab(u64 x, u64 y) {
   }
   final u64 slot = wmSlotHit(x, y);
   if (slot < u64(wmMaxWindows)) {
-    if (wmWin(slot, u64(wmWinState)) == u64(wmWinMin)) {
-      wmRestWindow(slot);
-    } else {
-      wmSetMeta(u64(wmMetaTop), slot);
-      wmFocusTo(slot);
-      if (wmPageAddr() > u64(0)) {
-        wmLatStamp(u64(wmLatKindFocus));
-        wmDefEnqueue(u64(wmDefKindFocus), slot, wmWin(slot, u64(wmWinGeom)),
-            wmWin(slot, u64(wmWinGeom)));
-        wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
-      } else {
-        final u64 unused = wmRepaintWindow(slot);
-      }
+    wmTaskAct(slot, u64(0));
+    if (wmPageAddr() > u64(0)) {
+      wmLatStamp(u64(wmLatKindFocus));
+      wmDefEnqueue(u64(wmDefKindFocus), slot, wmWin(slot, u64(wmWinGeom)),
+          wmWin(slot, u64(wmWinGeom)));
+      wmSetMeta(u64(wmMetaRectPixels), u64(wmRectComposePending));
     }
     return u64(1);
   }
