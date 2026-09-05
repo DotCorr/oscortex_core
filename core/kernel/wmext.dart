@@ -148,12 +148,6 @@ final List<u8> wmStrActAck = const [
   u8(0x41), u8(0x43), u8(0x4B), u8(0x20),
 ];
 
-/// `' K '` -- 3 bytes.
-@rodata
-final List<u8> wmStrK = const [
-  u8(0x20), u8(0x4B), u8(0x20),
-];
-
 const int wmActKindKey = 1;
 const int wmActKindPress = 2;
 
