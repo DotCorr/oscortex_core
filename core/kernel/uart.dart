@@ -344,8 +344,28 @@ u64 uartTokPage() {
   Pointer<u64>.fromAddress(p + u64(24)).value = u64(0);
   Pointer<u64>.fromAddress(p + u64(32)).value = u64(0);
   Pointer<u64>.fromAddress(p + u64(40)).value = u64(0);
+  Pointer<u64>.fromAddress(p + u64(48)).value = u64(0);
   wmPageSet(u64(wmPageWUartLine), p);
   return p;
+}
+
+/// 1 while a process-context line is open (bytes since last NL).
+@bare
+u64 uartLineOpen() {
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    return u64(0);
+  }
+  return Pointer<u64>.fromAddress(p + u64(48)).value;
+}
+
+@bare
+void uartLineSet(u64 v) {
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    return;
+  }
+  Pointer<u64>.fromAddress(p + u64(48)).value = v;
 }
 
 @bare
@@ -372,6 +392,12 @@ void uartIrqLeave() {
   final u64 n = wmPage(u64(wmPageWUartIrq));
   if (n > u64(0)) {
     wmPageSet(u64(wmPageWUartIrq), n - u64(1));
+  }
+  if (wmPage(u64(wmPageWUartIrq)) < u64(1)) {
+    if (uartLineOpen() < u64(1)) {
+      uartIrqDrainBytes();
+      uartTokKick();
+    }
   }
 }
 
@@ -561,7 +587,9 @@ void uartTokEnqueue(
   }
   uartTokPushRec(p, kind, slot, x, y, w, h, gen);
   if (uartIrqNest() < u64(1)) {
-    uartTokKick();
-    uartIrqDrainBytes();
+    if (uartLineOpen() < u64(1)) {
+      uartTokKick();
+      uartIrqDrainBytes();
+    }
   }
 }

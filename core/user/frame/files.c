@@ -1731,7 +1731,13 @@ static void files_type_sel(char letter) {
   u64 hit;
   u64 dirhit;
   unsigned at;
-  if (letter == 0 || files_names == 0) {
+  if (letter == 0) {
+    return;
+  }
+  if (files_names == 0) {
+    at = put(0, msg_key);
+    line[at++] = letter;
+    emit(at);
     return;
   }
   i = 0;
@@ -1759,10 +1765,10 @@ static void files_type_sel(char letter) {
   if (dirhit < files_names) {
     hit = dirhit;
   }
+  at = put(0, msg_key);
+  line[at++] = letter;
+  emit(at);
   if (hit < files_names) {
-    at = put(0, msg_key);
-    line[at++] = letter;
-    emit(at);
     files_set_sel(hit);
     files_repaint_body();
   }

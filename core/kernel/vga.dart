@@ -360,6 +360,11 @@ void conPutc(u8 c) {
     return;
   }
   uartPutc(c);
+  if (c == u8(0x0A)) {
+    uartLineSet(u64(0));
+  } else {
+    uartLineSet(u64(1));
+  }
   // Then EXACTLY ONE of the two screens -- see the note above on why it cannot
   // be both.
   if (fbState(u64(fbStateBase)) < u64(1)) {
