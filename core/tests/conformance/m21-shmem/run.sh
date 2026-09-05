@@ -257,11 +257,11 @@ ck; [[ $(( 16#$KBDQ_OFF + KBDQ_SIZE )) -eq $(( 16#$EV_OFF )) ]] \
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \
   || fail "wmeventStore ends at $(( 16#$EV_OFF + EV_SIZE )) and kmain.o's .bss is $DART_BSS — D7's block is not last"
 ASM_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kdata.o" | awk '$2==".bss"{print $3; exit}')
-# 50784 = kmain.o .bss 0xc600 + kdata.o .bss 0x60. Versus 49504 this is
+# 51936 = kmain.o .bss 0xca80 + kdata.o .bss 0x60. Versus 49504 this is
 # +1280: shmStore 8576->9600 (4->20 region records) and wmStore
 # 1216->1472 (16->20 window records). ELF objects agree.
-ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 50784 ]] \
-  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 50784 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48), plus shmStore 8576->9600 and wmStore 1216->1472 for 20 window/region slots. If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
+ck; [[ $(( DART_BSS + 16#$ASM_BSS_HEX )) -eq 51936 ]] \
+  || fail "the kernel's mutable static storage is $(( DART_BSS + 16#$ASM_BSS_HEX )) bytes, expected 51936 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48), plus shmStore 8576->9600 and wmStore 1216->1472 for 20 window/region slots, plus wmeventStore 768->1920 (one ring per slot). If that changed, it changed deliberately and GAP-0053's running total and every harness that subtracts a later block move with it."
 
 # 2e. THE STORAGE SEAM. ADR-0011 §0: the symbol is named in its accessors and
 # nowhere else in the kernel.
