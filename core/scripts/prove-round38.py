@@ -415,6 +415,25 @@ def interact_slot15(q, ser, info):
         or "USER WRITE BROWSE" in delta_k)
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines()
                            if ln.strip()][:6]
+    if not ev["key"]:
+        # Alt-F10 is consumed for the focused window and prints WM KEY / WM MAX.
+        try:
+            m36.qcode_edge(q, "alt", True)
+            m36.qcode_edge(q, "f10", True)
+            m36.qcode_edge(q, "f10", False)
+            m36.qcode_edge(q, "alt", False)
+            time.sleep(0.10)
+        except Exception:
+            pass
+        after_alt = harvest(ser)
+        delta_alt = after_alt[len(after_key):]
+        ev["key"] = (
+            "WM KEY " in delta_alt
+            or "WM MAX W F" in delta_alt
+            or "TAP HIT" in delta_alt)
+        ev["tokens"]["key_alt"] = [ln for ln in delta_alt.splitlines()
+                                   if ln.strip()][:6]
+        after_key = after_alt
     # SE handle is the last 8 px of content plus border (wmResizeEdge).
     se_x = x + ww - 4
     se_y = y + hh - 4
