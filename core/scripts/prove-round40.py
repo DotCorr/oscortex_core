@@ -164,7 +164,9 @@ def expose(q, ser, cap, w):
     info, g = raise_slot(q, ser, cap, w)
     if not g:
         return info, None
-    dest_x, dest_y = (960, 56) if cap == 6 else (36, 40)
+    dest = {1: (36, 40), 2: (500, 40), 3: (36, 300),
+            4: (500, 300), 5: (220, 160), 6: (960, 56)}.get(cap, (36, 40))
+    dest_x, dest_y = dest
     if abs(g["x"] - dest_x) > 24 or abs(g["y"] - dest_y) > 24:
         tx, ty = title_xy(g, cap)
         p38.drag(q, ser, tx, ty, dest_x + 10, dest_y + 8, steps=8)
