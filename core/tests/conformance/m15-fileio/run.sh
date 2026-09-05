@@ -344,7 +344,7 @@ KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
 ck; [[ "$KDATA_BSS" -eq 33824 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 23456 — 11552 through M14 (11488, plus M18's 64-byte scheduler header, ADR-0022) plus file_store's 3584. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 FILE_STORE_SIZE=$(bsssize fileStore)
-ck; [[ "$FILE_STORE_SIZE" == "5760" ]] || fail "kdata.o's file_store is ${FILE_STORE_SIZE:-missing} bytes, expected 2560"
+ck; [[ "$FILE_STORE_SIZE" == "6016" ]] || fail "kdata.o's file_store is ${FILE_STORE_SIZE:-missing} bytes, expected 2560"
 ck; [[ $(( KDATA_BSS - FILE_STORE_SIZE )) -eq 28064 ]] || fail "the .bss outside file_store is $(( KDATA_BSS - FILE_STORE_SIZE )), not M14's 11488 plus M18's 64 plus 4224 — M15 moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
 
 META_OFF=$(dartconst fileMetaOffset file.dart)

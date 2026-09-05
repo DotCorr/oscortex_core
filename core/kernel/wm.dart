@@ -995,6 +995,12 @@ void wmBlitRow(u64 wI, u64 py) {
   final u64 off = wmWinOffsetOf(wI);
   final u64 rowOff = off + ((py * scale) * stride);
   final u64 panel = wmIsPanel(wI);
+  /* Overlay cards carry their own rounded glass + glyphs. Do not
+   * skip the title band or inset corners the way titled clients do. */
+  u64 glass = panel;
+  if (wmIsOverlay(wI) > u64(0)) {
+    glass = u64(1);
+  }
   u64 x0 = u64(0);
   u64 x1 = w;
   if (stride >= u64(4)) {
@@ -1024,7 +1030,7 @@ void wmBlitRow(u64 wI, u64 py) {
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
     /* Desk strip (taskbar FRAME) is shorter than a titled window —
      * blit every row. Titled clients still skip the caption band. */
-    if (panel < u64(1)) {
+    if (glass < u64(1)) {
       if (h > u64(wmChromeH)) {
         if (py < u64(wmTitleH)) {
           x1 = u64(0);
@@ -1033,29 +1039,31 @@ void wmBlitRow(u64 wI, u64 py) {
     }
     /* Corner inset must not reopen a title-band skip (x1==0). That
      * stamped client fill over Graphite pearl/glyphs for py < radius. */
-    if (x1 > x0) {
-      if (py < u64(wmGfxRadius)) {
-        x0 = u64(wmGfxRadius);
-        if (w > u64(wmGfxRadius)) {
-          x1 = w - u64(wmGfxRadius);
+    if (glass < u64(1)) {
+      if (x1 > x0) {
+        if (py < u64(wmGfxRadius)) {
+          x0 = u64(wmGfxRadius);
+          if (w > u64(wmGfxRadius)) {
+            x1 = w - u64(wmGfxRadius);
+          }
         }
-      }
-      if (py >= (h - u64(wmGfxRadius))) {
-        x0 = wmGfxRowInset(py, w, h);
-        if (w > x0) {
-          x1 = w - x0;
+        if (py >= (h - u64(wmGfxRadius))) {
+          x0 = wmGfxRowInset(py, w, h);
+          if (w > x0) {
+            x1 = w - x0;
+          }
+          /* Coverage owns the bottom corner squares. Visit the full row
+           * so partial-cover pixels are blended instead of a binary stair. */
+          x0 = u64(0);
+          x1 = w;
         }
-        /* Coverage owns the bottom corner squares. Visit the full row
-         * so partial-cover pixels are blended instead of a binary stair. */
-        x0 = u64(0);
-        x1 = w;
       }
     }
   }
   u64 px = x0;
   u64 coverRow = u64(0);
   if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
-    if (panel < u64(1)) {
+    if (glass < u64(1)) {
       if (py >= (h - u64(wmGfxRadius))) {
         coverRow = u64(1);
       }
@@ -1064,7 +1072,7 @@ void wmBlitRow(u64 wI, u64 py) {
   while (px < x1) {
     final u64 boff = rowOff + ((px * scale) << u64(2));
     final u64 src = wmRegionPixel(vec, boff);
-    if (panel > u64(0)) {
+    if (glass > u64(0)) {
       /* Resolve against the stable wallpaper layer, not the previous scanout
        * value. Repeated panel commits must be idempotent rather than building
        * alpha on top of last frame's glass. */
@@ -2226,7 +2234,7 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   wmBumpMeta(u64(wmMetaAttaches));
   final u64 va = shmRegionVa(r);
   uartWrite(Rodata.addressOf(wmStrAttach), u64(12));
-  uartPutHex(slot, u64(1));
+  uartPutHex(slot, u64(2));
   uartWrite(Rodata.addressOf(wmStrP), u64(3));
   uartPutHex(id, u64(2));
   uartWrite(Rodata.addressOf(wmStrC), u64(3));
@@ -2345,7 +2353,7 @@ void wmCommit(u64 frame, u64 ptr, u64 id) {
     wmDefDrain();
   }
   uartWrite(Rodata.addressOf(wmStrCommit), u64(12));
-  uartPutHex(slot, u64(1));
+  uartPutHex(slot, u64(2));
   uartWrite(Rodata.addressOf(wmStrSeq), u64(5));
   uartPutHex(seq, u64(8));
   uartWrite(Rodata.addressOf(wmStrDmg), u64(7));
@@ -2509,7 +2517,7 @@ void wmReportWindow(u64 i) {
   }
   final u64 g = wmWin(i, u64(wmWinGeom));
   uartWrite(Rodata.addressOf(wmStrAttach), u64(12));
-  uartPutHex(i, u64(1));
+  uartPutHex(i, u64(2));
   uartWrite(Rodata.addressOf(wmStrR), u64(3));
   uartPutHex(wmWin(i, u64(wmWinReg)), u64(1));
   uartWrite(Rodata.addressOf(wmStrGen), u64(5));

@@ -324,13 +324,13 @@ KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 M15_OFF_HEX=$(bssoff fileStore)
 ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-ck; [[ "$M15_BSS" -eq 5760 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 5760 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7)"
+ck; [[ "$M15_BSS" -eq 6016 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 6016 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7)"
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
 ck; [[ "$KDATA_BSS" -eq 28064 ]] || fail "the kernel's mutable static storage outside M15's fileStore is $KDATA_BSS bytes, expected 19872 — 9728 through M13 (9664, plus M18's 64-byte scheduler header, ADR-0022) plus fat_store's 1824. If that changed, it changed deliberately and this number and docs/known-gaps.md GAP-0053's running total both move with it. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
 FAT_STORE_SIZE=$(bsssize fatStore)
 ck; [[ "$FAT_STORE_SIZE" == "1824" ]] || fail "kdata.o's fat_store is ${FAT_STORE_SIZE:-missing} bytes, expected 1824"
-ck; [[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 26240 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), not M13's 9664 plus M18's 64 plus 4224 — M14 moved storage it does not own. Since these numbers were pinned the blocks BELOW this milestone grew by 4224 bytes in total, every one of them authorised: pmmStore +4096 (ADR-0155 doubled pmmMaxFrames to 65536), vmStore +112 (ADR-0189 took vmFineBytes to 32MiB, vmMapBytes to 256MiB and vmFrameCount to 20) and fbStateBlock +16 (ADR-0064's scanout geometry words) — see GAP-0053's ledger."
+ck; [[ $(( KDATA_BSS - FAT_STORE_SIZE )) -eq 27264 ]] || fail "the .bss outside fat_store is $(( KDATA_BSS - FAT_STORE_SIZE )), expected 27264 (26240 at 16 slots plus 1024 for the 17th process slot and matching FXSAVE). M14 must not move storage it does not own."
 
 META_OFF=$(dartconst fatMetaOffset fat.dart)
 CHAIN_OFF=$(dartconst fatChainOffset fat.dart)

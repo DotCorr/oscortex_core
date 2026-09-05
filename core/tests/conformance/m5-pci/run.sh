@@ -412,7 +412,7 @@ KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 M15_OFF_HEX=$(bssoff fileStore)
 ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-ck; [[ "$M15_BSS" -eq 5760 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 5760 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M15_BSS" -eq 6016 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 6016 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added a SIXTH block after M11's: `fat_store` (1824 bytes -- 32
 # metadata words, a 256-entry cluster chain, one sector buffer and an 8.3 name
@@ -425,7 +425,7 @@ ck; [[ -n "$M14_OFF_HEX" ]] || fail "fat_store has no .bss offset in kdata.o —
 M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824. If M14's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 M11_BSS=$(( KDATA_BSS - 16#$M11_ELF_OFF_HEX - M10_STORE - M14_BSS ))
-ck; [[ "$M11_BSS" -eq 16520 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 8328 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M11_BSS" -eq 17544 ]] || fail "the donated bytes past the end of M10's elf_store are $M11_BSS, expected 8328 (M11's proc_store, grown to 4224 by M18's scheduler header (ADR-0022), plus the 8 bytes of padding its .align 16 needs). If M11's block changed size, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 NON_PMM_BSS=$(( KDATA_BSS + ASM_BSS - PMM_STORE_SIZE - VM_STORE_SIZE - M9_BSS - M10_STORE - M11_BSS - M14_BSS ))
 ck; if [[ "$NON_PMM_BSS" -ne 440 ]]; then
   fail "the kernel holds $(( KDATA_BSS + ASM_BSS )) bytes of mutable static storage, of which $PMM_STORE_SIZE are M7's pmmStore and $VM_STORE_SIZE are M8's vmStore, leaving $NON_PMM_BSS — expected 440 (392 through M4, plus 48 for the framebuffer console's state — 32 at M5, plus the two geometry words ADR-0064's fallback chain added so a live VirtIO/GOP aperture can outrank the Bochs 800x600 default; PCI enumeration adds NONE). That number is the measured cost of DCDart having no mutable statics (known-gaps GAP-0053) — if you meant to change it, change it in kdata.S's header and in GAP-0053 too."

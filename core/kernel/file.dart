@@ -307,15 +307,15 @@ const int fileSysMkdirNo = 38;
 /// leaked, and `m15-fileio`'s program opens five files to prove it.
 const int fileMaxFds = 4;
 
-/// Descriptor rows. SEVENTEEN: process slots 0..15 plus the `run <name>`
+/// Descriptor rows. EIGHTEEN: process slots 0..16 plus the `run <name>`
 /// row. Must stay `procMax + 1` or a dock app in slot 5+ gets
 /// [fileRetNoOwner] on every open (STUDIO APPS.TXT).
-const int fileRows = 17;
+const int fileRows = 18;
 
 /// The row a `run <name>` program uses. Equal to `procMax` by construction —
 /// the row indices below it are exactly the process slots — and asserted equal
 /// to it by the harness rather than left as a coincidence.
-const int fileRunRow = 16;
+const int fileRunRow = 17;
 
 /// The largest single `read`. One sector, deliberately: the bounce buffer is
 /// one sector, and a bound that equals the buffer means the loop below cannot
@@ -340,15 +340,15 @@ const int fileWriteMax = 512;
 ///
 /// M16 took this from 1280 to 2560. Round 27 added four descriptor
 /// rows so `fileRows` tracked `procMax + 1` = 9. Round 35 grows the
-/// table to 17 rows and the meta block to 48 words so each process
-/// keeps its own cwd.
-const int fileStoreBytes = 5760;
+/// table to 18 rows (procMax+1) and the meta block to 48 words so each
+/// process keeps its own cwd.
+const int fileStoreBytes = 6016;
 const int fileMetaOffset = 0;
 const int fileTableOffset = 384;
-const int fileBufOffset = 4736;
-const int fileSecOffset = 5248;
+const int fileBufOffset = 4992;
+const int fileSecOffset = 5504;
 
-/// Forty-eight metadata words (cwd for 17 rows lives at 18..34).
+/// Forty-eight metadata words (cwd for 18 rows lives at 18..35).
 const int fileMetaWords = 48;
 
 /// Eight words per descriptor, four descriptors per row.

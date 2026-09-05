@@ -341,7 +341,7 @@ KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 M15_OFF_HEX=$(bssoff fileStore)
 ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-ck; [[ "$M15_BSS" -eq 5760 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 5760 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M15_BSS" -eq 6016 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 6016 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added `fat_store`, 1824 bytes, AFTER M13. Subtracted here so
 # that M13's own claim -- "a C library is entirely userland" -- still means in
@@ -352,7 +352,7 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-ck; [[ "$KDATA_BSS" -eq 26240 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 18048 — M11/M12's 9664 plus M18's 64-byte scheduler header (ADR-0022), and not one byte of M13's. A C LIBRARY IS USERLAND. If the kernel needed new mutable state to host one, that is a different milestone and it needs its own ADR. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
+ck; [[ "$KDATA_BSS" -eq 27264 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 27264 (26240 at 16 slots plus 1024 for the 17th process slot and matching FXSAVE). A C LIBRARY IS USERLAND."
 # NO KERNEL *CODE* REACHES THE LIBRARY. Comments are stripped first, and that
 # is not a loophole: the five places the kernel names oslibc.h today are doc
 # comments on syscalls that say "No `oslibc.h` name" -- prose ASSERTING this

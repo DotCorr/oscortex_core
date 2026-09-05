@@ -321,7 +321,7 @@ KDATA_BSS=$(( KDATA_BSS - M19_BSS ))
 M15_OFF_HEX=$(bssoff fileStore)
 ck; [[ -n "$M15_OFF_HEX" ]] || fail "file_store has no .bss offset in kdata.o -- M15's file-descriptor block is missing"
 M15_BSS=$(( KDATA_BSS - 16#$M15_OFF_HEX ))
-ck; [[ "$M15_BSS" -eq 5760 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 5760 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
+ck; [[ "$M15_BSS" -eq 6016 ]] || fail "the donated bytes from M15's file_store to the end of .bss are $M15_BSS, expected 6016 — 1280 at M15, 2560 at M16, +1024 for 8 proc rows, doubled by M16's write path (ADR-0020 §7). If that block changed size again, change it in kdata.S's header, in GAP-0053, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - M15_BSS ))
 # M14 (ADR-0018) added `fat_store`, 1824 bytes, AFTER M12. Subtracted here so
 # that M12's own claim -- "a heap needed no new mutable state" -- still means in
@@ -332,7 +332,7 @@ M14_BSS=$(( KDATA_BSS - 16#$M14_OFF_HEX ))
 ck; [[ "$M14_BSS" -eq 1824 ]] || fail "the donated bytes from M14's fat_store to the end of .bss are $M14_BSS, expected 1824"
 KDATA_BSS=$(( KDATA_BSS - M14_BSS ))
 KDATA_BSS=$(( KDATA_BSS + ASM_BSS ))   # M17 (ADR-0021): the DCDart half plus the 96 assembly-owned bytes
-ck; [[ "$KDATA_BSS" -eq 26240 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 18048 — M11's 9664 plus the 64 bytes M18 added to procStore's header (ADR-0022), and nothing of M12's. M12's per-process heap state lives in process-table slot words 16..19, which M11 already donated. If you meant to grow it, say so in kdata.S's header and in GAP-0053. This number carries the 4224 bytes the blocks BELOW it gained and no milestone here declared: ADR-0155 doubled pmmMaxFrames to 65536 so pmmStore went 4672 -> 8768, ADR-0189's larger fine map took vmStore 128 -> 240, and ADR-0064's scanout fallback chain put two geometry words in fbStateBlock, 32 -> 48."
+ck; [[ "$KDATA_BSS" -eq 27264 ]] || fail "the kernel's mutable static storage outside M14's fatStore is $KDATA_BSS bytes, expected 27264 (26240 at 16 slots plus 1024 for the 17th process slot and matching FXSAVE). M12's per-process heap state lives in process-table slot words 16..19."
 echo "STRUCTURAL: pass  kdata.o donates 9664 bytes of .bss outside M14's fat_store — M12 added no mutable state of its own"
 
 # 2b. THE STORAGE SEAM IS STILL EXACTLY THREE CALL SITES, ALL IN proc.dart.

@@ -1675,18 +1675,91 @@ u64 wmPanelHit(u64 x, u64 y) {
   return u64(1);
 }
 
-/// Hides start or panel. With DESK's overlay the park MOVE restores
-/// the vacated rect; a second 280×244 [wmPopDamageRestore] here was
-/// the F4 present hitch (hide still running when the next open arrived).
+/// First reserved overlay slot that is live, or [wmMaxWindows].
+@bare
+u64 wmLaunchOverlaySlot() {
+  u64 i = u64(wmOverlaySlot0);
+  while (i < u64(wmMaxWindows)) {
+    if (wmWindowUsable(i) > u64(0)) {
+      if (wmIsOverlay(i) > u64(0)) {
+        return i;
+      }
+    }
+    i = i + u64(1);
+  }
+  return u64(wmMaxWindows);
+}
+
+/// Places overlay [slot] at launch AABB so compose is not parked.
+@bare
+void wmLaunchOverlayPlace(u64 slot, u64 x, u64 y, u64 w, u64 h) {
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  wmSetWin(slot, u64(wmWinGeom), wmPackGeom(x, y, w, h));
+}
+
+/// Restores the vacated launch AABB from chrome cache / [wmPixelAt]
+/// after the overlay is parked. Visible-generation restore, not a
+/// geom-only MOVE that leaves orange residue.
+@bare
+void wmLaunchHideRestore(u64 x, u64 y, u64 w, u64 h) {
+  if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+    wmGfxMail();
+    final u64 vacated = osgfx_chrome_vacate_geom(wmPackGeom(x, y, w, h));
+    if (vacated < u64(1)) {
+      final u64 unused = vacated;
+    }
+  }
+  final u64 unused2 = wmRepaintRect(x, y, w, h);
+}
+
+/// Blits DESK overlay SHM (pre-committed glyphs) at the launch AABB,
+/// or kernel-paints labels when no overlay is attached. Pixels are on
+/// scanout before [wmOverlayPresentKind] emits kind 7 DONE.
+@bare
+void wmLaunchPublish() {
+  final u64 x = wmLaunchX();
+  final u64 y = wmLaunchY();
+  final u64 w = u64(wmLaunchW);
+  final u64 h = wmLaunchBoxH();
+  final u64 slot = wmLaunchOverlaySlot();
+  if (slot < u64(wmMaxWindows)) {
+    wmLaunchOverlayPlace(slot, x, y, w, h);
+    final u64 unused = wmDrawWindow(slot, u64(0));
+    wmVisPublish(slot);
+  } else {
+    if (wmPanelStrip() < u64(1)) {
+      final u64 unused2 = wmLaunchDraw();
+    }
+  }
+  wmOverlayPresentKind(x, y, w, h, u64(wmOpKindLaunch));
+}
+
+/// Hides start or panel. Park the overlay then restore the vacated
+/// visible AABB so Esc cannot leave an orange block.
 @bare
 void wmDePopHide() {
   final u64 k = wmMeta(u64(wmMetaPop));
   if (k == u64(wmPopLaunch)) {
+    u64 x = wmLaunchX();
+    u64 y = wmLaunchY();
+    u64 w = u64(wmLaunchW);
+    u64 h = wmLaunchBoxH();
     wmSetMeta(u64(wmMetaPop), u64(0));
-    if (wmPanelStrip() < u64(1)) {
-      wmPopDamageRestore(
-          wmLaunchX(), wmLaunchY(), u64(wmLaunchW), wmLaunchBoxH());
+    final u64 slot = wmLaunchOverlaySlot();
+    if (slot < u64(wmMaxWindows)) {
+      final u64 vis = wmVisGeom(slot);
+      if (vis > u64(0)) {
+        x = wmGeomX(vis);
+        y = wmGeomY(vis);
+        w = wmGeomW(vis);
+        h = wmGeomH(vis);
+      }
+      wmLaunchOverlayPlace(slot, u64(8), u64(8), w, h);
+      wmVisPublish(slot);
     }
+    wmLaunchHideRestore(x, y, w, h);
   }
   if (k == u64(wmPopPanel)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
@@ -2329,16 +2402,9 @@ void wmDeStartShow() {
   uartWrite(Rodata.addressOf(wmStrLaunchShow), u64(15));
   uartPutHex(n, u64(2));
   uartNewline();
-  /* Warm catalog: skip the 280×244 software fill. DESK already has
-   * static rows in overlay SHM (idle pre-paint). Cold / no-DESK still
-   * paints so a harness without the panel strip has glyphs. */
-  if (wmLaunchModelReady() < u64(1)) {
-    if (wmPanelStrip() < u64(1)) {
-      final u64 unused = wmLaunchDraw();
-    }
-  }
-  wmOverlayPresentKind(wmLaunchX(), wmLaunchY(), u64(wmLaunchW),
-      wmLaunchBoxH(), u64(wmOpKindLaunch));
+  /* Atomic first publish: unpark overlay, blit committed glyph SHM
+   * (or kernel labels), then kind 7 DONE. */
+  wmLaunchPublish();
 }
 
 /// Opens the reflection panel and prints the live list.
@@ -2458,7 +2524,7 @@ u64 wmFocusExistingStem() {
   wmRestWindow(w);
   wmFocusTo(w);
   uartWrite(Rodata.addressOf(wmStrFocus), u64(9));
-  uartPutHex(w, u64(1));
+  uartPutHex(w, u64(2));
   uartNewline();
   return procSlotOfId(wmWin(w, u64(wmWinOwner)));
 }
@@ -2561,7 +2627,7 @@ void wmCloseWindow(u64 wI) {
   }
   wmMruDrop(wI);
   uartWrite(Rodata.addressOf(wmStrClose), u64(11));
-  uartPutHex(wI, u64(1));
+  uartPutHex(wI, u64(2));
   uartWrite(Rodata.addressOf(wmStrPid), u64(5));
   uartPutHex(owner, u64(8));
   uartNewline();

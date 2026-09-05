@@ -100,6 +100,9 @@ u64 wmChromeDraw() {
 /// [wmDrawWindow] count does not move.
 @bare
 u64 wmTitleDraw(u64 wI) {
+  if (wmIsOverlay(wI) > u64(0)) {
+    return u64(0);
+  }
   u64 px = u64(0);
   if (wmMeta(u64(wmMetaChrome)) > u64(0)) {
     if (wmMeta(u64(wmMetaGfx)) < u64(1)) {

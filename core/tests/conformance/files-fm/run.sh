@@ -171,11 +171,11 @@ ck; [[ "$HELP_SIZE" -eq 2511 ]] \
   || fail "shellStrHelp is ${HELP_SIZE:-missing} bytes, expected 2511 — no help line"
 ck; ! grep -qE 'FILES\.ELF|files\.c|:ROOT' "$CORE_DIR/kernel/shell.dart" \
   || fail "shell.dart grew a FILES name — no new help"
-ck; grep -q 'const int fileStoreBytes = 5760;' "$FILE_SRC" \
+ck; grep -q 'const int fileStoreBytes = 6016;' "$FILE_SRC" \
   || fail "fileStoreBytes is no longer 2560"
 FILE_STORE=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="fileStore"{print $3+0; exit}')
-ck; [[ "$FILE_STORE" -eq 5760 ]] || fail "fileStore is ${FILE_STORE:-missing} bytes, expected 2560"
+ck; [[ "$FILE_STORE" -eq 6016 ]] || fail "fileStore is ${FILE_STORE:-missing} bytes, expected 2560"
 EV_SIZE=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \
   | awk '$8=="wmeventStore"{print $3+0; exit}')
 EV_OFF=$(x86_64-elf-readelf -sW "$BUILD_DIR/kmain.o" \

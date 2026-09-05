@@ -589,7 +589,7 @@ void wmSwitchCommit() {
     return;
   }
   uartWrite(Rodata.addressOf(wmStrSwitchGo), u64(13));
-  uartPutHex(w, u64(1));
+  uartPutHex(w, u64(2));
   uartNewline();
   if (wmWin(w, u64(wmWinState)) == u64(wmWinMin)) {
     wmRestWindow(w);
