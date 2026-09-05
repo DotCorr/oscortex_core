@@ -911,16 +911,20 @@ u64 shmCallerId() {
 //
 // One packed word per capability, in the PROCESS SLOT:
 //
-//   bits  0..3   region index + 1   (0 means the slot is empty)
+//   bits  0..3   region index + 1, low nibble (0 means empty when high is 0)
 //   bits  4..7   permissions        (shmPermRo or shmPermRw)
 //   bit   8      mapped in this address space
 //   bit   9      whole map (1) or partial/offset (0) — ADR-0160
 //   bits 10..17  map offset in pages (partial only)
 //   bits 18..25  map count in pages (partial only)
+//   bits 26..31  region index + 1, high 6 bits
 //   bits 32..63  the region's generation at the time the capability was made
 //
-// A ring-3 HANDLE is `(capIndex << 32) | generation` and carries no region
-// index at all -- which is the point. See ADR-0041 §4.
+// Regions 0..14 keep the historical 4-bit encoding (high bits 0). Region
+// 15 used to pack to 0 and look empty — TAP last under 16 ordinary
+// clients hit wmRetBadCap on a live handle. High bits hold the rest of
+// shmMax (20). A ring-3 HANDLE is `(capIndex << 32) | generation` and
+// carries no region index at all -- which is the point. See ADR-0041 §4.
 // ---------------------------------------------------------------------------
 
 @bare
@@ -933,13 +937,20 @@ void shmSetCap(u64 s, u64 i, u64 v) {
   procSet(s, u64(procSlotShmCaps) + i, v);
 }
 
+/// Packed (region + 1), including the high bits in 26..31.
+/// Zero means the capability slot is empty.
+@bare
+u64 shmCapPacked(u64 c) {
+  return (c & u64(15)) | (((c >> u64(26)) & u64(63)) << u64(4));
+}
+
 /// The region a non-empty capability word names. **The caller must have tested
 /// the word for emptiness first**; on an empty word this underflows the `- 1`,
 /// which DCDart traps as a real `ud2`. Every call site below tests first, and
 /// `m21-shmem/run.sh` reads them and requires it.
 @bare
 u64 shmCapReg(u64 c) {
-  return (c & u64(15)) - u64(1);
+  return shmCapPacked(c) - u64(1);
 }
 
 @bare
@@ -975,7 +986,9 @@ u64 shmCapGen(u64 c) {
 @bare
 u64 shmCapPack(u64 reg, u64 perms, u64 mapped, u64 whole, u64 off, u64 count,
     u64 gen) {
-  u64 w = (reg + u64(1)) & u64(15);
+  final u64 packed = (reg + u64(1)) & u64(1023);
+  u64 w = packed & u64(15);
+  w = w | ((packed >> u64(4)) << u64(26));
   w = w | ((perms & u64(15)) << u64(4));
   w = w | ((mapped & u64(1)) << u64(8));
   w = w | ((whole & u64(1)) << u64(9));
@@ -1004,7 +1017,7 @@ u64 shmHandleGen(u64 h) {
 u64 shmCapFree(u64 s) {
   u64 i = u64(0);
   while (i < u64(shmCapsPerProc)) {
-    if ((shmCap(s, i) & u64(15)) < u64(1)) {
+    if (shmCapPacked(shmCap(s, i)) < u64(1)) {
       return i;
     }
     i = i + u64(1);
@@ -1018,7 +1031,7 @@ u64 shmCapHolds(u64 s, u64 r) {
   u64 i = u64(0);
   while (i < u64(shmCapsPerProc)) {
     final u64 c = shmCap(s, i);
-    if ((c & u64(15)) > u64(0)) {
+    if (shmCapPacked(c) > u64(0)) {
       if (shmCapReg(c) == r) {
         return u64(1);
       }
@@ -1034,7 +1047,7 @@ u64 shmProcMapsReg(u64 s, u64 r) {
   u64 i = u64(0);
   while (i < u64(shmCapsPerProc)) {
     final u64 c = shmCap(s, i);
-    if ((c & u64(15)) > u64(0)) {
+    if (shmCapPacked(c) > u64(0)) {
       if (shmCapReg(c) == r) {
         if (shmCapMapped(c) > u64(0)) {
           return u64(1);
@@ -1466,7 +1479,7 @@ void shmUnmapRangeAll(u64 r, u64 lo, u64 hi) {
       u64 ci = u64(0);
       while (ci < u64(shmCapsPerProc)) {
         final u64 c = shmCap(s, ci);
-        if ((c & u64(15)) > u64(0)) {
+        if (shmCapPacked(c) > u64(0)) {
           if (shmCapReg(c) == r) {
             if (shmCapMapped(c) > u64(0)) {
               final u64 clo = shmCapLo(c);
@@ -1521,7 +1534,7 @@ u64 shmMapRangeAll(u64 r, u64 lo, u64 hi) {
       u64 ci = u64(0);
       while (ci < u64(shmCapsPerProc)) {
         final u64 c = shmCap(s, ci);
-        if ((c & u64(15)) > u64(0)) {
+        if (shmCapPacked(c) > u64(0)) {
           if (shmCapReg(c) == r) {
             if (shmCapMapped(c) > u64(0)) {
               u64 write = u64(0);
@@ -1725,7 +1738,7 @@ void shmSysGrant(u64 frame) {
     return;
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     shmRefuse(frame, u64(shmSysGrantNo), h, u64(shmRetBadCap));
     return;
   }
@@ -1853,7 +1866,7 @@ void shmSysMap(u64 frame) {
     return;
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     shmRefuse(frame, u64(shmSysMapNo), h, u64(shmRetBadCap));
     return;
   }
@@ -1987,7 +2000,7 @@ void shmSysDrop(u64 frame) {
     return;
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     shmRefuse(frame, u64(shmSysDropNo), h, u64(shmRetBadCap));
     return;
   }
@@ -2049,7 +2062,7 @@ void shmSysGrow(u64 frame) {
     return;
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     shmRefuse(frame, u64(shmSysGrowNo), h, u64(shmRetBadCap));
     return;
   }
@@ -2200,7 +2213,7 @@ void shmSysShrink(u64 frame) {
     return;
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     shmRefuse(frame, u64(shmSysShrinkNo), h, u64(shmRetBadCap));
     return;
   }
@@ -2307,7 +2320,7 @@ void shmSysMprotect(u64 frame) {
     return;
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     shmRefuse(frame, u64(shmSysMprotectNo), h, u64(shmRetBadCap));
     return;
   }
@@ -2647,7 +2660,7 @@ void shmReleaseOwner(u64 s) {
   u64 i = u64(0);
   while (i < u64(shmCapsPerProc)) {
     final u64 c = shmCap(s, i);
-    if ((c & u64(15)) > u64(0)) {
+    if (shmCapPacked(c) > u64(0)) {
       final u64 r = shmCapReg(c);
       if (r < u64(shmMax)) {
         if (shmReg(r, u64(shmRegState)) == u64(shmRegLive)) {

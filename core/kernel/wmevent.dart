@@ -25,9 +25,9 @@
 part of 'kmain.dart';
 
 // ---------------------------------------------------------------------------
-// Layout. One ring per window slot. Four windows is [wmMaxWindows], which
-// is derived from [shmMax] -- a fifth ring would be storage nothing can
-// attach a surface to.
+// Layout. One ring per window slot. Twenty rings is [wmMaxWindows]:
+// DESK + sixteen ordinary clients + three reserved overlays. A twenty-first
+// ring would be storage nothing can attach a surface to.
 // ---------------------------------------------------------------------------
 
 /// Usable slots per window. A named constant so a host model and the
@@ -43,9 +43,9 @@ const int wmeventWordEvents = 4;
 const int wmeventMetaWords = 4;
 const int wmeventSlotWords = 12; // 4 + 8
 const int wmeventSlotBytes = 96;
-const int wmeventSlots = 8; // == wmMaxWindows; d7-click asserts the equality
-const int wmeventStoreWords = 96;
-const int wmeventStoreBytes = 768;
+const int wmeventSlots = 20; // == wmMaxWindows; d7-click / de-shm assert
+const int wmeventStoreWords = 240;
+const int wmeventStoreBytes = 1920;
 
 /// Packed-event field: bits 0-7. 1 is a left press. 2 is configure
 /// (ADR-0142). 3 is enter, 4 is leave. 0 is empty, and is never stored
@@ -77,7 +77,7 @@ const int wmeventOpPop = 0;
 const int wmeventOpDropped = 1;
 const int wmeventOpCount = 2;
 
-/// LAST in `kmain.o`'s `.bss`. Four per-window rings.
+/// LAST in `kmain.o`'s `.bss`. One ring per [wmMaxWindows] slot.
 @bss
 final Bss wmeventStore = const Bss(bytes: wmeventStoreBytes);
 

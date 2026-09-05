@@ -134,7 +134,7 @@ LAST_BSS=$(x86_64-elf-objdump -t "$CORE_DIR/build/kmain.o" \
   | awk '$4==".bss" && $6!=".bss" {print $1,$6}' | sort | tail -1 | awk '{print $2}')
 ck; [[ "$LAST_BSS" == "wmeventStore" ]] \
   || fail "last .bss is $LAST_BSS, not wmeventStore"
-ck; [[ "$STORE" -eq 768 ]] || fail "wmeventStoreBytes is $STORE, expected 768"
+ck; [[ "$STORE" -eq 1920 ]] || fail "wmeventStoreBytes is $STORE, expected 1920"
 ck; ! grep -qE 'const int \w+SysNo' "$CORE_DIR/kernel/wmde.dart" \
   || fail "wmde.dart allocated a syscall number"
 capture_sh HELP_OUT HELP_STATUS -- "python3 - '$CORE_DIR/kernel/shell.dart' <<'PY'

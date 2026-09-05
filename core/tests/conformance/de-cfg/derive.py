@@ -112,8 +112,8 @@ def main():
         raise SystemExit("derive: win.c types disagree with the kernel")
     if c_sys != sysno or sysno != 25:
         raise SystemExit("derive: SYS_WMEVENT is not 25")
-    if store != 768:
-        raise SystemExit("derive: wmeventStoreBytes is %d, expected 768" % store)
+    if store != 1920:
+        raise SystemExit("derive: wmeventStoreBytes is %d, expected 1920" % store)
     if edge < 4:
         raise SystemExit("derive: wmResizeEdge is %d, too small to grab" % edge)
 

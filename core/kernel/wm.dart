@@ -1274,6 +1274,23 @@ void wmPublishFrameQ(u64 px, u64 quiet, u64 x, u64 y, u64 w, u64 h) {
   } else {
     virtgpuPresent(x, y, w, h);
   }
+  /* GOP / Bochs BAR: virtgpuPresent is a no-op. The memcpy into the
+   * guest FB is already done; emit SCAN with the upcoming FRAME
+   * generation so the host waits on a completed write, not GTK lag. */
+  final u64 scanBase = fbState(u64(fbStateBase));
+  if (scanBase >= u64(virtgpuRamCeil)) {
+    u64 sx = x;
+    u64 sy = y;
+    u64 sw = w;
+    u64 sh = h;
+    if (sw < u64(1)) {
+      sx = u64(0);
+      sy = u64(0);
+      sw = fbGeomWidth();
+      sh = fbGeomHeight();
+    }
+    virtgpuReportScan(sx, sy, sw, sh, wmMeta(u64(wmMetaFrames)) + u64(1));
+  }
   final u64 cx = mouseState(u64(mouseWordX));
   final u64 cy = mouseState(u64(mouseWordY));
   wmSetMeta(u64(wmMetaCurX), cx);
@@ -1855,7 +1872,7 @@ u64 wmResolve(u64 h) {
     return u64(shmMax);
   }
   final u64 c = shmCap(s, ci);
-  if ((c & u64(15)) < u64(1)) {
+  if (shmCapPacked(c) < u64(1)) {
     return u64(shmMax);
   }
   if (shmCapGen(c) != shmHandleGen(h)) {
@@ -2036,9 +2053,11 @@ u64 wmPlaceExtent(u64 x, u64 y, u64 w, u64 h) {
   return (nw << u64(32)) | nh;
 }
 
-/// Tile to the previous client's right when the remainder is usable;
-/// otherwise stack below. The first client keeps the requested origin.
-/// Overlay cards and the panel strip are ignored.
+/// Workspace grid for ordinary clients. The first client keeps the
+/// requested origin (SET default 180,48). Later clients take a 4-column
+/// cascade that wraps above the panel and left of the right dock, so
+/// sixteen ordinary windows stay distinct instead of stacking on one
+/// AABB that covers the dock.
 @bare
 u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if (wmDeOn() < u64(1)) {
@@ -2047,53 +2066,28 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if ((y + h) >= (fbGeomHeight() - u64(wmChromeH))) {
     return (x << u64(32)) | y;
   }
-  final u64 prev = wmPlacePrev();
-  if (prev >= u64(wmMaxWindows)) {
+  final u64 n = wmSwitchCount();
+  if (n < u64(1)) {
     return (x << u64(32)) | y;
   }
   final u64 b = u64(wmBorder);
-  final u64 gap = u64(16);
-  final u64 minW = u64(240);
-  final u64 minH = u64(160);
-  final u64 g = wmWin(prev, u64(wmWinGeom));
-  final u64 px = wmGeomX(g);
-  final u64 py = wmGeomY(g);
-  final u64 pw = wmGeomW(g);
-  final u64 ph = wmGeomH(g);
-  u64 nx = px + pw + gap;
-  u64 ny = py;
-  u64 remainW = u64(0);
-  if (fbGeomWidth() > (b + nx)) {
-    remainW = fbGeomWidth() - b - nx;
-  }
-  if (remainW >= minW) {
-    if ((ny + h + u64(wmChromeH) + b) > fbGeomHeight()) {
-      if (fbGeomHeight() > (u64(wmChromeH) + b + h)) {
-        ny = fbGeomHeight() - u64(wmChromeH) - b - h;
-      } else {
-        ny = b;
-      }
-    }
-  } else {
-    nx = px;
-    ny = py + ph + gap;
-    u64 remainH = u64(0);
-    if (fbGeomHeight() > (u64(wmChromeH) + b + ny)) {
-      remainH = fbGeomHeight() - u64(wmChromeH) - b - ny;
-    }
-    if (remainH < minH) {
-      nx = px + u64(40);
-      ny = py + u64(40);
-    }
-  }
+  final u64 cols = u64(4);
+  final u64 pitchX = u64(236);
+  final u64 pitchY = u64(148);
+  final u64 ox = u64(24);
+  final u64 oy = u64(24);
+  final u64 row = n ~/ cols;
+  final u64 col = n - (row * cols);
+  u64 nx = ox + (col * pitchX);
+  u64 ny = oy + (row * pitchY);
   if (nx < b) {
     nx = b;
   }
   if (ny < b) {
     ny = b;
   }
-  u64 maxX = fbGeomWidth() - b - minW;
-  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - minH;
+  u64 maxX = fbGeomWidth() - b - u64(240);
+  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - u64(160);
   if (maxX < b) {
     maxX = b;
   }

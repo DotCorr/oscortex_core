@@ -1321,11 +1321,54 @@ u64 wmSlotOrd(u64 wI) {
   return u64(wmMaxWindows);
 }
 
+/// Right-island origin, lockstep with desk.c RIGHT_X (sw-16-RIGHT_W).
+@bare
+u64 wmIsleRightX() {
+  final u64 sw = fbGeomWidth();
+  final u64 rightW = u64(264);
+  if (sw > (u64(16) + rightW)) {
+    return sw - u64(16) - rightW;
+  }
+  return sw;
+}
+
+/// Pitch that keeps 16 ordinary pills inside the island gap.
+@bare
+u64 wmSlotPitchLive() {
+  final u64 n = wmSwitchCount();
+  final u64 x0 =
+      u64(wmIsleLeftX) + u64(wmIsleLeftW) + u64(wmIsleGapPad);
+  u64 avail = u64(0);
+  if (wmIsleRightX() > x0) {
+    avail = wmIsleRightX() - x0;
+  }
+  if (n < u64(1)) {
+    return u64(wmSlotPitch);
+  }
+  if ((n * u64(wmSlotPitch)) <= avail) {
+    return u64(wmSlotPitch);
+  }
+  u64 p = avail ~/ n;
+  if (p < u64(36)) {
+    p = u64(36);
+  }
+  return p;
+}
+
+@bare
+u64 wmSlotWLive() {
+  final u64 p = wmSlotPitchLive();
+  if (p > u64(8)) {
+    return p - u64(8);
+  }
+  return p;
+}
+
 /// Taskbar-slot origin X for window [wI] — island gap, packed cards only.
 @bare
 u64 wmSlotX(u64 wI) {
   return u64(wmIsleLeftX) + u64(wmIsleLeftW) + u64(wmIsleGapPad) +
-      (wmSlotOrd(wI) * u64(wmSlotPitch));
+      (wmSlotOrd(wI) * wmSlotPitchLive());
 }
 
 /// The held window whose taskbar slot contains ([x], [y]), or
@@ -1347,7 +1390,7 @@ u64 wmSlotHit(u64 x, u64 y) {
     if (wmSlotSkip(i) < u64(1)) {
       final u64 sx = wmSlotX(i);
       if (x >= sx) {
-        if (x < (sx + u64(wmSlotW))) {
+        if (x < (sx + wmSlotWLive())) {
           return i;
         }
       }
@@ -1531,7 +1574,7 @@ u64 wmDeChromeDraw() {
   while (i < u64(wmMaxWindows)) {
     if (wmSlotSkip(i) < u64(1)) {
       final u64 sx = wmSlotX(i);
-      wmOsxuiButton(sx, y, u64(wmSlotW), u64(wmChromeH), u64(wmStartR),
+      wmOsxuiButton(sx, y, wmSlotWLive(), u64(wmChromeH), u64(wmStartR),
           wmSlotColor(i));
       if (fbState(u64(fbStateBase)) > u64(0)) {
         u64 stem = Rodata.addressOf(wmStrSlot0);
@@ -1552,7 +1595,7 @@ u64 wmDeChromeDraw() {
   }
   return u64(wmStartW) * u64(wmChromeH) +
       u64(wmNoteW) * u64(wmChromeH) +
-      (n * u64(wmSlotW) * u64(wmChromeH));
+      (n * wmSlotWLive() * u64(wmChromeH));
 }
 
 /// Strip-widget colour at ([x], [y]), or [wmNoPixel].
