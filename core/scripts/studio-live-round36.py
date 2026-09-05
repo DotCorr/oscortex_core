@@ -201,24 +201,20 @@ def main():
 
     fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or (
         48, 40, 400, 280)
+    # Title-bar focus only. A body click lands on SET.ELF and Enter
+    # then opens the binary, not NOTE.TXT.
     click(q, ser, fg[0] + 80, fg[1] + 16)
     time.sleep(0.12)
-    click(q, ser, fg[0] + 80, fg[1] + 80)
-    time.sleep(0.1)
-    # Return to root if a prior mkdir left FILES in a folder.
     q.key("left")
     q.key("left")
-    time.sleep(0.15)
+    time.sleep(0.12)
     fg = cs.live_files_xywh(os.path.join(RUN, "serial.txt"), "") or fg
     click(q, ser, fg[0] + 80, fg[1] + 16)
-    time.sleep(0.08)
-    click(q, ser, fg[0] + 80, fg[1] + 80)
-    time.sleep(0.08)
+    time.sleep(0.1)
     row = note_row(harvest(ser))
     marked_ow = harvest(ser)
-    for _ in range(row):
-        q.key("down")
-        time.sleep(0.025)
+    q.key("n")
+    wait_tok(ser, "FILES KEY N", marked_ow, 1.5)
     q.key("ret")
     handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 3.0)
     studio_ow = wait_tok(ser, "STUDIO OPENWITH", marked_ow, 3.0)
@@ -236,17 +232,25 @@ def main():
     f9 = refuse_win.count("FILE REFUSED FFFFFFFFFFFFFFF9")
     ow_named = "OPENWITH" in refuse_win and "FILE REFUSED" in refuse_win
 
-    # Extra FILES windows until spawn/process bound. Honest slot count.
+    # Extra FILES until no new ordinary ATTACH, then fill with
+    # SET/BROWSE/PLAY (single-instance) to approach procMax=16.
     extra = 0
-    for _ in range(16):
-        marked_f = harvest(ser)
+    for _ in range(14):
+        before = ordinary_slots(harvest(ser))
         click(q, ser, dock_xy(1)[0], dock_xy(1)[1])
-        if wait_tok(ser, "FILES READY", marked_f, 1.8) or wait_tok(
-                ser, "FILES CSD", marked_f, 1.2):
+        time.sleep(0.35)
+        after = ordinary_slots(harvest(ser))
+        if len(after) > len(before):
             extra = extra + 1
         else:
             break
-        time.sleep(0.08)
+    for i in (0, 2, 3):
+        before = ordinary_slots(harvest(ser))
+        click(q, ser, dock_xy(i)[0], dock_xy(i)[1])
+        time.sleep(0.4)
+        after = ordinary_slots(harvest(ser))
+        if len(after) <= len(before):
+            wait_tok(ser, "WM FOCUS ", harvest(ser), 0.8)
     blob = harvest(ser)
     ord_slots = ordinary_slots(blob)
     ov = overlay_slots(blob)
