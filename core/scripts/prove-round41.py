@@ -37,6 +37,35 @@ CAP_NAME = p39.CAP_NAME
 STEMS = p39.STEMS
 STEM_DOCK = p39.STEM_DOCK
 
+_serial_state = {"text": "", "size": -1, "mtime": -1}
+
+
+def serial_text():
+    """Incremental file read. A 30 MB flood must not re-slurp every poll."""
+    path = os.path.join(RUN, "serial.txt")
+    try:
+        st = os.stat(path)
+        if (st.st_size == _serial_state["size"]
+                and st.st_mtime_ns == _serial_state["mtime"]):
+            return _serial_state["text"]
+        if st.st_size > _serial_state["size"] > 0:
+            with open(path, encoding="latin-1", errors="replace") as fh:
+                fh.seek(_serial_state["size"])
+                _serial_state["text"] += fh.read()
+            _serial_state["size"] = st.st_size
+            _serial_state["mtime"] = st.st_mtime_ns
+            return _serial_state["text"]
+        data = open(path, encoding="latin-1", errors="replace").read()
+        _serial_state["text"] = data
+        _serial_state["size"] = st.st_size
+        _serial_state["mtime"] = st.st_mtime_ns
+        return data
+    except OSError:
+        return ""
+
+
+p39.serial_text = serial_text
+
 TASK_A_RE = re.compile(r"WM TASK A ([0-9A-F]{2}) R ([0-9A-F]{2})")
 ACT_I_RE = re.compile(r"WM ACT I ([0-9A-F]{4}) C ([0-9A-F]) W ([0-9A-F]{2})")
 ACT_ACK_RE = re.compile(r"WM ACT ACK ([0-9A-F]{4}) C ([0-9A-F])")
@@ -55,12 +84,8 @@ def harvest(ser):
     return p39.harvest(ser)
 
 
-def serial_text():
-    return p39.serial_text()
-
-
 def serial_since(mark):
-    return p39.serial_since(mark)
+    return serial_text()[mark:]
 
 
 def live_from(blob):
@@ -201,12 +226,13 @@ def expose(q, ser, cap, w):
 
 
 def raise_slot(q, ser, cap, w):
-    """Pill first: focus+raise + generation before any title/body input."""
-    if cap in STEM_DOCK and cap != 1:
+    """Pill first: focus+raise + generation before any title/body input.
+
+    FILES also falls back to the dock icon when the pill is overflowed.
+    """
+    if cap in STEM_DOCK:
         uncover_all_dock(q, ser)
         time.sleep(0.03)
-        p39.dock_click(q, ser, STEM_DOCK[cap])
-        time.sleep(0.08)
     info = live_from(harvest(ser))
     g = info["windows"].get(w)
     if not g or not g.get("live"):
@@ -215,6 +241,13 @@ def raise_slot(q, ser, cap, w):
     mark = len(drain(ser))
     if pill:
         click(q, ser, pill[0], pill[1])
+        wait_token(ser, lambda d: focus_hit(d, w), 1.8, mark)
+        time.sleep(0.08)
+        info = live_from(harvest(ser))
+        g = info["windows"].get(w) or g
+    if not focus_hit(serial_since(mark), w) and cap in STEM_DOCK:
+        mark = len(drain(ser))
+        p39.dock_click(q, ser, STEM_DOCK[cap])
         wait_token(ser, lambda d: focus_hit(d, w), 1.8, mark)
         time.sleep(0.08)
         info = live_from(harvest(ser))
@@ -315,32 +348,39 @@ def matrix_one(q, ser, cap):
     mark = len(drain(ser))
     bx, by = body_xy(g, cap)
     click(q, ser, bx, by)
-    time.sleep(0.08)
+    time.sleep(0.10)
     try:
         m36.qcode_edge(q, "t", True)
+        time.sleep(0.02)
         m36.qcode_edge(q, "t", False)
         time.sleep(0.05)
         m36.qcode_edge(q, "down", True)
+        time.sleep(0.02)
         m36.qcode_edge(q, "down", False)
         time.sleep(0.05)
         m36.qcode_edge(q, "e", True)
+        time.sleep(0.02)
         m36.qcode_edge(q, "e", False)
     except Exception:
         try:
             q.key("t")
+            q.key("e")
         except Exception:
             pass
     want = KEY_TOKS.get(cap, ())
     delta = wait_token(
         ser,
-        lambda d: any(s in d for s in want) or act_ack(d, cap),
-        2.6, mark)
-    ev["key"] = any(s in delta for s in want) or act_ack(delta, cap)
+        lambda d: any(s in d for s in want),
+        2.8, mark)
+    app_tok = any(s in delta for s in want)
+    ack = act_ack(delta, cap)
+    ev["key"] = app_tok
+    ev["act_ack"] = ack
     ev["tokens"]["key"] = [ln for ln in delta.splitlines()
                            if any(s in ln for s in want)
                            or "ACT I" in ln or "ACT ACK" in ln][:8]
     if ev["key"] and not ev["tokens"]["key"]:
-        ev["tokens"]["key"] = ["WM ACT ACK C %X" % cap]
+        ev["tokens"]["key"] = [want[0]]
 
     info, g = raise_slot(q, ser, cap, w)
     if not g:
@@ -584,17 +624,22 @@ def main():
         tap_pill = " TAP " in harvest(ser) and "DESK TASK" in harvest(ser)
 
     p39.dismiss(q)
+    time.sleep(0.12)
     mark = len(drain(ser))
     p39.fire_overview(q)
-    ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.4, mark)
+    time.sleep(0.12)
+    ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 3.2, mark)
     overview_show = "WM SWITCH SHOW" in ov
     if not overview_show:
         p39.alt_tab(q, 1)
-        ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.0, mark)
+        time.sleep(0.10)
+        ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.8, mark)
         overview_show = "WM SWITCH SHOW" in ov
     if not overview_show:
+        mark = len(drain(ser))
         p39.fire_overview(q)
-        ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.4, mark)
+        time.sleep(0.12)
+        ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 3.2, mark)
         overview_show = "WM SWITCH SHOW" in ov
     overview_click = False
     overview_key = False
@@ -620,17 +665,19 @@ def main():
         overview_click = (SWITCH_GO_RE.search(cd) is not None
                           or "WM FOCUS G" in cd)
         p39.fire_overview(q)
-        wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 1.6)
-        # close chip on selected card (right edge)
+        time.sleep(0.10)
+        wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.0)
+        # close chip: rely < 16 and relx >= card_w-16 (wmSwitchHit)
         mark = len(drain(ser))
-        click(q, ser, hx + 48, hy - 16)
-        cld = wait_token(ser, lambda d: "WM CLOSE" in d or "SWITCH" in d, 1.2, mark)
+        click(q, ser, hx + 56, hy - 24)
+        cld = wait_token(ser, lambda d: "WM CLOSE" in d, 1.6, mark)
         overview_close = "WM CLOSE" in cld
         p39.fire_overview(q)
-        wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 1.2)
+        time.sleep(0.10)
+        wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.0)
         mark = len(drain(ser))
-        click(q, ser, hx + 28, hy - 16)
-        md = wait_token(ser, lambda d: "WM MIN" in d or "SWITCH" in d, 1.2, mark)
+        click(q, ser, hx + 40, hy - 24)
+        md = wait_token(ser, lambda d: "WM MIN" in d, 1.6, mark)
         overview_min = "WM MIN" in md
         try:
             q.key("esc")
@@ -689,6 +736,8 @@ def main():
             and overview_show
             and overview_click
             and overview_key
+            and overview_close
+            and overview_hide
             and life["ok"]
             and interact_cpath3 == 0),
         "focus_generation": (

@@ -908,6 +908,8 @@ void wmExposeReachable(u64 slot) {
 }
 
 /// Issue `WM ACT I` for a key (1) or body press (2) on the focused stem.
+/// One UART pair per focus-generation + kind + slot. Autorepeat and
+/// SET's tight pop loop must not flood the 16550.
 @bare
 void wmActIssue(u64 kind, u64 slot) {
   if (wmPageAddr() < u64(1)) {
@@ -919,9 +921,18 @@ void wmActIssue(u64 kind, u64 slot) {
   if (wmIsOrdinary(slot) < u64(1)) {
     return;
   }
-  final u64 id = (wmPage(u64(wmPageWActId)) + u64(1)) & u64(0xFFFF);
-  final u64 cap = wmSlotCaption(slot);
   final u64 gen = wmPage(u64(wmPageWFocusGen));
+  final u64 stamp = (kind & u64(0xFF)) | ((slot & u64(0xFF)) << u64(8)) |
+      ((gen & u64(0xFFFF)) << u64(16));
+  if (wmPage(u64(wmPageWActLast)) == stamp) {
+    return;
+  }
+  wmPageSet(u64(wmPageWActLast), stamp);
+  u64 id = (wmPage(u64(wmPageWActId)) + u64(1)) & u64(0xFFFF);
+  if (id < u64(1)) {
+    id = u64(1);
+  }
+  final u64 cap = wmSlotCaption(slot);
   wmPageSet(u64(wmPageWActId), id);
   wmPageSet(u64(wmPageWActMeta),
       (kind & u64(0xFF)) | ((cap & u64(0xFF)) << u64(8)) |
@@ -950,12 +961,16 @@ void wmActAck() {
     return;
   }
   final u64 meta = wmPage(u64(wmPageWActMeta));
+  if (((meta >> u64(24)) & u64(0xFF)) > u64(0)) {
+    return;
+  }
   final u64 cap = (meta >> u64(8)) & u64(0xFF);
   uartWrite(Rodata.addressOf(wmStrActAck), u64(11));
   uartPutHex(id, u64(4));
   uartWrite(Rodata.addressOf(wmStrC), u64(3));
   uartPutHex(cap, u64(1));
   uartNewline();
+  wmPageSet(u64(wmPageWActMeta), meta | (u64(1) << u64(24)));
 }
 
 /// Focus generation wins over pointer overlap when the click is inside

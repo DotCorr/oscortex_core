@@ -371,6 +371,9 @@ const int wmPageWUartLine = 507;
 const int wmPageWActId = 508;
 /// Last ACTION: kind:8 | cap:8 | slot:8 | ack:8 in the low 32 bits.
 const int wmPageWActMeta = 509;
+/// Last emitted ACTION stamp: kind:8 | slot:8 | focus-gen:16.
+/// Same generation+kind+slot does not mint another UART pair.
+const int wmPageWActLast = 510;
 /// IRQ nest for UART line assembly. IRQ never writes the 16550.
 const int wmPageWUartIrq = 511;
 const int wmOpKindPtr = 1;
