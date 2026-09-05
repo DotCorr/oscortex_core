@@ -43,8 +43,28 @@ CAP_NAME = {
 }
 
 
+VIS_RE = re.compile(
+    r"WM (?:VIS|REQ) W ([0-9A-F]+) X ([0-9A-F]{4}) Y ([0-9A-F]{4}) "
+    r"W ([0-9A-F]{4}) H ([0-9A-F]{4})")
+# Compositor keys and right-press client menus (ADR-0194).
+CTX_RE = re.compile(r"WM CTX [A-Z]+")
+FOCUS_SLOT_RE = re.compile(r"WM FOCUS G [0-9A-F]+ W ([0-9A-F]+)")
+NON_TAP_DOCK = (1, 0, 2, 3, 4)  # FILES SET BROWSE PLAY STUDIO
+NON_TAP_ROWS = (0, 1, 2, 3, 4, 5, 7)  # skip launcher row 6 = TAP
+
+
 def harvest(ser):
     return bar38.harvest_text(ser)
+
+
+def apply_vis(blob, wins):
+    for m in VIS_RE.finditer(blob):
+        w = int(m.group(1), 16)
+        if w in wins:
+            wins[w]["x"] = int(m.group(2), 16)
+            wins[w]["y"] = int(m.group(3), 16)
+            wins[w]["ww"] = int(m.group(4), 16)
+            wins[w]["hh"] = int(m.group(5), 16)
 
 
 def click(q, ser, x, y):
@@ -52,6 +72,13 @@ def click(q, ser, x, y):
     d15.button(q, int(x), int(y), "left", True)
     time.sleep(0.03)
     d15.button(q, int(x), int(y), "left", False)
+
+
+def right_click(q, ser, x, y):
+    d15.place(q, ser, int(x), int(y))
+    d15.button(q, int(x), int(y), "right", True)
+    time.sleep(0.04)
+    d15.button(q, int(x), int(y), "right", False)
 
 
 def drag(q, ser, x0, y0, x1, y1, steps=8):
@@ -119,6 +146,9 @@ def live_from(blob):
         g = wins[w]
         geoms.append((g["x"], g["y"], g["ww"], g["hh"]))
     unique_geoms = len(set(geoms))
+    apply_vis(blob, wins)
+    tap_slots = [w for w in ordinary
+                 if w in wins and wins[w].get("cap") == 6]
     return {
         "windows": wins,
         "live_wins": sorted(live_wins),
@@ -129,11 +159,17 @@ def live_from(blob):
         "unique_geoms": unique_geoms,
         "captions": sorted({wins[w]["caption"] for w in ordinary}),
         "peak_ordinary": peak,
+        "tap_slots": tap_slots,
     }
 
 
 def ordinary_n(blob):
     return len(live_from(blob)["ordinary_slots"])
+
+
+def ordinary_no_tap(blob):
+    info = live_from(blob)
+    return len([w for w in info["ordinary_slots"] if w not in info["tap_slots"]])
 
 
 def fire_f4(q):
@@ -154,6 +190,29 @@ def wait_ordinary(ser, before, timeout=2.0):
             return True
         time.sleep(0.04)
     return False
+
+
+def close_slot(q, ser, w):
+    info = live_from(harvest(ser))
+    if w not in info["windows"] or not info["windows"][w]["live"]:
+        return False
+    g = info["windows"][w]
+    before = harvest(ser)
+    click(q, ser, g["x"] + g["ww"] - 17, g["y"] + 17)
+    t1 = time.time()
+    while time.time() - t1 < 1.2:
+        delta = harvest(ser)[len(before):]
+        if ("WM CLOSE W %02X" % w) in delta or ("WM CLOSE W %X" % w) in delta:
+            return True
+        time.sleep(0.04)
+    return ("WM CLOSE W %02X" % w) in harvest(ser)[len(before):]
+
+
+def close_early_tap(q, ser, log):
+    info = live_from(harvest(ser))
+    for w in list(info.get("tap_slots") or []):
+        if close_slot(q, ser, w):
+            log.append(("close-early-tap", w, ordinary_n(harvest(ser))))
 
 
 def launch_row(q, ser, row):
@@ -190,6 +249,22 @@ def shot(q, ser, name):
     return bar38.shot_barrier(q, d15.shot, dest, ser)
 
 
+def slot15_geom(info):
+    g = info["windows"][15]
+    return g["x"], g["y"], g["ww"], g["hh"]
+
+
+def raise_slot15(q, ser, info):
+    """Drag title to a clear origin so SE/close/body are on top."""
+    x, y, ww, hh = slot15_geom(info)
+    dest_x, dest_y = 48, 40
+    if abs(x - dest_x) > 8 or abs(y - dest_y) > 8:
+        drag(q, ser, x + 36, y + 10, dest_x + 36, dest_y + 10, steps=10)
+        time.sleep(0.12)
+    info = live_from(harvest(ser))
+    return info
+
+
 def interact_slot15(q, ser, info):
     ev = {
         "focus": False,
@@ -198,43 +273,77 @@ def interact_slot15(q, ser, info):
         "menu": False,
         "close": False,
         "slot": 15,
+        "tokens": {},
     }
     if 15 not in info["windows"] or not info["windows"][15]["live"]:
         return ev
-    g = info["windows"][15]
-    x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
+    info = raise_slot15(q, ser, info)
+    if 15 not in info["windows"] or not info["windows"][15]["live"]:
+        return ev
+    x, y, ww, hh = slot15_geom(info)
     before = harvest(ser)
     click(q, ser, x + 40, y + 12)
-    time.sleep(0.08)
+    time.sleep(0.10)
     mid = harvest(ser)
-    ev["focus"] = ("WM FOCUS" in mid[len(before):]) or (
-        re.search(r"WM FOCUS W 0?F\b", mid) is not None)
+    delta_f = mid[len(before):]
+    ev["focus"] = (
+        re.search(r"WM FOCUS G [0-9A-F]+ W F\b", delta_f) is not None
+        or re.search(r"WM FOCUS G [0-9A-F]+ W 0?F\b", mid) is not None
+        or "WM FOCUS G" in delta_f)
+    ev["tokens"]["focus"] = [ln for ln in delta_f.splitlines()
+                             if "FOCUS" in ln][:4]
     try:
+        q.key("down")
+        time.sleep(0.08)
         q.key("a")
+        time.sleep(0.06)
+    except Exception:
+        pass
+    after_key = harvest(ser)
+    delta_k = after_key[len(mid):]
+    ev["key"] = (
+        "WM KEY " in delta_k
+        or "USER WRITE FILES" in delta_k
+        or "FILES SEL" in delta_k
+        or "FILES ROW" in delta_k
+        or "TAP " in delta_k
+        or "STUDIO" in delta_k)
+    ev["tokens"]["key"] = [ln for ln in delta_k.splitlines()
+                           if ln.strip()][:6]
+    # SE handle is the last 8 px of content plus border (wmResizeEdge).
+    se_x = x + ww - 4
+    se_y = y + hh - 4
+    drag(q, ser, se_x, se_y, se_x + 28, se_y + 20, steps=8)
+    time.sleep(0.12)
+    after_rs = harvest(ser)
+    delta_r = after_rs[len(after_key):]
+    ev["resize"] = (
+        re.search(r"WM REQ W F\b", delta_r) is not None
+        or re.search(r"WM VIS W F\b", delta_r) is not None
+        or "WM HOLD W F" in delta_r
+        or "WM PEND W F" in delta_r)
+    ev["tokens"]["resize"] = [ln for ln in delta_r.splitlines()
+                              if ln.startswith("WM ")][:8]
+    info = live_from(after_rs)
+    if 15 in info["windows"] and info["windows"][15]["live"]:
+        x, y, ww, hh = slot15_geom(info)
+    right_click(q, ser, x + max(24, ww // 2), y + max(40, hh // 2))
+    time.sleep(0.12)
+    after_menu = harvest(ser)
+    delta_m = after_menu[len(after_rs):]
+    ev["menu"] = (
+        CTX_RE.search(delta_m) is not None
+        or "WM WALL MENU" in delta_m
+        or "WM CTX " in delta_m
+        or re.search(r"WM DONE [0-9A-F]+ K 04 ", delta_m) is not None)
+    ev["tokens"]["menu"] = [ln for ln in delta_m.splitlines()
+                            if "CTX" in ln or "MENU" in ln or "DONE" in ln][:6]
+    try:
+        q.key("esc")
         time.sleep(0.05)
     except Exception:
         pass
-    ev["key"] = True
-    se_x = x + ww - 6
-    se_y = y + hh - 6
-    drag(q, ser, se_x, se_y, se_x + 24, se_y + 16, steps=6)
-    time.sleep(0.08)
-    after_rs = harvest(ser)
-    ev["resize"] = ("WM REQ" in after_rs[len(mid):]
-                    or "WM VIS" in after_rs[len(mid):]
-                    or "WMEVENT" in after_rs[len(mid):])
-    d15.button(q, x + ww // 2, y + hh // 2, "right", True)
-    time.sleep(0.04)
-    d15.button(q, x + ww // 2, y + hh // 2, "right", False)
-    time.sleep(0.08)
-    after_menu = harvest(ser)
-    ev["menu"] = ("WM POP" in after_menu[len(after_rs):]
-                  or "WM MENU" in after_menu[len(after_rs):]
-                  or "DESK MENU" in after_menu[len(after_rs):])
-    try:
-        q.key("esc")
-    except Exception:
-        pass
+    ev["geom"] = {"x": x, "y": y, "w": ww, "h": hh}
     return ev
 
 
@@ -244,58 +353,56 @@ def main():
                      int(open(os.path.join(RUN, "serial.port")).read()))
     marked0 = harvest(ser)
     log = []
-    # Sit-in may already have one FILES. Grow to 15 ordinary without TAP,
+    # Sit-in may already have one FILES. Grow to 15 ordinary WITHOUT TAP,
     # then TAP last. Dock 0=SET 1=FILES 2=BROWSE 3=PLAY 4=STUDIO 5=TAP.
-    while ordinary_n(harvest(ser)) < 10:
-        before = ordinary_n(harvest(ser))
-        if not dock_click(q, ser, 1):
-            launch_row(q, ser, 0)
-        log.append(("files", ordinary_n(harvest(ser))))
-        if ordinary_n(harvest(ser)) == before:
-            break
-    for i, name in ((0, "set"), (2, "browse"), (3, "play"), (4, "studio")):
-        if ordinary_n(harvest(ser)) >= 15:
-            break
-        before = ordinary_n(harvest(ser))
-        dock_click(q, ser, i)
-        log.append((name, ordinary_n(harvest(ser))))
-        if ordinary_n(harvest(ser)) == before:
-            launch_row(q, ser, i + 1 if i else 1)
-            log.append(("launch-" + name, ordinary_n(harvest(ser))))
-    tap_row = None
-    for row in (6, 7, 1, 2, 3, 4, 8):
-        if ordinary_n(harvest(ser)) >= 15:
-            break
-        before_blob = harvest(ser)
-        launch_row(q, ser, row)
-        after_blob = harvest(ser)
-        if "TAP READY" in after_blob[len(before_blob):] or (
-                " C 6 " in after_blob[len(before_blob):]
-                and "WM ATTACH" in after_blob[len(before_blob):]):
-            tap_row = row
-            log.append(("row%d-tap-early" % row, ordinary_n(harvest(ser))))
+    # Launcher row 6 is TAP — never use it during fill.
+    def fill_one(tag):
+        before = ordinary_no_tap(harvest(ser))
+        if before >= 15:
+            return False
+        progressed = False
+        for dock_i in NON_TAP_DOCK:
+            if ordinary_no_tap(harvest(ser)) >= 15:
+                break
+            n0 = ordinary_no_tap(harvest(ser))
+            dock_click(q, ser, dock_i)
+            close_early_tap(q, ser, log)
+            n1 = ordinary_no_tap(harvest(ser))
+            log.append((tag + "-dock%d" % dock_i, n1))
+            if n1 > n0:
+                progressed = True
+                break
+        if ordinary_no_tap(harvest(ser)) < 15 and not progressed:
+            for row in NON_TAP_ROWS:
+                if ordinary_no_tap(harvest(ser)) >= 15:
+                    break
+                n0 = ordinary_no_tap(harvest(ser))
+                launch_row(q, ser, row)
+                close_early_tap(q, ser, log)
+                n1 = ordinary_no_tap(harvest(ser))
+                log.append((tag + "-row%d" % row, n1))
+                if n1 > n0:
+                    progressed = True
+                    break
+        return ordinary_no_tap(harvest(ser)) > before
+
+    stall = 0
+    while ordinary_no_tap(harvest(ser)) < 15:
+        if fill_one("pre"):
+            stall = 0
             continue
-        log.append(("row%d" % row, ordinary_n(harvest(ser))))
-    while ordinary_n(harvest(ser)) < 15:
-        before = ordinary_n(harvest(ser))
-        dock_click(q, ser, 1)
-        log.append(("files-fill", ordinary_n(harvest(ser))))
-        if ordinary_n(harvest(ser)) == before:
+        stall += 1
+        if stall >= 3:
             break
-    while ordinary_n(harvest(ser)) < 15:
-        before = ordinary_n(harvest(ser))
-        if not dock_click(q, ser, 1):
-            launch_row(q, ser, 0)
-        log.append(("files-pre-tap", ordinary_n(harvest(ser))))
-        if ordinary_n(harvest(ser)) == before:
-            break
+    close_early_tap(q, ser, log)
     pre_tap = live_from(harvest(ser))
-    tap_before_slots = list(pre_tap["ordinary_slots"])
+    tap_before_slots = [w for w in pre_tap["ordinary_slots"]
+                        if w not in pre_tap["tap_slots"]]
     tap_ok = False
-    if len(tap_before_slots) >= 15:
+    if len(tap_before_slots) >= 15 and not pre_tap["tap_slots"]:
         tap_ok = dock_click(q, ser, 5)
         if ordinary_n(harvest(ser)) < 16:
-            tap_ok = launch_row(q, ser, 5) or tap_ok
+            tap_ok = launch_row(q, ser, 6) or tap_ok
     time.sleep(0.15)
     live = harvest(ser)
     live_info = live_from(live)
@@ -317,16 +424,24 @@ def main():
     # Close slot 15 only after the peak and TAP-last shots.
     closed15 = False
     if 15 in ev_info["windows"] and ev_info["windows"][15]["live"]:
-        g = ev_info["windows"][15]
-        before_c = harvest(ser)
-        click(q, ser, g["x"] + g["ww"] - 17, g["y"] + 17)
-        time.sleep(0.12)
-        closed15 = "WM CLOSE W 0F" in harvest(ser)[len(before_c):] or (
-            "WM CLOSE W 15" in harvest(ser)[len(before_c):])
+        closed15 = close_slot(q, ser, 15)
         slot15["close"] = closed15
     overlay_ev = (
-        after_ev.count("WM VIS W 1") + after_ev.count("WM ATTACH W 11")
-        + after_ev.count("WM ATTACH W 12") + after_ev.count("WM ATTACH W 13"))
+        after_ev.count("WM ATTACH W 11")
+        + after_ev.count("WM ATTACH W 12")
+        + after_ev.count("WM ATTACH W 13")
+        + after_ev.count("WM VIS W 11")
+        + after_ev.count("WM VIS W 12")
+        + after_ev.count("WM VIS W 13"))
+    slot15_ok = all(slot15.get(k) for k in (
+        "focus", "key", "resize", "menu", "close"))
+    tap_last = (
+        tap_live and peak >= 16 and tap_ready and not tap_die
+        and len(tap_before_slots) >= 15
+        and not pre_tap["tap_slots"])
+    ring_corrupt = (
+        after_ev.count("FAULT ") + after_ev.count("OSGFX OOM")
+        + after_ev.count("REAP "))
     payload = {
         "round": 38,
         "procMax": 17,
@@ -354,11 +469,12 @@ def main():
         "peak_ordinary_procs": len(live_info["ordinary_procs"]),
         "simultaneous": peak,
         "closed_before_peak": False,
-        "tap_last": tap_live and peak >= 16 and tap_ready and not tap_die,
+        "tap_last": tap_last,
         "tap_ready": tap_ready,
         "tap_die": tap_die,
         "attach_refuse": refuse,
         "slot15": slot15,
+        "slot15_ok": slot15_ok,
         "overlay_slots_separate": all(
             w >= 17 for w in live_info["overlay_slots"]),
         "overlay_events": overlay_ev,
@@ -366,14 +482,17 @@ def main():
         "oom": live.count("OSGFX OOM"),
         "fault": after_ev.count("FAULT "),
         "reap": after_ev.count("REAP "),
+        "ring_corrupt": ring_corrupt,
         "pass": (
             peak >= 16
+            and len(live_info["ordinary_slots"]) >= 16
             and len(live_info["overlay_slots"]) >= 1
             and refuse == 0
-            and tap_ready
-            and not tap_die
+            and tap_last
+            and slot15_ok
             and live_info["unique_geoms"] >= 8
-            and after_ev.count("OSGFX OOM") == 0),
+            and after_ev.count("OSGFX OOM") == 0
+            and ring_corrupt == 0),
     }
     os.makedirs(ART, exist_ok=True)
     dest = os.path.join(ART, "oscortex-round38-capacity.json")
@@ -383,7 +502,8 @@ def main():
         "wmeventSlots": 20,
         "slot15": slot15,
         "overlay_slots": live_info["overlay_slots"],
-        "pass": bool(slot15.get("focus") or slot15.get("key")),
+        "ring_corrupt": ring_corrupt,
+        "pass": bool(slot15_ok and ring_corrupt == 0),
     }
     open(os.path.join(ART, "oscortex-round38-events.json"), "w").write(
         json.dumps(events, indent=2) + "\n")
@@ -395,17 +515,21 @@ def main():
         "tap_die": tap_die,
         "refuse": refuse,
         "pre_tap_ordinary_n": len(tap_before_slots),
-        "pass": payload["tap_last"] and refuse == 0,
+        "pre_tap_had_tap": bool(pre_tap["tap_slots"]),
+        "pass": bool(tap_last and refuse == 0),
     }
     open(os.path.join(ART, "oscortex-round38-tap.json"), "w").write(
         json.dumps(tap, indent=2) + "\n")
     print("wrote", dest)
     print(json.dumps({
         "ordinary": peak,
+        "pre_tap": len(tap_before_slots),
         "overlays": live_info["overlay_slots"],
         "tap_last": payload["tap_last"],
         "refuse": refuse,
-        "slot15": slot15,
+        "slot15": {k: slot15.get(k) for k in (
+            "focus", "key", "resize", "menu", "close", "slot")},
+        "slot15_ok": slot15_ok,
         "pass": payload["pass"],
         "captions": live_info["captions"],
         "unique_geoms": live_info["unique_geoms"],
