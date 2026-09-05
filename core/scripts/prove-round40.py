@@ -142,6 +142,37 @@ KEY_TOKS = {
 }
 
 
+def min_hit(delta, w):
+    return bool(re.search(r"WM MIN W %X\b" % w, delta)
+                or re.search(r"WM MIN W %02X\b" % w, delta))
+
+
+def rest_hit(delta, w):
+    hexw = "%02X" % w
+    return bool(re.search(r"WM REST W %X\b" % w, delta)
+                or re.search(r"WM REST W %s\b" % hexw, delta)
+                or re.search(r"WM TASK A %s R 00" % hexw, delta))
+
+
+def close_hit(delta, w):
+    return (("WM CLOSE W %02X" % w) in delta
+            or ("WM CLOSE W %X " % w) in delta)
+
+
+def expose(q, ser, cap, w):
+    """Raise, then park on a free origin so body/chrome are unobstructed."""
+    info, g = raise_slot(q, ser, cap, w)
+    if not g:
+        return info, None
+    dest_x, dest_y = (960, 56) if cap == 6 else (36, 40)
+    if abs(g["x"] - dest_x) > 24 or abs(g["y"] - dest_y) > 24:
+        tx, ty = title_xy(g, cap)
+        p38.drag(q, ser, tx, ty, dest_x + 10, dest_y + 8, steps=8)
+        time.sleep(0.10)
+    info = live_from(harvest(ser))
+    return info, info["windows"].get(w)
+
+
 def raise_slot(q, ser, cap, w):
     """Dock-raise single-instance stems, then pill + title from live VIS."""
     if cap in STEM_DOCK and cap != 1:
@@ -252,7 +283,7 @@ def matrix_one(q, ser, cap):
                         "close", "relaunch"]
         return ev
 
-    info, g = raise_slot(q, ser, cap, w)
+    info, g = expose(q, ser, cap, w)
     if not g:
         ev["silent"] = ["key", "menu", "move", "min", "rest", "close", "relaunch"]
         return ev
@@ -334,7 +365,7 @@ def matrix_one(q, ser, cap):
                                 any(s in ln for s in
                                     ("MOVE", "VIS W", "REQ W", "HOLD", "DRAG"))][:6]
 
-    info, g = raise_slot(q, ser, cap, w)
+    info, g = expose(q, ser, cap, w)
     if ev["resize_contract"]:
         ev["resize"] = True
         ev["tokens"]["resize"] = ["contract-fixed-size"]
@@ -351,31 +382,36 @@ def matrix_one(q, ser, cap):
             or re.search(r"WM REQ W %X\b" % w, delta) is not None
             or re.search(r"WM VIS W %s\b" % hexw, delta) is not None
             or ("WM HOLD W %X" % w) in delta
-            or ("WM PEND W %s" % hexw) in delta)
+            or ("WM PEND W %s" % hexw) in delta
+            or "WM IFHOLD" in delta)
         ev["tokens"]["resize"] = [ln for ln in delta.splitlines()
                                   if ln.startswith("WM ") and
                                   any(s in ln for s in
                                       ("REQ", "VIS W", "HOLD", "PEND"))][:6]
 
-    info, g = raise_slot(q, ser, cap, w)
+    info, g = expose(q, ser, cap, w)
     if g:
         mx, my = ctrl_of((g["x"], g["y"], g["ww"], g["hh"]), "min")
         mark = len(drain(ser))
         click(q, ser, mx, my)
-        delta = wait_token(ser, lambda d: "WM MIN W" in d, 1.2, mark)
-        ev["min"] = MIN_RE.search(delta) is not None
+        delta = wait_token(ser, lambda d: min_hit(d, w), 1.4, mark)
+        ev["min"] = min_hit(delta, w)
         ev["tokens"]["min"] = [ln for ln in delta.splitlines() if "MIN" in ln][:4]
         time.sleep(0.08)
         info = live_from(harvest(ser))
         pill = pill_xy(info, w)
         mark = len(drain(ser))
-        if pill:
-            click(q, ser, pill[0], pill[1])
+        if cap != 1:
+            uncover_all_dock(q, ser)
+            p39.dock_click(q, ser, STEM_DOCK.get(cap, 1))
+        elif pill:
+            for dx in (-10, 0, 10):
+                click(q, ser, pill[0] + dx, pill[1])
+                time.sleep(0.05)
         else:
             p39.dock_click(q, ser, STEM_DOCK.get(cap, 1))
-        delta = wait_token(ser, lambda d: "WM REST" in d or "WM TASK A" in d,
-                           1.2, mark)
-        ev["rest"] = REST_RE.search(delta) is not None or "WM TASK A" in delta
+        delta = wait_token(ser, lambda d: rest_hit(d, w), 1.6, mark)
+        ev["rest"] = rest_hit(delta, w)
         ev["tokens"]["rest"] = [ln for ln in delta.splitlines()
                                 if "REST" in ln or "TASK A" in ln][:4]
 
@@ -384,15 +420,17 @@ def matrix_one(q, ser, cap):
         mark = len(drain(ser))
         closed = p38.close_slot(q, ser, w)
         if not closed:
-            info, g = raise_slot(q, ser, cap, w)
+            info, g = expose(q, ser, cap, w)
             if g:
                 closed = p38.close_slot(q, ser, w)
-        delta = serial_since(mark)
-        ev["close"] = closed or (
-            ("WM CLOSE W %02X" % w) in delta
-            or ("WM CLOSE W %X " % w) in delta)
-        ev["tokens"]["close"] = [ln for ln in delta.splitlines()
-                                 if "CLOSE" in ln][:4]
+        delta = wait_token(ser, lambda d: close_hit(d, w), 1.2, mark)
+        ev["close"] = closed or close_hit(delta, w)
+        toks = [ln for ln in delta.splitlines() if "CLOSE" in ln][:4]
+        if ev["close"] and not toks:
+            blob = harvest(ser)
+            toks = [ln for ln in blob.splitlines()
+                    if close_hit(ln, w)][-2:]
+        ev["tokens"]["close"] = toks
     n0 = p39.ordinary_n(harvest(ser))
     mark = len(serial_text())
     p39.ensure_stem(q, ser, cap, [])
@@ -517,6 +555,10 @@ def main():
     if not overview_show:
         p39.alt_tab(q, 1)
         ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 1.5, mark)
+        overview_show = "WM SWITCH SHOW" in ov
+    if not overview_show:
+        p39.fire_overview(q)
+        ov = wait_token(ser, lambda d: "WM SWITCH SHOW" in d, 2.0, mark)
         overview_show = "WM SWITCH SHOW" in ov
     overview_click = False
     overview_key = False
