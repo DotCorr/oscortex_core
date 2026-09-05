@@ -562,16 +562,16 @@ ck; havere '^WM ON BASE [0-9A-F]{8} PITCH [0-9A-F]{8} BG [0-9A-F]{8}$'
 # Attach grew P (owner), C (caption), Q (requested width) so identity
 # probes can name a surface; R/GEN/X are unchanged. Matching the old
 # `W n R n GEN` adjacency was a vacuous 0 against live lines.
-ck; [[ "$(countof '^WM ATTACH W [01] P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R [01] GEN ')" -eq 2 ]] \
-  || fail "$(countof '^WM ATTACH W [01] P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R [01] GEN ') surfaces attached, expected 2"
-ck; havere "^WM ATTACH W 0 P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R 0 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define A_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
-ck; havere "^WM ATTACH W 1 P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R 1 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define B_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
+ck; [[ "$(countof '^WM ATTACH W 0[01] P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R [01] GEN ')" -eq 2 ]] \
+  || fail "$(countof '^WM ATTACH W 0[01] P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R [01] GEN ') surfaces attached, expected 2"
+ck; havere "^WM ATTACH W 00 P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R 0 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define A_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
+ck; havere "^WM ATTACH W 01 P [0-9A-F]{2} C [0-9A-F] Q [0-9A-F]{4} R 1 GEN [0-9A-F]{8} X $(printf '%04X' "$(grep -m1 '^#define B_X ' "$SCRIPT_DIR/prog.c" | awk '{print $3+0}')")"
 # THREE COMMITS: two full-surface presents, then D6's 16x16.
-ck; [[ "$(countof '^WM COMMIT W [01] SEQ ')" -eq 3 ]] \
-  || fail "$(countof '^WM COMMIT W [01] SEQ ') commits, expected 3"
-ck; havere "^WM COMMIT W 0 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WIN_W") H $(printf '%04X' "$WIN_H")\$"
-ck; havere "^WM COMMIT W 1 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WIN_W") H $(printf '%04X' "$WIN_H")\$"
-ck; havere "^WM COMMIT W 1 SEQ 00000002 DMG X $DMG_X Y $DMG_Y W $(printf '%04X' "$DMG_W") H $(printf '%04X' "$DMG_H")\$"
+ck; [[ "$(countof '^WM COMMIT W 0[01] SEQ ')" -eq 3 ]] \
+  || fail "$(countof '^WM COMMIT W 0[01] SEQ ') commits, expected 3"
+ck; havere "^WM COMMIT W 00 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WIN_W") H $(printf '%04X' "$WIN_H")\$"
+ck; havere "^WM COMMIT W 01 SEQ 00000001 DMG X 0000 Y 0000 W $(printf '%04X' "$WIN_W") H $(printf '%04X' "$WIN_H")\$"
+ck; havere "^WM COMMIT W 01 SEQ 00000002 DMG X $DMG_X Y $DMG_Y W $(printf '%04X' "$DMG_W") H $(printf '%04X' "$DMG_H")\$"
 # FOUR FRAMES, with the pixel counts derived on the host. Frame 1 is `wm on`
 # (the desktop). 2 and 3 are decorated windows. 4 is D6's 16x16.
 # Frame 1 is `wm on` (desktop). TOP is the composed z-top, not wmMaxWindows.
