@@ -1076,16 +1076,33 @@ static void paint_desk_menu(u64 kind) {
   }
 }
 
-static u64 launch_box_h(void) {
+static u64 launch_vis_n(void) {
+  char stem[8];
   u64 packed = osxui_app_launch_sel();
-  u64 n = (packed >> 8) & 0xFFUL;
-  if (n < 1UL) {
-    n = 1UL;
+  u64 qlen = (packed >> 16) & 0xFFUL;
+  u64 q = osxui_app_launch_q();
+  u64 vis = 0;
+  u64 i = 0;
+  while (i < ICON_MAX) {
+    u64 n = stem_into(stem, osxui_app_launch(i));
+    if (n > 0) {
+      if (launch_q_match(osxui_app_launch(i), q, qlen) > 0) {
+        vis = vis + 1UL;
+      }
+    }
+    i = i + 1UL;
   }
-  if (n > 8UL) {
-    n = 8UL;
+  if (vis < 1UL) {
+    vis = 1UL;
   }
-  return LAUNCH_SEARCH_H + n * LAUNCH_ROW_H + LAUNCH_PAD;
+  if (vis > 8UL) {
+    vis = 8UL;
+  }
+  return vis;
+}
+
+static u64 launch_box_h(void) {
+  return LAUNCH_SEARCH_H + launch_vis_n() * LAUNCH_ROW_H + LAUNCH_PAD;
 }
 
 static u64 switch_box_w(void) {
