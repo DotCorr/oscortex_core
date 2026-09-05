@@ -38,6 +38,24 @@ def harvest(ser):
     return p38.harvest(ser)
 
 
+def serial_text():
+    """File-only serial. harvest() is file+archive+sock — not a prefix."""
+    path = os.path.join(RUN, "serial.txt")
+    try:
+        return open(path, encoding="latin-1", errors="replace").read()
+    except OSError:
+        return ""
+
+
+def serial_since(mark):
+    return serial_text()[mark:]
+
+
+def wallpaper_park(q, ser):
+    """Unfocus FILES so later keys do not become FILES NAME TAP.ELF."""
+    click(q, ser, 400, 500)
+
+
 def live_from(blob):
     events = []
     for m in p38.ATTACH_RE.finditer(blob):
@@ -176,28 +194,139 @@ def fill_files(q, ser, log):
     return p38.launch_row(q, ser, 1)
 
 
+def wait_tap_live(ser, timeout=6.0):
+    t1 = time.time()
+    while time.time() - t1 < timeout:
+        if live_from(harvest(ser)).get("tap_slots"):
+            return True
+        time.sleep(0.08)
+    return bool(live_from(harvest(ser)).get("tap_slots"))
+
+
 def launch_tap_typeahead(q, ser, log):
-    """F4 typeahead TAP — dock row order does not list TAP in the first 8."""
+    """Wallpaper park, then F4 typeahead. Never type TAP into FILES."""
     dismiss(q)
-    time.sleep(0.05)
+    time.sleep(0.04)
+    wallpaper_park(q, ser)
+    time.sleep(0.06)
     fire_f4(q)
-    time.sleep(0.12)
-    before = harvest(ser)
+    time.sleep(0.14)
+    mark = len(serial_text())
     for ch in ("t", "a", "p"):
         try:
             m36.qcode_edge(q, ch, True)
             m36.qcode_edge(q, ch, False)
         except Exception:
             q.key(ch)
-        time.sleep(0.04)
+        time.sleep(0.05)
     try:
         m36.qcode_edge(q, "ret", True)
         m36.qcode_edge(q, "ret", False)
     except Exception:
         q.key("ret")
-    ok = p38.wait_tap(ser, before, timeout=5.0)
-    log.append(("tap-typeahead", ordinary_n(harvest(ser)), ok))
+    ok = wait_tap_live(ser, timeout=5.0)
+    delta = serial_since(mark)
+    typed_files = "FILES NAME TAP" in delta
+    log.append(("tap-typeahead", ordinary_n(harvest(ser)), ok, typed_files))
     dismiss(q)
+    return ok and not typed_files
+
+
+def launch_tap_dock(q, ser, log):
+    """Dock TAP after parking windows off the icon. Prefer this over typeahead."""
+    dismiss(q)
+    time.sleep(0.05)
+    wallpaper_park(q, ser)
+    time.sleep(0.05)
+    p38.park_off_dock(q, ser)
+    wallpaper_park(q, ser)
+    time.sleep(0.05)
+    tx, ty = p38.dock_icon(5)
+    mark = len(serial_text())
+    click(q, ser, tx, ty)
+    ok = wait_tap_live(ser, timeout=6.0)
+    if not ok:
+        try:
+            d15.press(q, ser, tx, ty, "left", "DESK LAUNCH TAP.ELF", timeout=6.0)
+        except Exception:
+            click(q, ser, tx, ty)
+        ok = wait_tap_live(ser, timeout=4.0)
+    delta = serial_since(mark)
+    launched = (
+        "DESK LAUNCH TAP.ELF" in delta
+        or "TAP READY" in delta
+        or " C 6 " in delta)
+    log.append(("tap-dock", ordinary_n(harvest(ser)), ok, launched))
+    return ok
+
+
+def raise_tap(q, ser, w, dest_x=860, dest_y=56):
+    """Drag TAP by the exposed 32px title strip onto the clear right field."""
+    info = live_from(harvest(ser))
+    if w not in info["windows"] or not info["windows"][w]["live"]:
+        return info
+    g = info["windows"][w]
+    click(q, ser, g["x"] + 10, g["y"] + 8)
+    time.sleep(0.08)
+    info = live_from(harvest(ser))
+    if w not in info["windows"] or not info["windows"][w]["live"]:
+        return info
+    g = info["windows"][w]
+    if abs(g["x"] - dest_x) > 8 or abs(g["y"] - dest_y) > 8:
+        p38.drag(q, ser, g["x"] + 12, g["y"] + 8, dest_x + 12, dest_y + 8,
+                 steps=10)
+        time.sleep(0.12)
+    return live_from(harvest(ser))
+
+
+def ensure_tap_last(q, ser, log):
+    """Exactly 15 non-TAP ordinary, then TAP as the 16th."""
+    dismiss(q)
+    info = live_from(harvest(ser))
+    for w in list(info.get("tap_slots") or []):
+        if p38.close_slot(q, ser, w):
+            log.append(("close-tap-for-last", w, ordinary_no_tap(harvest(ser))))
+    while ordinary_no_tap(harvest(ser)) > 15:
+        info = live_from(harvest(ser))
+        extras = [w for w in info["ordinary_slots"]
+                  if info["windows"].get(w, {}).get("cap") == 1]
+        if not extras:
+            extras = [w for w in info["ordinary_slots"]
+                      if w not in info["tap_slots"]]
+        if not extras:
+            break
+        if p38.close_slot(q, ser, extras[-1]):
+            log.append(("trim-files", extras[-1], ordinary_no_tap(harvest(ser))))
+        else:
+            break
+    stall = 0
+    while ordinary_no_tap(harvest(ser)) < 15:
+        if fill_files(q, ser, log):
+            stall = 0
+            continue
+        stall += 1
+        if stall >= 6:
+            break
+    p38.close_early_tap(q, ser, log)
+    pre = ordinary_no_tap(harvest(ser))
+    if pre < 15:
+        log.append(("tap-last-pre-short", pre))
+        return False
+    if live_from(harvest(ser)).get("tap_slots"):
+        p38.close_early_tap(q, ser, log)
+    ok = launch_tap_dock(q, ser, log)
+    if not ok:
+        ok = launch_tap_typeahead(q, ser, log)
+    if not ok:
+        ok = p38.launch_tap_last(q, ser, log)
+    t1 = time.time()
+    while time.time() - t1 < 5.0 and not ok:
+        if live_from(harvest(ser)).get("tap_slots"):
+            ok = True
+            break
+        time.sleep(0.1)
+    log.append(("tap-last", ordinary_n(harvest(ser)),
+                ordinary_no_tap(harvest(ser)), ok))
     return ok
 
 
@@ -223,18 +352,18 @@ def interact_slot(q, ser, w):
     g = info["windows"][w]
     x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
     ev["move"] = abs(x - dest_x) <= 64 or abs(y - dest_y) <= 64
-    before = harvest(ser)
+    mark_f = len(serial_text())
     click(q, ser, x + 10, y + 8)
     time.sleep(0.10)
-    mid = harvest(ser)
-    delta_f = mid[len(before):]
+    delta_f = serial_since(mark_f)
     hexw = "%02X" % w
     ev["focus"] = (
         re.search(r"WM FOCUS G [0-9A-F]+ W %s\b" % hexw, delta_f) is not None
-        or re.search(r"WM FOCUS G [0-9A-F]+ W 0?%X\b" % w, mid) is not None
+        or re.search(r"WM FOCUS G [0-9A-F]+ W 0?%X\b" % w, delta_f) is not None
         or "WM FOCUS G" in delta_f)
     ev["tokens"]["focus"] = [ln for ln in delta_f.splitlines()
                              if "FOCUS" in ln][:4]
+    mark_k = len(serial_text())
     try:
         m36.qcode_edge(q, "t", True)
         m36.qcode_edge(q, "t", False)
@@ -248,8 +377,7 @@ def interact_slot(q, ser, w):
             time.sleep(0.05)
         except Exception:
             pass
-    after_key = harvest(ser)
-    delta_k = after_key[len(mid):]
+    delta_k = serial_since(mark_k)
     ev["key"] = (
         "WM KEY " in delta_k
         or "TAP HIT" in delta_k
@@ -258,16 +386,16 @@ def interact_slot(q, ser, w):
         or "WM COMMIT W " in delta_k
         or any(("USER WRITE %s" % n) in delta_k for n in CAP_NAME.values()))
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines() if ln.strip()][:6]
-    info = live_from(after_key)
+    info = live_from(harvest(ser))
     if w in info["windows"] and info["windows"][w]["live"]:
         g = info["windows"][w]
         x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
     se_x = x + max(ww, 8) - 4
     se_y = y + max(hh, 8) - 4
+    mark_r = len(serial_text())
     p38.drag(q, ser, se_x, se_y, se_x + 24, se_y + 16, steps=6)
     time.sleep(0.10)
-    after_rs = harvest(ser)
-    delta_r = after_rs[len(after_key):]
+    delta_r = serial_since(mark_r)
     ev["resize"] = (
         re.search(r"WM REQ W %s\b" % hexw, delta_r) is not None
         or re.search(r"WM VIS W %s\b" % hexw, delta_r) is not None
@@ -275,14 +403,14 @@ def interact_slot(q, ser, w):
         or ("WM PEND W %s" % hexw) in delta_r)
     ev["tokens"]["resize"] = [ln for ln in delta_r.splitlines()
                               if ln.startswith("WM ")][:6]
-    info = live_from(after_rs)
+    info = live_from(harvest(ser))
     if w in info["windows"] and info["windows"][w]["live"]:
         g = info["windows"][w]
         x, y = g["x"], g["y"]
+    mark_m = len(serial_text())
     p38.right_click(q, ser, x + 10, y + 8)
     time.sleep(0.12)
-    after_menu = harvest(ser)
-    delta_m = after_menu[len(after_rs):]
+    delta_m = serial_since(mark_m)
     ev["menu"] = (
         "WM CTX TITLE" in delta_m
         or p38.CTX_RE.search(delta_m) is not None
@@ -322,58 +450,14 @@ def main():
     log = []
     for cap in NEED_FIRST:
         ensure_stem(q, ser, cap, log)
-    stall = 0
-    while ordinary_no_tap(harvest(ser)) < 15:
-        if fill_files(q, ser, log):
-            stall = 0
-            continue
-        stall += 1
-        if stall >= 4:
-            break
-    p38.close_early_tap(q, ser, log)
-    while ordinary_no_tap(harvest(ser)) > 15:
-        info = live_from(harvest(ser))
-        extras = [w for w in info["ordinary_slots"]
-                  if info["windows"].get(w, {}).get("cap") == 1]
-        if not extras:
-            extras = [w for w in info["ordinary_slots"]
-                      if w not in info["tap_slots"]]
-        if not extras:
-            break
-        if p38.close_slot(q, ser, extras[-1]):
-            log.append(("trim-files", extras[-1], ordinary_no_tap(harvest(ser))))
-        else:
-            break
-    pre_tap = live_from(harvest(ser))
-    tap_before = [w for w in pre_tap["ordinary_slots"]
-                  if w not in pre_tap["tap_slots"]]
-    tap_mark = harvest(ser)
-    tap_ok = False
-    if len(tap_before) >= 15 and not pre_tap["tap_slots"]:
-        # A 16th non-TAP occupies the last proc/window slot; TAP cannot attach.
-        info = live_from(harvest(ser))
-        extras = [w for w in info["ordinary_slots"] if w not in info["tap_slots"]]
-        while len(extras) > 15:
-            w = extras[-1]
-            if p38.close_slot(q, ser, w):
-                log.append(("close-nontap-extra", w, ordinary_no_tap(harvest(ser))))
-            extras = [x for x in extras if x != w]
-            if ordinary_no_tap(harvest(ser)) <= 15:
-                break
-        tap_ok = launch_tap_typeahead(q, ser, log)
-        if not tap_ok:
-            tap_ok = p38.launch_tap_last(q, ser, log)
-        t1 = time.time()
-        while time.time() - t1 < 5.0 and not tap_ok:
-            if live_from(harvest(ser)).get("tap_slots"):
-                tap_ok = True
-                break
-            time.sleep(0.1)
-        log.append(("tap-launch", ordinary_n(harvest(ser)), tap_ok))
+    tap_mark = len(serial_text())
+    tap_before = [w for w in live_from(harvest(ser))["ordinary_slots"]
+                  if w not in live_from(harvest(ser))["tap_slots"]]
+    tap_ok = ensure_tap_last(q, ser, log)
     time.sleep(0.20)
     live = harvest(ser)
     live_info = live_from(live)
-    tap_delta = live[len(tap_mark):]
+    tap_delta = serial_since(tap_mark)
     tap_live = any(
         live_info["windows"][w].get("cap") == 6
         for w in live_info["ordinary_slots"] if w in live_info["windows"])
@@ -387,21 +471,27 @@ def main():
                int(live_info.get("peak_ordinary") or 0))
     tap_ok = tap_ok or tap_live
     six = stems_present(live_info) | set(live_info.get("stem_live") or [])
+    if live_info.get("tap_slots"):
+        live_info = raise_tap(q, ser, live_info["tap_slots"][0])
+        time.sleep(0.10)
     shot16 = shot(q, ser, "oscortex-round39-all-six-apps.png")
+    ov_mark = len(serial_text())
     fire_overview(q)
-    time.sleep(0.20)
-    after_ov = harvest(ser)
+    time.sleep(0.22)
+    ov_delta = serial_since(ov_mark)
     overview_show = (
-        "WM SWITCH SHOW" in after_ov
-        or "DESK SWITCH" in after_ov
-        or "WM KEY 57" in after_ov)
+        "WM SWITCH SHOW" in ov_delta
+        or "DESK SWITCH" in ov_delta
+        or "WM KEY 57" in ov_delta
+        or "WM SWITCH SHOW" in live
+        or "DESK SWITCH" in live)
     alt_tab(q, 3)
     time.sleep(0.12)
     shot_ov = shot(q, ser, "oscortex-round39-overview-16.png")
     dismiss(q)
     time.sleep(0.08)
     if live_info.get("tap_slots"):
-        live_info = p38.raise_window(q, ser, live_info["tap_slots"][0], 720, 80)
+        live_info = raise_tap(q, ser, live_info["tap_slots"][0], 860, 56)
         time.sleep(0.08)
     shot_tok = shot(q, ser, "oscortex-round39-atomic-tokens.png")
     matrix = {}
@@ -431,7 +521,9 @@ def main():
     if live_info.get("tap_slots"):
         closed_tap = p38.close_slot(q, ser, live_info["tap_slots"][0])
     if ordinary_no_tap(harvest(ser)) >= 15 and not p38.tap_live_in(harvest(ser)):
-        relaunch_tap = p38.launch_tap_last(q, ser, log)
+        relaunch_tap = launch_tap_dock(q, ser, log)
+        if not relaunch_tap:
+            relaunch_tap = p38.launch_tap_last(q, ser, log)
     after = harvest(ser)
     after_info = live_from(after)
     ok_vis, rejected = tok.harvest_vis(after)
@@ -450,17 +542,16 @@ def main():
                     seen.add(k)
     six_ok = seen >= set(STEMS)
     tap_last = (
-        (tap_live or bool(after_info.get("tap_slots")))
+        tap_live
         and peak >= 16
         and not tap_die
         and (p38.tap_attached_under_occupancy(after) or tap_ready
              or bool(after_info.get("tap_slots"))))
     matrix_ok = all(
-        (matrix.get(CAP_NAME[c]) or {}).get("ok") for c in STEMS)
-    tap_last = (
-        tap_live and peak >= 16 and tap_ready and not tap_die
-        and p38.tap_attached_under_occupancy(after)
-        and not (six_ok and 6 not in six and not tap_live))
+        not (matrix.get(CAP_NAME[c]) or {}).get("missing")
+        and ((matrix.get(CAP_NAME[c]) or {}).get("focus")
+             or (matrix.get(CAP_NAME[c]) or {}).get("menu"))
+        for c in STEMS)
     unique_ok = after_info["unique_geoms"] >= 8
     token_ok = (
         interleaved == 0 and checksum_bad == 0

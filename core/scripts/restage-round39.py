@@ -32,14 +32,12 @@ def main():
     log = []
     for cap in p39.NEED_FIRST:
         p39.ensure_stem(q, ser, cap, log)
-    if not p39.live_from(p39.harvest(ser)).get("tap_slots"):
-        if p39.ordinary_no_tap(p39.harvest(ser)) >= 15:
-            p39.launch_tap_typeahead(q, ser, log)
+    p39.ensure_tap_last(q, ser, log)
     p39.dismiss(q)
     time.sleep(0.08)
     info = p39.live_from(p39.harvest(ser))
     if info.get("tap_slots"):
-        p39.p38.raise_window(q, ser, info["tap_slots"][0], 640, 80)
+        info = p39.raise_tap(q, ser, info["tap_slots"][0])
         time.sleep(0.12)
     shot16 = p39.shot(q, ser, "oscortex-round39-all-six-apps.png")
     p39.dismiss(q)
