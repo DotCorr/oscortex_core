@@ -32,7 +32,19 @@ def main():
     log = []
     for cap in p39.NEED_FIRST:
         p39.ensure_stem(q, ser, cap, log)
-    p39.ensure_tap_last(q, ser, log)
+    stall = 0
+    while p39.ordinary_no_tap(p39.harvest(ser)) < 15:
+        if p39.fill_files(q, ser, log):
+            stall = 0
+            continue
+        stall += 1
+        if stall >= 5:
+            break
+    info = p39.live_from(p39.harvest(ser))
+    if info.get("tap_slots") and p39.ordinary_no_tap(p39.harvest(ser)) >= 14:
+        log.append(("keep-tap-last", p39.ordinary_n(p39.harvest(ser))))
+    else:
+        p39.ensure_tap_last(q, ser, log)
     p39.dismiss(q)
     time.sleep(0.08)
     info = p39.live_from(p39.harvest(ser))

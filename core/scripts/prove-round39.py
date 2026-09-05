@@ -261,12 +261,16 @@ def launch_tap_dock(q, ser, log):
 
 
 def raise_tap(q, ser, w, dest_x=860, dest_y=56):
-    """Focus TAP on the reserved right-field attach. Do not drag across chrome."""
+    """Focus TAP on the reserved right-field attach. Do not drag across chrome.
+
+    Second-column FILES (520+400) cover the left of TAP at 860; click the
+    exposed right title strip.
+    """
     info = live_from(harvest(ser))
     if w not in info["windows"] or not info["windows"][w]["live"]:
         return info
     g = info["windows"][w]
-    click(q, ser, g["x"] + 10, g["y"] + 8)
+    click(q, ser, g["x"] + max(g["ww"], 80) - 36, g["y"] + 8)
     time.sleep(0.08)
     return live_from(harvest(ser))
 
@@ -336,7 +340,20 @@ def interact_slot(q, ser, w):
     # which lands under the next card.
     dest_x = g["x"]
     dest_y = g["y"]
-    click(q, ser, dest_x + 10, dest_y + 8)
+    # Single-instance stems: dock click focuses the live window on top.
+    if g.get("cap") in STEM_DOCK and g.get("cap") != 1:
+        wallpaper_park(q, ser)
+        time.sleep(0.04)
+        dock_click(q, ser, STEM_DOCK[g["cap"]])
+        time.sleep(0.10)
+        info = live_from(harvest(ser))
+        if w in info["windows"] and info["windows"][w]["live"]:
+            g = info["windows"][w]
+            dest_x, dest_y = g["x"], g["y"]
+    hx = dest_x + 10
+    if g.get("cap") == 6:
+        hx = dest_x + max(g["ww"], 80) - 36
+    click(q, ser, hx, dest_y + 8)
     time.sleep(0.08)
     info = live_from(harvest(ser))
     if w not in info["windows"] or not info["windows"][w]["live"]:
@@ -345,7 +362,10 @@ def interact_slot(q, ser, w):
     x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
     ev["move"] = abs(x - dest_x) <= 64 or abs(y - dest_y) <= 64
     mark_f = len(serial_text())
-    click(q, ser, x + 10, y + 8)
+    fx = x + 10
+    if g.get("cap") == 6:
+        fx = x + max(ww, 80) - 36
+    click(q, ser, fx, y + 8)
     time.sleep(0.10)
     delta_f = serial_since(mark_f)
     hexw = "%02X" % w
@@ -467,18 +487,30 @@ def main():
         live_info = raise_tap(q, ser, live_info["tap_slots"][0])
         time.sleep(0.10)
     shot16 = shot(q, ser, "oscortex-round39-all-six-apps.png")
+    dismiss(q)
+    time.sleep(0.06)
     ov_mark = len(serial_text())
     fire_overview(q)
-    time.sleep(0.22)
-    ov_delta = serial_since(ov_mark)
-    overview_show = (
-        "WM SWITCH SHOW" in ov_delta
-        or "DESK SWITCH" in ov_delta
-        or "WM KEY 57" in ov_delta
-        or "WM SWITCH SHOW" in live
-        or "DESK SWITCH" in live)
-    alt_tab(q, 3)
-    time.sleep(0.12)
+    t1 = time.time()
+    overview_show = False
+    while time.time() - t1 < 1.2:
+        ov_delta = serial_since(ov_mark)
+        if ("WM SWITCH SHOW" in ov_delta or "DESK SWITCH" in ov_delta
+                or "WM KEY 57" in ov_delta):
+            overview_show = True
+            break
+        time.sleep(0.05)
+    if not overview_show:
+        alt_tab(q, 2)
+        time.sleep(0.15)
+        ov_delta = serial_since(ov_mark)
+        overview_show = (
+            "WM SWITCH SHOW" in ov_delta
+            or "DESK SWITCH" in ov_delta
+            or "WM KEY 57" in ov_delta)
+    else:
+        alt_tab(q, 3)
+        time.sleep(0.12)
     shot_ov = shot(q, ser, "oscortex-round39-overview-16.png")
     dismiss(q)
     time.sleep(0.08)
