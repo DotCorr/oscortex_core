@@ -1041,20 +1041,7 @@ void wmDrawOverlayFast(u64 wI) {
   final u64 h = wmGeomH(g);
   u64 py = u64(0);
   while (py < h) {
-    u64 edge = u64(0);
-    if (py < u64(8)) {
-      edge = u64(1);
-    }
-    if (h > u64(8)) {
-      if (py >= (h - u64(8))) {
-        edge = u64(1);
-      }
-    }
-    if (edge > u64(0)) {
-      wmBlitRow(wI, py);
-    } else {
-      wmBlitOverlayRowSrc(wI, py);
-    }
+    wmBlitOverlayRowSrc(wI, py);
     py = py + u64(1);
   }
 }

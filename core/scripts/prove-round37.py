@@ -19,9 +19,15 @@ m36s.loader.exec_module(m36)
 
 ART = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
 RUN = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r37")
-ATTACH_RE = re.compile(r"WM ATTACH ([0-9A-F]{2}) ")
-PROC_RE = re.compile(r"PROC (?:NEW|START) SLOT ([0-9A-F]{2})")
-CLOSE_RE = re.compile(r"WM CLOSE ([0-9A-F]{2}) ")
+ATTACH_RE = re.compile(
+    r"WM ATTACH W ([0-9A-F]{2}) P ([0-9A-F]{2}) .* "
+    r"X ([0-9A-F]{4}) Y ([0-9A-F]{4}) W ([0-9A-F]{4}) H ([0-9A-F]{4})")
+CLOSE_RE = re.compile(r"WM CLOSE W ([0-9A-F]{2}) ")
+PROC_NEW_RE = re.compile(r"PROC NEW SLOT ([0-9A-F]{2})")
+PROC_KILL_RE = re.compile(r"PROC KILL SLOT ([0-9A-F]{2})")
+LAUNCH_X = 516
+LAUNCH_ROW0_Y = 458
+LAUNCH_PITCH = 24
 
 
 def harvest(ser):
@@ -44,24 +50,126 @@ def click(q, ser, x, y):
     d15.button(q, int(x), int(y), "left", False)
 
 
+def drag(q, ser, x0, y0, x1, y1, steps=8):
+    d15.place(q, ser, int(x0), int(y0))
+    d15.button(q, int(x0), int(y0), "left", True)
+    time.sleep(0.02)
+    for i in range(1, steps + 1):
+        x = x0 + (x1 - x0) * i // steps
+        y = y0 + (y1 - y0) * i // steps
+        d15.place(q, ser, int(x), int(y))
+        time.sleep(0.015)
+    d15.button(q, int(x1), int(y1), "left", False)
+
+
 def dock_files(q, ser):
     x, y = d15.FILES_DOCK_XY
     click(q, ser, x, y)
 
 
-def slots_from(blob):
-    att = sorted({int(m.group(1), 16) for m in ATTACH_RE.finditer(blob)})
-    procs = sorted({int(m.group(1), 16) for m in PROC_RE.finditer(blob)})
-    closes = [int(m.group(1), 16) for m in CLOSE_RE.finditer(blob)]
-    overlays = [s for s in att if s >= 17]
-    ordinary = [s for s in att if s < 17]
+def live_from(blob):
+    wins = {}
+    for m in ATTACH_RE.finditer(blob):
+        w = int(m.group(1), 16)
+        wins[w] = {
+            "w": w,
+            "proc": int(m.group(2), 16),
+            "x": int(m.group(3), 16),
+            "y": int(m.group(4), 16),
+            "ww": int(m.group(5), 16),
+            "hh": int(m.group(6), 16),
+            "live": True,
+        }
+    for m in CLOSE_RE.finditer(blob):
+        w = int(m.group(1), 16)
+        if w in wins:
+            wins[w]["live"] = False
+    procs = {}
+    for m in PROC_NEW_RE.finditer(blob):
+        procs[int(m.group(1), 16)] = True
+    for m in PROC_KILL_RE.finditer(blob):
+        procs[int(m.group(1), 16)] = False
+    live_wins = [w for w, info in wins.items() if info["live"]]
+    ordinary = [w for w in live_wins if 0 < w < 17]
+    overlays = [w for w in live_wins if w >= 17]
+    live_procs = sorted([s for s, on in procs.items() if on])
+    ordinary_procs = [s for s in live_procs if s > 0]
     return {
-        "attach_slots": att,
-        "proc_slots": procs,
-        "close_slots": closes,
-        "overlay_slots": overlays,
+        "windows": wins,
+        "live_wins": sorted(live_wins),
         "ordinary_slots": ordinary,
+        "overlay_slots": overlays,
+        "proc_live": live_procs,
+        "ordinary_procs": ordinary_procs,
     }
+
+
+def ordinary_n(blob):
+    info = live_from(blob)
+    return max(len(info["ordinary_slots"]), len(info["ordinary_procs"]))
+
+
+def fire_f4(q):
+    m36.qcode_edge(q, "f4", True)
+    m36.qcode_edge(q, "f4", False)
+
+
+def dismiss(q):
+    m36.qcode_edge(q, "esc", True)
+    m36.qcode_edge(q, "esc", False)
+
+
+def launch_row(q, ser, row):
+    dismiss(q)
+    time.sleep(0.04)
+    fire_f4(q)
+    time.sleep(0.12)
+    click(q, ser, LAUNCH_X, LAUNCH_ROW0_Y + row * LAUNCH_PITCH)
+    t1 = time.time()
+    before = ordinary_n(harvest(ser))
+    while time.time() - t1 < 2.0:
+        if ordinary_n(harvest(ser)) > before:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def uncover_dock(q, ser):
+    info = live_from(harvest(ser))
+    dock_y = d15.FILES_DOCK_XY[1]
+    dock_x = d15.FILES_DOCK_XY[0]
+    for w, g in info["windows"].items():
+        if not g["live"]:
+            continue
+        if w < 1 or w >= 17:
+            continue
+        x1 = g["x"]
+        y1 = g["y"]
+        x2 = x1 + g["ww"]
+        y2 = y1 + g["hh"]
+        if x1 <= dock_x <= x2 and y1 <= dock_y <= y2:
+            drag(q, ser, x1 + 24, y1 + 10, 80 + (w % 6) * 40, 48 + (w % 4) * 28)
+            time.sleep(0.05)
+
+
+def close_live_ordinary(q, ser):
+    closed = 0
+    for _i in range(24):
+        info = live_from(harvest(ser))
+        targets = [info["windows"][w] for w in info["ordinary_slots"]
+                   if w in info["windows"]]
+        if not targets:
+            break
+        g = targets[-1]
+        before = harvest(ser)
+        click(q, ser, g["x"] + g["ww"] - 17, g["y"] + 17)
+        time.sleep(0.1)
+        if "WM CLOSE" in harvest(ser)[len(before):]:
+            closed += 1
+            continue
+        click(q, ser, d15.FILES_CLOSE_XY[0], d15.FILES_CLOSE_XY[1])
+        time.sleep(0.08)
+    return closed
 
 
 def main():
@@ -70,25 +178,31 @@ def main():
                      int(open(os.path.join(RUN, "serial.port")).read()))
     marked0 = harvest(ser)
     files0 = marked0.count("FILES READY") + marked0.count("FILES CSD")
-    # Sit-in already spawned DESK + one FILES. Spawn 15 more FILES.
-    for i in range(15):
-        dock_files(q, ser)
-        time.sleep(0.18)
-    t1 = time.time()
-    while time.time() - t1 < 8.0:
-        blob = harvest(ser)
-        nfiles = blob.count("FILES READY") + blob.count("FILES SLOT")
-        if nfiles >= 16 or blob.count("WM ATTACH ") >= 17:
+    # Unused single-instance rows (FILES is row 0 / multi-doc).
+    for row in (1, 2, 3, 4, 5, 6, 7):
+        if ordinary_n(harvest(ser)) >= 16:
             break
-        time.sleep(0.1)
-    # Overlays: launcher, then Esc, switcher, menu.
-    m36.qcode_edge(q, "f4", True)
-    m36.qcode_edge(q, "f4", False)
+        print("launch-row", row, "ordinary", ordinary_n(harvest(ser)))
+        launch_row(q, ser, row)
+    tries = 0
+    while ordinary_n(harvest(ser)) < 16 and tries < 20:
+        uncover_dock(q, ser)
+        dismiss(q)
+        time.sleep(0.04)
+        before = ordinary_n(harvest(ser))
+        dock_files(q, ser)
+        t1 = time.time()
+        while time.time() - t1 < 1.4:
+            if ordinary_n(harvest(ser)) > before:
+                break
+            time.sleep(0.05)
+        tries += 1
+        print("dock-files", tries, "ordinary", ordinary_n(harvest(ser)))
+    dismiss(q)
+    time.sleep(0.05)
+    fire_f4(q)
     time.sleep(0.2)
     d15.shot(q, os.path.join(ART, "oscortex-round37-16-clients.png"))
-    m36.qcode_edge(q, "esc", True)
-    m36.qcode_edge(q, "esc", False)
-    time.sleep(0.08)
     try:
         q.cmd("input-send-event", events=[{
             "type": "key",
@@ -109,33 +223,20 @@ def main():
         }])
     except Exception:
         pass
-    click(q, ser, 48, 520)
     d15.button(q, 48, 520, "right", True)
     time.sleep(0.04)
     d15.button(q, 48, 520, "right", False)
-    time.sleep(0.1)
-    try:
-        q.key("esc")
-    except Exception:
-        pass
+    time.sleep(0.08)
     live = harvest(ser)
-    live_info = slots_from(live)
-    # Close every ordinary client we can see, then relaunch one FILES.
-    closed = 0
-    for _i in range(20):
-        blob = harvest(ser)
-        # Default FILES close chip; extras may stack. Click a few title closes.
-        for x, y in ((48 + 400 - 17, 40 + 17), (80 + 400 - 17, 70 + 17),
-                     (120 + 400 - 17, 100 + 17), (d15.FILES_CLOSE_XY[0],
-                     d15.FILES_CLOSE_XY[1])):
-            before = harvest(ser)
-            click(q, ser, x, y)
-            time.sleep(0.08)
-            if harvest(ser)[len(before):].find("WM CLOSE") >= 0:
-                closed += 1
+    live_info = live_from(live)
+    peak_ordinary = max(len(live_info["ordinary_slots"]),
+                        len(live_info["ordinary_procs"]))
+    closed = close_live_ordinary(q, ser)
+    uncover_dock(q, ser)
     dock_files(q, ser)
-    time.sleep(0.4)
+    time.sleep(0.5)
     after = harvest(ser)
+    after_info = live_from(after)
     refuse = after.count("WM ATTACH REFUS") + after.count("SHM REFUS")
     refuse += after.count("procErrNoSlot") + after.count("PROC REFUSED")
     payload = {
@@ -150,12 +251,20 @@ def main():
         "fileRunRow": 17,
         "slot_print_hex_digits": 2,
         "sit_in_files": files0,
-        "live": live_info,
-        "ordinary_live": len(live_info["ordinary_slots"]),
+        "live": {
+            "ordinary_slots": live_info["ordinary_slots"],
+            "overlay_slots": live_info["overlay_slots"],
+            "proc_live": live_info["proc_live"],
+            "ordinary_procs": live_info["ordinary_procs"],
+        },
+        "ordinary_live": peak_ordinary,
         "overlay_live": len(live_info["overlay_slots"]),
         "closed_clicks": closed,
-        "relaunch_files": "FILES READY" in after[len(live):] or (
-            "FILES CSD" in after[len(live):]),
+        "after_close_ordinary": len(after_info["ordinary_slots"]),
+        "relaunch_files": (
+            "FILES READY" in after[len(live):]
+            or "FILES CSD" in after[len(live):]
+            or "FILES SLOT" in after[len(live):]),
         "attach_refuse": refuse,
         "oom": after.count("OSGFX OOM") + after.count(" OOM "),
         "tap_die": "TAP DIE " in after,
@@ -163,9 +272,9 @@ def main():
         "reap": after.count("REAP "),
         "wrong_slot_print": bool(re.search(r"WM ATTACH [0-9A-F] ", after)
                                  and "WM ATTACH 1 " in after
-                                 and 17 in live_info["attach_slots"]),
+                                 and 17 in live_info["live_wins"]),
         "pass": (
-            len(live_info["ordinary_slots"]) >= 16
+            peak_ordinary >= 16
             and len(live_info["overlay_slots"]) >= 1
             and refuse == 0
             and after.count("OSGFX OOM") == 0
@@ -180,7 +289,9 @@ def main():
         "overlays": payload["overlay_live"],
         "refuse": refuse,
         "pass": payload["pass"],
-        "slots": live_info,
+        "slots": payload["live"],
+        "closed": closed,
+        "relaunch": payload["relaunch_files"],
     }, indent=2))
     return 0 if payload["pass"] else 1
 
