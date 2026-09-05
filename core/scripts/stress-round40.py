@@ -105,7 +105,7 @@ def main():
         if line.startswith("WM CPATH 3"):
             reasons.append(line)
     out = {
-        "round": 39,
+        "round": 40,
         "secs": round(time.time() - t0, 1),
         "cycles": n,
         "fault": ("FAULT 0E" in blob) or ("FAULT 0D" in blob)
@@ -145,7 +145,7 @@ def main():
     open(dest, "w").write(json.dumps(out, indent=2) + "\n")
     open(os.path.join(ART, "oscortex-round40-cpath.json"), "w").write(
         json.dumps({
-            "round": 39,
+            "round": 40,
             "source": "stress",
             "cpath3": out["cpath_compose"],
             "reasons": reasons,
