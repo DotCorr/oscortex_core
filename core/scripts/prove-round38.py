@@ -58,17 +58,23 @@ def harvest(ser):
 
 
 def apply_vis(blob, wins):
+    last_att = {}
+    for m in ATTACH_RE.finditer(blob):
+        last_att[int(m.group(1), 16)] = m.start()
     for m in VIS_RE.finditer(blob):
         w = int(m.group(1), 16)
         ww = int(m.group(4), 16)
         hh = int(m.group(5), 16)
         if ww < 1 or hh < 1:
             continue
-        if w in wins:
-            wins[w]["x"] = int(m.group(2), 16)
-            wins[w]["y"] = int(m.group(3), 16)
-            wins[w]["ww"] = ww
-            wins[w]["hh"] = hh
+        if w not in wins:
+            continue
+        if last_att.get(w, -1) > m.start():
+            continue
+        wins[w]["x"] = int(m.group(2), 16)
+        wins[w]["y"] = int(m.group(3), 16)
+        wins[w]["ww"] = ww
+        wins[w]["hh"] = hh
 
 
 def click(q, ser, x, y):
@@ -465,8 +471,11 @@ def interact_slot15(q, ser, info):
                                    if ln.strip()][:6]
         after_key = after_alt
     # SE handle is the last 8 px of content plus border (wmResizeEdge).
-    se_x = x + ww - 4
-    se_y = y + hh - 4
+    info = live_from(after_key)
+    if 15 in info["windows"] and info["windows"][15]["live"]:
+        x, y, ww, hh = slot15_geom(info)
+    se_x = x + max(ww, 8) - 4
+    se_y = y + max(hh, 8) - 4
     drag(q, ser, se_x, se_y, se_x + 28, se_y + 20, steps=8)
     time.sleep(0.12)
     after_rs = harvest(ser)
@@ -476,6 +485,22 @@ def interact_slot15(q, ser, info):
         or re.search(r"WM VIS W F\b", delta_r) is not None
         or "WM HOLD W F" in delta_r
         or "WM PEND W F" in delta_r)
+    if not ev["resize"]:
+        info = live_from(after_rs)
+        if 15 in info["windows"] and info["windows"][15]["live"]:
+            x, y, ww, hh = slot15_geom(info)
+            se_x = x + max(ww, 8) - 3
+            se_y = y + max(hh, 8) - 3
+            before_rs2 = harvest(ser)
+            drag(q, ser, se_x, se_y, se_x + 36, se_y + 24, steps=8)
+            time.sleep(0.12)
+            after_rs = harvest(ser)
+            delta_r = after_rs[len(before_rs2):]
+            ev["resize"] = (
+                re.search(r"WM REQ W F\b", delta_r) is not None
+                or re.search(r"WM VIS W F\b", delta_r) is not None
+                or "WM HOLD W F" in delta_r
+                or "WM PEND W F" in delta_r)
     ev["tokens"]["resize"] = [ln for ln in delta_r.splitlines()
                               if ln.startswith("WM ")][:8]
     info = live_from(after_rs)
