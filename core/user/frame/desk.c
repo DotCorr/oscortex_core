@@ -109,6 +109,8 @@ static u64 last_pop;
 static u64 last_launch_sel;
 static u64 last_launch_paint;
 static u64 last_launch_q;
+static u64 launch_hold;
+static u64 launch_fb_gen;
 static u64 last_pref;
 static u64 seq;
 static u64 menu_h;
@@ -1150,8 +1152,8 @@ static void sync_menu(u64 pop) {
   }
   if (kind == 0) {
     if (menu_on != 0) {
-      /* Park off the visible desk. Restore uses the last exact geom. */
-      osxui_app_place(menu_h, 8, 8, overlay_w, overlay_h);
+      /* Leave overlay geom. A park MOVE+commit of 280×244 blocked
+       * the next F4. Kernel pop=0; parked-at-8,8 is for long hide. */
       {
         u64 at = put(0, msg_menu);
         at = put(at, " 0");
@@ -1159,6 +1161,7 @@ static void sync_menu(u64 pop) {
       }
     }
     menu_on = 0;
+    launch_hold = 0;
     return;
   }
   overlay_size_for(kind);
@@ -1179,8 +1182,10 @@ static void sync_menu(u64 pop) {
       last_launch_paint = osxui_app_launch_sel();
       last_launch_q = osxui_app_launch_q();
     }
+    if (kind != 2UL) {
+      commit_menu();
+    }
   }
-  commit_menu();
   if (menu_on != kind) {
     u64 at = put(0, msg_menu);
     at = put(at, " ");
@@ -1325,6 +1330,8 @@ void desk_main(u64 sp) {
   last_launch_sel = 0;
   last_launch_paint = 0;
   last_launch_q = 0xFFFFFFFFFFFFFFFFUL;
+  launch_hold = 0;
+  launch_fb_gen = 0xFFFFFFFFFFFFFFFFUL;
   last_pref = osxui_app_pref();
   icon_n = ICON_N;
   icon_vis = ICON_N;
@@ -1358,6 +1365,14 @@ void desk_main(u64 sp) {
         sync_menu(pop);
       } else if (OSXUI_POP_KIND(pop) == 0) {
         launch_cache_paint();
+      } else if (OSXUI_POP_KIND(pop) == 2UL) {
+        launch_hold = launch_hold + 1UL;
+        if (launch_hold == 64UL) {
+          if (launch_fb_gen != last_launch_paint) {
+            commit_menu();
+            launch_fb_gen = last_launch_paint;
+          }
+        }
       }
       if (pref != last_pref) {
         last_pref = pref;
