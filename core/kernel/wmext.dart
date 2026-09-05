@@ -810,6 +810,11 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     if (wmPageAddr() > u64(0)) {
       cap = wmPage(wmPageLaunchOf(slot));
     }
+    if (cap < u64(1)) {
+      if (wmSlotIsTap(slot) > u64(0)) {
+        cap = u64(6);
+      }
+    }
     userSetFrame(frame, u64(userFrameRax), wmPack8(wmCapStem(cap)));
     return;
   }
