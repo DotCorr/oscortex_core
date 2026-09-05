@@ -48,7 +48,7 @@ CAP_NAME = {
 
 
 VIS_RE = re.compile(
-    r"WM (?:VIS|REQ) W ([0-9A-F]+) X ([0-9A-F]{4}) Y ([0-9A-F]{4}) "
+    r"WM VIS W ([0-9A-F]+) X ([0-9A-F]{4}) Y ([0-9A-F]{4}) "
     r"W ([0-9A-F]{4}) H ([0-9A-F]{4})")
 # Compositor keys and right-press client menus (ADR-0194).
 CTX_RE = re.compile(r"WM CTX [A-Z]+")
