@@ -246,6 +246,19 @@ def wait_tap(ser, before, timeout=3.0):
     return tap_live_in(harvest(ser))
 
 
+def park_off_dock(q, ser):
+    info = live_from(harvest(ser))
+    dock_x, _dock_y = dock_icon(5)
+    for w, g in list(info["windows"].items()):
+        if not g["live"] or w < 1 or w >= 17:
+            continue
+        if g["x"] + g["ww"] >= dock_x - 12:
+            dest_x = 24 + (w % 4) * 28
+            dest_y = 24 + ((w // 4) % 4) * 28
+            drag(q, ser, g["x"] + 24, g["y"] + 10, dest_x + 24, dest_y + 10)
+            time.sleep(0.04)
+
+
 def launch_tap_last(q, ser, log):
     """16th ordinary client must be TAP. A dock miss that spawned PLAY is closed."""
     info = live_from(harvest(ser))
@@ -262,23 +275,30 @@ def launch_tap_last(q, ser, log):
                 others = [x for x in others if x != w]
     if ordinary_no_tap(harvest(ser)) < 15:
         return False
+    park_off_dock(q, ser)
+    dismiss(q)
+    time.sleep(0.06)
+    tx, ty = dock_icon(5)
     before = harvest(ser)
+    try:
+        d15.press(q, ser, tx, ty, "left", "DESK LAUNCH TAP.ELF", timeout=6.0)
+    except Exception:
+        click(q, ser, tx, ty)
+    if wait_tap(ser, before, timeout=4.0):
+        log.append(("tap-dock5-token", ordinary_n(harvest(ser))))
+        return True
+    log.append(("tap-dock5-miss", ordinary_n(harvest(ser))))
+    before2 = harvest(ser)
     dismiss(q)
     time.sleep(0.05)
     fire_f4(q)
-    time.sleep(0.16)
+    time.sleep(0.18)
     click(q, ser, LAUNCH_X, LAUNCH_ROW0_Y + 6 * LAUNCH_PITCH)
-    if wait_tap(ser, before, timeout=3.2):
+    if wait_tap(ser, before2, timeout=3.5):
         log.append(("tap-launcher-row6", ordinary_n(harvest(ser))))
         dismiss(q)
         return True
     log.append(("tap-launcher-miss", ordinary_n(harvest(ser))))
-    # Dock 5 is TAP on the 6-icon strip; a miss often hits PLAY.
-    before2 = harvest(ser)
-    dock_click(q, ser, 5)
-    if wait_tap(ser, before2, timeout=2.4):
-        log.append(("tap-dock5", ordinary_n(harvest(ser))))
-        return True
     info = live_from(harvest(ser))
     if not info["tap_slots"] and len(info["ordinary_slots"]) > 15:
         newest = max(info["ordinary_slots"])
@@ -386,15 +406,13 @@ def interact_slot15(q, ser, info):
     ev["key"] = (
         "WM KEY " in delta_k
         or "TAP HIT" in delta_k
-        or "TAP CSD" in delta_k
         or "FILES KEY " in delta_k
         or "USER WRITE FILES" in delta_k
         or "USER WRITE STUDIO" in delta_k
         or "USER WRITE TAP" in delta_k
         or "USER WRITE SET" in delta_k
         or "USER WRITE PLAY" in delta_k
-        or "USER WRITE BROWSE" in delta_k
-        or ("TOP F" in delta_k and ev["focus"]))
+        or "USER WRITE BROWSE" in delta_k)
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines()
                            if ln.strip()][:6]
     # SE handle is the last 8 px of content plus border (wmResizeEdge).
@@ -495,7 +513,10 @@ def main():
     live = harvest(ser)
     live_info = live_from(live)
     tap_delta = live[len(tap_mark):]
-    tap_ready = "TAP READY" in tap_delta or "TAP READY" in live
+    tap_ready = (
+        "TAP READY" in tap_delta
+        or "TAP CSD" in tap_delta
+        or (tap_live and "TAP READY" in live))
     tap_die = "TAP DIE " in tap_delta
     refuse = live.count("WM REFUSE") + live.count("TAP DIE ATTACH")
     peak = max(len(live_info["ordinary_slots"]),
