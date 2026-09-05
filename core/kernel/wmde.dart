@@ -1708,10 +1708,11 @@ void wmLaunchHideRestore(u64 x, u64 y, u64 w, u64 h) {
     wmGfxMail();
     final u64 vacated = osgfx_chrome_vacate_geom(wmPackGeom(x, y, w, h));
     if (vacated < u64(1)) {
-      final u64 unused = vacated;
+      final u64 unused = wmRepaintRect(x, y, w, h);
     }
+  } else {
+    final u64 unused2 = wmRepaintRect(x, y, w, h);
   }
-  final u64 unused2 = wmRepaintRect(x, y, w, h);
 }
 
 /// Blits DESK overlay SHM (pre-committed glyphs) at the launch AABB,
