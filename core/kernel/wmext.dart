@@ -598,16 +598,13 @@ void wmMoveOp(u64 frame, u64 ptr, u64 id) {
   final u64 oh = wmGeomH(g);
   wmSetWin(slot, u64(wmWinGeom), wmPackGeom(nx, ny, ww, hh));
   wmeventEnqueueConfigure(slot);
-  u64 px = wmRepaintRect(ox, oy, ow + b + b, oh + b + b);
+  u64 px = u64(0);
   if (wmIsOverlay(slot) > u64(0)) {
-    if (wmOverlayParked(slot) > u64(0)) {
-      /* Park: restore the exact previous overlay rect. A full compose
-       * was the hide hitch on the shared 420×220 AABB. */
-      px = ow * oh;
-    } else {
-      px = px + wmRepaintWindow(slot);
-    }
+    /* Overlay MOVE is geom only. A 280×244 restore/blit here blocked
+     * the next F4 kind-7 present. DESK commit paints; park skips draw. */
+    px = ww * hh;
   } else {
+    px = wmRepaintRect(ox, oy, ow + b + b, oh + b + b);
     px = px + wmRepaintWindow(slot);
   }
   // Children of this root: their abs moved; repaint them too.

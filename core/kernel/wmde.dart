@@ -1675,15 +1675,18 @@ u64 wmPanelHit(u64 x, u64 y) {
   return u64(1);
 }
 
-/// Hides start or panel and restores the rectangle. Kind 1 still goes
-/// through [wmPopHide].
+/// Hides start or panel. With DESK's overlay the park MOVE restores
+/// the vacated rect; a second 280×244 [wmPopDamageRestore] here was
+/// the F4 present hitch (hide still running when the next open arrived).
 @bare
 void wmDePopHide() {
   final u64 k = wmMeta(u64(wmMetaPop));
   if (k == u64(wmPopLaunch)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
-    wmPopDamageRestore(
-        wmLaunchX(), wmLaunchY(), u64(wmLaunchW), wmLaunchBoxH());
+    if (wmPanelStrip() < u64(1)) {
+      wmPopDamageRestore(
+          wmLaunchX(), wmLaunchY(), u64(wmLaunchW), wmLaunchBoxH());
+    }
   }
   if (k == u64(wmPopPanel)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
@@ -1692,8 +1695,10 @@ void wmDePopHide() {
   }
   if (k == u64(wmPopSwitch)) {
     wmSetMeta(u64(wmMetaPop), u64(0));
-    wmPopDamageRestore(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
-        u64(wmSwitchH));
+    if (wmPanelStrip() < u64(1)) {
+      wmPopDamageRestore(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
+          u64(wmSwitchH));
+    }
   }
 }
 
