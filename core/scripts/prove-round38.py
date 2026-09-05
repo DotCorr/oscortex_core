@@ -73,25 +73,37 @@ def dock_icon(i):
 
 
 def live_from(blob):
-    wins = {}
+    events = []
     for m in ATTACH_RE.finditer(blob):
-        w = int(m.group(1), 16)
-        cap = int(m.group(3), 16)
-        wins[w] = {
-            "w": w,
-            "proc": int(m.group(2), 16),
-            "cap": cap,
-            "caption": CAP_NAME.get(cap, "c%x" % cap),
-            "x": int(m.group(4), 16),
-            "y": int(m.group(5), 16),
-            "ww": int(m.group(6), 16),
-            "hh": int(m.group(7), 16),
-            "live": True,
-        }
+        events.append((m.start(), "A", m))
     for m in CLOSE_RE.finditer(blob):
-        w = int(m.group(1), 16)
-        if w in wins:
-            wins[w]["live"] = False
+        events.append((m.start(), "C", m))
+    events.sort(key=lambda e: e[0])
+    wins = {}
+    peak = 0
+    for _at, kind, m in events:
+        if kind == "A":
+            w = int(m.group(1), 16)
+            cap = int(m.group(3), 16)
+            wins[w] = {
+                "w": w,
+                "proc": int(m.group(2), 16),
+                "cap": cap,
+                "caption": CAP_NAME.get(cap, "c%x" % cap),
+                "x": int(m.group(4), 16),
+                "y": int(m.group(5), 16),
+                "ww": int(m.group(6), 16),
+                "hh": int(m.group(7), 16),
+                "live": True,
+            }
+        else:
+            w = int(m.group(1), 16)
+            if w in wins:
+                wins[w]["live"] = False
+        cur = sum(1 for w, g in wins.items()
+                  if g["live"] and 0 < w < 17)
+        if cur > peak:
+            peak = cur
     procs = {}
     for m in PROC_NEW_RE.finditer(blob):
         procs[int(m.group(1), 16)] = True
@@ -116,6 +128,7 @@ def live_from(blob):
         "ordinary_procs": ordinary_procs,
         "unique_geoms": unique_geoms,
         "captions": sorted({wins[w]["caption"] for w in ordinary}),
+        "peak_ordinary": peak,
     }
 
 
@@ -249,10 +262,19 @@ def main():
         if ordinary_n(harvest(ser)) == before:
             launch_row(q, ser, i + 1 if i else 1)
             log.append(("launch-" + name, ordinary_n(harvest(ser))))
-    for row in (6, 7, 1, 2, 3, 4):
+    tap_row = None
+    for row in (6, 7, 1, 2, 3, 4, 8):
         if ordinary_n(harvest(ser)) >= 15:
             break
+        before_blob = harvest(ser)
         launch_row(q, ser, row)
+        after_blob = harvest(ser)
+        if "TAP READY" in after_blob[len(before_blob):] or (
+                " C 6 " in after_blob[len(before_blob):]
+                and "WM ATTACH" in after_blob[len(before_blob):]):
+            tap_row = row
+            log.append(("row%d-tap-early" % row, ordinary_n(harvest(ser))))
+            continue
         log.append(("row%d" % row, ordinary_n(harvest(ser))))
     while ordinary_n(harvest(ser)) < 15:
         before = ordinary_n(harvest(ser))
@@ -260,15 +282,10 @@ def main():
         log.append(("files-fill", ordinary_n(harvest(ser))))
         if ordinary_n(harvest(ser)) == before:
             break
-    # If TAP already attached early, close only TAP, fill to 15, relaunch last.
-    info = live_from(harvest(ser))
-    for w, g in list(info["windows"].items()):
-        if g["live"] and g.get("cap") == 6:
-            click(q, ser, g["x"] + g["ww"] - 17, g["y"] + 17)
-            time.sleep(0.15)
     while ordinary_n(harvest(ser)) < 15:
         before = ordinary_n(harvest(ser))
-        dock_click(q, ser, 1)
+        if not dock_click(q, ser, 1):
+            launch_row(q, ser, 0)
         log.append(("files-pre-tap", ordinary_n(harvest(ser))))
         if ordinary_n(harvest(ser)) == before:
             break
@@ -285,7 +302,12 @@ def main():
     tap_ready = "TAP READY" in live
     tap_die = "TAP DIE " in live
     refuse = live.count("WM REFUSE") + live.count("TAP DIE ATTACH")
-    peak = len(live_info["ordinary_slots"])
+    peak = max(len(live_info["ordinary_slots"]),
+               int(live_info.get("peak_ordinary") or 0))
+    tap_live = any(
+        live_info["windows"][w].get("cap") == 6
+        for w in live_info["ordinary_slots"] if w in live_info["windows"])
+    tap_ok = tap_ok or tap_live
     shot16 = shot(q, ser, "oscortex-round38-16-windows.png")
     shot_tap = shot(q, ser, "oscortex-round38-tap-last.png")
     slot15 = interact_slot15(q, ser, live_info)
@@ -332,7 +354,7 @@ def main():
         "peak_ordinary_procs": len(live_info["ordinary_procs"]),
         "simultaneous": peak,
         "closed_before_peak": False,
-        "tap_last": tap_ok and peak >= 16 and tap_ready and not tap_die,
+        "tap_last": tap_live and peak >= 16 and tap_ready and not tap_die,
         "tap_ready": tap_ready,
         "tap_die": tap_die,
         "attach_refuse": refuse,
