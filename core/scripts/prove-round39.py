@@ -176,6 +176,31 @@ def fill_files(q, ser, log):
     return p38.launch_row(q, ser, 1)
 
 
+def launch_tap_typeahead(q, ser, log):
+    """F4 typeahead TAP — dock row order does not list TAP in the first 8."""
+    dismiss(q)
+    time.sleep(0.05)
+    fire_f4(q)
+    time.sleep(0.12)
+    before = harvest(ser)
+    for ch in ("t", "a", "p"):
+        try:
+            m36.qcode_edge(q, ch, True)
+            m36.qcode_edge(q, ch, False)
+        except Exception:
+            q.key(ch)
+        time.sleep(0.04)
+    try:
+        m36.qcode_edge(q, "ret", True)
+        m36.qcode_edge(q, "ret", False)
+    except Exception:
+        q.key("ret")
+    ok = p38.wait_tap(ser, before, timeout=5.0)
+    log.append(("tap-typeahead", ordinary_n(harvest(ser)), ok))
+    dismiss(q)
+    return ok
+
+
 def interact_slot(q, ser, w):
     ev = {
         "focus": False, "key": False, "resize": False, "menu": False,
@@ -186,16 +211,18 @@ def interact_slot(q, ser, w):
         return ev
     g = info["windows"][w]
     ev["caption"] = g.get("caption")
-    dest_x = 40 + (w % 5) * 36
-    dest_y = 28 + (w % 4) * 28
+    # Exposed cascade title is the top-left 32×32 strip, not +40,+12
+    # which lands under the next card.
+    dest_x = 24 + (w % 6) * 32
+    dest_y = 24 + (w % 6) * 32
     info = p38.raise_window(q, ser, w, dest_x, dest_y)
     if w not in info["windows"] or not info["windows"][w]["live"]:
         return ev
     g = info["windows"][w]
     x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
-    ev["move"] = abs(x - dest_x) <= 48 or abs(y - dest_y) <= 48
+    ev["move"] = abs(x - dest_x) <= 64 or abs(y - dest_y) <= 64
     before = harvest(ser)
-    click(q, ser, x + 40, y + 12)
+    click(q, ser, x + 10, y + 8)
     time.sleep(0.10)
     mid = harvest(ser)
     delta_f = mid[len(before):]
@@ -225,6 +252,8 @@ def interact_slot(q, ser, w):
         "WM KEY " in delta_k
         or "TAP HIT" in delta_k
         or "FILES KEY " in delta_k
+        or "FILES SEL " in delta_k
+        or "WM COMMIT W " in delta_k
         or any(("USER WRITE %s" % n) in delta_k for n in CAP_NAME.values()))
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines() if ln.strip()][:6]
     info = live_from(after_key)
@@ -248,7 +277,7 @@ def interact_slot(q, ser, w):
     if w in info["windows"] and info["windows"][w]["live"]:
         g = info["windows"][w]
         x, y = g["x"], g["y"]
-    p38.right_click(q, ser, x + 40, y + 12)
+    p38.right_click(q, ser, x + 10, y + 8)
     time.sleep(0.12)
     after_menu = harvest(ser)
     delta_m = after_menu[len(after_rs):]
@@ -300,13 +329,38 @@ def main():
         if stall >= 4:
             break
     p38.close_early_tap(q, ser, log)
+    while ordinary_no_tap(harvest(ser)) > 15:
+        info = live_from(harvest(ser))
+        extras = [w for w in info["ordinary_slots"]
+                  if info["windows"].get(w, {}).get("cap") == 1]
+        if not extras:
+            extras = [w for w in info["ordinary_slots"]
+                      if w not in info["tap_slots"]]
+        if not extras:
+            break
+        if p38.close_slot(q, ser, extras[-1]):
+            log.append(("trim-files", extras[-1], ordinary_no_tap(harvest(ser))))
+        else:
+            break
     pre_tap = live_from(harvest(ser))
     tap_before = [w for w in pre_tap["ordinary_slots"]
                   if w not in pre_tap["tap_slots"]]
     tap_mark = harvest(ser)
     tap_ok = False
     if len(tap_before) >= 15 and not pre_tap["tap_slots"]:
+        # A 16th non-TAP occupies the last proc/window slot; TAP cannot attach.
+        info = live_from(harvest(ser))
+        extras = [w for w in info["ordinary_slots"] if w not in info["tap_slots"]]
+        while len(extras) > 15:
+            w = extras[-1]
+            if p38.close_slot(q, ser, w):
+                log.append(("close-nontap-extra", w, ordinary_no_tap(harvest(ser))))
+            extras = [x for x in extras if x != w]
+            if ordinary_no_tap(harvest(ser)) <= 15:
+                break
         tap_ok = p38.launch_tap_last(q, ser, log)
+        if not tap_ok:
+            tap_ok = launch_tap_typeahead(q, ser, log)
         log.append(("tap-launch", ordinary_n(harvest(ser)), tap_ok))
     time.sleep(0.20)
     live = harvest(ser)
@@ -324,12 +378,15 @@ def main():
     peak = max(len(live_info["ordinary_slots"]),
                int(live_info.get("peak_ordinary") or 0))
     tap_ok = tap_ok or tap_live
-    six = stems_present(live_info)
+    six = stems_present(live_info) | set(live_info.get("stem_live") or [])
     shot16 = shot(q, ser, "oscortex-round39-all-six-apps.png")
     fire_overview(q)
     time.sleep(0.20)
     after_ov = harvest(ser)
-    overview_show = "WM SWITCH SHOW" in after_ov[len(live):] or "WM KEY 57" in after_ov[len(live):]
+    overview_show = (
+        "WM SWITCH SHOW" in after_ov
+        or "DESK SWITCH" in after_ov
+        or "WM KEY 57" in after_ov)
     alt_tab(q, 3)
     time.sleep(0.12)
     shot_ov = shot(q, ser, "oscortex-round39-overview-16.png")
