@@ -36,6 +36,7 @@ typedef unsigned int u32;
  * (`wmIsPanel`) refuses a surface taller than the band, and its fallback strip
  * occupies exactly this many rows. de-desk asserts the three agree. */
 #define BAR_H 48UL
+#define SLOT_MAX 16UL
 
 /* Split glass dock (ADR-0197). Two islands on a full-width panel so
  * wmIsPanel still withdraws the fallback strip. Unused panel pixels
@@ -208,7 +209,6 @@ static char slot_stem[9];
 #define SLOT_FOCUS_A1 0x00A0C8F0UL
 #define SLOT_FOCUS_A2 0x00C8B0E0UL
 #define SLOT_FOCUS_A3 0x00C0D890UL
-#define SLOT_MAX 16UL
 static char name_set[] = "SET.ELF";
 static char name_files[] = "FILES.ELF";
 static char name_web[] = "BROWSE.ELF";
