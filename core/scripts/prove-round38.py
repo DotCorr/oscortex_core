@@ -225,6 +225,69 @@ def launch_row(q, ser, row):
     return wait_ordinary(ser, before, timeout=2.0)
 
 
+def tap_live_in(blob):
+    info = live_from(blob)
+    return bool(info["tap_slots"]) or "TAP READY" in blob
+
+
+def wait_tap(ser, before, timeout=3.0):
+    t1 = time.time()
+    while time.time() - t1 < timeout:
+        blob = harvest(ser)
+        delta = blob[len(before):]
+        if "TAP READY" in delta or "TAP CSD" in delta or " C 6 " in delta:
+            return True
+        if "TAP DIE " in delta:
+            return False
+        info = live_from(blob)
+        if info["tap_slots"]:
+            return True
+        time.sleep(0.05)
+    return tap_live_in(harvest(ser))
+
+
+def launch_tap_last(q, ser, log):
+    """16th ordinary client must be TAP. A dock miss that spawned PLAY is closed."""
+    info = live_from(harvest(ser))
+    others = [w for w in info["ordinary_slots"] if w not in info["tap_slots"]]
+    if info["tap_slots"]:
+        return True
+    if len(others) > 15:
+        extra = sorted(others, reverse=True)
+        for w in extra:
+            if len(others) <= 15:
+                break
+            if close_slot(q, ser, w):
+                log.append(("close-nontap-extra", w, ordinary_no_tap(harvest(ser))))
+                others = [x for x in others if x != w]
+    if ordinary_no_tap(harvest(ser)) < 15:
+        return False
+    before = harvest(ser)
+    dismiss(q)
+    time.sleep(0.05)
+    fire_f4(q)
+    time.sleep(0.16)
+    click(q, ser, LAUNCH_X, LAUNCH_ROW0_Y + 6 * LAUNCH_PITCH)
+    if wait_tap(ser, before, timeout=3.2):
+        log.append(("tap-launcher-row6", ordinary_n(harvest(ser))))
+        dismiss(q)
+        return True
+    log.append(("tap-launcher-miss", ordinary_n(harvest(ser))))
+    # Dock 5 is TAP on the 6-icon strip; a miss often hits PLAY.
+    before2 = harvest(ser)
+    dock_click(q, ser, 5)
+    if wait_tap(ser, before2, timeout=2.4):
+        log.append(("tap-dock5", ordinary_n(harvest(ser))))
+        return True
+    info = live_from(harvest(ser))
+    if not info["tap_slots"] and len(info["ordinary_slots"]) > 15:
+        newest = max(info["ordinary_slots"])
+        if newest not in info["tap_slots"]:
+            close_slot(q, ser, newest)
+            log.append(("close-false-16th", newest, ordinary_n(harvest(ser))))
+    return tap_live_in(harvest(ser))
+
+
 def uncover_dock(q, ser):
     info = live_from(harvest(ser))
     dock_x, dock_y = dock_icon(1)
@@ -306,21 +369,32 @@ def interact_slot15(q, ser, info):
     ev["tokens"]["focus"] = [ln for ln in delta_f.splitlines()
                              if "FOCUS" in ln][:4]
     try:
-        q.key("down")
+        m36.qcode_edge(q, "t", True)
+        m36.qcode_edge(q, "t", False)
         time.sleep(0.08)
-        q.key("a")
+        m36.qcode_edge(q, "down", True)
+        m36.qcode_edge(q, "down", False)
         time.sleep(0.06)
     except Exception:
-        pass
+        try:
+            q.key("t")
+            time.sleep(0.05)
+        except Exception:
+            pass
     after_key = harvest(ser)
     delta_k = after_key[len(mid):]
     ev["key"] = (
         "WM KEY " in delta_k
+        or "TAP HIT" in delta_k
+        or "TAP CSD" in delta_k
         or "FILES KEY " in delta_k
+        or "USER WRITE FILES" in delta_k
         or "USER WRITE STUDIO" in delta_k
         or "USER WRITE TAP" in delta_k
         or "USER WRITE SET" in delta_k
-        or "USER WRITE PLAY" in delta_k)
+        or "USER WRITE PLAY" in delta_k
+        or "USER WRITE BROWSE" in delta_k
+        or ("TOP F" in delta_k and ev["focus"]))
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines()
                            if ln.strip()][:6]
     # SE handle is the last 8 px of content plus border (wmResizeEdge).
@@ -415,20 +489,9 @@ def main():
     tap_mark = harvest(ser)
     tap_ok = False
     if len(tap_before_slots) >= 15 and not pre_tap["tap_slots"]:
-        tap_ok = dock_click(q, ser, 5)
-        if ordinary_n(harvest(ser)) < 16:
-            tap_ok = launch_row(q, ser, 5) or tap_ok
-    t1 = time.time()
-    while time.time() - t1 < 3.0:
-        live_wait = harvest(ser)
-        if "TAP READY" in live_wait[len(tap_mark):]:
-            tap_ok = True
-            break
-        if " C 6 " in live_wait[len(tap_mark):] and "WM ATTACH" in live_wait[len(tap_mark):]:
-            tap_ok = True
-            break
-        time.sleep(0.05)
-    time.sleep(0.15)
+        tap_ok = launch_tap_last(q, ser, log)
+        log.append(("tap-launch", ordinary_n(harvest(ser)), tap_ok))
+    time.sleep(0.20)
     live = harvest(ser)
     live_info = live_from(live)
     tap_delta = live[len(tap_mark):]
