@@ -771,13 +771,31 @@ def write_overlay_json(art, launcher, switcher, park_ok):
     return payload
 
 
+def qcode_edge(q, name, down):
+    """One edge. send-key is a hold and added ~150ms to F4 walls."""
+    q.cmd("input-send-event", events=[{
+        "type": "key",
+        "data": {"down": down, "key": {"type": "qcode", "data": name}},
+    }])
+
+
+def fire_f4(q):
+    qcode_edge(q, "f4", True)
+    qcode_edge(q, "f4", False)
+
+
+def dismiss_esc(q):
+    qcode_edge(q, "esc", True)
+    qcode_edge(q, "esc", False)
+
+
 def run_overlay_bursts(q, ser):
     wallpaper_park(q, ser)
     serial_idle(os.environ.get("DRIVE_SERIAL_FILE", ""), quiet=0.2, timeout=3.0)
     launcher = overlay_kind_burst(
         q, ser, "launcher",
-        fire=lambda: q.key("f4"),
-        dismiss=lambda: q.key("esc"),
+        fire=lambda: fire_f4(q),
+        dismiss=lambda: dismiss_esc(q),
         kind=KIND_LAUNCH,
         n=max(50, int(os.environ.get("DRIVE_LAUNCH_N", "50"))))
     fire_switcher_up(q)
