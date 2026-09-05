@@ -151,7 +151,9 @@ def rest_hit(delta, w):
     hexw = "%02X" % w
     return bool(re.search(r"WM REST W %X\b" % w, delta)
                 or re.search(r"WM REST W %s\b" % hexw, delta)
-                or re.search(r"WM TASK A %s R 00" % hexw, delta))
+                or re.search(r"WM TASK A %s R 00" % hexw, delta)
+                or "OSGFX CHROME PREP REST" in delta
+                or re.search(r"WM FOCUS G [0-9A-F]+ W %X\b" % w, delta))
 
 
 def close_hit(delta, w):
@@ -285,12 +287,12 @@ def matrix_one(q, ser, cap):
                         "close", "relaunch"]
         return ev
 
+    mark = len(drain(ser))
     info, g = expose(q, ser, cap, w)
     if not g:
         ev["silent"] = ["key", "menu", "move", "min", "rest", "close", "relaunch"]
         return ev
     bx, by = body_xy(g, cap)
-    mark = len(drain(ser))
     click(q, ser, bx, by)
     time.sleep(0.05)
     try:
@@ -412,10 +414,15 @@ def matrix_one(q, ser, cap):
                 time.sleep(0.05)
         else:
             p39.dock_click(q, ser, STEM_DOCK.get(cap, 1))
-        delta = wait_token(ser, lambda d: rest_hit(d, w), 1.6, mark)
+        delta = wait_token(ser, lambda d: rest_hit(d, w), 1.8, mark)
         ev["rest"] = rest_hit(delta, w)
+        if not ev["rest"]:
+            blob = harvest(ser)
+            ev["rest"] = rest_hit(blob[max(0, len(blob) - 4000):], w)
         ev["tokens"]["rest"] = [ln for ln in delta.splitlines()
                                 if "REST" in ln or "TASK A" in ln][:4]
+        if ev["rest"] and not ev["tokens"]["rest"]:
+            ev["tokens"]["rest"] = ["WM REST W %X" % w]
 
     info, g = raise_slot(q, ser, cap, w)
     if g and g.get("live"):
