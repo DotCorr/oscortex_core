@@ -46,15 +46,23 @@ def main():
             "/workspace/core/build/daily-drive-r39/serial.txt")
     ser = d15.Serial(serial_path, sock)
     fps = float(os.environ.get("DRIVE_GUEST_FPS", "8"))
+    want = float(os.environ.get("DRIVE_GUEST_SECS", "42"))
     dt = 1.0 / fps
     n = 0
 
-    def dump(_tag):
+    def dump(_tag=""):
         nonlocal n
         n += 1
         path = os.path.join(framedir, "g%05d.png" % n)
         d15.shot(q, path)
         return path
+
+    def hold(secs):
+        t = time.time()
+        dump("hold")
+        while time.time() - t < secs:
+            time.sleep(dt)
+            dump("hold")
 
     def click(x, y):
         d15.place(q, ser, x, y)
@@ -73,72 +81,55 @@ def main():
     dump("start")
     # Wallpaper-miss park (400,500 stays clear of leftover windows).
     click(400, 500)
-    time.sleep(0.12)
-    dump("park")
+    hold(1.2)
     # Launcher catalog.
     q.key("f4")
-    time.sleep(0.25)
-    dump("launcher")
-    time.sleep(dt)
-    dump("launcher2")
+    hold(2.4)
     q.key("esc")
-    time.sleep(0.12)
-    dump("launcher-off")
-    # Switcher.
+    hold(1.0)
+    # Switcher / overview so high slots are reachable.
     key_edge("alt", True)
     time.sleep(0.04)
     key_edge("tab", True)
     key_edge("tab", False)
-    time.sleep(0.18)
-    dump("switcher")
+    hold(1.6)
     key_edge("tab", True)
     key_edge("tab", False)
-    time.sleep(0.12)
-    dump("switcher2")
+    hold(1.2)
     key_edge("alt", False)
-    time.sleep(0.1)
-    dump("switcher-off")
-    # Overview grid (F11) so high slots are reachable, not buried.
+    hold(0.8)
     q.key("f11")
-    time.sleep(0.22)
-    dump("overview")
+    hold(2.2)
     key_edge("tab", True)
     key_edge("tab", False)
-    time.sleep(0.12)
-    dump("overview-high")
+    hold(1.4)
     q.key("esc")
-    time.sleep(0.1)
-    dump("overview-off")
+    hold(0.8)
     # Dock apps: SET FILES BROWSE PLAY STUDIO, then TAP last.
     for i, tag in enumerate(("set", "files", "browse", "play", "studio")):
         x, y = dock_xy(i)
         click(x, y)
-        time.sleep(0.28)
-        dump(tag)
+        hold(2.0)
     tx, ty = dock_xy(5)
     click(tx, ty)
-    time.sleep(0.35)
-    dump("tap-last")
+    hold(2.4)
     click(400, 500)
-    time.sleep(0.1)
-    dump("all-apps")
+    hold(0.8)
     # Close + relaunch FILES, then TAP again under occupancy.
     fx, fy = dock_xy(1)
     click(fx, fy)
-    time.sleep(0.15)
-    dump("files-focus")
+    hold(1.2)
     q.key("esc")
-    time.sleep(0.08)
+    hold(0.6)
     click(fx, fy)
-    time.sleep(0.2)
-    dump("files-relaunch")
+    hold(1.6)
     click(tx, ty)
-    time.sleep(0.25)
-    dump("tap-relaunch")
+    hold(2.0)
     sx, sy = dock_xy(4)
     click(sx, sy)
-    time.sleep(0.2)
-    dump("studio")
+    hold(1.4)
+    while time.time() - t0 < want:
+        hold(0.4)
     elapsed = time.time() - t0
     cmd = [
         "ffmpeg", "-y", "-framerate", str(max(1, int(fps))),
