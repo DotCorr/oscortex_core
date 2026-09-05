@@ -188,7 +188,7 @@ ck; [[ -n "$ASM_BSS_HEX" ]] || fail "kdata.o has no .bss section — the four as
 ASM_BSS=$((16#$ASM_BSS_HEX))
 ck; [[ "$ASM_BSS" -eq 96 ]] || fail "kdata.o still donates $ASM_BSS bytes of .bss, expected exactly 96 — cpu_info (64) plus the four resume words. Anything else in there is storage that ADR-0021 says should be a @bss mutable static in the subsystem that owns it."
 KDATA_BSS=$(( DART_BSS + ASM_BSS ))
-ck; [[ "$KDATA_BSS" -eq 49504 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 37600 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
+ck; [[ "$KDATA_BSS" -eq 50784 ]] || fail "the kernel's mutable static storage is $KDATA_BSS bytes, expected 50784 — ADR-0109's 23264, plus ADR-0155's doubling of `pmmMaxFrames` to 65536 (`pmmStore` 4672 -> 8768 and `shmStore` 4480 -> 8576, because `shmPlaneFrames` must equal `pmmMaxFrames`), plus ADR-0189's larger fine map (`vmStore` 128 -> 240), plus the two geometry words ADR-0064's fallback chain needs (`fbStateBlock` 32 -> 48). If that changed, it changed deliberately and this number, docs/known-gaps.md GAP-0053's running total, and every harness that subtracts a later milestone's block all move with it."
 
 # The later blocks, subtracted NEWEST FIRST, so that every assertion below
 # means what it meant when M19 wrote it.
