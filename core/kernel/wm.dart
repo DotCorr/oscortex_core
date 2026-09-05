@@ -2993,15 +2993,6 @@ u64 wmGeomIsOverlay(u64 ww, u64 hh) {
       }
     }
   }
-  if (hh >= u64(wmOverlaySwitchH)) {
-    if (hh <= u64(wmOverlayOverH)) {
-      if (ww >= u64(wmOverlaySwitchWMin)) {
-        if (ww <= u64(wmOverlaySwitchWMax)) {
-          return u64(1);
-        }
-      }
-    }
-  }
   return u64(0);
 }
 
