@@ -50,7 +50,7 @@ VIS_RE = re.compile(
 CTX_RE = re.compile(r"WM CTX [A-Z]+")
 FOCUS_SLOT_RE = re.compile(r"WM FOCUS G [0-9A-F]+ W ([0-9A-F]+)")
 NON_TAP_DOCK = (1, 0, 2, 3, 4)  # FILES SET BROWSE PLAY STUDIO
-NON_TAP_ROWS = (0, 1, 2, 3, 4, 5, 7)  # skip launcher row 6 = TAP
+NON_TAP_ROWS = (1, 0, 2, 3, 4)  # SET FILES BROWSE PLAY STUDIO; 5+ is TAP
 
 
 def harvest(ser):
@@ -254,15 +254,28 @@ def slot15_geom(info):
     return g["x"], g["y"], g["ww"], g["hh"]
 
 
-def raise_slot15(q, ser, info):
-    """Drag title to a clear origin so SE/close/body are on top."""
-    x, y, ww, hh = slot15_geom(info)
-    dest_x, dest_y = 48, 40
+def raise_window(q, ser, w, dest_x, dest_y):
+    """Drag a live title to dest so SE/close/body are on top and visible."""
+    info = live_from(harvest(ser))
+    if w not in info["windows"] or not info["windows"][w]["live"]:
+        return info
+    g = info["windows"][w]
+    x, y = g["x"], g["y"]
+    click(q, ser, x + 40, y + 12)
+    time.sleep(0.08)
+    info = live_from(harvest(ser))
+    if w not in info["windows"] or not info["windows"][w]["live"]:
+        return info
+    g = info["windows"][w]
+    x, y = g["x"], g["y"]
     if abs(x - dest_x) > 8 or abs(y - dest_y) > 8:
         drag(q, ser, x + 36, y + 10, dest_x + 36, dest_y + 10, steps=10)
         time.sleep(0.12)
-    info = live_from(harvest(ser))
-    return info
+    return live_from(harvest(ser))
+
+
+def raise_slot15(q, ser, info):
+    return raise_window(q, ser, 15, 48, 40)
 
 
 def interact_slot15(q, ser, info):
@@ -303,11 +316,11 @@ def interact_slot15(q, ser, info):
     delta_k = after_key[len(mid):]
     ev["key"] = (
         "WM KEY " in delta_k
-        or "USER WRITE FILES" in delta_k
-        or "FILES SEL" in delta_k
-        or "FILES ROW" in delta_k
-        or "TAP " in delta_k
-        or "STUDIO" in delta_k)
+        or "FILES KEY " in delta_k
+        or "USER WRITE STUDIO" in delta_k
+        or "USER WRITE TAP" in delta_k
+        or "USER WRITE SET" in delta_k
+        or "USER WRITE PLAY" in delta_k)
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines()
                            if ln.strip()][:6]
     # SE handle is the last 8 px of content plus border (wmResizeEdge).
@@ -327,13 +340,14 @@ def interact_slot15(q, ser, info):
     info = live_from(after_rs)
     if 15 in info["windows"] and info["windows"][15]["live"]:
         x, y, ww, hh = slot15_geom(info)
-    right_click(q, ser, x + max(24, ww // 2), y + max(40, hh // 2))
+    # Title right-press is the compositor window menu (WM CTX TITLE + kind 4).
+    right_click(q, ser, x + 40, y + 12)
     time.sleep(0.12)
     after_menu = harvest(ser)
     delta_m = after_menu[len(after_rs):]
     ev["menu"] = (
-        CTX_RE.search(delta_m) is not None
-        or "WM WALL MENU" in delta_m
+        "WM CTX TITLE" in delta_m
+        or CTX_RE.search(delta_m) is not None
         or "WM CTX " in delta_m
         or re.search(r"WM DONE [0-9A-F]+ K 04 ", delta_m) is not None)
     ev["tokens"]["menu"] = [ln for ln in delta_m.splitlines()
@@ -398,16 +412,28 @@ def main():
     pre_tap = live_from(harvest(ser))
     tap_before_slots = [w for w in pre_tap["ordinary_slots"]
                         if w not in pre_tap["tap_slots"]]
+    tap_mark = harvest(ser)
     tap_ok = False
     if len(tap_before_slots) >= 15 and not pre_tap["tap_slots"]:
         tap_ok = dock_click(q, ser, 5)
         if ordinary_n(harvest(ser)) < 16:
-            tap_ok = launch_row(q, ser, 6) or tap_ok
+            tap_ok = launch_row(q, ser, 5) or tap_ok
+    t1 = time.time()
+    while time.time() - t1 < 3.0:
+        live_wait = harvest(ser)
+        if "TAP READY" in live_wait[len(tap_mark):]:
+            tap_ok = True
+            break
+        if " C 6 " in live_wait[len(tap_mark):] and "WM ATTACH" in live_wait[len(tap_mark):]:
+            tap_ok = True
+            break
+        time.sleep(0.05)
     time.sleep(0.15)
     live = harvest(ser)
     live_info = live_from(live)
-    tap_ready = "TAP READY" in live
-    tap_die = "TAP DIE " in live
+    tap_delta = live[len(tap_mark):]
+    tap_ready = "TAP READY" in tap_delta or "TAP READY" in live
+    tap_die = "TAP DIE " in tap_delta
     refuse = live.count("WM REFUSE") + live.count("TAP DIE ATTACH")
     peak = max(len(live_info["ordinary_slots"]),
                int(live_info.get("peak_ordinary") or 0))
@@ -416,7 +442,14 @@ def main():
         for w in live_info["ordinary_slots"] if w in live_info["windows"])
     tap_ok = tap_ok or tap_live
     shot16 = shot(q, ser, "oscortex-round38-16-windows.png")
+    # Raise TAP so the last-at-occupancy shot is not a duplicate dump.
+    if live_info.get("tap_slots"):
+        live_info = raise_window(q, ser, live_info["tap_slots"][0], 720, 80)
+        time.sleep(0.10)
     shot_tap = shot(q, ser, "oscortex-round38-tap-last.png")
+    tap_shot_distinct = (
+        shot16.get("sha256") != shot_tap.get("sha256")
+        and bool(shot16.get("sha256")) and bool(shot_tap.get("sha256")))
     slot15 = interact_slot15(q, ser, live_info)
     shot15 = shot(q, ser, "oscortex-round38-high-slot-events.png")
     after_ev = harvest(ser)
@@ -438,7 +471,8 @@ def main():
     tap_last = (
         tap_live and peak >= 16 and tap_ready and not tap_die
         and len(tap_before_slots) >= 15
-        and not pre_tap["tap_slots"])
+        and not pre_tap["tap_slots"]
+        and tap_shot_distinct)
     ring_corrupt = (
         after_ev.count("FAULT ") + after_ev.count("OSGFX OOM")
         + after_ev.count("REAP "))
@@ -479,6 +513,7 @@ def main():
             w >= 17 for w in live_info["overlay_slots"]),
         "overlay_events": overlay_ev,
         "shots": {"windows": shot16, "tap": shot_tap, "slot15": shot15},
+        "tap_shot_distinct": tap_shot_distinct,
         "oom": live.count("OSGFX OOM"),
         "fault": after_ev.count("FAULT "),
         "reap": after_ev.count("REAP "),
@@ -516,6 +551,7 @@ def main():
         "refuse": refuse,
         "pre_tap_ordinary_n": len(tap_before_slots),
         "pre_tap_had_tap": bool(pre_tap["tap_slots"]),
+        "tap_shot_distinct": tap_shot_distinct,
         "pass": bool(tap_last and refuse == 0),
     }
     open(os.path.join(ART, "oscortex-round38-tap.json"), "w").write(
@@ -526,6 +562,7 @@ def main():
         "pre_tap": len(tap_before_slots),
         "overlays": live_info["overlay_slots"],
         "tap_last": payload["tap_last"],
+        "tap_shot_distinct": tap_shot_distinct,
         "refuse": refuse,
         "slot15": {k: slot15.get(k) for k in (
             "focus", "key", "resize", "menu", "close", "slot")},
