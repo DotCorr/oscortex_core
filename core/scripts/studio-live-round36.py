@@ -212,10 +212,23 @@ def main():
     click(q, ser, fg[0] + 80, fg[1] + 16)
     time.sleep(0.1)
     row = note_row(harvest(ser))
+    try:
+        key_edge(q, "ctrl", False)
+    except Exception:
+        pass
     marked_ow = harvest(ser)
-    q.key("n")
-    wait_tok(ser, "FILES KEY N", marked_ow, 1.5)
-    q.key("ret")
+    key_edge(q, "n", True)
+    key_edge(q, "n", False)
+    got_key = wait_tok(ser, "FILES KEY N", marked_ow, 1.5)
+    if not got_key:
+        for _ in range(20):
+            q.key("up")
+            time.sleep(0.02)
+        for _ in range(row):
+            q.key("down")
+            time.sleep(0.025)
+    key_edge(q, "ret", True)
+    key_edge(q, "ret", False)
     handoff = wait_tok(ser, "FILES OPEN STUDIO", marked_ow, 3.0)
     studio_ow = wait_tok(ser, "STUDIO OPENWITH", marked_ow, 3.0)
     studio_open = wait_tok(ser, "STUDIO OPEN ", marked_ow, 2.0)
