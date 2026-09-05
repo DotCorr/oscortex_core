@@ -110,6 +110,7 @@ static u64 last_launch_sel;
 static u64 last_launch_paint;
 static u64 last_launch_q;
 static u64 launch_hold;
+static u64 park_hold;
 static u64 launch_fb_gen;
 static u64 last_pref;
 static u64 seq;
@@ -1331,6 +1332,7 @@ void desk_main(u64 sp) {
   last_launch_paint = 0;
   last_launch_q = 0xFFFFFFFFFFFFFFFFUL;
   launch_hold = 0;
+  park_hold = 0;
   launch_fb_gen = 0xFFFFFFFFFFFFFFFFUL;
   last_pref = osxui_app_pref();
   icon_n = ICON_N;
@@ -1363,8 +1365,18 @@ void desk_main(u64 sp) {
         last_pop = pop;
         last_launch_sel = lsel;
         sync_menu(pop);
+        park_hold = 0;
       } else if (OSXUI_POP_KIND(pop) == 0) {
         launch_cache_paint();
+        /* Geom-only park after a long hide. Immediate MOVE+commit of
+         * 280×244 on hide blocked the next F4; 80 idle yields is off
+         * that path and clears leftover overlay residue. */
+        if (menu_h != 0) {
+          park_hold = park_hold + 1UL;
+          if (park_hold == 80UL) {
+            osxui_app_place(menu_h, 8UL, 8UL, overlay_w, overlay_h);
+          }
+        }
       } else if (OSXUI_POP_KIND(pop) == 2UL) {
         launch_hold = launch_hold + 1UL;
         if (launch_hold == 64UL) {

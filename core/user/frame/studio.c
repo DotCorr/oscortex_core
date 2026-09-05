@@ -549,6 +549,9 @@ static void studio_find_next(void) {
   u64 i;
   unsigned n;
   if (find_n < 1) {
+    n = put(0, msg_find);
+    n = put(n, "0");
+    emit(n);
     return;
   }
   i = find_at + 1;

@@ -209,6 +209,7 @@ static const char path_studio[] = "STUDIO.ELF";
 static const char new_body[] = "note\n";
 static const char path_gone[] = "GONE.DAT";
 static const char path_miss[] = "MISS.DAT";
+static const char path_pins[] = "PINS.DAT";
 static const char msg_retry[] = "FILES RETRY";
 static const char msg_dir[] = "FILES DIR ";
 #if FILES_NO_ICON == 0
@@ -1789,6 +1790,9 @@ static u64 files_plant_skip(u64 row) {
       return 1;
     }
     if (same_bytes(dotted[row], 8, path_miss, 8) > 0) {
+      return 1;
+    }
+    if (same_bytes(dotted[row], 8, path_pins, 8) > 0) {
       return 1;
     }
   }

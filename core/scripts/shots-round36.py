@@ -138,32 +138,38 @@ def main():
     # STUDIO from dock; live chords on the real card.
     marked_st = harvest(ser)
     click(q, ser, dock_xy(4)[0], dock_xy(4)[1])
-    studio_ready = wait_tok(ser, "STUDIO READY", marked_st, 4.0) or wait_tok(
+    studio_ready = wait_tok(ser, "STUDIO2 READY", marked_st, 4.0) or wait_tok(
+        ser, "STUDIO READY", marked_st, 1.0) or wait_tok(
         ser, "STUDIO CSD", marked_st, 3.0)
     sg = None
     blob = harvest(ser)
+    last_st = None
     for m in cs.ATTACH_RE.finditer(blob):
-        # caption 5 = STUDIO
-        pass
-    # Prefer last STUDIO-looking attach: 320x220 at y=40 is the known card.
-    last = None
-    for m in cs.ATTACH_RE.finditer(blob):
-        last = (
-            int(m.group(4), 16), int(m.group(5), 16),
-            int(m.group(6), 16), int(m.group(7), 16),
-        )
-    sg = last or (464, 40, 320, 220)
+        if int(m.group(3), 16) == 5 and int(m.group(6), 16) >= 200:
+            last_st = (
+                int(m.group(4), 16), int(m.group(5), 16),
+                int(m.group(6), 16), int(m.group(7), 16),
+            )
+    sg = last_st or (48, 56, 320, 220)
     # Focus STUDIO body, not FILES.
     click(q, ser, sg[0] + 80, sg[1] + 120)
     time.sleep(0.2)
     marked_ed = harvest(ser)
-    combo(q, "ctrl", "n")
+
+    def chord(*names):
+        for n in names:
+            key_edge(q, n, True)
+        time.sleep(0.03)
+        for n in reversed(names):
+            key_edge(q, n, False)
+
+    chord("ctrl", "n")
     studio_new = wait_tok(ser, "STUDIO NEW ", marked_ed, 1.8)
-    combo(q, "ctrl", "f")
+    chord("ctrl", "f")
     studio_find = wait_tok(ser, "STUDIO FIND ", marked_ed, 1.5)
-    combo(q, "ctrl", "tab")
+    chord("ctrl", "tab")
     studio_tab = wait_tok(ser, "STUDIO TAB ", marked_ed, 1.5)
-    combo(q, "ctrl", "a")
+    chord("ctrl", "a")
     studio_saveas = wait_tok(ser, "STUDIO SAVEAS ", marked_ed, 1.5)
     q.key("right")
     studio_caret = wait_tok(ser, "STUDIO CARET ", marked_ed, 1.2)
