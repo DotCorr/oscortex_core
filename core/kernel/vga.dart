@@ -359,11 +359,14 @@ void conPutc(u8 c) {
     uartIrqPutc(c);
     return;
   }
-  uartPutc(c);
+  /* Mark the line open BEFORE the 16550 store so a timer leave
+   * between putc and the flag cannot kick SCAN into this line. */
   if (c == u8(0x0A)) {
+    uartPutc(c);
     uartLineSet(u64(0));
   } else {
     uartLineSet(u64(1));
+    uartPutc(c);
   }
   // Then EXACTLY ONE of the two screens -- see the note above on why it cannot
   // be both.
