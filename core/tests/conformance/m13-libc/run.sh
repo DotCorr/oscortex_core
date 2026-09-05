@@ -274,7 +274,7 @@ KDATA_BSS=$DART_BSS
 D7_OFF_HEX=$(bssoff wmeventStore)
 ck; [[ -n "$D7_OFF_HEX" ]] || fail "wmeventStore has no .bss offset in kmain.o -- D7's click-event block (ADR-0055) is missing"
 D7_BSS=$(( KDATA_BSS - 16#$D7_OFF_HEX ))
-ck; [[ "$D7_BSS" -eq 768 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 768. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
+ck; [[ "$D7_BSS" -eq 1920 ]] || fail "the bytes from D7's wmeventStore to the end of .bss are $D7_BSS, expected 1920. If that block changed size, change it in ADR-0109, in GAP-0053's running total, and in every harness that subtracts it."
 KDATA_BSS=$(( KDATA_BSS - D7_BSS ))
 D2_OFF_HEX=$(bssoff kbdqStore)
 ck; [[ -n "$D2_OFF_HEX" ]] || fail "kbdqStore has no .bss offset in kmain.o -- D2's input-queue block (ADR-0054) is missing"

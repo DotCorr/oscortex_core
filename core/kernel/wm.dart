@@ -2070,6 +2070,70 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if (n < u64(1)) {
     return (x << u64(32)) | y;
   }
+  /* 800×600 de-geom keeps tile-right / stack-below. 1280 DESK uses
+   * the workspace grid so sixteen ordinary windows stay off the dock. */
+  if (fbGeomWidth() < u64(1200)) {
+    final u64 prev = wmPlacePrev();
+    if (prev >= u64(wmMaxWindows)) {
+      return (x << u64(32)) | y;
+    }
+    final u64 b0 = u64(wmBorder);
+    final u64 gap = u64(16);
+    final u64 minW = u64(240);
+    final u64 minH = u64(160);
+    final u64 g = wmWin(prev, u64(wmWinGeom));
+    final u64 px = wmGeomX(g);
+    final u64 py = wmGeomY(g);
+    final u64 pw = wmGeomW(g);
+    final u64 ph = wmGeomH(g);
+    u64 nx0 = px + pw + gap;
+    u64 ny0 = py;
+    u64 remainW = u64(0);
+    if (fbGeomWidth() > (b0 + nx0)) {
+      remainW = fbGeomWidth() - b0 - nx0;
+    }
+    if (remainW >= minW) {
+      if ((ny0 + h + u64(wmChromeH) + b0) > fbGeomHeight()) {
+        if (fbGeomHeight() > (u64(wmChromeH) + b0 + h)) {
+          ny0 = fbGeomHeight() - u64(wmChromeH) - b0 - h;
+        } else {
+          ny0 = b0;
+        }
+      }
+    } else {
+      nx0 = px;
+      ny0 = py + ph + gap;
+      u64 remainH = u64(0);
+      if (fbGeomHeight() > (u64(wmChromeH) + b0 + ny0)) {
+        remainH = fbGeomHeight() - u64(wmChromeH) - b0 - ny0;
+      }
+      if (remainH < minH) {
+        nx0 = px + u64(40);
+        ny0 = py + u64(40);
+      }
+    }
+    if (nx0 < b0) {
+      nx0 = b0;
+    }
+    if (ny0 < b0) {
+      ny0 = b0;
+    }
+    u64 maxX0 = fbGeomWidth() - b0 - minW;
+    u64 maxY0 = fbGeomHeight() - u64(wmChromeH) - b0 - minH;
+    if (maxX0 < b0) {
+      maxX0 = b0;
+    }
+    if (maxY0 < b0) {
+      maxY0 = b0;
+    }
+    if (nx0 > maxX0) {
+      nx0 = maxX0;
+    }
+    if (ny0 > maxY0) {
+      ny0 = maxY0;
+    }
+    return (nx0 << u64(32)) | ny0;
+  }
   final u64 b = u64(wmBorder);
   final u64 cols = u64(4);
   final u64 pitchX = u64(188);
@@ -2202,8 +2266,14 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
     /* 1280 tile: grant SET 320 so commit stride matches the visible
      * column. remainW after FILES is ~814, so PlaceExtent would keep 440. */
     if (fbGeomWidth() >= u64(1200)) {
-      if (w > u64(200)) {
-        w = u64(200);
+      if (wmSwitchCount() >= u64(3)) {
+        if (w > u64(200)) {
+          w = u64(200);
+        }
+      } else {
+        if (w > u64(320)) {
+          w = u64(320);
+        }
       }
     }
   }

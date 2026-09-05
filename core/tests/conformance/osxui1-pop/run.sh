@@ -181,7 +181,7 @@ EV_OFF=$(bssoff wmeventStore)
 KBDQ_OFF=$(bssoff kbdqStore)
 KBDQ_SIZE=$(bsssize kbdqStore)
 ck; [[ "$WM_SIZE" -eq 1472 ]] || fail "the image has wmStore ${WM_SIZE:-missing}, expected 1472"
-ck; [[ "$EV_SIZE" -eq 768 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 768"
+ck; [[ "$EV_SIZE" -eq 1920 ]] || fail "wmeventStore is ${EV_SIZE:-missing} bytes, expected 1920"
 DART_BSS_HEX=$(x86_64-elf-objdump -h "$CORE_DIR/build/kmain.o" | awk '$2==".bss"{print $3; exit}')
 DART_BSS=$((16#$DART_BSS_HEX))
 ck; [[ $(( 16#$EV_OFF + EV_SIZE )) -eq "$DART_BSS" ]] \

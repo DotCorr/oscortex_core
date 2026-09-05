@@ -161,7 +161,7 @@ KDATA_BSS=$(( DART_BSS + ASM_BSS ))
 # D7 (ADR-0055) added a block AFTER D2's and is the last one in .bss now, so it
 # is subtracted FIRST -- exactly the accounting D2 itself gave D4.
 WMEVENT_STORE_SIZE=$(bsssize wmeventStore)
-[[ "$WMEVENT_STORE_SIZE" == "768" ]] || fail "wmeventStore is ${WMEVENT_STORE_SIZE:-missing} bytes, expected 768 (ADR-0055)"
+[[ "$WMEVENT_STORE_SIZE" == "1920" ]] || fail "wmeventStore is ${WMEVENT_STORE_SIZE:-missing} bytes, expected 1920 (one ring per wmMaxWindows)"
 WMEVENT_OFF=$(bssoff wmeventStore)
 [[ -n "$WMEVENT_OFF" ]] || fail "wmeventStore has no .bss offset in kmain.o"
 [[ $(( 16#$WMEVENT_OFF + WMEVENT_STORE_SIZE )) -eq "$DART_BSS" ]] \
