@@ -57,6 +57,19 @@ def harvest(ser):
     return bar38.harvest_text(ser)
 
 
+def apply_vis_event(wins, m):
+    w = int(m.group(1), 16)
+    ww = int(m.group(4), 16)
+    hh = int(m.group(5), 16)
+    if ww < 1 or hh < 1:
+        return
+    if w in wins and wins[w].get("live"):
+        wins[w]["x"] = int(m.group(2), 16)
+        wins[w]["y"] = int(m.group(3), 16)
+        wins[w]["ww"] = ww
+        wins[w]["hh"] = hh
+
+
 def apply_vis(blob, wins):
     last_att = {}
     for m in ATTACH_RE.finditer(blob):
@@ -115,6 +128,8 @@ def live_from(blob):
         events.append((m.start(), "A", m))
     for m in CLOSE_RE.finditer(blob):
         events.append((m.start(), "C", m))
+    for m in VIS_RE.finditer(blob):
+        events.append((m.start(), "V", m))
     events.sort(key=lambda e: e[0])
     wins = {}
     peak = 0
@@ -133,10 +148,12 @@ def live_from(blob):
                 "hh": int(m.group(7), 16),
                 "live": True,
             }
-        else:
+        elif kind == "C":
             w = int(m.group(1), 16)
             if w in wins:
                 wins[w]["live"] = False
+        else:
+            apply_vis_event(wins, m)
         cur = sum(1 for w, g in wins.items()
                   if g["live"] and 0 < w < 17)
         if cur > peak:
@@ -156,7 +173,6 @@ def live_from(blob):
         g = wins[w]
         geoms.append((g["x"], g["y"], g["ww"], g["hh"]))
     unique_geoms = len(set(geoms))
-    apply_vis(blob, wins)
     tap_slots = [w for w in ordinary
                  if w in wins and wins[w].get("cap") == 6]
     return {
@@ -228,20 +244,43 @@ def wait_ordinary(ser, before, timeout=2.0):
     return False
 
 
+CSDHIT_RE = re.compile(
+    r"WM CSDHIT  T ([0-9A-F]+) HIT ([0-9A-F]+) GH ([0-9A-F]+) "
+    r"X ([0-9A-F]{4}) Y ([0-9A-F]{4}) W ([0-9A-F]{4}) H ([0-9A-F]{4}) "
+    r"CX ([0-9A-F]{4}) CY ([0-9A-F]{4})")
+
+
 def close_slot(q, ser, w):
     info = live_from(harvest(ser))
     if w not in info["windows"] or not info["windows"][w]["live"]:
         return False
     g = info["windows"][w]
     before = harvest(ser)
-    click(q, ser, g["x"] + g["ww"] - 17, g["y"] + 17)
+    click(q, ser, g["x"] + 40, g["y"] + 12)
+    time.sleep(0.08)
+    blob = harvest(ser)
+    cx = cy = None
+    hexw = "%X" % w
+    for m in CSDHIT_RE.finditer(blob[len(before):]):
+        if m.group(1).upper() == hexw:
+            ww = int(m.group(6), 16)
+            hh = int(m.group(7), 16)
+            if ww < 1 or hh < 1:
+                continue
+            cx = int(m.group(8), 16) + 9
+            cy = int(m.group(9), 16) + 9
+    if cx is None:
+        cx = g["x"] + g["ww"] - 17
+        cy = g["y"] + 17
+    mark = harvest(ser)
+    click(q, ser, cx, cy)
     t1 = time.time()
-    while time.time() - t1 < 1.2:
-        delta = harvest(ser)[len(before):]
-        if ("WM CLOSE W %02X" % w) in delta or ("WM CLOSE W %X" % w) in delta:
+    while time.time() - t1 < 1.4:
+        delta = harvest(ser)[len(mark):]
+        if ("WM CLOSE W %02X" % w) in delta or ("WM CLOSE W %X " % w) in delta:
             return True
         time.sleep(0.04)
-    return ("WM CLOSE W %02X" % w) in harvest(ser)[len(before):]
+    return ("WM CLOSE W %02X" % w) in harvest(ser)[len(mark):]
 
 
 def close_early_tap(q, ser, log):
@@ -452,24 +491,19 @@ def interact_slot15(q, ser, info):
     ev["tokens"]["key"] = [ln for ln in delta_k.splitlines()
                            if ln.strip()][:6]
     if not ev["key"]:
-        # Alt-F10 is consumed for the focused window and prints WM KEY / WM MAX.
+        # TAP's T scancode flips the control and prints TAP HIT.
         try:
-            m36.qcode_edge(q, "alt", True)
-            m36.qcode_edge(q, "f10", True)
-            m36.qcode_edge(q, "f10", False)
-            m36.qcode_edge(q, "alt", False)
-            time.sleep(0.10)
+            m36.qcode_edge(q, "t", True)
+            m36.qcode_edge(q, "t", False)
+            time.sleep(0.20)
         except Exception:
             pass
-        after_alt = harvest(ser)
-        delta_alt = after_alt[len(after_key):]
-        ev["key"] = (
-            "WM KEY " in delta_alt
-            or "WM MAX W F" in delta_alt
-            or "TAP HIT" in delta_alt)
-        ev["tokens"]["key_alt"] = [ln for ln in delta_alt.splitlines()
-                                   if ln.strip()][:6]
-        after_key = after_alt
+        after_t = harvest(ser)
+        delta_t = after_t[len(after_key):]
+        ev["key"] = "TAP HIT" in delta_t or "WM KEY " in delta_t
+        ev["tokens"]["key_t"] = [ln for ln in delta_t.splitlines()
+                                 if "TAP" in ln or "KEY" in ln][:6]
+        after_key = after_t
     # SE handle is the last 8 px of content plus border (wmResizeEdge).
     info = live_from(after_key)
     if 15 in info["windows"] and info["windows"][15]["live"]:
