@@ -477,6 +477,7 @@ void m1End() {
 void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   // --- Timer (IRQ0, remapped to 0x20) ---
   if (vector == u64(vectorTimer)) {
+    uartIrqEnter();
     final u64 counter = tick_counter_addr();
     final u64 ticks = Pointer<u64>.fromAddress(counter).value + u64(1);
     Pointer<u64>.fromAddress(counter).value = ticks;
@@ -514,6 +515,7 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
     picEoiMaster();
     virtabPoll();
     wmFrameTick();
+    uartIrqLeave();
     procTick(frame);
     return;
   }
@@ -531,8 +533,10 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   // with it" true, which stops being cosmetic the moment a handler can be
   // interrupted.
   if (vector == u64(vectorKeyboard)) {
+    uartIrqEnter();
     kbdHandle();
     picEoiMaster();
+    uartIrqLeave();
     return;
   }
 
@@ -563,8 +567,10 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   // unreachable in any boot where nothing moves a pointer, which is every
   // harness in this suite but one.
   if (vector == u64(vectorMouse)) {
+    uartIrqEnter();
     mouseHandle();
     picEoiSlave();
+    uartIrqLeave();
     return;
   }
 
@@ -580,8 +586,10 @@ void isrDispatch(u64 vector, u64 errorCode, u64 rip, u64 frame) {
   //
   // EOI last, for the keyboard arm's stated reason.
   if (vector == u64(vectorSerial)) {
+    uartIrqEnter();
     shellSerialIrq();
     picEoiMaster();
+    uartIrqLeave();
     return;
   }
 

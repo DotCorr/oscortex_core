@@ -153,16 +153,22 @@ void _start(void) {
   }
 
   for (;;) {
+    {
+      u64 key = sys1(SYS_KBDEVENT, KBD_OP_POP);
+      if (key != KBD_EMPTY) {
+        if ((key & KBD_BIT_BREAK) == 0) {
+          wr(msg_hit, sizeof(msg_hit) - 1);
+        }
+      }
+    }
     u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
     if (ev != WMEVENT_EMPTY) {
       if (press_in_ctl(ev) > 0) {
-        if (armed == 0) {
-          armed = 1;
-          paint_body(pix_va, 1);
-          osxui_app_csd_win(shm_h, WIN_W, WIN_H, cap_play, 4UL);
-          commit_all(2);
-          wr(msg_hit, sizeof(msg_hit) - 1);
-        }
+        armed = armed ^ 1UL;
+        paint_body(pix_va, armed);
+        osxui_app_csd_win(shm_h, WIN_W, WIN_H, cap_play, 4UL);
+        commit_all(2);
+        wr(msg_hit, sizeof(msg_hit) - 1);
       }
     }
     {

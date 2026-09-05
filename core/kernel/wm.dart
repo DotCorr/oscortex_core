@@ -3858,14 +3858,8 @@ void wmGrab(u64 x, u64 y) {
     wmeventEnqueue(panel, x, y);
     return;
   }
-  u64 hit = wmHit(x, y);
   final u64 de = wmDeOn();
-  if (de > u64(0)) {
-    final u64 geomHit = wmDeGeomHit(x, y);
-    if (geomHit < u64(wmMaxWindows)) {
-      hit = geomHit;
-    }
-  }
+  u64 hit = wmFocusRoute(x, y);
   if (hit >= u64(wmMaxWindows)) {
     /* Wallpaper miss parks the seat so shell commands (`wm pace`)
      * reach the prompt. F4 / Alt-Tab stay WM-global in wmDeKey. */

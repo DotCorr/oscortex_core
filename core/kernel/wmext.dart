@@ -134,6 +134,29 @@ final List<u8> wmStrTaskA = const [
   u8(0x20), u8(0x41), u8(0x20),
 ];
 
+/// `'WM ACT I '` -- 9 bytes. Routed input under the live focus generation.
+@rodata
+final List<u8> wmStrActI = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x41), u8(0x43), u8(0x54), u8(0x20),
+  u8(0x49), u8(0x20),
+];
+
+/// `'WM ACT ACK '` -- 11 bytes. Intended stem popped the routed event.
+@rodata
+final List<u8> wmStrActAck = const [
+  u8(0x57), u8(0x4D), u8(0x20), u8(0x41), u8(0x43), u8(0x54), u8(0x20),
+  u8(0x41), u8(0x43), u8(0x4B), u8(0x20),
+];
+
+/// `' K '` -- 3 bytes.
+@rodata
+final List<u8> wmStrK = const [
+  u8(0x20), u8(0x4B), u8(0x20),
+];
+
+const int wmActKindKey = 1;
+const int wmActKindPress = 2;
+
 /// `' S '` -- 3 bytes.
 @rodata
 final List<u8> wmStrS = const [
@@ -768,10 +791,213 @@ void wmTaskAct(u64 slot, u64 act) {
   wmSetMeta(u64(wmMetaTop), slot);
   wmFocusTo(slot);
   wmMruTouch(slot);
+  wmExposeReachable(slot);
   if (act == u64(2)) {
     final u64 y = fbGeomHeight() - u64(wmChromeH);
     wmPopShowKind(wmSlotX(slot), y, u64(wmPopWin));
   }
+}
+
+/// Caption of a live slot, or 0.
+@bare
+u64 wmSlotCaption(u64 slot) {
+  if (wmPageAddr() < u64(1)) {
+    return u64(0);
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return u64(0);
+  }
+  return wmPage(wmPageLaunchOf(slot)) & u64(0xFF);
+}
+
+/// Stem-reserved work-area origin so a later body/chrome hit is not buried.
+@bare
+u64 wmStemOrigin(u64 cap) {
+  if (cap == u64(2)) {
+    return (u64(500) << u64(32)) | u64(40);
+  }
+  if (cap == u64(3)) {
+    return (u64(36) << u64(32)) | u64(300);
+  }
+  if (cap == u64(4)) {
+    return (u64(500) << u64(32)) | u64(300);
+  }
+  if (cap == u64(5)) {
+    return (u64(220) << u64(32)) | u64(160);
+  }
+  if (cap == u64(6)) {
+    u64 tx = fbGeomWidth() - u64(240) - u64(80);
+    if (tx < u64(960)) {
+      tx = u64(960);
+    }
+    return (tx << u64(32)) | u64(56);
+  }
+  return (u64(36) << u64(32)) | u64(40);
+}
+
+/// After pill/overview focus: park the slot on its stem origin when buried
+/// or more than 24px off the reserved cell.
+@bare
+void wmExposeReachable(u64 slot) {
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmIsOrdinary(slot) < u64(1)) {
+    return;
+  }
+  if (wmWin(slot, u64(wmWinState)) == u64(wmWinMin)) {
+    return;
+  }
+  final u64 g = wmWin(slot, u64(wmWinGeom));
+  final u64 ww = wmGeomW(g);
+  final u64 hh = wmGeomH(g);
+  final u64 ox = wmGeomX(g);
+  final u64 oy = wmGeomY(g);
+  final u64 dest = wmStemOrigin(wmSlotCaption(slot));
+  u64 nx = dest >> u64(32);
+  u64 ny = dest & u64(0xFFFFFFFF);
+  final u64 packed = wmClampOrigin(nx, ny, ww, hh);
+  nx = packed >> u64(32);
+  ny = packed & u64(0xFFFFFFFF);
+  u64 dx = u64(0);
+  u64 dy = u64(0);
+  if (ox > nx) {
+    dx = ox - nx;
+  } else {
+    dx = nx - ox;
+  }
+  if (oy > ny) {
+    dy = oy - ny;
+  } else {
+    dy = ny - oy;
+  }
+  u64 buried = u64(0);
+  u64 i = u64(0);
+  while (i < u64(wmMaxWindows)) {
+    if (i != slot) {
+      if (wmIsOrdinary(i) > u64(0)) {
+        if (wmWin(i, u64(wmWinState)) != u64(wmWinMin)) {
+          final u64 og = wmWin(i, u64(wmWinGeom));
+          final u64 ix = wmGeomX(og);
+          final u64 iy = wmGeomY(og);
+          final u64 iw = wmGeomW(og);
+          final u64 ih = wmGeomH(og);
+          if (ox < (ix + iw)) {
+            if ((ox + ww) > ix) {
+              if (oy < (iy + ih)) {
+                if ((oy + hh) > iy) {
+                  buried = u64(1);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    i = i + u64(1);
+  }
+  if (buried < u64(1)) {
+    if (dx < u64(24)) {
+      if (dy < u64(24)) {
+        return;
+      }
+    }
+  }
+  wmSetWin(slot, u64(wmWinGeom), wmPackGeom(nx, ny, ww, hh));
+  wmeventEnqueueConfigure(slot);
+  if (wmPageAddr() > u64(0)) {
+    wmVisPublish(slot);
+    if (wmMeta(u64(wmMetaGfx)) > u64(0)) {
+      wmGfxMail();
+    }
+  }
+}
+
+/// Issue `WM ACT I` for a key (1) or body press (2) on the focused stem.
+@bare
+void wmActIssue(u64 kind, u64 slot) {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  if (slot >= u64(wmMaxWindows)) {
+    return;
+  }
+  if (wmIsOrdinary(slot) < u64(1)) {
+    return;
+  }
+  final u64 id = (wmPage(u64(wmPageWActId)) + u64(1)) & u64(0xFFFF);
+  final u64 cap = wmSlotCaption(slot);
+  final u64 gen = wmPage(u64(wmPageWFocusGen));
+  wmPageSet(u64(wmPageWActId), id);
+  wmPageSet(u64(wmPageWActMeta),
+      (kind & u64(0xFF)) | ((cap & u64(0xFF)) << u64(8)) |
+          ((slot & u64(0xFF)) << u64(16)));
+  uartWrite(Rodata.addressOf(wmStrActI), u64(9));
+  uartPutHex(id, u64(4));
+  uartWrite(Rodata.addressOf(wmStrC), u64(3));
+  uartPutHex(cap, u64(1));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(slot, u64(2));
+  uartWrite(Rodata.addressOf(wmLatStrG), u64(3));
+  uartPutHex(gen, u64(4));
+  uartWrite(Rodata.addressOf(wmStrK), u64(3));
+  uartPutHex(kind, u64(1));
+  uartNewline();
+}
+
+/// The focused client's process popped the routed event.
+@bare
+void wmActAck() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 id = wmPage(u64(wmPageWActId)) & u64(0xFFFF);
+  if (id < u64(1)) {
+    return;
+  }
+  final u64 meta = wmPage(u64(wmPageWActMeta));
+  final u64 cap = (meta >> u64(8)) & u64(0xFF);
+  uartWrite(Rodata.addressOf(wmStrActAck), u64(11));
+  uartPutHex(id, u64(4));
+  uartWrite(Rodata.addressOf(wmStrC), u64(3));
+  uartPutHex(cap, u64(1));
+  uartNewline();
+}
+
+/// Focus generation wins over pointer overlap when the click is inside
+/// the focused client's current VIS AABB.
+@bare
+u64 wmFocusRoute(u64 x, u64 y) {
+  final u64 f = wmFocusLive();
+  if (f > u64(0)) {
+    final u64 fw = f - u64(1);
+    if (wmIsOrdinary(fw) > u64(0)) {
+      if (wmWin(fw, u64(wmWinState)) != u64(wmWinMin)) {
+        final u64 g = wmWin(fw, u64(wmWinGeom));
+        final u64 ax = wmGeomX(g);
+        final u64 ay = wmGeomY(g);
+        final u64 aw = wmGeomW(g);
+        final u64 ah = wmGeomH(g);
+        if (x >= ax) {
+          if (y >= ay) {
+            if (x < (ax + aw)) {
+              if (y < (ay + ah)) {
+                return fw;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  u64 hit = wmHit(x, y);
+  if (wmDeOn() > u64(0)) {
+    final u64 geomHit = wmDeGeomHit(x, y);
+    if (geomHit < u64(wmMaxWindows)) {
+      hit = geomHit;
+    }
+  }
+  return hit;
 }
 
 /// `op = wmOpScreen`. Word 2 is WM_SCREEN_*; answer in rax.

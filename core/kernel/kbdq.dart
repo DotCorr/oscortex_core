@@ -238,6 +238,13 @@ void kbdqSys(u64 frame) {
       userSetFrame(frame, u64(userFrameRax), u64(kbdqEmpty));
       return;
     }
+    final u64 f = wmFocusLive();
+    if (f > u64(0)) {
+      if ((ev & u64(kbdqBitBreak)) < u64(1)) {
+        wmActIssue(u64(wmActKindKey), f - u64(1));
+        wmActAck();
+      }
+    }
     userSetFrame(frame, u64(userFrameRax), ev);
     return;
   }

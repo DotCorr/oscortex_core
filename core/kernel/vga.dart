@@ -353,9 +353,12 @@ void vgaUpdateHwCursor() {
 /// screen -- the mirror is a layer above the driver, not a wart inside it.
 @bare
 void conPutc(u8 c) {
-  // COM1 FIRST and unconditionally, unchanged since M2. Every byte three
-  // byte-exact goldens assert is produced here, in this order, before anything
-  // that touches a display.
+  // COM1 FIRST. After the UART page exists, IRQ writers enqueue a byte
+  // and return — a SCAN or FOCUS line must not splice into a VIS record.
+  if (uartIrqNest() > u64(0)) {
+    uartIrqPutc(c);
+    return;
+  }
   uartPutc(c);
   // Then EXACTLY ONE of the two screens -- see the note above on why it cannot
   // be both.

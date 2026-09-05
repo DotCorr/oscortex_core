@@ -881,6 +881,22 @@ void _start(void) {
       if ((k & KBD_BIT_BREAK) == 0) {
         if ((k & 0xFFUL) == FLIP_SCAN) {
           flip();
+        } else if ((k & 0xFFUL) == 0x14UL) {
+          pref_theme = (unsigned char)((pref_theme + 1U) % 3U);
+          theme_sel = (u64)pref_theme;
+          write_pref();
+          paint_all(pix_va, armed);
+          commit_rect(0, 0, set_w, set_h, 7);
+          {
+            unsigned at = put(0, "SET CARD ");
+            at = puthex(at, theme_sel, 1);
+            line[at++] = '\n';
+            emit(at);
+            at = put(0, msg_theme);
+            at = puthex(at, (u64)pref_theme, 1);
+            line[at++] = '\n';
+            emit(at);
+          }
         }
       }
     }

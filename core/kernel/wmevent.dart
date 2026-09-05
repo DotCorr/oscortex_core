@@ -395,6 +395,12 @@ void wmeventEnqueue(u64 wI, u64 x, u64 y) {
   final u64 rx = x - wmAbsX(wI);
   final u64 ry = y - wmAbsY(wI);
   wmeventPush(wI, wmeventPack(wI, rx, ry));
+  final u64 f = wmFocusLive();
+  if (f == (wI + u64(1))) {
+    if (wmIsOrdinary(wI) > u64(0)) {
+      wmActIssue(u64(wmActKindPress), wI);
+    }
+  }
 }
 
 /// Routes a signed wheel delta to the client body currently under the pointer.
@@ -503,7 +509,11 @@ void wmeventSys(u64 frame) {
       userSetFrame(frame, u64(userFrameRax), u64(wmeventEmpty));
       return;
     }
-    userSetFrame(frame, u64(userFrameRax), wmeventPopOwned(id));
+    final u64 ev = wmeventPopOwned(id);
+    if ((ev & u64(0xFF)) == u64(wmeventTypePress)) {
+      wmActAck();
+    }
+    userSetFrame(frame, u64(userFrameRax), ev);
     return;
   }
   if (op == u64(wmeventOpDropped)) {

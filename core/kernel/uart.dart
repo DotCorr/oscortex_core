@@ -238,6 +238,10 @@ void uartPutHex(u64 value, u64 digits) {
 @bare
 void uartNewline() {
   conPutc(u8(0x0A));
+  if (uartIrqNest() < u64(1)) {
+    uartIrqDrainBytes();
+    uartTokKick();
+  }
 }
 
 /// Space separator.
@@ -295,16 +299,15 @@ void uartPutBanner() {
 }
 
 // ---------------------------------------------------------------------------
-// Atomic diagnostic records (Round 39). VIS and VIRTIO SCAN share COM1
-// with IRQ present. A structured ring holds complete records so a SCAN
-// cannot splice into `WM VIS W 0F ...`. The writer never holds IF off
-// across the 16550 wait — IRQ enqueues and returns. Ring full drops
-// SCAN only (flood); VIS is never dropped.
+// Atomic diagnostic records (Round 41). VIS and VIRTIO SCAN share COM1
+// with IRQ present. IRQ never writes the 16550: it enqueues a complete
+// record (or a raw byte) and returns. One process-context drain writes
+// whole lines. Ring full drops SCAN only; VIS overwrites the oldest SCAN.
 //
 // Record: 3 x u64. kind:8 | slot:8 | x:16 | y:16 in word0;
-// w:32 | h:32 in word1; gen:32 | extra:32 in word2.
+// w:32 | h:32 in word1; gen:32 in word2.
 // kind 1 VIS, 2 REQ, 3 PEND, 4 SCAN.
-// Page: lock, head, tail, drops, then 8 records.
+// Page: lock, rec head/tail, drops, irq byte head/tail, 8 records, 256 bytes.
 // ---------------------------------------------------------------------------
 
 const int uartTokKindVis = 1;
@@ -313,7 +316,9 @@ const int uartTokKindPend = 3;
 const int uartTokKindScan = 4;
 const int uartTokRecN = 8;
 const int uartTokRecBytes = 24;
-const int uartTokRecOff = 32;
+const int uartTokRecOff = 64;
+const int uartIrqByteOff = 256;
+const int uartIrqByteN = 256;
 
 @bare
 u64 uartTokCsum(u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
@@ -337,8 +342,85 @@ u64 uartTokPage() {
   Pointer<u64>.fromAddress(p + u64(8)).value = u64(0);
   Pointer<u64>.fromAddress(p + u64(16)).value = u64(0);
   Pointer<u64>.fromAddress(p + u64(24)).value = u64(0);
+  Pointer<u64>.fromAddress(p + u64(32)).value = u64(0);
+  Pointer<u64>.fromAddress(p + u64(40)).value = u64(0);
   wmPageSet(u64(wmPageWUartLine), p);
   return p;
+}
+
+@bare
+u64 uartIrqNest() {
+  if (wmPageAddr() < u64(1)) {
+    return u64(0);
+  }
+  return wmPage(u64(wmPageWUartIrq));
+}
+
+@bare
+void uartIrqEnter() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  wmPageSet(u64(wmPageWUartIrq), wmPage(u64(wmPageWUartIrq)) + u64(1));
+}
+
+@bare
+void uartIrqLeave() {
+  if (wmPageAddr() < u64(1)) {
+    return;
+  }
+  final u64 n = wmPage(u64(wmPageWUartIrq));
+  if (n > u64(0)) {
+    wmPageSet(u64(wmPageWUartIrq), n - u64(1));
+  }
+}
+
+@bare
+void uartIrqPutc(u8 c) {
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    uartPutc(c);
+    return;
+  }
+  u64 head = Pointer<u64>.fromAddress(p + u64(32)).value;
+  u64 tail = Pointer<u64>.fromAddress(p + u64(40)).value;
+  u64 next = head + u64(1);
+  if (next >= u64(uartIrqByteN)) {
+    next = u64(0);
+  }
+  if (next == tail) {
+    Pointer<u64>.fromAddress(p + u64(24)).value =
+        Pointer<u64>.fromAddress(p + u64(24)).value + u64(1);
+    return;
+  }
+  Pointer<u8>.fromAddress(p + u64(uartIrqByteOff) + head).value = c;
+  Pointer<u64>.fromAddress(p + u64(32)).value = next;
+}
+
+@bare
+void uartIrqDrainBytes() {
+  if (uartIrqNest() > u64(0)) {
+    return;
+  }
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    return;
+  }
+  u64 steps = u64(0);
+  while (steps < u64(uartIrqByteN)) {
+    final u64 head = Pointer<u64>.fromAddress(p + u64(32)).value;
+    final u64 tail = Pointer<u64>.fromAddress(p + u64(40)).value;
+    if (head == tail) {
+      return;
+    }
+    uartPutc(Pointer<u8>.fromAddress(p + u64(uartIrqByteOff) + tail).value);
+    u64 next = tail + u64(1);
+    if (next >= u64(uartIrqByteN)) {
+      next = u64(0);
+    }
+    Pointer<u64>.fromAddress(p + u64(40)).value = next;
+    steps = steps + u64(1);
+  }
 }
 
 /// Emits one sealed record. Caller holds the page lock.
@@ -415,21 +497,8 @@ void uartTokDrain(u64 p) {
 }
 
 @bare
-void uartTokEnqueue(
-    u64 kind, u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
-  final u64 p = uartTokPage();
-  if (p < u64(1)) {
-    uartTokWrite(kind, slot, x, y, w, h, gen);
-    return;
-  }
-  final u64 lock = Pointer<u64>.fromAddress(p).value;
-  if (lock < u64(1)) {
-    Pointer<u64>.fromAddress(p).value = u64(1);
-    uartTokWrite(kind, slot, x, y, w, h, gen);
-    uartTokDrain(p);
-    Pointer<u64>.fromAddress(p).value = u64(0);
-    return;
-  }
+void uartTokPushRec(
+    u64 p, u64 kind, u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
   u64 head = Pointer<u64>.fromAddress(p + u64(8)).value;
   u64 tail = Pointer<u64>.fromAddress(p + u64(16)).value;
   u64 next = head + u64(1);
@@ -459,4 +528,40 @@ void uartTokEnqueue(
       (w & u64(0xFFFFFFFF)) | ((h & u64(0xFFFFFFFF)) << u64(32));
   Pointer<u64>.fromAddress(rec + u64(16)).value = gen;
   Pointer<u64>.fromAddress(p + u64(8)).value = next;
+}
+
+/// Process-context drain. IRQ callers enqueue and return.
+@bare
+void uartTokKick() {
+  if (uartIrqNest() > u64(0)) {
+    return;
+  }
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    return;
+  }
+  final u64 lock = Pointer<u64>.fromAddress(p).value;
+  if (lock > u64(0)) {
+    return;
+  }
+  Pointer<u64>.fromAddress(p).value = u64(1);
+  uartTokDrain(p);
+  Pointer<u64>.fromAddress(p).value = u64(0);
+}
+
+@bare
+void uartTokEnqueue(
+    u64 kind, u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    if (uartIrqNest() < u64(1)) {
+      uartTokWrite(kind, slot, x, y, w, h, gen);
+    }
+    return;
+  }
+  uartTokPushRec(p, kind, slot, x, y, w, h, gen);
+  if (uartIrqNest() < u64(1)) {
+    uartTokKick();
+    uartIrqDrainBytes();
+  }
 }

@@ -25,5 +25,10 @@ if why not in ("interleaved", "malformed"):
 rec, why = m.parse_vis_line("WM VIS W F X 0123 Y 0048 W 00F0 H 00A0")
 if why != "malformed":
     raise SystemExit("1-digit VIS not rejected: %s" % why)
-print("vis-tokens host PASS")
+# Round 41: reproduce the R40 stress splice (SCAN inside VIS) and reject it.
+spliced = "WM VIS W 0F XVIRTIO SCAN 00000000 Y 0048 W 00F0 H 00A0 G 0001 C 00"
+rec, why = m.parse_vis_line(spliced)
+if why not in ("interleaved", "malformed"):
+    raise SystemExit("reproduced splice not rejected: %s" % why)
+print("vis-tokens host PASS (malformed splice reproduced and rejected)")
 sys.exit(0)

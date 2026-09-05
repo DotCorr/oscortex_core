@@ -367,6 +367,12 @@ const int wmPageWPref = 505;
 const int wmPageWFocusGen = 506;
 /// Physical address of the UART token line page (allocFrame). No .bss.
 const int wmPageWUartLine = 507;
+/// Incrementing ACTION id for focus-generation input (low 16 bits).
+const int wmPageWActId = 508;
+/// Last ACTION: kind:8 | cap:8 | slot:8 | ack:8 in the low 32 bits.
+const int wmPageWActMeta = 509;
+/// IRQ nest for UART line assembly. IRQ never writes the 16550.
+const int wmPageWUartIrq = 511;
 const int wmOpKindPtr = 1;
 const int wmOpKindDrag = 2;
 const int wmOpKindBody = 3;

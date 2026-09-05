@@ -156,11 +156,8 @@ static void commit_rect(u64 x, u64 y, u64 w, u64 h, u64 seq) {
 }
 
 static void flip(void) {
-  if (armed != 0) {
-    return;
-  }
-  armed = 1;
-  paint_ctl(pix_va, 1);
+  armed = armed ^ 1UL;
+  paint_ctl(pix_va, armed);
   commit_rect(CTL_X, CTL_Y, CTL_W, CTL_H, 2);
   unsigned n = put(0, "TAP HIT ");
   n = puthex(n, CTL_ON & 0xFFFFFFUL, 8);

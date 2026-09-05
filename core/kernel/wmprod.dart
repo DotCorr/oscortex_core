@@ -715,6 +715,7 @@ void wmSwitchCommit() {
   wmSetMeta(u64(wmMetaTop), w);
   wmFocusTo(w);
   wmMruTouch(w);
+  wmExposeReachable(w);
   if (wmPageAddr() > u64(0)) {
     wmDefEnqueue(u64(wmDefKindFocus), w, wmWin(w, u64(wmWinGeom)),
         wmWin(w, u64(wmWinGeom)));

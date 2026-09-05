@@ -3629,17 +3629,10 @@ u64 wmDeGrab(u64 x, u64 y) {
     }
     return u64(1);
   }
-  /* CSD buttons belong to the topmost title under the pointer. Client
-   * CSD makes wmWindowPixel a hole in the title band, so wmHit alone
-   * falls through to the window underneath. wmDeGeomHit is the same
-   * title/resize override wmGrab uses. A buried FILES min must not
-   * fire through SET's title. */
-  u64 hit = wmHit(x, y);
-  final u64 geomHit = wmDeGeomHit(x, y);
-  if (geomHit < u64(wmMaxWindows)) {
-    hit = geomHit;
-  }
-  return wmDeCsdButtons(hit, geomHit, x, y);
+  /* After a focus generation, CSD and body prefer the focused VIS so
+   * an overlapping title cannot steal the press. */
+  final u64 routed = wmFocusRoute(x, y);
+  return wmDeCsdButtons(routed, routed, x, y);
 }
 
 /// Fire close/max/min from live abs geom. Same layout paint uses.
