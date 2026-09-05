@@ -24,6 +24,10 @@ bar_s = importlib.util.spec_from_file_location(
     "bar38", os.path.join(HERE, "capture-barrier-round38.py"))
 bar38 = importlib.util.module_from_spec(bar_s)
 bar_s.loader.exec_module(bar38)
+cs_s = importlib.util.spec_from_file_location(
+    "cs24", os.path.join(HERE, "chip-scan-round24.py"))
+cs24 = importlib.util.module_from_spec(cs_s)
+cs_s.loader.exec_module(cs24)
 
 ART = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
 RUN = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r38")
@@ -270,8 +274,11 @@ def close_slot(q, ser, w):
             cx = int(m.group(8), 16) + 9
             cy = int(m.group(9), 16) + 9
     if cx is None:
-        cx = g["x"] + g["ww"] - 17
-        cy = g["y"] + 17
+        try:
+            cx, cy = cs24.ctrl_of((g["x"], g["y"], g["ww"], g["hh"]), "close")
+        except Exception:
+            cx = g["x"] + g["ww"] - 17
+            cy = g["y"] + 16
     mark = harvest(ser)
     click(q, ser, cx, cy)
     t1 = time.time()
@@ -433,7 +440,7 @@ def raise_window(q, ser, w, dest_x, dest_y):
 
 
 def raise_slot15(q, ser, info):
-    return raise_window(q, ser, 15, 48, 40)
+    return raise_window(q, ser, 15, 720, 80)
 
 
 def interact_slot15(q, ser, info):
@@ -448,6 +455,11 @@ def interact_slot15(q, ser, info):
     }
     if 15 not in info["windows"] or not info["windows"][15]["live"]:
         return ev
+    # A leftover Alt-F10 may have native-maxed slot 15; restore first.
+    if re.search(r"WM MAX W F\b", harvest(ser)):
+        click(q, ser, 3 + 1274 - 78 + 9, 3 + 17)
+        time.sleep(0.18)
+        info = live_from(harvest(ser))
     info = raise_slot15(q, ser, info)
     if 15 not in info["windows"] or not info["windows"][15]["live"]:
         return ev
