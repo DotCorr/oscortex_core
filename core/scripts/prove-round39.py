@@ -261,21 +261,13 @@ def launch_tap_dock(q, ser, log):
 
 
 def raise_tap(q, ser, w, dest_x=860, dest_y=56):
-    """Drag TAP by the exposed 32px title strip onto the clear right field."""
+    """Focus TAP on the reserved right-field attach. Do not drag across chrome."""
     info = live_from(harvest(ser))
     if w not in info["windows"] or not info["windows"][w]["live"]:
         return info
     g = info["windows"][w]
     click(q, ser, g["x"] + 10, g["y"] + 8)
     time.sleep(0.08)
-    info = live_from(harvest(ser))
-    if w not in info["windows"] or not info["windows"][w]["live"]:
-        return info
-    g = info["windows"][w]
-    if abs(g["x"] - dest_x) > 8 or abs(g["y"] - dest_y) > 8:
-        p38.drag(q, ser, g["x"] + 12, g["y"] + 8, dest_x + 12, dest_y + 8,
-                 steps=10)
-        time.sleep(0.12)
     return live_from(harvest(ser))
 
 

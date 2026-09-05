@@ -75,6 +75,7 @@ cp -a "$PROMO/disk.img" "$LIVE/disk.img"
 cp -a "$PROMO/BUILD.json" "$LIVE/BUILD.json"
 rm -rf "$PROMO"
 
+cp -a "$LIVE/BUILD.json" "$ART/oscortex-round39-build.json"
 cp -a "$LIVE/BUILD.json" "$ART/oscortex-round33-build.json"
 cp -a "$LIVE/BUILD.json" "$ART/oscortex-round32-build.json"
 cp -a "$LIVE/BUILD.json" "$ART/oscortex-round31-build.json"

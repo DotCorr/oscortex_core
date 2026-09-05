@@ -2137,8 +2137,22 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   final u64 step = u64(32);
   final u64 ox = u64(24);
   final u64 oy = u64(24);
+  // TAP 240×160 parks on the clear right field. Cascade step 32 at
+  // n=15 lands on (504,504) under later FILES cards and the panel.
+  if (w == u64(240)) {
+    if (h == u64(160)) {
+      return (u64(860) << u64(32)) | u64(56);
+    }
+  }
   u64 nx = ox + (n * step);
   u64 ny = oy + (n * step);
+  // Second title column after ten cards so high slots stay above
+  // the panel instead of wrapping onto the same buried origin.
+  if (n > u64(9)) {
+    final u64 k = n - u64(10);
+    nx = u64(520) + (k * step);
+    ny = oy + (k * step);
+  }
   if (nx < b) {
     nx = b;
   }
