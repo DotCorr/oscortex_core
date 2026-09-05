@@ -3629,10 +3629,18 @@ u64 wmDeGrab(u64 x, u64 y) {
     }
     return u64(1);
   }
-  /* After a focus generation, CSD and body prefer the focused VIS so
-   * an overlapping title cannot steal the press. */
+  /* CSD buttons belong to the title under the pointer, except a click
+   * inside the focused VIS stays on that generation (overlap). */
+  u64 hit = wmHit(x, y);
+  final u64 geomHit = wmDeGeomHit(x, y);
+  if (geomHit < u64(wmMaxWindows)) {
+    hit = geomHit;
+  }
   final u64 routed = wmFocusRoute(x, y);
-  return wmDeCsdButtons(routed, routed, x, y);
+  if (routed < u64(wmMaxWindows)) {
+    hit = routed;
+  }
+  return wmDeCsdButtons(hit, geomHit, x, y);
 }
 
 /// Fire close/max/min from live abs geom. Same layout paint uses.
