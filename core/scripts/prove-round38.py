@@ -513,6 +513,9 @@ def main():
     live = harvest(ser)
     live_info = live_from(live)
     tap_delta = live[len(tap_mark):]
+    tap_live = any(
+        live_info["windows"][w].get("cap") == 6
+        for w in live_info["ordinary_slots"] if w in live_info["windows"])
     tap_ready = (
         "TAP READY" in tap_delta
         or "TAP CSD" in tap_delta
@@ -521,9 +524,6 @@ def main():
     refuse = live.count("WM REFUSE") + live.count("TAP DIE ATTACH")
     peak = max(len(live_info["ordinary_slots"]),
                int(live_info.get("peak_ordinary") or 0))
-    tap_live = any(
-        live_info["windows"][w].get("cap") == 6
-        for w in live_info["ordinary_slots"] if w in live_info["windows"])
     tap_ok = tap_ok or tap_live
     shot16 = shot(q, ser, "oscortex-round38-16-windows.png")
     # Raise TAP so the last-at-occupancy shot is not a duplicate dump.
