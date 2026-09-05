@@ -308,8 +308,7 @@ def launch_row(q, ser, row):
 
 
 def tap_live_in(blob):
-    info = live_from(blob)
-    return bool(info["tap_slots"]) or "TAP READY" in blob
+    return bool(live_from(blob)["tap_slots"])
 
 
 def wait_tap(ser, before, timeout=3.0):
