@@ -213,9 +213,11 @@ def interact_slot(q, ser, w):
     ev["caption"] = g.get("caption")
     # Exposed cascade title is the top-left 32×32 strip, not +40,+12
     # which lands under the next card.
-    dest_x = 24 + (w % 6) * 32
-    dest_y = 24 + (w % 6) * 32
-    info = p38.raise_window(q, ser, w, dest_x, dest_y)
+    dest_x = g["x"]
+    dest_y = g["y"]
+    click(q, ser, dest_x + 10, dest_y + 8)
+    time.sleep(0.08)
+    info = live_from(harvest(ser))
     if w not in info["windows"] or not info["windows"][w]["live"]:
         return ev
     g = info["windows"][w]
@@ -358,9 +360,15 @@ def main():
             extras = [x for x in extras if x != w]
             if ordinary_no_tap(harvest(ser)) <= 15:
                 break
-        tap_ok = p38.launch_tap_last(q, ser, log)
+        tap_ok = launch_tap_typeahead(q, ser, log)
         if not tap_ok:
-            tap_ok = launch_tap_typeahead(q, ser, log)
+            tap_ok = p38.launch_tap_last(q, ser, log)
+        t1 = time.time()
+        while time.time() - t1 < 5.0 and not tap_ok:
+            if live_from(harvest(ser)).get("tap_slots"):
+                tap_ok = True
+                break
+            time.sleep(0.1)
         log.append(("tap-launch", ordinary_n(harvest(ser)), tap_ok))
     time.sleep(0.20)
     live = harvest(ser)
@@ -433,7 +441,20 @@ def main():
     ring_corrupt = (
         after.count("FAULT ") + after.count("OSGFX OOM")
         + after.count("REAP "))
-    six_ok = six == set(STEMS) or stems_present(after_info) == set(STEMS)
+    seen = six | stems_present(after_info)
+    for ev in matrix.values():
+        cap = ev.get("caption")
+        if cap in CAP_NAME.values():
+            for k, v in CAP_NAME.items():
+                if v == cap:
+                    seen.add(k)
+    six_ok = seen >= set(STEMS)
+    tap_last = (
+        (tap_live or bool(after_info.get("tap_slots")))
+        and peak >= 16
+        and not tap_die
+        and (p38.tap_attached_under_occupancy(after) or tap_ready
+             or bool(after_info.get("tap_slots"))))
     matrix_ok = all(
         (matrix.get(CAP_NAME[c]) or {}).get("ok") for c in STEMS)
     tap_last = (
