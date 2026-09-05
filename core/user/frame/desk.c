@@ -1130,13 +1130,18 @@ static void launch_cache_paint(void) {
   }
   packed = osxui_app_launch_sel();
   q = osxui_app_launch_q();
-  if (last_launch_paint == packed) {
-    if (last_launch_q == q) {
-      return;
+  {
+    u64 want_h = launch_box_h();
+    if (last_launch_paint == packed) {
+      if (last_launch_q == q) {
+        if (overlay_h == want_h) {
+          return;
+        }
+      }
     }
+    overlay_w = LAUNCH_W;
+    overlay_h = want_h;
   }
-  overlay_w = LAUNCH_W;
-  overlay_h = launch_box_h();
   paint_desk_menu(2);
   last_launch_paint = packed;
   last_launch_q = q;

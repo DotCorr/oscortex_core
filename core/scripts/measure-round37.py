@@ -193,11 +193,14 @@ def wait_catalog(ser, timeout=8.0):
     t0 = time.time()
     while time.time() - t0 < timeout:
         blob = m36.harvest(ser)
-        if "DESK LAUNCH FILT " in blob or "WM CATALOG " in blob:
-            if "WM ATTACH " in blob:
+        if "DESK LAUNCH FILT 08" in blob or "DESK LAUNCH FILT 08" in blob:
+            if "W 0118 H 00F4" in blob or "H 00F4" in blob:
+                return True
+        if "WM CATALOG " in blob and "WM ATTACH " in blob:
+            if "H 00F4" in blob:
                 return True
         time.sleep(0.05)
-    return False
+    return "WM ATTACH " in m36.harvest(ser)
 
 
 def write_json(name, obj):
@@ -245,7 +248,7 @@ def overlay_burst(q, ser, n):
         print("launcher", i, "ms", round(wall, 2), "px", ev["px"],
               "rect", rec["rect"])
         dismiss_esc(q)
-        time.sleep(0.04)
+        time.sleep(0.08)
     summ = m36.summarize("launcher", walls, px_tail, paired, time.time() - t0)
     summ["hits"] = len(walls)
     summ["warm_p95_ms"] = summ["event_present_ms_warm"]["p95"]
