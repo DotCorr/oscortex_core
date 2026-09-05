@@ -60,11 +60,15 @@ def harvest(ser):
 def apply_vis(blob, wins):
     for m in VIS_RE.finditer(blob):
         w = int(m.group(1), 16)
+        ww = int(m.group(4), 16)
+        hh = int(m.group(5), 16)
+        if ww < 1 or hh < 1:
+            continue
         if w in wins:
             wins[w]["x"] = int(m.group(2), 16)
             wins[w]["y"] = int(m.group(3), 16)
-            wins[w]["ww"] = int(m.group(4), 16)
-            wins[w]["hh"] = int(m.group(5), 16)
+            wins[w]["ww"] = ww
+            wins[w]["hh"] = hh
 
 
 def click(q, ser, x, y):
@@ -170,6 +174,32 @@ def ordinary_n(blob):
 def ordinary_no_tap(blob):
     info = live_from(blob)
     return len([w for w in info["ordinary_slots"] if w not in info["tap_slots"]])
+
+
+def tap_attached_under_occupancy(blob):
+    """True when a C 6 attach happened with >=15 other ordinary windows live."""
+    events = []
+    for m in ATTACH_RE.finditer(blob):
+        events.append((m.start(), "A", m))
+    for m in CLOSE_RE.finditer(blob):
+        events.append((m.start(), "C", m))
+    events.sort(key=lambda e: e[0])
+    live = {}
+    saw = False
+    for _at, kind, m in events:
+        if kind == "A":
+            w = int(m.group(1), 16)
+            cap = int(m.group(3), 16)
+            live[w] = cap
+            if cap == 6 and 0 < w < 17:
+                others = [x for x, c in live.items()
+                          if 0 < x < 17 and x != w]
+                if len(others) >= 15:
+                    saw = True
+        else:
+            w = int(m.group(1), 16)
+            live.pop(w, None)
+    return saw
 
 
 def fire_f4(q):
@@ -562,6 +592,10 @@ def main():
     if 15 in ev_info["windows"] and ev_info["windows"][15]["live"]:
         closed15 = close_slot(q, ser, 15)
         slot15["close"] = closed15
+    # Restore TAP-last occupancy on the leftover after the close proof.
+    if closed15 and ordinary_no_tap(harvest(ser)) >= 15:
+        if not tap_live_in(harvest(ser)):
+            launch_tap_last(q, ser, log)
     overlay_ev = (
         after_ev.count("WM ATTACH W 11")
         + after_ev.count("WM ATTACH W 12")
@@ -573,8 +607,7 @@ def main():
         "focus", "key", "resize", "menu", "close"))
     tap_last = (
         tap_live and peak >= 16 and tap_ready and not tap_die
-        and len(tap_before_slots) >= 15
-        and not pre_tap["tap_slots"]
+        and tap_attached_under_occupancy(after_ev)
         and tap_shot_distinct)
     ring_corrupt = (
         after_ev.count("FAULT ") + after_ev.count("OSGFX OOM")
