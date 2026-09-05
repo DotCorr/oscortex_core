@@ -55,6 +55,7 @@
 #include "osgfx_guest.h"
 
 #include <stdint.h>
+#include <string.h>
 
 extern void com1_puts(const char *s);
 
@@ -1612,6 +1613,14 @@ uint64_t osgfx_chrome_vacate_geom(uint64_t old_g) {
 
 uint64_t osgfx_chrome_hit_restore(void) {
   return osgfx_chrome_hit_present(&osgfx_guest_cmd);
+}
+
+uint64_t osgfx_fb_copy_span(uint64_t dst, uint64_t src, uint64_t bytes) {
+  if (dst == 0 || src == 0 || bytes == 0) {
+    return 0;
+  }
+  memcpy((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, (size_t)bytes);
+  return bytes;
 }
 
 uint64_t osgfx_menu_blit(uint64_t pop) {

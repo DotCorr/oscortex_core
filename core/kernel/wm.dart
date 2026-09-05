@@ -982,12 +982,7 @@ u64 wmUnderWallpaper(u64 x, u64 y) {
 /// Copies [n] 32-bit pixels from identity-mapped [src] to GOP [dst].
 @bare
 void wmOverlayCopySpan(u64 dst, u64 src, u64 n) {
-  u64 i = u64(0);
-  while (i < n) {
-    Volatile<u32>.fromAddress(dst + (i << u64(2))).value =
-        Pointer<u32>.fromAddress(src + (i << u64(2))).value;
-    i = i + u64(1);
-  }
+  final u64 unused = osgfx_fb_copy_span(dst, src, n << u64(2));
 }
 
 /// One page-bounded SRC span. Returns pixels written.

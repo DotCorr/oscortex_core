@@ -29,6 +29,20 @@ __attribute__((weak)) uint64_t osgfx_chrome_vacate_geom(uint64_t old_g) {
   (void)old_g;
   return 0;
 }
+__attribute__((weak)) uint64_t osgfx_fb_copy_span(uint64_t dst, uint64_t src,
+                                                 uint64_t bytes) {
+  uint64_t i;
+  if (dst == 0 || src == 0) {
+    return 0;
+  }
+  i = 0;
+  while (i < bytes) {
+    ((unsigned char *)(uintptr_t)dst)[i] =
+        ((const unsigned char *)(uintptr_t)src)[i];
+    i = i + 1;
+  }
+  return bytes;
+}
 __attribute__((weak)) uint64_t osgfx_chrome_hit_present(const struct OsGfxGuestCmd *m) {
   (void)m;
   return 0;
