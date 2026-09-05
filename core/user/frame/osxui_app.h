@@ -144,6 +144,18 @@ static inline unsigned long osxui_app_tasks_lo(void) {
   return r;
 }
 
+static inline unsigned long osxui_app_tasks_x(void) {
+  unsigned long r;
+  osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;
+  osxui_app_desc[WM_DESC_HANDLE] = 0;
+  osxui_app_desc[OSXUI_APP_KIND] = WM_SCREEN_TASKS_X;
+  r = osxui_app_call();
+  if (r >= WM_RET_FLOOR) {
+    return 0;
+  }
+  return r;
+}
+
 static inline unsigned long osxui_app_task_min(void) {
   unsigned long r;
   osxui_app_desc[WM_DESC_OP] = WM_OP_SCREEN;

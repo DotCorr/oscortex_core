@@ -916,10 +916,14 @@ void wmScreenOp(u64 frame, u64 ptr, u64 id) {
     userSetFrame(frame, u64(userFrameRax), slot);
     return;
   }
+  if (kind == u64(16)) {
+    userSetFrame(frame, u64(userFrameRax), wmPackTaskBank(u64(16)));
+    return;
+  }
   if (kind == u64(15)) {
     u64 mask = u64(0);
     u64 i = u64(0);
-    while (i < u64(16)) {
+    while (i < u64(wmMaxWindows)) {
       if (wmWindowHeld(i) > u64(0)) {
         if (wmWin(i, u64(wmWinState)) == u64(wmWinMin)) {
           mask = mask | (u64(1) << i);

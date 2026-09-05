@@ -36,7 +36,7 @@ typedef unsigned int u32;
  * (`wmIsPanel`) refuses a surface taller than the band, and its fallback strip
  * occupies exactly this many rows. de-desk asserts the three agree. */
 #define BAR_H 48UL
-#define SLOT_MAX 16UL
+#define SLOT_MAX 20UL
 
 /* Split glass dock (ADR-0197). Two islands on a full-width panel so
  * wmIsPanel still withdraws the fallback strip. Unused panel pixels
@@ -111,6 +111,7 @@ static u64 last_tasks;
 static u64 last_tasks_hi;
 static u64 last_tasks_mid;
 static u64 last_tasks_lo;
+static u64 last_tasks_x;
 static u64 last_task_min;
 static u64 last_screen;
 static u64 slot_ids[SLOT_MAX];
@@ -535,7 +536,70 @@ static u64 task_bank_of(u64 i, u64 tasks, u64 tasks_hi) {
   if (i < 12UL) {
     return last_tasks_mid;
   }
-  return last_tasks_lo;
+  if (i < 16UL) {
+    return last_tasks_lo;
+  }
+  return last_tasks_x;
+}
+
+static u64 hit_task_slot(u64 rx) {
+  u64 n = slot_n;
+  if (n < 1UL) {
+    return SLOT_MAX;
+  }
+  if (slot_pitch < 1UL) {
+    return SLOT_MAX;
+  }
+  if (slot_overflow != 0) {
+    u64 vis_s = slot_vis;
+    u64 tap = slot_tap_i;
+    u64 rel;
+    u64 idx;
+    if (rx < (SLOT_X0 + SLOT_CHEV)) {
+      return SLOT_MAX;
+    }
+    if (tap < n) {
+      if (vis_s > 0) {
+        vis_s = vis_s - 1UL;
+      }
+    }
+    rel = rx - (SLOT_X0 + SLOT_CHEV);
+    idx = rel / slot_pitch;
+    if (tap < n) {
+      if (idx == vis_s) {
+        return slot_ids[tap];
+      }
+    }
+    if (idx < vis_s) {
+      u64 skipped = 0;
+      u64 painted = 0;
+      u64 i = 0;
+      while (i < n) {
+        if (i != tap) {
+          if (skipped < slot_off_vis) {
+            skipped = skipped + 1;
+          } else {
+            if (painted == idx) {
+              return slot_ids[i];
+            }
+            painted = painted + 1;
+          }
+        }
+        i = i + 1;
+      }
+    }
+    return SLOT_MAX;
+  }
+  if (rx < SLOT_X0) {
+    return SLOT_MAX;
+  }
+  {
+    u64 idx = (rx - SLOT_X0) / slot_pitch;
+    if (idx < n) {
+      return slot_ids[idx];
+    }
+  }
+  return SLOT_MAX;
 }
 
 static u64 collect_slots(u64 tasks, u64 tasks_hi) {
@@ -979,6 +1043,17 @@ static void handle_press(u64 ev) {
           }
           return;
         }
+      }
+    }
+    {
+      u64 win = hit_task_slot(rx);
+      if (win < SLOT_MAX) {
+        if (typ == WMEVENT_TYPE_CONTEXT) {
+          osxui_app_task_act(win, WM_TASK_ACT_CTX);
+        } else {
+          osxui_app_task_act(win, WM_TASK_ACT_FOCUS);
+        }
+        return;
       }
     }
     return;
@@ -1574,6 +1649,7 @@ void desk_main(u64 sp) {
   last_tasks_hi = osxui_app_tasks_hi();
   last_tasks_mid = osxui_app_tasks_mid();
   last_tasks_lo = osxui_app_tasks_lo();
+  last_tasks_x = osxui_app_tasks_x();
   last_task_min = osxui_app_task_min();
   paint_bar(last_tasks, last_tasks_hi);
   wr("DESK PAINT\n", 11);
@@ -1655,14 +1731,16 @@ void desk_main(u64 sp) {
       u64 tasks_hi = osxui_app_tasks_hi();
       u64 tasks_mid = osxui_app_tasks_mid();
       u64 tasks_lo = osxui_app_tasks_lo();
+      u64 tasks_x = osxui_app_tasks_x();
       u64 task_min = osxui_app_task_min();
       if (tasks != last_tasks || tasks_hi != last_tasks_hi ||
           tasks_mid != last_tasks_mid || tasks_lo != last_tasks_lo ||
-          task_min != last_task_min) {
+          tasks_x != last_tasks_x || task_min != last_task_min) {
         last_tasks = tasks;
         last_tasks_hi = tasks_hi;
         last_tasks_mid = tasks_mid;
         last_tasks_lo = tasks_lo;
+        last_tasks_x = tasks_x;
         last_task_min = task_min;
         paint_bar(tasks, tasks_hi);
         commit_all();

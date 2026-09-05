@@ -61,6 +61,8 @@ static const char msg_ready[] = "BROWSE NOPAIN\n";
 static const char msg_ready[] = "BROWSE READY\n";
 #endif
 static const char msg_csd[] = "BROWSE CSD";
+static const char msg_hit[] = "BROWSE HIT\n";
+static const char msg_key[] = "BROWSE KEY\n";
 static const char cap_browse[] = "BROWSE";
 
 static void commit_rect(u64 x, u64 y, u64 w, u64 h, u64 seq) {
@@ -170,8 +172,22 @@ void _start(void) {
   }
 
   for (;;) {
-    (void)sys1(SYS_KBDEVENT, KBD_OP_POP);
-    (void)sys1(SYS_WMEVENT, WMEVENT_OP_POP);
+    {
+      u64 key = sys1(SYS_KBDEVENT, KBD_OP_POP);
+      if (key != KBD_EMPTY) {
+        if ((key & KBD_BIT_BREAK) == 0) {
+          wr(msg_key, sizeof(msg_key) - 1);
+        }
+      }
+    }
+    {
+      u64 ev = sys1(SYS_WMEVENT, WMEVENT_OP_POP);
+      if (ev != WMEVENT_EMPTY) {
+        if ((ev & 0xFFUL) == WMEVENT_TYPE_PRESS) {
+          wr(msg_hit, sizeof(msg_hit) - 1);
+        }
+      }
+    }
     {
       volatile u64 spin = 0;
       while (spin < YIELD_SPIN) {

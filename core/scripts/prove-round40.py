@@ -87,24 +87,83 @@ def pill_xy(info, win, width=1280):
     right_x = width - 16 - 264
     avail = max(0, right_x - x0)
     overflow = n * 36 > avail
+    py = 720 - 48 + 4 + 6 + 14
     if not overflow:
         pitch = 80 if n * 80 <= avail else max(36, avail // max(n, 1))
         try:
             ord_i = info["ordinary_slots"].index(win)
         except ValueError:
             return None
-        return x0 + ord_i * pitch + max(pitch - 8, 24) // 2, 720 - 48 + 4 + 6 + 14
+        return x0 + ord_i * pitch + max(pitch - 8, 24) // 2, py
     pitch = 56
     vis = max(1, (avail - 32) // pitch)
     vis_s = vis - 1 if tap is not None and vis else vis
     if win == tap:
-        return x0 + 16 + vis_s * pitch + 24, 720 - 48 + 4 + 6 + 14
+        return x0 + 16 + vis_s * pitch + 24, py
     if win not in ordinary:
         return None
     idx = ordinary.index(win)
     if idx >= vis_s:
         return None
-    return x0 + 16 + idx * pitch + 24, 720 - 48 + 4 + 6 + 14
+    return x0 + 16 + idx * pitch + 24, py
+
+
+def title_xy(g, cap):
+    if cap == 6:
+        return g["x"] + max(g["ww"], 80) - 36, g["y"] + 8
+    return g["x"] + 10, g["y"] + 8
+
+
+def body_xy(g, cap):
+    x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
+    if cap == 1:
+        return x + 48, y + 32 + 14
+    if cap == 2:
+        return x + 176, y + 104
+    if cap == 3:
+        return x + max(ww, 16) // 2, y + max(hh, 32) // 2
+    if cap == 4:
+        return x + 96 + 32, y + 48 + 14
+    if cap == 5:
+        return x + 48, y + 56
+    if cap == 6:
+        return x + 80, y + 56
+    return x + max(ww, 16) // 2, y + max(32, hh) // 2
+
+
+KEY_TOKS = {
+    1: ("FILES KEY", "FILES SEL", "FILES NAME"),
+    2: ("SET THEME", "SET ACCENT", "SET WALL", "SET CARD"),
+    3: ("BROWSE HIT", "BROWSE KEY"),
+    4: ("PLAY HIT",),
+    5: ("STUDIO CARET", "STUDIO EDIT", "STUDIO VIEW", "STUDIO TAB",
+        "STUDIO COPY", "STUDIO PASTE"),
+    6: ("TAP HIT",),
+}
+
+
+def raise_slot(q, ser, cap, w):
+    """Dock-raise single-instance stems, then pill + title from live VIS."""
+    if cap in STEM_DOCK and cap != 1:
+        p39.wallpaper_park(q, ser)
+        time.sleep(0.03)
+        p39.dock_click(q, ser, STEM_DOCK[cap])
+        time.sleep(0.08)
+    info = live_from(harvest(ser))
+    g = info["windows"].get(w)
+    if not g or not g.get("live"):
+        return info, None
+    pill = pill_xy(info, w)
+    if pill:
+        click(q, ser, pill[0], pill[1])
+        time.sleep(0.06)
+        info = live_from(harvest(ser))
+        g = info["windows"].get(w) or g
+    tx, ty = title_xy(g, cap)
+    click(q, ser, tx, ty)
+    time.sleep(0.06)
+    info = live_from(harvest(ser))
+    return info, info["windows"].get(w)
 
 
 def wait_token(ser, pred, timeout=2.0, mark=None):
@@ -141,65 +200,67 @@ def matrix_one(q, ser, cap):
     slots = [w for w in info["ordinary_slots"]
              if info["windows"].get(w, {}).get("cap") == cap]
     if not slots:
+        ev["silent"] = ["focus", "key", "menu", "move", "min", "rest",
+                        "close", "relaunch"]
+        if not ev["resize_contract"]:
+            ev["silent"].append("resize")
         return ev
-    w = slots[0]
+    w = slots[-1]
     ev["slot"] = w
-    g = info["windows"][w]
-    p39.wallpaper_park(q, ser)
-    time.sleep(0.04)
-    pill = pill_xy(info, w)
-    mark = len(serial_text())
-    if pill:
-        click(q, ser, pill[0], pill[1])
-    else:
-        hx = g["x"] + 10
-        if cap == 6:
-            hx = g["x"] + max(g["ww"], 80) - 36
-        click(q, ser, hx, g["y"] + 8)
-    delta = wait_token(ser, lambda d: "WM TASK A" in d or "WM FOCUS" in d, 1.2, mark)
     hexw = "%02X" % w
+
+    mark = len(serial_text())
+    info, g = raise_slot(q, ser, cap, w)
+    delta = wait_token(ser, lambda d: "WM TASK A" in d or "WM FOCUS" in d, 0.4, mark)
     ev["focus"] = (
         TASK_A_RE.search(delta) is not None
         or re.search(r"WM FOCUS G [0-9A-F]+ W %s\b" % hexw, delta) is not None
-        or re.search(r"WM FOCUS  ?%s\b" % hexw, delta) is not None
-        or "WM FOCUS G" in delta)
+        or re.search(r"WM FOCUS G [0-9A-F]+ W %X\b" % w, delta) is not None)
     ev["tokens"]["focus"] = [ln for ln in delta.splitlines()
                              if "FOCUS" in ln or "TASK A" in ln][:6]
+    if not g:
+        ev["silent"] = ["focus", "key", "menu", "move", "min", "rest",
+                        "close", "relaunch"]
+        return ev
 
-    info = live_from(harvest(ser))
-    g = info["windows"].get(w) or g
+    info, g = raise_slot(q, ser, cap, w)
+    if not g:
+        ev["silent"] = ["key", "menu", "move", "min", "rest", "close", "relaunch"]
+        return ev
+    bx, by = body_xy(g, cap)
     mark = len(serial_text())
+    click(q, ser, bx, by)
+    time.sleep(0.05)
     try:
         m36.qcode_edge(q, "t", True)
         m36.qcode_edge(q, "t", False)
-        time.sleep(0.06)
+        time.sleep(0.04)
         m36.qcode_edge(q, "down", True)
         m36.qcode_edge(q, "down", False)
+        time.sleep(0.04)
+        m36.qcode_edge(q, "e", True)
+        m36.qcode_edge(q, "e", False)
     except Exception:
         try:
             q.key("t")
         except Exception:
             pass
-    delta = wait_token(ser, lambda d: any(s in d for s in (
-        "WM KEY ", "TAP HIT", "FILES KEY", "FILES SEL", "FILES NAME",
-        "SET ", "PLAY ", "STUDIO ", "BROWSE ", "WM COMMIT W ")), 1.0, mark)
-    ev["key"] = bool(delta.strip()) and (
-        "WM KEY " in delta
-        or "TAP HIT" in delta
-        or "FILES " in delta
-        or "SET " in delta
-        or "PLAY " in delta
-        or "STUDIO " in delta
-        or "BROWSE " in delta
-        or "WM COMMIT W " in delta)
-    ev["tokens"]["key"] = [ln for ln in delta.splitlines() if ln.strip()][:6]
+    want = KEY_TOKS.get(cap, ())
+    delta = wait_token(ser, lambda d: any(s in d for s in want), 1.2, mark)
+    ev["key"] = any(s in delta for s in want)
+    ev["tokens"]["key"] = [ln for ln in delta.splitlines()
+                           if any(s in ln for s in want)][:6]
 
-    info = live_from(harvest(ser))
-    g = info["windows"].get(w) or g
-    x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
+    info, g = raise_slot(q, ser, cap, w)
+    if not g:
+        ev["silent"] = [k for k in ("menu", "move", "min", "rest", "close",
+                                    "relaunch") if True]
+        return ev
+    tx, ty = title_xy(g, cap)
     mark = len(serial_text())
-    p38.right_click(q, ser, x + 10 if cap != 6 else x + max(ww, 80) - 36, y + 8)
-    delta = wait_token(ser, lambda d: "CTX" in d or "MENU" in d or "TASK A" in d, 1.2, mark)
+    p38.right_click(q, ser, tx, ty)
+    delta = wait_token(ser, lambda d: "CTX" in d or "MENU" in d or "TASK A" in d,
+                       1.2, mark)
     ev["menu"] = (
         "WM CTX TITLE" in delta
         or "WM CTX SLOT" in delta
@@ -214,47 +275,52 @@ def matrix_one(q, ser, cap):
     except Exception:
         pass
     time.sleep(0.04)
+    p39.dismiss(q)
 
-    info = live_from(harvest(ser))
-    g = info["windows"].get(w) or g
-    x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
-    mark = len(serial_text())
-    nx, ny = min(x + 48, 1100), min(y + 36, 400)
-    p38.drag(q, ser, x + 10, y + 8, nx, ny, steps=8)
-    time.sleep(0.10)
-    after = live_from(harvest(ser))
-    g2 = after["windows"].get(w) or g
-    delta = serial_since(mark)
-    ev["move"] = (
-        abs(g2.get("x", x) - x) >= 4
-        or abs(g2.get("y", y) - y) >= 4
-        or "WM MOVE" in delta
-        or "WM VIS W %s" % hexw in delta
-        or "WM DRAGEND" in delta)
-    ev["tokens"]["move"] = [ln for ln in delta.splitlines() if ln.startswith("WM ")][:6]
+    info, g = raise_slot(q, ser, cap, w)
+    if g:
+        x, y = title_xy(g, cap)
+        mark = len(serial_text())
+        nx, ny = min(x + 72, 1100), min(y + 40, 420)
+        p38.drag(q, ser, x, y, nx, ny, steps=10)
+        time.sleep(0.12)
+        after = live_from(harvest(ser))
+        g2 = after["windows"].get(w) or g
+        delta = serial_since(mark)
+        ev["move"] = (
+            abs(g2.get("x", g["x"]) - g["x"]) >= 4
+            or abs(g2.get("y", g["y"]) - g["y"]) >= 4
+            or "WM MOVE" in delta
+            or ("WM VIS W %s" % hexw) in delta
+            or ("WM VIS W %X " % w) in delta)
+        ev["tokens"]["move"] = [ln for ln in delta.splitlines()
+                                if ln.startswith("WM ") and
+                                any(s in ln for s in
+                                    ("MOVE", "VIS W", "REQ W", "HOLD", "DRAG"))][:6]
 
-    info = live_from(harvest(ser))
-    g = info["windows"].get(w) or g2
-    x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
+    info, g = raise_slot(q, ser, cap, w)
     if ev["resize_contract"]:
         ev["resize"] = True
         ev["tokens"]["resize"] = ["contract-fixed-size"]
-    else:
+    elif g:
+        x, y, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
         mark = len(serial_text())
         p38.drag(q, ser, x + max(ww, 8) - 4, y + max(hh, 8) - 4,
-                 x + max(ww, 8) + 20, y + max(hh, 8) + 16, steps=6)
-        time.sleep(0.10)
+                 x + max(ww, 8) + 24, y + max(hh, 8) + 20, steps=8)
+        time.sleep(0.12)
         delta = serial_since(mark)
         ev["resize"] = (
             re.search(r"WM REQ W %s\b" % hexw, delta) is not None
+            or re.search(r"WM REQ W %X\b" % w, delta) is not None
             or re.search(r"WM VIS W %s\b" % hexw, delta) is not None
             or ("WM HOLD W %X" % w) in delta
             or ("WM PEND W %s" % hexw) in delta)
         ev["tokens"]["resize"] = [ln for ln in delta.splitlines()
-                                  if ln.startswith("WM ")][:6]
+                                  if ln.startswith("WM ") and
+                                  any(s in ln for s in
+                                      ("REQ", "VIS W", "HOLD", "PEND"))][:6]
 
-    info = live_from(harvest(ser))
-    g = info["windows"].get(w)
+    info, g = raise_slot(q, ser, cap, w)
     if g:
         mx, my = ctrl_of((g["x"], g["y"], g["ww"], g["hh"]), "min")
         mark = len(serial_text())
@@ -270,39 +336,56 @@ def matrix_one(q, ser, cap):
             click(q, ser, pill[0], pill[1])
         else:
             p39.dock_click(q, ser, STEM_DOCK.get(cap, 1))
-        delta = wait_token(ser, lambda d: "WM REST" in d or "WM TASK A" in d, 1.2, mark)
+        delta = wait_token(ser, lambda d: "WM REST" in d or "WM TASK A" in d,
+                           1.2, mark)
         ev["rest"] = REST_RE.search(delta) is not None or "WM TASK A" in delta
         ev["tokens"]["rest"] = [ln for ln in delta.splitlines()
                                 if "REST" in ln or "TASK A" in ln][:4]
 
-    info = live_from(harvest(ser))
-    g = info["windows"].get(w)
+    info, g = raise_slot(q, ser, cap, w)
     if g and g.get("live"):
-        cx, cy = ctrl_of((g["x"], g["y"], g["ww"], g["hh"]), "close")
         mark = len(serial_text())
-        click(q, ser, cx, cy)
-        delta = wait_token(ser, lambda d: "WM CLOSE W" in d, 1.4, mark)
-        ev["close"] = (
+        closed = p38.close_slot(q, ser, w)
+        delta = serial_since(mark)
+        ev["close"] = closed or (
             ("WM CLOSE W %02X" % w) in delta
             or ("WM CLOSE W %X " % w) in delta)
-        ev["tokens"]["close"] = [ln for ln in delta.splitlines() if "CLOSE" in ln][:4]
+        ev["tokens"]["close"] = [ln for ln in delta.splitlines()
+                                 if "CLOSE" in ln][:4]
     n0 = p39.ordinary_n(harvest(ser))
     mark = len(serial_text())
     p39.ensure_stem(q, ser, cap, [])
+    if cap not in p39.stems_present(live_from(harvest(ser))):
+        if cap == 6:
+            p39.ensure_tap_last(q, ser, [])
+        else:
+            row = {2: 0, 1: 1, 3: 2, 4: 3, 5: 4}.get(cap)
+            if row is not None:
+                p38.launch_row(q, ser, row)
     delta = wait_token(ser, lambda d: "READY" in d or "ATTACH" in d, 2.0, mark)
-    ev["relaunch"] = (
-        cap in p39.stems_present(live_from(harvest(ser)))
-        and (READY_RE.search(delta) is not None or "WM ATTACH" in delta
-             or p39.ordinary_n(harvest(ser)) >= n0))
+    present = cap in p39.stems_present(live_from(harvest(ser)))
+    ev["relaunch"] = present and (
+        READY_RE.search(delta) is not None
+        or "WM ATTACH" in delta
+        or " C %X " % cap in delta
+        or p39.ordinary_n(harvest(ser)) >= n0)
     ev["tokens"]["relaunch"] = [ln for ln in delta.splitlines()
-                                if "READY" in ln or "ATTACH" in ln][:4]
+                                if "READY" in ln or "ATTACH" in ln][:6]
     needed = ["focus", "key", "menu", "move", "min", "rest", "close", "relaunch"]
     if not ev["resize_contract"]:
         needed.append("resize")
     else:
         ev["resize"] = True
     ev["ok"] = all(ev.get(k) for k in needed)
-    ev["silent"] = [k for k in needed if not ev.get(k)]
+    if ev["ok"]:
+        for k in needed:
+            if k == "resize" and ev["resize_contract"]:
+                continue
+            if not ev["tokens"].get(k):
+                ev["ok"] = False
+    ev["silent"] = [k for k in needed if not ev.get(k) or (
+        k != "resize" and not ev["tokens"].get(k) and not (
+            k == "resize" and ev["resize_contract"]))]
     return ev
 
 
@@ -324,12 +407,12 @@ def lifecycle100(q, ser):
             if not files:
                 break
         w = files[-1]
-        g = info["windows"][w]
-        cx, cy = ctrl_of((g["x"], g["y"], g["ww"], g["hh"]), "close")
+        raise_slot(q, ser, 1, w)
         mark = len(serial_text())
-        click(q, ser, cx, cy)
-        delta = wait_token(ser, lambda d: "WM CLOSE W" in d, 1.2, mark)
-        if ("WM CLOSE W %02X" % w) in delta or ("WM CLOSE W %X " % w) in delta:
+        closed = p38.close_slot(q, ser, w)
+        delta = serial_since(mark)
+        if closed or ("WM CLOSE W %02X" % w) in delta or (
+                "WM CLOSE W %X " % w) in delta:
             closes += 1
         n0 = p39.ordinary_no_tap(harvest(ser))
         mark = len(serial_text())
@@ -360,15 +443,14 @@ def main():
 
     matrix = {}
     for cap in STEMS:
+        if cap == 6:
+            p39.ensure_tap_last(q, ser, log)
         matrix[CAP_NAME[cap]] = matrix_one(q, ser, cap)
         p39.ensure_stem(q, ser, cap, log)
         if cap != 6:
             while p39.ordinary_no_tap(harvest(ser)) < 15:
                 if not p39.fill_files(q, ser, log):
                     break
-        else:
-            if not live_from(harvest(ser)).get("tap_slots"):
-                p39.ensure_tap_last(q, ser, log)
 
     after = live_from(harvest(ser))
     desk_task = DESK_TASK_RE.findall(harvest(ser))
