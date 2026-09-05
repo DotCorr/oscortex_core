@@ -178,26 +178,39 @@ def main():
                      int(open(os.path.join(RUN, "serial.port")).read()))
     marked0 = harvest(ser)
     files0 = marked0.count("FILES READY") + marked0.count("FILES CSD")
-    # Unused single-instance rows (FILES is row 0 / multi-doc).
-    for row in (1, 2, 3, 4, 5, 6, 7):
+    # Rapid FILES while the cascade is still above the dock.
+    tries = 0
+    while ordinary_n(harvest(ser)) < 16 and tries < 24:
+        before = ordinary_n(harvest(ser))
+        dock_files(q, ser)
+        t1 = time.time()
+        while time.time() - t1 < 0.9:
+            if ordinary_n(harvest(ser)) > before:
+                break
+            time.sleep(0.04)
+        tries += 1
+        print("dock-files", tries, "ordinary", ordinary_n(harvest(ser)))
+        if ordinary_n(harvest(ser)) == before:
+            uncover_dock(q, ser)
+    # Unused single-instance dock icons (skip TAP; TAP DIE ATTACH is not FILES).
+    for i in (0, 2, 3, 4):
+        if ordinary_n(harvest(ser)) >= 16:
+            break
+        x = (d15.RIGHT_X + d15.ICON_PAD + i * (d15.ICON_S + d15.ICON_GAP)
+             + d15.ICON_S // 2)
+        before = ordinary_n(harvest(ser))
+        click(q, ser, x, d15.PANEL_Y)
+        t1 = time.time()
+        while time.time() - t1 < 1.6:
+            if ordinary_n(harvest(ser)) > before:
+                break
+            time.sleep(0.05)
+        print("dock-icon", i, "ordinary", ordinary_n(harvest(ser)))
+    for row in (1, 2, 3, 4, 5):
         if ordinary_n(harvest(ser)) >= 16:
             break
         print("launch-row", row, "ordinary", ordinary_n(harvest(ser)))
         launch_row(q, ser, row)
-    tries = 0
-    while ordinary_n(harvest(ser)) < 16 and tries < 20:
-        uncover_dock(q, ser)
-        dismiss(q)
-        time.sleep(0.04)
-        before = ordinary_n(harvest(ser))
-        dock_files(q, ser)
-        t1 = time.time()
-        while time.time() - t1 < 1.4:
-            if ordinary_n(harvest(ser)) > before:
-                break
-            time.sleep(0.05)
-        tries += 1
-        print("dock-files", tries, "ordinary", ordinary_n(harvest(ser)))
     dismiss(q)
     time.sleep(0.05)
     fire_f4(q)
