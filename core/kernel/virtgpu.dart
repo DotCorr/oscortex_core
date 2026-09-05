@@ -1111,18 +1111,7 @@ void virtgpuReportResp(u64 t) {
 ///     VIRTIO SCAN xxxxxxxx yyyyyyyy wwwwwwww hhhhhhhh eeeeeeee
 @bare
 void virtgpuReportScan(u64 x, u64 y, u64 w, u64 h, u64 en) {
-  uartWrite(Rodata.addressOf(virtgpuStrLine), u64(7));
-  uartWrite(Rodata.addressOf(virtgpuStrScan), u64(5));
-  uartPutHex(x, u64(8));
-  uartSpace();
-  uartPutHex(y, u64(8));
-  uartSpace();
-  uartPutHex(w, u64(8));
-  uartSpace();
-  uartPutHex(h, u64(8));
-  uartSpace();
-  uartPutHex(en, u64(8));
-  uartNewline();
+  uartTokEnqueue(u64(uartTokKindScan), u64(0), x, y, w, h, en);
 }
 
 /// G2: VirtIO §3.1.1 against COMMON_CFG. Reset, ACKNOWLEDGE, DRIVER,

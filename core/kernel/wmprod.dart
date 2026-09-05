@@ -82,17 +82,53 @@ u64 wmLaunchBoxH() {
       u64(wmLaunchHPad);
 }
 
-/// Switcher width from ordinary-client count. Cards + pad.
+/// Overview grid: 4 columns, up to 16 ordinary cards. Lockstep desk.c.
+const int wmSwitchCardW = 128;
+const int wmSwitchCardH = 64;
+const int wmSwitchGap = 8;
+const int wmSwitchTop = 20;
+const int wmSwitchColsMax = 4;
+const int wmSwitchMax = 16;
+
 @bare
-u64 wmSwitchBoxW() {
+u64 wmSwitchVisN() {
   u64 n = wmSwitchCount();
   if (n < u64(1)) {
-    n = u64(1);
+    return u64(1);
   }
-  if (n > u64(8)) {
-    n = u64(8);
+  if (n > u64(wmSwitchMax)) {
+    return u64(wmSwitchMax);
   }
-  return (n * u64(64)) + u64(wmSwitchWPad);
+  return n;
+}
+
+@bare
+u64 wmSwitchCols() {
+  final u64 n = wmSwitchVisN();
+  if (n <= u64(wmSwitchColsMax)) {
+    return n;
+  }
+  return u64(wmSwitchColsMax);
+}
+
+@bare
+u64 wmSwitchRows() {
+  final u64 n = wmSwitchVisN();
+  final u64 cols = wmSwitchCols();
+  return (n + cols - u64(1)) ~/ cols;
+}
+
+/// Switcher / overview width from ordinary-client count. Grid + pad.
+@bare
+u64 wmSwitchBoxW() {
+  return u64(wmSwitchWPad) +
+      (wmSwitchCols() * (u64(wmSwitchCardW) + u64(wmSwitchGap)));
+}
+
+@bare
+u64 wmSwitchBoxH() {
+  return u64(wmSwitchTop) +
+      (wmSwitchRows() * (u64(wmSwitchCardH) + u64(wmSwitchGap)));
 }
 
 @bare
@@ -418,7 +454,7 @@ u64 wmSwitchX() {
 @bare
 u64 wmSwitchY() {
   final u64 sh = fbGeomHeight();
-  u64 y = (sh - u64(wmSwitchH)) >> u64(1);
+  u64 y = (sh - wmSwitchBoxH()) >> u64(1);
   if (y < u64(8)) {
     y = u64(8);
   }
@@ -427,7 +463,7 @@ u64 wmSwitchY() {
 
 @bare
 u64 wmSwitchHit(u64 x, u64 y) {
-  if (wmMeta(u64(wmMetaPop)) != u64(wmPopSwitch)) {
+  if (wmPopKind() != u64(wmPopSwitch)) {
     return u64(0);
   }
   if (x < wmSwitchX()) {
@@ -439,8 +475,27 @@ u64 wmSwitchHit(u64 x, u64 y) {
   if (x >= (wmSwitchX() + wmSwitchBoxW())) {
     return u64(0);
   }
-  if (y >= (wmSwitchY() + u64(wmSwitchH))) {
+  if (y >= (wmSwitchY() + wmSwitchBoxH())) {
     return u64(0);
+  }
+  final u64 lx = x - wmSwitchX();
+  final u64 ly = y - wmSwitchY();
+  if (lx < u64(wmSwitchWPad)) {
+    return u64(1);
+  }
+  if (ly < u64(wmSwitchTop)) {
+    return u64(1);
+  }
+  final u64 col = (lx - u64(wmSwitchWPad)) ~/
+      (u64(wmSwitchCardW) + u64(wmSwitchGap));
+  final u64 row = (ly - u64(wmSwitchTop)) ~/
+      (u64(wmSwitchCardH) + u64(wmSwitchGap));
+  final u64 vis = (row * wmSwitchCols()) + col;
+  final u64 n = wmSwitchVisN();
+  if (vis < n) {
+    wmSwitchWrite(vis, n);
+    wmSetMeta(u64(wmMetaPop),
+        u64(wmPopSwitch) | ((vis & u64(0xFF)) << u64(8)));
   }
   return u64(1);
 }
@@ -545,7 +600,7 @@ void wmSwitchShow() {
   uartPutHex(n, u64(2));
   uartNewline();
   wmOverlayPresentKind(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
-      u64(wmSwitchH), u64(wmOpKindSwitch));
+      wmSwitchBoxH(), u64(wmOpKindSwitch));
 }
 
 @bare
@@ -574,7 +629,7 @@ void wmSwitchCycle() {
   uartPutHex(n, u64(2));
   uartNewline();
   wmOverlayPresentKind(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
-      u64(wmSwitchH), u64(wmOpKindSwitch));
+      wmSwitchBoxH(), u64(wmOpKindSwitch));
 }
 
 @bare
@@ -713,6 +768,19 @@ u64 wmDeKey(u64 ev) {
       final u64 f = wmFocusLive();
       if (f > u64(0)) {
         wmToggleMaxWindow(f - u64(1));
+      }
+      uartWrite(Rodata.addressOf(wmStrKey), u64(7));
+      uartPutHex(scan, u64(2));
+      uartNewline();
+      return u64(1);
+    }
+  }
+  if (scan == u64(wmScanF11)) {
+    if (alt < u64(1)) {
+      if (wmPopKind() == u64(wmPopSwitch)) {
+        wmDePopHide();
+      } else {
+        wmSwitchShow();
       }
       uartWrite(Rodata.addressOf(wmStrKey), u64(7));
       uartPutHex(scan, u64(2));

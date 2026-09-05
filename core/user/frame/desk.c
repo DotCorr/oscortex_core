@@ -77,13 +77,17 @@ typedef unsigned int u32;
 #define LAUNCH_SEARCH_H 36UL
 #define LAUNCH_ROW_H 24UL
 #define LAUNCH_PAD 16UL
-#define SWITCH_CARD_W 56UL
-#define SWITCH_CARD_H 72UL
+#define SWITCH_CARD_W 128UL
+#define SWITCH_CARD_H 64UL
 #define SWITCH_H 88UL
-#define SWITCH_PAD 12UL
-#define OVERLAY_MAX_W 280UL
-#define OVERLAY_MAX_H 244UL
-#define MENU_PAGES 68UL
+#define SWITCH_PAD 16UL
+#define SWITCH_GAP 8UL
+#define SWITCH_TOP 20UL
+#define SWITCH_COLS 4UL
+#define SWITCH_MAX 16UL
+#define OVERLAY_MAX_W 640UL
+#define OVERLAY_MAX_H 400UL
+#define MENU_PAGES 250UL
 
 /* osxui_button_fb's in-ELF retest (ADR-0192 §5). Linked for real now:
  * osxui.c + osxui_fb.c, not the weak no-op in osgfx_glyph.c. */
@@ -1033,34 +1037,53 @@ static void paint_desk_menu(u64 kind) {
     sel = (osxui_app_pop() >> 56) & 0xFFUL;
     vis = 0;
     i = 0;
-    while (i < 8UL) {
+    while (i < SWITCH_MAX) {
       slot = osxui_app_switch_at(i);
-      if (slot >= 8UL) {
+      if (slot >= 20UL) {
         break;
       }
       n = stem_into(stem, osxui_app_name(slot));
-      cx = SWITCH_PAD + vis * (SWITCH_CARD_W + 8UL);
-      if ((cx + SWITCH_CARD_W) > overlay_w) {
-        break;
-      }
-      rgb = OSXUI_MENU_ROW0;
-      if (vis == sel) {
-        rgb = 0x00D0E4F8UL;
-      }
-      osxui_app_rrect(menu_h, cx, 24UL, SWITCH_CARD_W, SWITCH_CARD_H, 10UL,
-                      rgb);
-      if (n > 0) {
-        osxui_app_text(menu_h, cx + 6UL, 48UL, stem, n, WM_TEXT_LABEL_PX,
-                       WM_TEXT_REGULAR, OSXUI_MENU_FG);
+      {
+        u64 cols = SWITCH_COLS;
+        u64 row = vis / cols;
+        u64 col = vis - (row * cols);
+        u64 cy;
+        cx = SWITCH_PAD + col * (SWITCH_CARD_W + SWITCH_GAP);
+        cy = SWITCH_TOP + row * (SWITCH_CARD_H + SWITCH_GAP);
+        if ((cx + SWITCH_CARD_W) > overlay_w) {
+          break;
+        }
+        if ((cy + SWITCH_CARD_H) > overlay_h) {
+          break;
+        }
+        rgb = OSXUI_MENU_ROW0;
+        if (vis == sel) {
+          rgb = 0x00D0E4F8UL;
+        }
+        osxui_app_rrect(menu_h, cx, cy, SWITCH_CARD_W, SWITCH_CARD_H, 10UL,
+                        rgb);
+        {
+          char hex[2];
+          u64 hi = (slot >> 4) & 0xFUL;
+          u64 lo = slot & 0xFUL;
+          hex[0] = (char)((hi < 10UL) ? ('0' + (int)hi) : ('A' + (int)hi - 10));
+          hex[1] = (char)((lo < 10UL) ? ('0' + (int)lo) : ('A' + (int)lo - 10));
+          osxui_app_text(menu_h, cx + 6UL, cy + 8UL, hex, 2UL,
+                         WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+        }
+        if (n > 0) {
+          osxui_app_text(menu_h, cx + 20UL, cy + 28UL, stem, n,
+                         WM_TEXT_LABEL_PX, WM_TEXT_REGULAR, OSXUI_MENU_FG);
+        }
       }
       vis = vis + 1;
       i = i + 1;
     }
     {
       u64 at = put(0, "DESK SWITCH ");
-      at = put_hex(at, vis, 1);
+      at = put_hex(at, vis, 2);
       at = put(at, " S ");
-      at = put_hex(at, sel, 1);
+      at = put_hex(at, sel, 2);
       emit(at);
     }
     return;
@@ -1105,11 +1128,11 @@ static u64 launch_box_h(void) {
   return LAUNCH_SEARCH_H + launch_vis_n() * LAUNCH_ROW_H + LAUNCH_PAD;
 }
 
-static u64 switch_box_w(void) {
+static u64 switch_vis_n(void) {
   u64 n = 0;
   u64 i = 0;
-  while (i < 8UL) {
-    if (osxui_app_switch_at(i) < 8UL) {
+  while (i < SWITCH_MAX) {
+    if (osxui_app_switch_at(i) < 20UL) {
       n = n + 1UL;
     } else {
       break;
@@ -1119,7 +1142,29 @@ static u64 switch_box_w(void) {
   if (n < 1UL) {
     n = 1UL;
   }
-  return n * (SWITCH_CARD_W + 8UL) + SWITCH_PAD;
+  if (n > SWITCH_MAX) {
+    n = SWITCH_MAX;
+  }
+  return n;
+}
+
+static u64 switch_cols(void) {
+  u64 n = switch_vis_n();
+  if (n <= SWITCH_COLS) {
+    return n;
+  }
+  return SWITCH_COLS;
+}
+
+static u64 switch_box_w(void) {
+  return SWITCH_PAD + switch_cols() * (SWITCH_CARD_W + SWITCH_GAP);
+}
+
+static u64 switch_box_h(void) {
+  u64 n = switch_vis_n();
+  u64 cols = switch_cols();
+  u64 rows = (n + cols - 1UL) / cols;
+  return SWITCH_TOP + rows * (SWITCH_CARD_H + SWITCH_GAP);
 }
 
 static void overlay_size_for(u64 kind) {
@@ -1130,7 +1175,7 @@ static void overlay_size_for(u64 kind) {
   }
   if (kind == 6UL) {
     overlay_w = switch_box_w();
-    overlay_h = SWITCH_H;
+    overlay_h = switch_box_h();
     return;
   }
   overlay_w = MENU_W;

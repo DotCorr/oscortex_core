@@ -2053,11 +2053,10 @@ u64 wmPlaceExtent(u64 x, u64 y, u64 w, u64 h) {
   return (nw << u64(32)) | nh;
 }
 
-/// Workspace grid for ordinary clients. The first client keeps the
-/// requested origin (SET default 180,48). Later clients take a 4-column
-/// cascade that wraps above the panel and left of the right dock, so
-/// sixteen ordinary windows stay distinct instead of stacking on one
-/// AABB that covers the dock.
+/// Title-exposing cascade for ordinary clients. The first client keeps
+/// the requested origin (SET default 180,48). Later clients step by
+/// the chrome band so every title stays clickable; wrap above the
+/// panel and left of the right dock. A 4-column overlap buried TAP.
 @bare
 u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if (wmDeOn() < u64(1)) {
@@ -2071,7 +2070,7 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
     return (x << u64(32)) | y;
   }
   /* 800×600 de-geom keeps tile-right / stack-below. 1280 DESK uses
-   * the workspace grid so sixteen ordinary windows stay off the dock. */
+   * a title cascade so sixteen ordinary windows stay reachable. */
   if (fbGeomWidth() < u64(1200)) {
     final u64 prev = wmPlacePrev();
     if (prev >= u64(wmMaxWindows)) {
@@ -2135,15 +2134,11 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
     return (nx0 << u64(32)) | ny0;
   }
   final u64 b = u64(wmBorder);
-  final u64 cols = u64(4);
-  final u64 pitchX = u64(188);
-  final u64 pitchY = u64(148);
+  final u64 step = u64(32);
   final u64 ox = u64(24);
   final u64 oy = u64(24);
-  final u64 row = n ~/ cols;
-  final u64 col = n - (row * cols);
-  u64 nx = ox + (col * pitchX);
-  u64 ny = oy + (row * pitchY);
+  u64 nx = ox + (n * step);
+  u64 ny = oy + (n * step);
   if (nx < b) {
     nx = b;
   }
@@ -2151,17 +2146,31 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
     ny = b;
   }
   u64 maxX = wmIsleRightX();
-  if (maxX > (b + u64(200))) {
-    maxX = maxX - b - u64(200);
+  if (maxX > (b + u64(220))) {
+    maxX = maxX - b - u64(220);
   } else {
     maxX = b;
   }
-  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - u64(140);
+  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - u64(160);
   if (maxX < b) {
     maxX = b;
   }
   if (maxY < b) {
     maxY = b;
+  }
+  if (nx > maxX) {
+    u64 spanX = u64(1);
+    if (maxX > ox) {
+      spanX = maxX - ox;
+    }
+    nx = ox + ((n * u64(17)) - (((n * u64(17)) ~/ spanX) * spanX));
+  }
+  if (ny > maxY) {
+    u64 spanY = u64(1);
+    if (maxY > oy) {
+      spanY = maxY - oy;
+    }
+    ny = oy + ((n * u64(13)) - (((n * u64(13)) ~/ spanY) * spanY));
   }
   if (nx > maxX) {
     nx = maxX;
@@ -2259,23 +2268,11 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
   final u64 placed = wmPlaceClient(x, y, w, hh);
   final u64 nx = placed >> u64(32);
   final u64 ny = placed & u64(0xFFFFFFFF);
-  // Always take the tile/cascade origin. Requiring the requested width
+  // Always take the cascade origin. Requiring the requested width
   // to fit there used to drop the tile and leave SET over FILES.
+  // Do not shrink to a 200 px column — that buried TAP under overlap.
   if (nx != x) {
     x = nx;
-    /* 1280 tile: grant SET 320 so commit stride matches the visible
-     * column. remainW after FILES is ~814, so PlaceExtent would keep 440. */
-    if (fbGeomWidth() >= u64(1200)) {
-      if (wmSwitchCount() >= u64(3)) {
-        if (w > u64(200)) {
-          w = u64(200);
-        }
-      } else {
-        if (w > u64(320)) {
-          w = u64(320);
-        }
-      }
-    }
   }
   if (ny != y) {
     y = ny;
@@ -2958,7 +2955,10 @@ const int wmOverlayLaunchHMin = 76;
 const int wmOverlayLaunchHMax = 244;
 const int wmOverlaySwitchH = 88;
 const int wmOverlaySwitchWMin = 80;
-const int wmOverlaySwitchWMax = 528;
+const int wmOverlaySwitchWMax = 640;
+/// Attached DESK overlay backing (overview grid). Distinct from PLAY.
+const int wmOverlayOverW = 640;
+const int wmOverlayOverH = 400;
 /// PLAY titled card is 280×200 — not a launcher overlay.
 const int wmPlayCardH = 200;
 
@@ -2966,6 +2966,11 @@ const int wmPlayCardH = 200;
 /// PLAY 280×200 is a titled client and must not take an overlay slot.
 @bare
 u64 wmGeomIsOverlay(u64 ww, u64 hh) {
+  if (ww == u64(wmOverlayOverW)) {
+    if (hh == u64(wmOverlayOverH)) {
+      return u64(1);
+    }
+  }
   if (ww == u64(wmOverlayMenuW)) {
     if (hh == u64(wmOverlayMenuH)) {
       return u64(1);
@@ -2985,6 +2990,15 @@ u64 wmGeomIsOverlay(u64 ww, u64 hh) {
     if (ww >= u64(wmOverlaySwitchWMin)) {
       if (ww <= u64(wmOverlaySwitchWMax)) {
         return u64(1);
+      }
+    }
+  }
+  if (hh >= u64(wmOverlaySwitchH)) {
+    if (hh <= u64(wmOverlayOverH)) {
+      if (ww >= u64(wmOverlaySwitchWMin)) {
+        if (ww <= u64(wmOverlaySwitchWMax)) {
+          return u64(1);
+        }
       }
     }
   }

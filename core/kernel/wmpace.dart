@@ -365,6 +365,8 @@ const int wmPageWSwitch = 504;
 const int wmPageWPref = 505;
 /// Focus generation token. Bumped on every seat-0 focus change.
 const int wmPageWFocusGen = 506;
+/// Physical address of the UART token line page (allocFrame). No .bss.
+const int wmPageWUartLine = 507;
 const int wmOpKindPtr = 1;
 const int wmOpKindDrag = 2;
 const int wmOpKindBody = 3;

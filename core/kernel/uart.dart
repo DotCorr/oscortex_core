@@ -293,3 +293,170 @@ void uartWrite(u64 base, u64 len) {
 void uartPutBanner() {
   uartWrite(Rodata.addressOf(uartBannerLine), u64(15));
 }
+
+// ---------------------------------------------------------------------------
+// Atomic diagnostic records (Round 39). VIS and VIRTIO SCAN share COM1
+// with IRQ present. A structured ring holds complete records so a SCAN
+// cannot splice into `WM VIS W 0F ...`. The writer never holds IF off
+// across the 16550 wait — IRQ enqueues and returns. Ring full drops
+// SCAN only (flood); VIS is never dropped.
+//
+// Record: 3 x u64. kind:8 | slot:8 | x:16 | y:16 in word0;
+// w:32 | h:32 in word1; gen:32 | extra:32 in word2.
+// kind 1 VIS, 2 REQ, 3 PEND, 4 SCAN.
+// Page: lock, head, tail, drops, then 8 records.
+// ---------------------------------------------------------------------------
+
+const int uartTokKindVis = 1;
+const int uartTokKindReq = 2;
+const int uartTokKindPend = 3;
+const int uartTokKindScan = 4;
+const int uartTokRecN = 8;
+const int uartTokRecBytes = 24;
+const int uartTokRecOff = 32;
+
+@bare
+u64 uartTokCsum(u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
+  return (slot ^ x ^ y ^ w ^ h ^ gen) & u64(0xFF);
+}
+
+@bare
+u64 uartTokPage() {
+  if (wmPageAddr() < u64(1)) {
+    return u64(0);
+  }
+  u64 p = wmPage(u64(wmPageWUartLine));
+  if (p > u64(0)) {
+    return p;
+  }
+  p = allocFrame();
+  if (p < u64(1)) {
+    return u64(0);
+  }
+  Pointer<u64>.fromAddress(p).value = u64(0);
+  Pointer<u64>.fromAddress(p + u64(8)).value = u64(0);
+  Pointer<u64>.fromAddress(p + u64(16)).value = u64(0);
+  Pointer<u64>.fromAddress(p + u64(24)).value = u64(0);
+  wmPageSet(u64(wmPageWUartLine), p);
+  return p;
+}
+
+/// Emits one sealed record. Caller holds the page lock.
+@bare
+void uartTokWrite(u64 kind, u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
+  if (kind == u64(uartTokKindScan)) {
+    uartWrite(Rodata.addressOf(virtgpuStrLine), u64(7));
+    uartWrite(Rodata.addressOf(virtgpuStrScan), u64(5));
+    uartPutHex(x, u64(8));
+    uartSpace();
+    uartPutHex(y, u64(8));
+    uartSpace();
+    uartPutHex(w, u64(8));
+    uartSpace();
+    uartPutHex(h, u64(8));
+    uartSpace();
+    uartPutHex(gen, u64(8));
+    uartNewline();
+    return;
+  }
+  if (kind == u64(uartTokKindReq)) {
+    uartWrite(Rodata.addressOf(wmStrReq), u64(9));
+  } else {
+    if (kind == u64(uartTokKindPend)) {
+      uartWrite(Rodata.addressOf(wmStrPendTok), u64(10));
+    } else {
+      uartWrite(Rodata.addressOf(wmStrVis), u64(9));
+    }
+  }
+  uartPutHex(slot, u64(2));
+  uartWrite(Rodata.addressOf(wmStrX), u64(3));
+  uartPutHex(x, u64(4));
+  uartWrite(Rodata.addressOf(wmStrY), u64(3));
+  uartPutHex(y, u64(4));
+  uartWrite(Rodata.addressOf(wmStrW), u64(3));
+  uartPutHex(w, u64(4));
+  uartWrite(Rodata.addressOf(wmStrH), u64(3));
+  uartPutHex(h, u64(4));
+  uartWrite(Rodata.addressOf(wmLatStrG), u64(3));
+  uartPutHex(gen, u64(4));
+  uartWrite(Rodata.addressOf(wmStrC), u64(3));
+  uartPutHex(uartTokCsum(slot, x, y, w, h, gen), u64(2));
+  uartNewline();
+}
+
+@bare
+void uartTokDrain(u64 p) {
+  u64 steps = u64(0);
+  while (steps < u64(uartTokRecN)) {
+    final u64 head = Pointer<u64>.fromAddress(p + u64(8)).value;
+    final u64 tail = Pointer<u64>.fromAddress(p + u64(16)).value;
+    if (head == tail) {
+      return;
+    }
+    final u64 rec = p + u64(uartTokRecOff) + (tail * u64(uartTokRecBytes));
+    final u64 w0 = Pointer<u64>.fromAddress(rec).value;
+    final u64 w1 = Pointer<u64>.fromAddress(rec + u64(8)).value;
+    final u64 w2 = Pointer<u64>.fromAddress(rec + u64(16)).value;
+    uartTokWrite(
+        w0 & u64(0xFF),
+        (w0 >> u64(8)) & u64(0xFF),
+        (w0 >> u64(16)) & u64(0xFFFF),
+        (w0 >> u64(32)) & u64(0xFFFF),
+        w1 & u64(0xFFFFFFFF),
+        w1 >> u64(32),
+        w2);
+    u64 next = tail + u64(1);
+    if (next >= u64(uartTokRecN)) {
+      next = u64(0);
+    }
+    Pointer<u64>.fromAddress(p + u64(16)).value = next;
+    steps = steps + u64(1);
+  }
+}
+
+@bare
+void uartTokEnqueue(
+    u64 kind, u64 slot, u64 x, u64 y, u64 w, u64 h, u64 gen) {
+  final u64 p = uartTokPage();
+  if (p < u64(1)) {
+    uartTokWrite(kind, slot, x, y, w, h, gen);
+    return;
+  }
+  final u64 lock = Pointer<u64>.fromAddress(p).value;
+  if (lock < u64(1)) {
+    Pointer<u64>.fromAddress(p).value = u64(1);
+    uartTokWrite(kind, slot, x, y, w, h, gen);
+    uartTokDrain(p);
+    Pointer<u64>.fromAddress(p).value = u64(0);
+    return;
+  }
+  u64 head = Pointer<u64>.fromAddress(p + u64(8)).value;
+  u64 tail = Pointer<u64>.fromAddress(p + u64(16)).value;
+  u64 next = head + u64(1);
+  if (next >= u64(uartTokRecN)) {
+    next = u64(0);
+  }
+  if (next == tail) {
+    if (kind == u64(uartTokKindScan)) {
+      Pointer<u64>.fromAddress(p + u64(24)).value =
+          Pointer<u64>.fromAddress(p + u64(24)).value + u64(1);
+      return;
+    }
+    tail = tail + u64(1);
+    if (tail >= u64(uartTokRecN)) {
+      tail = u64(0);
+    }
+    Pointer<u64>.fromAddress(p + u64(16)).value = tail;
+    Pointer<u64>.fromAddress(p + u64(24)).value =
+        Pointer<u64>.fromAddress(p + u64(24)).value + u64(1);
+  }
+  final u64 rec = p + u64(uartTokRecOff) + (head * u64(uartTokRecBytes));
+  Pointer<u64>.fromAddress(rec).value = (kind & u64(0xFF)) |
+      ((slot & u64(0xFF)) << u64(8)) |
+      ((x & u64(0xFFFF)) << u64(16)) |
+      ((y & u64(0xFFFF)) << u64(32));
+  Pointer<u64>.fromAddress(rec + u64(8)).value =
+      (w & u64(0xFFFFFFFF)) | ((h & u64(0xFFFFFFFF)) << u64(32));
+  Pointer<u64>.fromAddress(rec + u64(16)).value = gen;
+  Pointer<u64>.fromAddress(p + u64(8)).value = next;
+}

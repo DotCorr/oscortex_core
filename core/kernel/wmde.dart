@@ -982,19 +982,15 @@ u64 wmHitAbsY(u64 wI) {
 
 @bare
 void wmGeomNote(u64 hdr, u64 hdrN, u64 wI, u64 g, u64 gen) {
-  uartWrite(hdr, hdrN);
-  uartPutHex(wI, u64(1));
-  uartWrite(Rodata.addressOf(wmStrX), u64(3));
-  uartPutHex(wmGeomX(g), u64(4));
-  uartWrite(Rodata.addressOf(wmStrY), u64(3));
-  uartPutHex(wmGeomY(g), u64(4));
-  uartWrite(Rodata.addressOf(wmStrW), u64(3));
-  uartPutHex(wmGeomW(g), u64(4));
-  uartWrite(Rodata.addressOf(wmStrH), u64(3));
-  uartPutHex(wmGeomH(g), u64(4));
-  uartWrite(Rodata.addressOf(wmLatStrG), u64(3));
-  uartPutHex(gen, u64(4));
-  uartNewline();
+  u64 kind = u64(uartTokKindVis);
+  if (hdr == Rodata.addressOf(wmStrReq)) {
+    kind = u64(uartTokKindReq);
+  }
+  if (hdr == Rodata.addressOf(wmStrPendTok)) {
+    kind = u64(uartTokKindPend);
+  }
+  uartTokEnqueue(kind, wI, wmGeomX(g), wmGeomY(g), wmGeomW(g),
+      wmGeomH(g), gen);
 }
 
 /// Arm HOLD: client is configured to [next]; scanout+hit-test stay on VIS.
@@ -1814,7 +1810,7 @@ void wmDePopHide() {
     wmSetMeta(u64(wmMetaPop), u64(0));
     if (wmPanelStrip() < u64(1)) {
       wmPopDamageRestore(wmSwitchX(), wmSwitchY(), wmSwitchBoxW(),
-          u64(wmSwitchH));
+          wmSwitchBoxH());
     }
   }
 }
