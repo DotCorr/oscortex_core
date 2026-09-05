@@ -2072,7 +2072,7 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   }
   final u64 b = u64(wmBorder);
   final u64 cols = u64(4);
-  final u64 pitchX = u64(236);
+  final u64 pitchX = u64(188);
   final u64 pitchY = u64(148);
   final u64 ox = u64(24);
   final u64 oy = u64(24);
@@ -2086,8 +2086,13 @@ u64 wmPlaceClient(u64 x, u64 y, u64 w, u64 h) {
   if (ny < b) {
     ny = b;
   }
-  u64 maxX = fbGeomWidth() - b - u64(240);
-  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - u64(160);
+  u64 maxX = wmIsleRightX();
+  if (maxX > (b + u64(200))) {
+    maxX = maxX - b - u64(200);
+  } else {
+    maxX = b;
+  }
+  u64 maxY = fbGeomHeight() - u64(wmChromeH) - b - u64(140);
   if (maxX < b) {
     maxX = b;
   }
@@ -2197,8 +2202,8 @@ void wmAttach(u64 frame, u64 ptr, u64 id) {
     /* 1280 tile: grant SET 320 so commit stride matches the visible
      * column. remainW after FILES is ~814, so PlaceExtent would keep 440. */
     if (fbGeomWidth() >= u64(1200)) {
-      if (w > u64(320)) {
-        w = u64(320);
+      if (w > u64(200)) {
+        w = u64(200);
       }
     }
   }

@@ -28,9 +28,8 @@ bar_s.loader.exec_module(bar38)
 ART = os.environ.get("ARTIFACTS_DIR", "/opt/cursor/artifacts")
 RUN = os.environ.get("DRIVE_RUN", "/workspace/core/build/daily-drive-r38")
 ATTACH_RE = re.compile(
-    r"WM ATTACH W ([0-9A-F]{2}) P ([0-9A-F]{2}) .* "
-    r"C ([0-9A-F]) .* "
-    r"X ([0-9A-F]{4}) Y ([0-9A-F]{4}) W ([0-9A-F]{4}) H ([0-9A-F]{4})")
+    r"WM ATTACH W ([0-9A-F]{2}) P ([0-9A-F]{2}) C ([0-9A-F])"
+    r".* X ([0-9A-F]{4}) Y ([0-9A-F]{4}) W ([0-9A-F]{4}) H ([0-9A-F]{4})")
 CLOSE_RE = re.compile(r"WM CLOSE W ([0-9A-F]{2}) ")
 PROC_NEW_RE = re.compile(r"PROC NEW SLOT ([0-9A-F]{2})")
 PROC_KILL_RE = re.compile(r"PROC KILL SLOT ([0-9A-F]{2})")
@@ -154,7 +153,19 @@ def launch_row(q, ser, row):
     return wait_ordinary(ser, before, timeout=2.0)
 
 
+def uncover_dock(q, ser):
+    info = live_from(harvest(ser))
+    dock_x, dock_y = dock_icon(1)
+    for w, g in info["windows"].items():
+        if not g["live"] or w < 1 or w >= 17:
+            continue
+        x1, y1, ww, hh = g["x"], g["y"], g["ww"], g["hh"]
+        if x1 <= dock_x <= x1 + ww and y1 <= dock_y <= y1 + hh:
+            drag(q, ser, x1 + 24, y1 + 10, 40 + (w % 5) * 36, 32 + (w % 4) * 24)
+
+
 def dock_click(q, ser, i):
+    uncover_dock(q, ser)
     x, y = dock_icon(i)
     before = ordinary_n(harvest(ser))
     click(q, ser, x, y)
@@ -224,7 +235,8 @@ def main():
     # then TAP last. Dock 0=SET 1=FILES 2=BROWSE 3=PLAY 4=STUDIO 5=TAP.
     while ordinary_n(harvest(ser)) < 10:
         before = ordinary_n(harvest(ser))
-        dock_click(q, ser, 1)
+        if not dock_click(q, ser, 1):
+            launch_row(q, ser, 0)
         log.append(("files", ordinary_n(harvest(ser))))
         if ordinary_n(harvest(ser)) == before:
             break
@@ -248,11 +260,25 @@ def main():
         log.append(("files-fill", ordinary_n(harvest(ser))))
         if ordinary_n(harvest(ser)) == before:
             break
+    # If TAP already attached early, close only TAP, fill to 15, relaunch last.
+    info = live_from(harvest(ser))
+    for w, g in list(info["windows"].items()):
+        if g["live"] and g.get("cap") == 6:
+            click(q, ser, g["x"] + g["ww"] - 17, g["y"] + 17)
+            time.sleep(0.15)
+    while ordinary_n(harvest(ser)) < 15:
+        before = ordinary_n(harvest(ser))
+        dock_click(q, ser, 1)
+        log.append(("files-pre-tap", ordinary_n(harvest(ser))))
+        if ordinary_n(harvest(ser)) == before:
+            break
     pre_tap = live_from(harvest(ser))
     tap_before_slots = list(pre_tap["ordinary_slots"])
-    tap_ok = dock_click(q, ser, 5)
-    if ordinary_n(harvest(ser)) < 16:
-        tap_ok = launch_row(q, ser, 5) or tap_ok
+    tap_ok = False
+    if len(tap_before_slots) >= 15:
+        tap_ok = dock_click(q, ser, 5)
+        if ordinary_n(harvest(ser)) < 16:
+            tap_ok = launch_row(q, ser, 5) or tap_ok
     time.sleep(0.15)
     live = harvest(ser)
     live_info = live_from(live)
