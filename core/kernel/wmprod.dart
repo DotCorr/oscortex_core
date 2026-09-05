@@ -150,6 +150,14 @@ void wmLaunchReset() {
   if (wmPageAddr() < u64(1)) {
     return;
   }
+  if (wmLaunchQLen() < u64(1)) {
+    if (wmLaunchSel() < u64(1)) {
+      final u64 n = (wmPage(u64(wmPageWLaunchSel)) >> u64(8)) & u64(0xFF);
+      if (n == wmDeLaunchN()) {
+        return;
+      }
+    }
+  }
   wmPageSet(u64(wmPageWLaunchQ), u64(0));
   wmLaunchWriteSel(u64(0), wmDeLaunchN(), u64(0));
 }
@@ -509,11 +517,20 @@ void wmSwitchShow() {
   if (n < u64(1)) {
     return;
   }
-  if (wmPopKind() > u64(0)) {
-    if (wmPopIsCard(wmPopKind()) > u64(0)) {
-      wmPopHide();
+  final u64 oldk = wmPopKind();
+  if (oldk > u64(0)) {
+    if (oldk == u64(wmPopLaunch)) {
+      wmSetMeta(u64(wmMetaPop), u64(0));
     } else {
-      wmDePopHide();
+      if (wmPopIsCard(oldk) > u64(0)) {
+        wmPopHide();
+      } else {
+        if (oldk != u64(wmPopSwitch)) {
+          wmDePopHide();
+        } else {
+          wmSetMeta(u64(wmMetaPop), u64(0));
+        }
+      }
     }
   }
   u64 sel = u64(1);

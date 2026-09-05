@@ -2172,19 +2172,31 @@ u64 wmDeElfMagicOk() {
   return u64(1);
 }
 
+/// 1 when the catalog model is warm. Open presents from that model;
+/// a FAT mutation (fatWrites moved) forces a rescan before the next show.
+@bare
+u64 wmLaunchModelReady() {
+  if (wmPageAddr() < u64(1)) {
+    return u64(0);
+  }
+  if (wmDeLaunchN() < u64(1)) {
+    return u64(0);
+  }
+  if (wmPage(u64(wmPageWCatGen)) != fatWrites()) {
+    return u64(0);
+  }
+  return u64(1);
+}
+
 /// Re-scan only when the FAT write generation moved or the cache is empty.
 /// Opening the launcher uses the cached model immediately.
 @bare
 void wmDeScanLaunchIfStale() {
-  if (wmPageAddr() > u64(0)) {
-    if (wmDeLaunchN() > u64(0)) {
-      if (wmPage(u64(wmPageWCatGen)) == fatWrites()) {
-        uartWrite(Rodata.addressOf(wmStrCatalog), u64(11));
-        uartPutHex(wmDeLaunchN(), u64(2));
-        uartNewline();
-        return;
-      }
-    }
+  if (wmLaunchModelReady() > u64(0)) {
+    uartWrite(Rodata.addressOf(wmStrCatalog), u64(11));
+    uartPutHex(wmDeLaunchN(), u64(2));
+    uartNewline();
+    return;
   }
   wmDeScanLaunch();
   if (wmPageAddr() > u64(0)) {
@@ -2280,14 +2292,24 @@ void wmDeNameCopy(u64 src) {
   }
 }
 
-/// Opens the start popover. Uses the ELF list `wm de` already cached.
+/// Opens the start popover. Cached catalog + pre-rendered DESK rows;
+/// kind 7 DONE is the present token, not a 280×244 GOP refill.
 @bare
 void wmDeStartShow() {
-  if (wmPopKind() > u64(0)) {
-    if (wmPopIsCard(wmPopKind()) > u64(0)) {
-      wmPopHide();
+  final u64 oldk = wmPopKind();
+  if (oldk > u64(0)) {
+    if (oldk != u64(wmPopLaunch)) {
+      if (wmPopIsCard(oldk) > u64(0)) {
+        wmPopHide();
+      } else {
+        if (oldk != u64(wmPopSwitch)) {
+          wmDePopHide();
+        } else {
+          wmSetMeta(u64(wmMetaPop), u64(0));
+        }
+      }
     } else {
-      wmDePopHide();
+      wmSetMeta(u64(wmMetaPop), u64(0));
     }
   }
   wmDeScanLaunchIfStale();
@@ -2302,8 +2324,13 @@ void wmDeStartShow() {
   uartWrite(Rodata.addressOf(wmStrLaunchShow), u64(15));
   uartPutHex(n, u64(2));
   uartNewline();
-  if (wmPanelStrip() < u64(1)) {
-    final u64 unused = wmLaunchDraw();
+  /* Warm catalog: skip the 280×244 software fill. DESK already has
+   * static rows in overlay SHM (idle pre-paint). Cold / no-DESK still
+   * paints so a harness without the panel strip has glyphs. */
+  if (wmLaunchModelReady() < u64(1)) {
+    if (wmPanelStrip() < u64(1)) {
+      final u64 unused = wmLaunchDraw();
+    }
   }
   wmOverlayPresentKind(wmLaunchX(), wmLaunchY(), u64(wmLaunchW),
       wmLaunchBoxH(), u64(wmOpKindLaunch));

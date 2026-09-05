@@ -107,6 +107,8 @@ static u64 last_tasks_hi;
 static u64 last_screen;
 static u64 last_pop;
 static u64 last_launch_sel;
+static u64 last_launch_paint;
+static u64 last_launch_q;
 static u64 last_pref;
 static u64 seq;
 static u64 menu_h;
@@ -1116,10 +1118,33 @@ static void overlay_size_for(u64 kind) {
   overlay_h = MENU_H;
 }
 
+/* Paint launcher rows into parked overlay SHM. Idle / first catalog
+ * fill, not the F4 present path. Filter only repaints when the key moves. */
+static void launch_cache_paint(void) {
+  u64 packed;
+  u64 q;
+  if (menu_h == 0) {
+    return;
+  }
+  packed = osxui_app_launch_sel();
+  q = osxui_app_launch_q();
+  if (last_launch_paint == packed) {
+    if (last_launch_q == q) {
+      return;
+    }
+  }
+  overlay_w = LAUNCH_W;
+  overlay_h = launch_box_h();
+  paint_desk_menu(2);
+  last_launch_paint = packed;
+  last_launch_q = q;
+}
+
 static void sync_menu(u64 pop) {
   u64 kind = OSXUI_POP_KIND(pop);
   u64 px = OSXUI_POP_X(pop);
   u64 py = OSXUI_POP_Y(pop);
+  u64 need_paint;
   if (menu_h == 0) {
     return;
   }
@@ -1137,8 +1162,24 @@ static void sync_menu(u64 pop) {
     return;
   }
   overlay_size_for(kind);
+  need_paint = 1;
+  if (kind == 2UL) {
+    u64 packed = osxui_app_launch_sel();
+    u64 q = osxui_app_launch_q();
+    if (last_launch_paint == packed) {
+      if (last_launch_q == q) {
+        need_paint = 0;
+      }
+    }
+  }
   osxui_app_place(menu_h, px, py, overlay_w, overlay_h);
-  paint_desk_menu(kind);
+  if (need_paint != 0) {
+    paint_desk_menu(kind);
+    if (kind == 2UL) {
+      last_launch_paint = osxui_app_launch_sel();
+      last_launch_q = osxui_app_launch_q();
+    }
+  }
   commit_menu();
   if (menu_on != kind) {
     u64 at = put(0, msg_menu);
@@ -1282,12 +1323,15 @@ void desk_main(u64 sp) {
   attach_menu();
   last_pop = 0;
   last_launch_sel = 0;
+  last_launch_paint = 0;
+  last_launch_q = 0xFFFFFFFFFFFFFFFFUL;
   last_pref = osxui_app_pref();
   icon_n = ICON_N;
   icon_vis = ICON_N;
   icon_off = 0;
   right_w = RIGHT_W;
   pins_persist();
+  launch_cache_paint();
   wr(msg_ready, 10);
   wr(msg_strip, 10);
   wr(msg_dock, 9);
@@ -1312,6 +1356,8 @@ void desk_main(u64 sp) {
         last_pop = pop;
         last_launch_sel = lsel;
         sync_menu(pop);
+      } else if (OSXUI_POP_KIND(pop) == 0) {
+        launch_cache_paint();
       }
       if (pref != last_pref) {
         last_pref = pref;
