@@ -1726,7 +1726,7 @@ void wmLaunchPublish() {
   final u64 slot = wmLaunchOverlaySlot();
   if (slot < u64(wmMaxWindows)) {
     wmLaunchOverlayPlace(slot, x, y, w, h);
-    final u64 unused = wmDrawWindow(slot, u64(0));
+    wmDrawOverlayFast(slot);
     wmVisPublish(slot);
   } else {
     if (wmPanelStrip() < u64(1)) {

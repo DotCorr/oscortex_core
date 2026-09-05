@@ -979,6 +979,91 @@ u64 wmUnderWallpaper(u64 x, u64 y) {
   return under & u64(0x00FFFFFF);
 }
 
+/// Copies [n] 32-bit pixels from identity-mapped [src] to GOP [dst].
+@bare
+void wmOverlayCopySpan(u64 dst, u64 src, u64 n) {
+  u64 i = u64(0);
+  while (i < n) {
+    Volatile<u32>.fromAddress(dst + (i << u64(2))).value =
+        Pointer<u32>.fromAddress(src + (i << u64(2))).value;
+    i = i + u64(1);
+  }
+}
+
+/// One page-bounded SRC span. Returns pixels written.
+@bare
+u64 wmOverlayCopyPage(u64 fbDst, u64 vec, u64 off, u64 n) {
+  if (n < u64(1)) {
+    return u64(0);
+  }
+  u64 pageLeft = (u64(4096) - (off & u64(4095))) >> u64(2);
+  u64 count = n;
+  if (count > pageLeft) {
+    count = pageLeft;
+  }
+  final u64 phys =
+      shmVec(vec, off >> u64(vmPageShift)) + (off & u64(vmPageMask));
+  wmOverlayCopySpan(fbDst, phys, count);
+  return count;
+}
+
+/// Opaque interior overlay row: one page walk per 4 KiB, not per pixel.
+@bare
+void wmBlitOverlayRowSrc(u64 wI, u64 py) {
+  final u64 g = wmViewGeom(wI);
+  final u64 x = wmAbsX(wI);
+  final u64 y = wmAbsY(wI);
+  final u64 w = wmGeomW(g);
+  final u64 vec = shmReg(wmWin(wI, u64(wmWinReg)), u64(shmRegVec));
+  final u64 stride = wmWinStrideOf(wI);
+  final u64 off = wmWinOffsetOf(wI);
+  final u64 rowOff = off + (py * stride);
+  if (w < u64(1)) {
+    return;
+  }
+  u64 remain = w;
+  u64 done = u64(0);
+  while (remain > u64(0)) {
+    final u64 n = wmOverlayCopyPage(
+        fbPixelAddr(x + done, y + py), vec, rowOff + (done << u64(2)), remain);
+    if (n < u64(1)) {
+      remain = u64(0);
+    } else {
+      remain = remain - n;
+      done = done + n;
+    }
+  }
+}
+
+/// Overlay card onto scanout. Corner rows keep SRC_OVER; the opaque
+/// interior is a page-span copy so F4 kind 7 is not a 68k-pixel hitch.
+@bare
+void wmDrawOverlayFast(u64 wI) {
+  if (wmWindowUsable(wI) < u64(1)) {
+    return;
+  }
+  final u64 g = wmViewGeom(wI);
+  final u64 h = wmGeomH(g);
+  u64 py = u64(0);
+  while (py < h) {
+    u64 edge = u64(0);
+    if (py < u64(8)) {
+      edge = u64(1);
+    }
+    if (h > u64(8)) {
+      if (py >= (h - u64(8))) {
+        edge = u64(1);
+      }
+    }
+    if (edge > u64(0)) {
+      wmBlitRow(wI, py);
+    } else {
+      wmBlitOverlayRowSrc(wI, py);
+    }
+    py = py + u64(1);
+  }
+}
+
 /// Blits row [py] of window [wI] from its region onto the framebuffer.
 /// [py] is a surface row; buffer sampling multiplies by the window's
 /// integer scale (ADR-0185).
